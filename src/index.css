@@ -1,0 +1,257 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Notion-inspired Light Mode (unused, keeping dark) */
+    --background: 40 30% 98%;
+    --foreground: 220 15% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 15% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 15% 15%;
+    --primary: 35 90% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 12% 94%;
+    --secondary-foreground: 220 15% 25%;
+    --muted: 220 12% 92%;
+    --muted-foreground: 220 10% 45%;
+    --accent: 35 85% 95%;
+    --accent-foreground: 35 90% 30%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 12% 88%;
+    --input: 220 12% 88%;
+    --ring: 35 90% 50%;
+    --radius: 0.75rem;
+
+    /* Diff colors */
+    --diff-added: 142 76% 36%;
+    --diff-removed: 0 72% 51%;
+    --diff-modified: 45 93% 47%;
+  }
+
+  .dark {
+    /* Notion-inspired Dark Mode - Warm & Inviting */
+    --background: 220 15% 8%;
+    --foreground: 40 15% 90%;
+    --card: 220 14% 11%;
+    --card-foreground: 40 15% 90%;
+    --popover: 220 14% 10%;
+    --popover-foreground: 40 15% 90%;
+    --primary: 35 90% 55%;
+    --primary-foreground: 220 15% 8%;
+    --secondary: 220 12% 16%;
+    --secondary-foreground: 40 12% 80%;
+    --muted: 220 12% 18%;
+    --muted-foreground: 220 10% 55%;
+    --accent: 35 50% 18%;
+    --accent-foreground: 35 90% 70%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 12% 20%;
+    --input: 220 12% 20%;
+    --ring: 35 90% 55%;
+
+    /* Diff colors - slightly muted for dark mode */
+    --diff-added: 142 60% 30%;
+    --diff-removed: 0 60% 40%;
+    --diff-modified: 45 80% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Notion-style typography - slightly larger, more comfortable */
+  html {
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+
+  /* Improved scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/30;
+  }
+}
+
+@layer components {
+  /* Notion-style card with soft shadow and lift effect */
+  .notion-card {
+    @apply bg-card rounded-xl shadow-sm border border-border/50;
+    @apply transition-all duration-200;
+  }
+
+  .notion-card:hover {
+    @apply shadow-md;
+    transform: translateY(-1px);
+  }
+
+  /* Block-style container */
+  .notion-block {
+    @apply p-4 rounded-lg bg-muted/30;
+    @apply hover:bg-muted/50 transition-colors duration-150;
+  }
+
+  /* Sidebar navigation item */
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-sm;
+    @apply text-muted-foreground hover:text-foreground;
+    @apply hover:bg-accent/50 transition-all duration-150;
+    @apply cursor-pointer select-none;
+  }
+
+  .sidebar-item.active {
+    @apply bg-accent text-accent-foreground font-medium;
+  }
+
+  /* Warm button glow effect */
+  .glow-button {
+    @apply relative overflow-hidden;
+  }
+
+  .glow-button::before {
+    content: '';
+    @apply absolute inset-0 bg-primary/20 rounded-xl blur-xl;
+    @apply opacity-0 transition-opacity duration-300;
+  }
+
+  .glow-button:hover::before {
+    @apply opacity-100;
+  }
+
+  /* Data grid row colors */
+  .row-added {
+    background-color: hsl(var(--diff-added) / 0.15) !important;
+  }
+
+  .row-removed {
+    background-color: hsl(var(--diff-removed) / 0.15) !important;
+  }
+
+  .row-modified {
+    background-color: hsl(var(--diff-modified) / 0.1) !important;
+  }
+
+  .cell-modified {
+    background-color: hsl(var(--diff-modified) / 0.3) !important;
+    font-weight: 600;
+  }
+
+  /* File dropzone */
+  .dropzone {
+    @apply border-2 border-dashed border-border rounded-xl;
+    @apply bg-muted/20 hover:bg-muted/40;
+    @apply transition-all duration-200 cursor-pointer;
+  }
+
+  .dropzone.active {
+    @apply border-primary bg-primary/10;
+    @apply ring-4 ring-primary/20;
+  }
+
+  /* Memory indicator bar */
+  .memory-bar {
+    @apply h-2 rounded-full bg-muted overflow-hidden;
+  }
+
+  .memory-bar-fill {
+    @apply h-full rounded-full transition-all duration-500;
+    @apply bg-gradient-to-r from-primary to-primary/70;
+  }
+
+  .memory-bar-fill.warning {
+    @apply from-yellow-500 to-orange-500;
+  }
+
+  .memory-bar-fill.critical {
+    @apply from-red-500 to-red-600;
+  }
+}
+
+@layer utilities {
+  /* Subtle scale on hover for interactive elements */
+  .hover-lift {
+    @apply transition-transform duration-150;
+  }
+
+  .hover-lift:hover {
+    transform: scale(1.01);
+  }
+
+  /* Soft focus ring */
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  /* Text gradient for headings */
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary via-primary/80 to-primary bg-clip-text text-transparent;
+  }
+
+  /* Animate in */
+  .animate-in {
+    animation: fadeIn 0.2s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Glass effect */
+  .glass {
+    @apply bg-background/80 backdrop-blur-sm;
+  }
+}
+
+/* Glide Data Grid theming */
+.gdg-container {
+  --gdg-bg-cell: hsl(var(--card));
+  --gdg-bg-cell-medium: hsl(var(--muted));
+  --gdg-bg-header: hsl(var(--muted));
+  --gdg-bg-header-has-focus: hsl(var(--accent));
+  --gdg-bg-header-hover: hsl(var(--muted));
+  --gdg-text-dark: hsl(var(--foreground));
+  --gdg-text-medium: hsl(var(--muted-foreground));
+  --gdg-text-light: hsl(var(--muted-foreground));
+  --gdg-text-header: hsl(var(--foreground));
+  --gdg-border-color: hsl(var(--border));
+  --gdg-accent-color: hsl(var(--primary));
+  --gdg-accent-fg: hsl(var(--primary-foreground));
+  --gdg-accent-light: hsl(var(--accent));
+  --gdg-link-color: hsl(var(--primary));
+}

@@ -1,0 +1,147 @@
+import { useState, useEffect, useCallback } from 'react'
+import {
+  initDuckDB,
+  loadCSV,
+  loadJSON,
+  loadParquet,
+  getTableData,
+  exportToCSV,
+  dropTable,
+  query,
+  execute,
+} from '@/lib/duckdb'
+import { useTableStore } from '@/stores/tableStore'
+import { useAuditStore } from '@/stores/auditStore'
+import { toast } from '@/hooks/use-toast'
+import type { ColumnInfo } from '@/types'
+
+export function useDuckDB() {
+  const [isReady, setIsReady] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const addTable = useTableStore((s) => s.addTable)
+  const removeTable = useTableStore((s) => s.removeTable)
+  const addAuditEntry = useAuditStore((s) => s.addEntry)
+
+  useEffect(() => {
+    initDuckDB()
+      .then(() => {
+        setIsReady(true)
+        console.log('DuckDB ready')
+      })
+      .catch((err) => {
+        console.error('Failed to initialize DuckDB:', err)
+        toast({
+          title: 'Database Error',
+          description: 'Failed to initialize the data engine',
+          variant: 'destructive',
+        })
+      })
+  }, [])
+
+  const loadFile = useCallback(
+    async (file: File) => {
+      setIsLoading(true)
+      try {
+        const tableName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+        let result: { columns: string[]; rowCount: number }
+
+        const ext = file.name.split('.').pop()?.toLowerCase()
+
+        if (ext === 'csv') {
+          result = await loadCSV(tableName, file)
+        } else if (ext === 'json') {
+          result = await loadJSON(tableName, file)
+        } else if (ext === 'parquet') {
+          result = await loadParquet(tableName, file)
+        } else {
+          throw new Error(`Unsupported file type: ${ext}`)
+        }
+
+        const columns: ColumnInfo[] = result.columns.map((name) => ({
+          name,
+          type: 'VARCHAR',
+          nullable: true,
+        }))
+
+        const tableId = addTable(tableName, columns, result.rowCount)
+
+        addAuditEntry(
+          tableId,
+          tableName,
+          'File Loaded',
+          `Loaded ${file.name} (${result.rowCount} rows, ${result.columns.length} columns)`
+        )
+
+        toast({
+          title: 'File Loaded',
+          description: `${tableName}: ${result.rowCount.toLocaleString()} rows`,
+        })
+
+        return { tableId, tableName, ...result }
+      } catch (error) {
+        console.error('Error loading file:', error)
+        toast({
+          title: 'Load Error',
+          description: error instanceof Error ? error.message : 'Failed to load file',
+          variant: 'destructive',
+        })
+        throw error
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [addTable, addAuditEntry]
+  )
+
+  const getData = useCallback(
+    async (tableName: string, offset = 0, limit = 1000) => {
+      return getTableData(tableName, offset, limit)
+    },
+    []
+  )
+
+  const runQuery = useCallback(async (sql: string) => {
+    return query(sql)
+  }, [])
+
+  const runExecute = useCallback(async (sql: string) => {
+    return execute(sql)
+  }, [])
+
+  const exportTable = useCallback(async (tableName: string, filename: string) => {
+    const blob = await exportToCSV(tableName)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || `${tableName}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    toast({
+      title: 'Export Complete',
+      description: `Saved ${filename || tableName + '.csv'}`,
+    })
+  }, [])
+
+  const deleteTable = useCallback(
+    async (tableId: string, tableName: string) => {
+      await dropTable(tableName)
+      removeTable(tableId)
+      addAuditEntry(tableId, tableName, 'Table Deleted', `Removed table ${tableName}`)
+    },
+    [removeTable, addAuditEntry]
+  )
+
+  return {
+    isReady,
+    isLoading,
+    loadFile,
+    getData,
+    runQuery,
+    runExecute,
+    exportTable,
+    deleteTable,
+  }
+}
