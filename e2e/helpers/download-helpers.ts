@@ -6,6 +6,12 @@ export interface DownloadResult {
   rows: string[][]
 }
 
+export interface TXTDownloadResult {
+  filename: string
+  content: string
+  lines: string[]
+}
+
 /**
  * Click the export button and capture the downloaded CSV
  */
@@ -90,5 +96,45 @@ export async function verifyDownloadContent(
     expect([...dataRows].sort(sortFn)).toEqual([...expectedRows].sort(sortFn))
   } else {
     expect(dataRows).toEqual(expectedRows)
+  }
+}
+
+/**
+ * Click a button and capture the downloaded TXT file
+ * @param page - Playwright page
+ * @param buttonSelector - Selector for the button that triggers download
+ */
+export async function downloadAndVerifyTXT(
+  page: Page,
+  buttonSelector: string
+): Promise<TXTDownloadResult> {
+  // Start waiting for download before clicking
+  const downloadPromise = page.waitForEvent('download')
+
+  // Click export button
+  await page.locator(buttonSelector).click()
+
+  // Wait for download
+  const download = await downloadPromise
+
+  // Get file content
+  const stream = await download.createReadStream()
+  const chunks: Buffer[] = []
+
+  if (stream) {
+    for await (const chunk of stream) {
+      chunks.push(Buffer.from(chunk))
+    }
+  }
+
+  const content = Buffer.concat(chunks).toString('utf-8')
+
+  // Parse TXT content
+  const lines = content.split('\n')
+
+  return {
+    filename: download.suggestedFilename(),
+    content,
+    lines,
   }
 }

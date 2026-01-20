@@ -56,7 +56,7 @@ export function AuditDetailTable({ auditEntryId }: AuditDetailTableProps) {
     <div className="flex flex-col h-full">
       {/* Table */}
       <ScrollArea className="h-[400px] border rounded-lg">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm" data-testid="audit-detail-table">
           <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm">
             <tr className="border-b">
               <th className="text-left py-2 px-3 font-medium w-20">Row #</th>
@@ -87,6 +87,7 @@ export function AuditDetailTable({ auditEntryId }: AuditDetailTableProps) {
                 <tr
                   key={`${row.rowIndex}-${idx}`}
                   className="border-b border-border/50 hover:bg-muted/30 transition-colors"
+                  data-testid="audit-detail-row"
                 >
                   <td className="py-2 px-3 font-mono text-muted-foreground">
                     {row.rowIndex}

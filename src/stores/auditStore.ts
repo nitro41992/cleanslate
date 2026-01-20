@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { AuditLogEntry, AuditEntryType, SerializedAuditLogEntry } from '@/types'
 import { generateId } from '@/lib/utils'
+import { getAuditRowDetails } from '@/lib/transformations'
 
 interface ManualEditParams {
   tableId: string
@@ -39,7 +40,7 @@ interface AuditActions {
   clearEntries: () => void
   getEntriesForTable: (tableId: string) => AuditLogEntry[]
   getSerializedEntries: () => SerializedAuditLogEntry[]
-  exportLog: () => string
+  exportLog: () => Promise<string>
 }
 
 export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
@@ -117,7 +118,7 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
     }))
   },
 
-  exportLog: () => {
+  exportLog: async () => {
     const entries = get().entries
     const typeAEntries = entries.filter((e) => e.entryType !== 'B')
     const typeBEntries = entries.filter((e) => e.entryType === 'B')
@@ -133,7 +134,7 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       '',
     ]
 
-    entries.forEach((entry) => {
+    for (const entry of entries) {
       lines.push(`[${entry.timestamp.toISOString()}]`)
       lines.push(`Table: ${entry.tableName}`)
       lines.push(`Type: ${entry.entryType === 'B' ? 'Manual Edit (B)' : 'Transformation (A)'}`)
@@ -143,8 +144,18 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       // Include rowsAffected for Type A entries
       if (entry.entryType === 'A' && entry.rowsAffected !== undefined) {
         lines.push(`Rows Affected: ${entry.rowsAffected}`)
-        if (entry.hasRowDetails) {
-          lines.push(`Row Details: Available (ID: ${entry.auditEntryId})`)
+      }
+
+      // Fetch and include row-level details if available
+      if (entry.hasRowDetails && entry.auditEntryId) {
+        try {
+          const { rows, total } = await getAuditRowDetails(entry.auditEntryId, 10000, 0)
+          lines.push(`Row Details (${total} changes):`)
+          for (const row of rows) {
+            lines.push(`  Row ${row.rowIndex}, ${row.columnName}: ${formatValue(row.previousValue)} → ${formatValue(row.newValue)}`)
+          }
+        } catch {
+          lines.push(`Row Details: Failed to fetch (ID: ${entry.auditEntryId})`)
         }
       }
 
@@ -157,7 +168,7 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       }
 
       lines.push('')
-    })
+    }
 
     return lines.join('\n')
   },

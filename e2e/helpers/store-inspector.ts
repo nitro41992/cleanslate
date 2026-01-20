@@ -19,6 +19,9 @@ export interface AuditEntry {
   newValue?: unknown
   rowIndex?: number
   columnName?: string
+  hasRowDetails?: boolean
+  auditEntryId?: string
+  rowsAffected?: number
 }
 
 export interface StoreInspector {

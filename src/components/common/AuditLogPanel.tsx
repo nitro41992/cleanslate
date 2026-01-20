@@ -36,8 +36,8 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
     }
   }
 
-  const handleExport = () => {
-    const content = exportLog()
+  const handleExport = async () => {
+    const content = await exportLog()
     const blob = new Blob([content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -50,7 +50,7 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-testid="audit-log-panel">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4 text-muted-foreground" />
@@ -66,6 +66,7 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
             className="h-8 w-8"
             onClick={handleExport}
             disabled={entries.length === 0}
+            data-testid="audit-export-btn"
           >
             <Download className="w-4 h-4" />
           </Button>
@@ -103,6 +104,7 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
                   role={isClickable ? 'button' : undefined}
                   tabIndex={isClickable ? 0 : undefined}
                   onKeyDown={isClickable ? (e) => e.key === 'Enter' && handleEntryClick(entry) : undefined}
+                  data-testid={isClickable ? 'audit-entry-with-details' : undefined}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">

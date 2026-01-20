@@ -56,7 +56,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+      <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col" data-testid="audit-detail-modal">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -68,7 +68,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
                 Detailed view of changes made by this transformation
               </DialogDescription>
             </div>
-            <Button variant="outline" size="sm" onClick={handleExportCSV}>
+            <Button variant="outline" size="sm" onClick={handleExportCSV} data-testid="audit-detail-export-csv-btn">
               <Download className="h-4 w-4 mr-2" />
               Export CSV
             </Button>
