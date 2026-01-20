@@ -1,5 +1,25 @@
 import { execute, query } from '@/lib/duckdb'
 import type { TransformationStep, TransformationType } from '@/types'
+import { generateId } from '@/lib/utils'
+
+// Max rows for which we capture row-level details (performance threshold)
+const ROW_DETAIL_THRESHOLD = 10_000
+// Batch size for inserting row details
+const BATCH_SIZE = 500
+
+export interface TransformationResult {
+  rowCount: number
+  affected: number
+  hasRowDetails: boolean
+  auditEntryId?: string
+}
+
+export interface RowDetail {
+  rowIndex: number
+  columnName: string
+  previousValue: string | null
+  newValue: string | null
+}
 
 export interface TransformationDefinition {
   id: TransformationType
@@ -122,11 +142,265 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
   },
 ]
 
+/**
+ * Ensure _audit_details table exists
+ */
+export async function ensureAuditDetailsTable(): Promise<void> {
+  await execute(`
+    CREATE TABLE IF NOT EXISTS _audit_details (
+      id VARCHAR PRIMARY KEY,
+      audit_entry_id VARCHAR NOT NULL,
+      row_index INTEGER NOT NULL,
+      column_name VARCHAR NOT NULL,
+      previous_value VARCHAR,
+      new_value VARCHAR,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `)
+  // Create index if not exists
+  await execute(`
+    CREATE INDEX IF NOT EXISTS idx_audit_entry ON _audit_details(audit_entry_id)
+  `)
+}
+
+/**
+ * Query count of rows that will be affected by a transformation BEFORE execution
+ */
+async function countAffectedRows(
+  tableName: string,
+  step: TransformationStep
+): Promise<number> {
+  const column = step.column ? `"${step.column}"` : null
+
+  switch (step.type) {
+    case 'trim': {
+      if (!column) return 0
+      const trimResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} != TRIM(${column})`
+      )
+      return Number(trimResult[0].count)
+    }
+
+    case 'lowercase': {
+      if (!column) return 0
+      const lowerResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} != LOWER(${column})`
+      )
+      return Number(lowerResult[0].count)
+    }
+
+    case 'uppercase': {
+      if (!column) return 0
+      const upperResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} != UPPER(${column})`
+      )
+      return Number(upperResult[0].count)
+    }
+
+    case 'replace': {
+      if (!column) return 0
+      const find = (step.params?.find as string) || ''
+      const caseSensitive = (step.params?.caseSensitive as string) ?? 'true'
+      const matchType = (step.params?.matchType as string) ?? 'contains'
+      const escapedFind = find.replace(/'/g, "''")
+
+      let whereClause: string
+      if (matchType === 'exact') {
+        if (caseSensitive === 'false') {
+          whereClause = `LOWER(${column}) = LOWER('${escapedFind}')`
+        } else {
+          whereClause = `${column} = '${escapedFind}'`
+        }
+      } else {
+        // contains
+        if (caseSensitive === 'false') {
+          whereClause = `LOWER(${column}) LIKE LOWER('%${escapedFind}%')`
+        } else {
+          whereClause = `${column} LIKE '%${escapedFind}%'`
+        }
+      }
+
+      const replaceResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${whereClause}`
+      )
+      return Number(replaceResult[0].count)
+    }
+
+    case 'filter_empty': {
+      if (!column) return 0
+      const filterResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NULL OR TRIM(${column}) = ''`
+      )
+      return Number(filterResult[0].count)
+    }
+
+    case 'rename_column':
+      // Metadata-only change, no rows affected
+      return 0
+
+    case 'cast_type': {
+      // All rows are affected by cast
+      const castResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}"`
+      )
+      return Number(castResult[0].count)
+    }
+
+    case 'remove_duplicates': {
+      // Will be calculated after as row diff
+      return -1 // Signal to use row count diff
+    }
+
+    case 'custom_sql':
+      // Cannot predict affected rows for custom SQL
+      return -1
+
+    default:
+      return -1
+  }
+}
+
+/**
+ * Capture row-level details for a transformation
+ * Returns the rows that will be changed with their before/after values
+ */
+async function captureRowDetails(
+  tableName: string,
+  step: TransformationStep,
+  auditEntryId: string,
+  affectedCount: number
+): Promise<boolean> {
+  // Skip if too many rows or no column involved
+  if (affectedCount > ROW_DETAIL_THRESHOLD || affectedCount <= 0 || !step.column) {
+    return false
+  }
+
+  const column = `"${step.column}"`
+
+  // Build query to get affected rows with their rowid and current value
+  let whereClause: string
+  let newValueExpression: string
+
+  switch (step.type) {
+    case 'trim':
+      whereClause = `${column} IS NOT NULL AND ${column} != TRIM(${column})`
+      newValueExpression = `TRIM(${column})`
+      break
+
+    case 'lowercase':
+      whereClause = `${column} IS NOT NULL AND ${column} != LOWER(${column})`
+      newValueExpression = `LOWER(${column})`
+      break
+
+    case 'uppercase':
+      whereClause = `${column} IS NOT NULL AND ${column} != UPPER(${column})`
+      newValueExpression = `UPPER(${column})`
+      break
+
+    case 'replace': {
+      const find = (step.params?.find as string) || ''
+      const replaceWith = (step.params?.replace as string) || ''
+      const caseSensitive = (step.params?.caseSensitive as string) ?? 'true'
+      const matchType = (step.params?.matchType as string) ?? 'contains'
+      const escapedFind = find.replace(/'/g, "''")
+      const escapedReplace = replaceWith.replace(/'/g, "''")
+
+      if (matchType === 'exact') {
+        if (caseSensitive === 'false') {
+          whereClause = `LOWER(${column}) = LOWER('${escapedFind}')`
+          newValueExpression = `CASE WHEN LOWER(${column}) = LOWER('${escapedFind}') THEN '${escapedReplace}' ELSE ${column} END`
+        } else {
+          whereClause = `${column} = '${escapedFind}'`
+          newValueExpression = `'${escapedReplace}'`
+        }
+      } else {
+        // contains
+        if (caseSensitive === 'false') {
+          const regexEscaped = escapedFind.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          whereClause = `LOWER(${column}) LIKE LOWER('%${escapedFind}%')`
+          newValueExpression = `REGEXP_REPLACE(${column}, '${regexEscaped}', '${escapedReplace}', 'gi')`
+        } else {
+          whereClause = `${column} LIKE '%${escapedFind}%'`
+          newValueExpression = `REPLACE(${column}, '${escapedFind}', '${escapedReplace}')`
+        }
+      }
+      break
+    }
+
+    default:
+      // Cannot capture details for other transformation types
+      return false
+  }
+
+  // Ensure audit details table exists
+  await ensureAuditDetailsTable()
+
+  // Query affected rows with before/after values
+  const rows = await query<{ row_index: number; prev_val: string | null; new_val: string | null }>(
+    `SELECT rowid as row_index, ${column} as prev_val, ${newValueExpression} as new_val
+     FROM "${tableName}"
+     WHERE ${whereClause}
+     LIMIT ${ROW_DETAIL_THRESHOLD}`
+  )
+
+  if (rows.length === 0) return false
+
+  // Batch insert into _audit_details
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE)
+    const values = batch.map((row) => {
+      const id = generateId()
+      const prevEscaped = row.prev_val !== null ? `'${String(row.prev_val).replace(/'/g, "''")}'` : 'NULL'
+      const newEscaped = row.new_val !== null ? `'${String(row.new_val).replace(/'/g, "''")}'` : 'NULL'
+      return `('${id}', '${auditEntryId}', ${row.row_index}, '${step.column}', ${prevEscaped}, ${newEscaped}, CURRENT_TIMESTAMP)`
+    }).join(', ')
+
+    await execute(`INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at) VALUES ${values}`)
+  }
+
+  return true
+}
+
+/**
+ * Get row details for an audit entry
+ */
+export async function getAuditRowDetails(
+  auditEntryId: string,
+  limit: number = 500,
+  offset: number = 0
+): Promise<{ rows: RowDetail[]; total: number }> {
+  // Get total count
+  const countResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
+  )
+  const total = Number(countResult[0].count)
+
+  // Get paginated rows
+  const rows = await query<{ row_index: number; column_name: string; previous_value: string | null; new_value: string | null }>(
+    `SELECT row_index, column_name, previous_value, new_value
+     FROM _audit_details
+     WHERE audit_entry_id = '${auditEntryId}'
+     ORDER BY row_index
+     LIMIT ${limit} OFFSET ${offset}`
+  )
+
+  return {
+    rows: rows.map(r => ({
+      rowIndex: r.row_index,
+      columnName: r.column_name,
+      previousValue: r.previous_value,
+      newValue: r.new_value,
+    })),
+    total,
+  }
+}
+
 export async function applyTransformation(
   tableName: string,
   step: TransformationStep
-): Promise<{ rowCount: number; affected: number }> {
+): Promise<TransformationResult> {
   const tempTable = `${tableName}_temp_${Date.now()}`
+  const auditEntryId = generateId()
 
   let sql: string
 
@@ -135,6 +409,15 @@ export async function applyTransformation(
     `SELECT COUNT(*) as count FROM "${tableName}"`
   )
   const countBefore = Number(beforeResult[0].count)
+
+  // Count affected rows BEFORE transformation
+  const preCountAffected = await countAffectedRows(tableName, step)
+
+  // Capture row-level details if within threshold
+  let hasRowDetails = false
+  if (preCountAffected > 0 && preCountAffected <= ROW_DETAIL_THRESHOLD) {
+    hasRowDetails = await captureRowDetails(tableName, step, auditEntryId, preCountAffected)
+  }
 
   switch (step.type) {
     case 'trim':
@@ -219,7 +502,7 @@ export async function applyTransformation(
           const regexEscaped = escapedFind.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
           sql = `
             UPDATE "${tableName}" SET "${step.column}" =
-            REGEXP_REPLACE("${step.column}", '(?i)${regexEscaped}', '${escapedReplace}', 'g')
+            REGEXP_REPLACE("${step.column}", '${regexEscaped}', '${escapedReplace}', 'gi')
           `
         } else {
           // Default: case-sensitive substring replacement
@@ -274,9 +557,18 @@ export async function applyTransformation(
   )
   const countAfter = Number(afterResult[0].count)
 
+  // Calculate affected rows:
+  // - If preCountAffected >= 0, use that (precise count)
+  // - Otherwise fall back to row count diff (for remove_duplicates, custom_sql, etc.)
+  const affected = preCountAffected >= 0
+    ? preCountAffected
+    : Math.abs(countBefore - countAfter)
+
   return {
     rowCount: countAfter,
-    affected: Math.abs(countBefore - countAfter),
+    affected,
+    hasRowDetails,
+    auditEntryId: hasRowDetails ? auditEntryId : undefined,
   }
 }
 

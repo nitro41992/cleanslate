@@ -33,7 +33,7 @@ export function RecipePanel({
 }: RecipePanelProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [currentStep, setCurrentStep] = useState(-1)
-  const addAuditEntry = useAuditStore((s) => s.addEntry)
+  const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
   const updateTable = useTableStore((s) => s.updateTable)
 
   const handleRunRecipe = async () => {
@@ -52,12 +52,15 @@ export function RecipePanel({
         totalAffected += result.affected
         finalRowCount = result.rowCount
 
-        addAuditEntry(
+        addTransformationEntry({
           tableId,
           tableName,
-          getTransformationLabel(step),
-          `Applied transformation. Rows affected: ${result.affected}. Current row count: ${result.rowCount}`
-        )
+          action: getTransformationLabel(step),
+          details: `Applied transformation. Current row count: ${result.rowCount}`,
+          rowsAffected: result.affected,
+          hasRowDetails: result.hasRowDetails,
+          auditEntryId: result.auditEntryId,
+        })
       }
 
       // Update table metadata

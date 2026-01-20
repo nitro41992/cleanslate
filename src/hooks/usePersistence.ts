@@ -7,11 +7,14 @@ import {
   loadTableFromOPFS,
   removeTableFromOPFS,
   clearAllOPFS,
+  saveAuditDetailsToOPFS,
+  loadAuditDetailsFromOPFS,
 } from '@/lib/opfs/storage'
 import { useTableStore } from '@/stores/tableStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { toast } from '@/hooks/use-toast'
+import type { AuditLogEntry } from '@/types'
 
 export function usePersistence() {
   const [isAvailable, setIsAvailable] = useState(false)
@@ -23,6 +26,8 @@ export function usePersistence() {
   const clearTables = useTableStore((s) => s.clearTables)
   const setPersistenceStatus = useUIStore((s) => s.setPersistenceStatus)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
+  const getSerializedEntries = useAuditStore((s) => s.getSerializedEntries)
+  const loadAuditEntries = useAuditStore((s) => s.loadEntries)
 
   // Check OPFS availability on mount
   useEffect(() => {
@@ -57,7 +62,11 @@ export function usePersistence() {
         await saveTableToOPFS(table.id, table.name)
       }
 
-      // Save metadata
+      // Save audit details table
+      await saveAuditDetailsToOPFS()
+
+      // Save metadata (including audit entries)
+      const auditEntries = getSerializedEntries()
       await saveMetadata(
         tables.map((t) => ({
           id: t.id,
@@ -66,13 +75,14 @@ export function usePersistence() {
           rowCount: t.rowCount,
           createdAt: t.createdAt.toISOString(),
           updatedAt: t.updatedAt.toISOString(),
-        }))
+        })),
+        auditEntries
       )
 
       setPersistenceStatus('saved')
       toast({
         title: 'Data Saved',
-        description: `Saved ${tables.length} table(s) to local storage`,
+        description: `Saved ${tables.length} table(s) and ${auditEntries.length} audit entries to local storage`,
       })
 
       return true
@@ -88,7 +98,7 @@ export function usePersistence() {
     } finally {
       setIsLoading(false)
     }
-  }, [isAvailable, tables, setPersistenceStatus])
+  }, [isAvailable, tables, getSerializedEntries, setPersistenceStatus])
 
   // Load all tables from OPFS
   const loadFromStorage = useCallback(async () => {
@@ -134,12 +144,26 @@ export function usePersistence() {
         }
       }
 
+      // Load audit entries from metadata
+      let auditCount = 0
+      if (metadata.auditEntries && metadata.auditEntries.length > 0) {
+        const restoredEntries: AuditLogEntry[] = metadata.auditEntries.map((e) => ({
+          ...e,
+          timestamp: new Date(e.timestamp),
+        }))
+        loadAuditEntries(restoredEntries)
+        auditCount = restoredEntries.length
+      }
+
+      // Load audit details table
+      await loadAuditDetailsFromOPFS()
+
       if (loadedCount > 0) {
         addAuditEntry(
           'system',
           'System',
           'Data Restored',
-          `Loaded ${loadedCount} table(s) from local storage`
+          `Loaded ${loadedCount} table(s) and ${auditCount} audit entries from local storage`
         )
       }
 
@@ -147,7 +171,7 @@ export function usePersistence() {
       setHasRestoredData(true)
       toast({
         title: 'Data Restored',
-        description: `Loaded ${loadedCount} table(s) from local storage`,
+        description: `Loaded ${loadedCount} table(s) and ${auditCount} audit entries from local storage`,
       })
 
       return true
@@ -163,7 +187,7 @@ export function usePersistence() {
     } finally {
       setIsLoading(false)
     }
-  }, [isAvailable, clearTables, addTable, addAuditEntry, setPersistenceStatus])
+  }, [isAvailable, clearTables, addTable, addAuditEntry, loadAuditEntries, setPersistenceStatus])
 
   // Remove a specific table from OPFS
   const removeFromStorage = useCallback(async (tableId: string) => {

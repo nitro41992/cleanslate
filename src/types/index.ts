@@ -28,6 +28,28 @@ export interface AuditLogEntry {
   newValue?: unknown
   rowIndex?: number
   columnName?: string
+  // Enhanced audit fields
+  rowsAffected?: number      // Actual count of modified rows
+  hasRowDetails?: boolean    // Flag: row-level data exists in _audit_details
+  auditEntryId?: string      // ID for looking up row details
+}
+
+// Serialized version for persistence
+export interface SerializedAuditLogEntry {
+  id: string
+  timestamp: string  // ISO string
+  tableId: string
+  tableName: string
+  action: string
+  details: string
+  entryType?: AuditEntryType
+  previousValue?: unknown
+  newValue?: unknown
+  rowIndex?: number
+  columnName?: string
+  rowsAffected?: number
+  hasRowDetails?: boolean
+  auditEntryId?: string
 }
 
 export interface CSVIngestionSettings {

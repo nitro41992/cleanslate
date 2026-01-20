@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AuditLogEntry, AuditEntryType } from '@/types'
+import type { AuditLogEntry, AuditEntryType, SerializedAuditLogEntry } from '@/types'
 import { generateId } from '@/lib/utils'
 
 interface ManualEditParams {
@@ -9,6 +9,16 @@ interface ManualEditParams {
   columnName: string
   previousValue: unknown
   newValue: unknown
+}
+
+interface TransformationEntryParams {
+  tableId: string
+  tableName: string
+  action: string
+  details: string
+  rowsAffected?: number
+  hasRowDetails?: boolean
+  auditEntryId?: string
 }
 
 interface AuditState {
@@ -23,9 +33,12 @@ interface AuditActions {
     details: string,
     entryType?: AuditEntryType
   ) => void
+  addTransformationEntry: (params: TransformationEntryParams) => void
   addManualEditEntry: (params: ManualEditParams) => void
+  loadEntries: (entries: AuditLogEntry[]) => void
   clearEntries: () => void
   getEntriesForTable: (tableId: string) => AuditLogEntry[]
+  getSerializedEntries: () => SerializedAuditLogEntry[]
   exportLog: () => string
 }
 
@@ -47,6 +60,24 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
     }))
   },
 
+  addTransformationEntry: (params) => {
+    const entry: AuditLogEntry = {
+      id: generateId(),
+      timestamp: new Date(),
+      tableId: params.tableId,
+      tableName: params.tableName,
+      action: params.action,
+      details: params.details,
+      entryType: 'A',
+      rowsAffected: params.rowsAffected,
+      hasRowDetails: params.hasRowDetails,
+      auditEntryId: params.auditEntryId,
+    }
+    set((state) => ({
+      entries: [entry, ...state.entries],
+    }))
+  },
+
   addManualEditEntry: (params) => {
     const entry: AuditLogEntry = {
       id: generateId(),
@@ -60,10 +91,15 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       newValue: params.newValue,
       rowIndex: params.rowIndex,
       columnName: params.columnName,
+      rowsAffected: 1,
     }
     set((state) => ({
       entries: [entry, ...state.entries],
     }))
+  },
+
+  loadEntries: (entries) => {
+    set({ entries })
   },
 
   clearEntries: () => {
@@ -72,6 +108,13 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
 
   getEntriesForTable: (tableId) => {
     return get().entries.filter((e) => e.tableId === tableId)
+  },
+
+  getSerializedEntries: () => {
+    return get().entries.map((entry) => ({
+      ...entry,
+      timestamp: entry.timestamp.toISOString(),
+    }))
   },
 
   exportLog: () => {
@@ -96,6 +139,14 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       lines.push(`Type: ${entry.entryType === 'B' ? 'Manual Edit (B)' : 'Transformation (A)'}`)
       lines.push(`Action: ${entry.action}`)
       lines.push(`Details: ${entry.details}`)
+
+      // Include rowsAffected for Type A entries
+      if (entry.entryType === 'A' && entry.rowsAffected !== undefined) {
+        lines.push(`Rows Affected: ${entry.rowsAffected}`)
+        if (entry.hasRowDetails) {
+          lines.push(`Row Details: Available (ID: ${entry.auditEntryId})`)
+        }
+      }
 
       // Include previous/new values for Type B entries
       if (entry.entryType === 'B') {
