@@ -13,6 +13,8 @@ export interface ColumnInfo {
   nullable: boolean
 }
 
+export type AuditEntryType = 'A' | 'B'  // A = Transformation, B = Manual Edit
+
 export interface AuditLogEntry {
   id: string
   timestamp: Date
@@ -20,6 +22,18 @@ export interface AuditLogEntry {
   tableName: string
   action: string
   details: string
+  // Type B (Manual Edit) specific fields
+  entryType?: AuditEntryType
+  previousValue?: unknown
+  newValue?: unknown
+  rowIndex?: number
+  columnName?: string
+}
+
+export interface CSVIngestionSettings {
+  headerRow?: number    // 1-based row number for headers
+  encoding?: 'utf-8' | 'latin-1'
+  delimiter?: ',' | '\t' | '|' | ';'
 }
 
 export interface TransformationStep {

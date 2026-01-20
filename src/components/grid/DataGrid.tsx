@@ -4,10 +4,15 @@ import DataGridLib, {
   GridCellKind,
   Item,
   GetRowThemeCallback,
+  EditableGridCell,
+  DrawCellCallback,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useEditStore } from '@/stores/editStore'
+import { useAuditStore } from '@/stores/auditStore'
+import { updateCell } from '@/lib/duckdb'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -50,6 +55,8 @@ interface DataGridProps {
   highlightedRows?: Map<number, 'added' | 'removed' | 'modified'>
   highlightedCells?: Map<string, boolean>
   onCellClick?: (col: number, row: number) => void
+  editable?: boolean
+  tableId?: string
 }
 
 const PAGE_SIZE = 500
@@ -61,6 +68,8 @@ export function DataGrid({
   highlightedRows,
   highlightedCells: _highlightedCells,
   onCellClick,
+  editable = false,
+  tableId,
 }: DataGridProps) {
   const { getData } = useDuckDB()
   const [data, setData] = useState<Record<string, unknown>[]>([])
@@ -68,6 +77,13 @@ export function DataGrid({
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
+
+  // Edit store for tracking dirty cells and undo/redo
+  const recordEdit = useEditStore((s) => s.recordEdit)
+  const isDirty = useEditStore((s) => s.isDirty)
+
+  // Audit store for logging edits
+  const addManualEditEntry = useAuditStore((s) => s.addManualEditEntry)
 
   const gridColumns: GridColumn[] = useMemo(
     () =>
@@ -131,10 +147,107 @@ export function DataGrid({
         data: value === null || value === undefined ? '' : String(value),
         displayData: value === null || value === undefined ? '' : String(value),
         allowOverlay: true,
-        readonly: true,
+        readonly: !editable,
       }
     },
-    [data, columns, loadedRange.start]
+    [data, columns, loadedRange.start, editable]
+  )
+
+  // Handle cell edits
+  const onCellEdited = useCallback(
+    async ([col, row]: Item, newValue: EditableGridCell) => {
+      if (!editable || !tableId) return
+
+      const colName = columns[col]
+      const adjustedRow = row - loadedRange.start
+      const rowData = data[adjustedRow]
+      const previousValue = rowData?.[colName]
+
+      // Get the new value from the cell
+      let newCellValue: unknown
+      if (newValue.kind === GridCellKind.Text) {
+        newCellValue = newValue.data
+      } else {
+        return // Only handle text cells for now
+      }
+
+      // Skip if value hasn't changed
+      if (previousValue === newCellValue) return
+
+      try {
+        // Update DuckDB
+        await updateCell(tableName, row, colName, newCellValue)
+
+        // Update local data state
+        setData((prevData) => {
+          const newData = [...prevData]
+          if (newData[adjustedRow]) {
+            newData[adjustedRow] = {
+              ...newData[adjustedRow],
+              [colName]: newCellValue,
+            }
+          }
+          return newData
+        })
+
+        // Record the edit for undo/redo
+        recordEdit({
+          tableId,
+          tableName,
+          rowIndex: row,
+          columnName: colName,
+          previousValue,
+          newValue: newCellValue,
+          timestamp: new Date(),
+        })
+
+        // Log to audit
+        addManualEditEntry({
+          tableId,
+          tableName,
+          rowIndex: row,
+          columnName: colName,
+          previousValue,
+          newValue: newCellValue,
+        })
+      } catch (error) {
+        console.error('Failed to update cell:', error)
+      }
+    },
+    [editable, tableId, tableName, columns, loadedRange.start, data, recordEdit, addManualEditEntry]
+  )
+
+  // Custom cell drawing to show dirty indicator (red triangle)
+  const drawCell: DrawCellCallback = useCallback(
+    (args, draw) => {
+      // First, draw the default cell
+      draw()
+
+      // Then overlay the dirty indicator if applicable
+      if (!editable || !tableId) return
+
+      const { col, row, rect, ctx } = args
+      const colName = columns[col]
+
+      if (isDirty(tableId, row, colName)) {
+        // Save canvas state before modifying
+        ctx.save()
+
+        // Draw a small red triangle in the top-right corner
+        const triangleSize = 8
+        ctx.beginPath()
+        ctx.moveTo(rect.x + rect.width - triangleSize, rect.y)
+        ctx.lineTo(rect.x + rect.width, rect.y)
+        ctx.lineTo(rect.x + rect.width, rect.y + triangleSize)
+        ctx.closePath()
+        ctx.fillStyle = '#ef4444' // red-500
+        ctx.fill()
+
+        // Restore canvas state to prevent affecting other cells
+        ctx.restore()
+      }
+    },
+    [editable, tableId, columns, isDirty]
   )
 
   const getRowThemeOverride: GetRowThemeCallback = useCallback(
@@ -193,6 +306,8 @@ export function DataGrid({
               ? ([col, row]) => onCellClick(col, row)
               : undefined
           }
+          onCellEdited={editable ? onCellEdited : undefined}
+          drawCell={editable ? drawCell : undefined}
           width={gridWidth}
           height={gridHeight}
           smoothScrollX

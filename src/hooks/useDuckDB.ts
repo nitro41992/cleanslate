@@ -10,11 +10,12 @@ import {
   dropTable,
   query,
   execute,
+  updateCell as updateCellDb,
 } from '@/lib/duckdb'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { toast } from '@/hooks/use-toast'
-import type { ColumnInfo } from '@/types'
+import type { ColumnInfo, CSVIngestionSettings } from '@/types'
 
 export function useDuckDB() {
   const [isReady, setIsReady] = useState(false)
@@ -40,7 +41,7 @@ export function useDuckDB() {
   }, [])
 
   const loadFile = useCallback(
-    async (file: File) => {
+    async (file: File, csvSettings?: CSVIngestionSettings) => {
       setIsLoading(true)
       try {
         const tableName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
@@ -49,7 +50,7 @@ export function useDuckDB() {
         const ext = file.name.split('.').pop()?.toLowerCase()
 
         if (ext === 'csv') {
-          result = await loadCSV(tableName, file)
+          result = await loadCSV(tableName, file, csvSettings)
         } else if (ext === 'json') {
           result = await loadJSON(tableName, file)
         } else if (ext === 'parquet') {
@@ -68,11 +69,34 @@ export function useDuckDB() {
 
         const tableId = addTable(tableName, columns, result.rowCount)
 
+        // Build details string with settings info for CSV
+        let details = `Loaded ${file.name} (${result.rowCount} rows, ${result.columns.length} columns)`
+        if (ext === 'csv' && csvSettings) {
+          const settingsParts: string[] = []
+          if (csvSettings.headerRow && csvSettings.headerRow > 1) {
+            settingsParts.push(`header row: ${csvSettings.headerRow}`)
+          }
+          if (csvSettings.delimiter && csvSettings.delimiter !== ',') {
+            const delimNames: Record<string, string> = {
+              '\t': 'tab',
+              '|': 'pipe',
+              ';': 'semicolon',
+            }
+            settingsParts.push(`delimiter: ${delimNames[csvSettings.delimiter] || csvSettings.delimiter}`)
+          }
+          if (csvSettings.encoding && csvSettings.encoding !== 'utf-8') {
+            settingsParts.push(`encoding: ${csvSettings.encoding}`)
+          }
+          if (settingsParts.length > 0) {
+            details += ` [${settingsParts.join(', ')}]`
+          }
+        }
+
         addAuditEntry(
           tableId,
           tableName,
           'File Loaded',
-          `Loaded ${file.name} (${result.rowCount} rows, ${result.columns.length} columns)`
+          details
         )
 
         toast({
@@ -137,6 +161,13 @@ export function useDuckDB() {
     [removeTable, addAuditEntry]
   )
 
+  const updateCell = useCallback(
+    async (tableName: string, rowIndex: number, columnName: string, newValue: unknown) => {
+      await updateCellDb(tableName, rowIndex, columnName, newValue)
+    },
+    []
+  )
+
   return {
     isReady,
     isLoading,
@@ -146,5 +177,6 @@ export function useDuckDB() {
     runExecute,
     exportTable,
     deleteTable,
+    updateCell,
   }
 }

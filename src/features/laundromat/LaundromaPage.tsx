@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react'
-import { Download, Play, Plus, Sparkles, Upload } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { Download, Play, Plus, Sparkles, Upload, Undo2, Redo2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -8,12 +8,15 @@ import { DataGrid } from '@/components/grid/DataGrid'
 import { AuditLogPanel } from '@/components/common/AuditLogPanel'
 import { RecipePanel } from './components/RecipePanel'
 import { TransformationPicker } from './components/TransformationPicker'
+import { IngestionWizard } from '@/components/common/IngestionWizard'
 import { useTableStore } from '@/stores/tableStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
-import type { TransformationStep } from '@/types'
+import { useEditStore } from '@/stores/editStore'
+import { useAuditStore } from '@/stores/auditStore'
+import type { TransformationStep, CSVIngestionSettings } from '@/types'
 
 export function LaundromaPage() {
-  const { loadFile, isLoading, exportTable, isReady } = useDuckDB()
+  const { loadFile, isLoading, exportTable, isReady, updateCell } = useDuckDB()
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
@@ -22,6 +25,78 @@ export function LaundromaPage() {
   const [isPickerOpen, setIsPickerOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('data')
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Ingestion wizard state
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [showWizard, setShowWizard] = useState(false)
+
+  // Edit store for undo/redo
+  const undo = useEditStore((s) => s.undo)
+  const redo = useEditStore((s) => s.redo)
+  const canUndo = useEditStore((s) => s.canUndo)
+  const canRedo = useEditStore((s) => s.canRedo)
+
+  // Force re-render on undo/redo stack changes for button state
+  const undoStackLength = useEditStore((s) => s.undoStack.length)
+  const redoStackLength = useEditStore((s) => s.redoStack.length)
+
+  // Audit store for logging undo/redo
+  const addAuditEntry = useAuditStore((s) => s.addEntry)
+
+  // Handle undo action
+  const handleUndo = useCallback(async () => {
+    const edit = undo()
+    if (edit && activeTable) {
+      // Revert the cell value in DuckDB
+      await updateCell(edit.tableName, edit.rowIndex, edit.columnName, edit.previousValue)
+
+      // Log undo action to audit
+      addAuditEntry(
+        edit.tableId,
+        edit.tableName,
+        'Undo Edit',
+        `Reverted cell [${edit.rowIndex}, ${edit.columnName}] from "${edit.newValue}" to "${edit.previousValue}"`,
+        'B'
+      )
+    }
+  }, [undo, activeTable, updateCell, addAuditEntry])
+
+  // Handle redo action
+  const handleRedo = useCallback(async () => {
+    const edit = redo()
+    if (edit && activeTable) {
+      // Re-apply the cell value in DuckDB
+      await updateCell(edit.tableName, edit.rowIndex, edit.columnName, edit.newValue)
+
+      // Log redo action to audit
+      addAuditEntry(
+        edit.tableId,
+        edit.tableName,
+        'Redo Edit',
+        `Re-applied cell [${edit.rowIndex}, ${edit.columnName}] from "${edit.previousValue}" to "${edit.newValue}"`,
+        'B'
+      )
+    }
+  }, [redo, activeTable, updateCell, addAuditEntry])
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Z for undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        handleUndo()
+      }
+      // Ctrl+Y or Ctrl+Shift+Z for redo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        handleRedo()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleUndo, handleRedo])
 
   const handleAddFileClick = () => {
     fileInputRef.current?.click()
@@ -37,8 +112,31 @@ export function LaundromaPage() {
   }
 
   const handleFileDrop = async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase()
+
+    // Show wizard for CSV files
+    if (ext === 'csv') {
+      setPendingFile(file)
+      setShowWizard(true)
+      return
+    }
+
+    // Load other file types directly
     await loadFile(file)
     setRecipe([])
+  }
+
+  const handleWizardConfirm = async (settings: CSVIngestionSettings) => {
+    if (pendingFile) {
+      await loadFile(pendingFile, settings)
+      setPendingFile(null)
+      setRecipe([])
+    }
+  }
+
+  const handleWizardCancel = () => {
+    setPendingFile(null)
+    setShowWizard(false)
   }
 
   const handleAddStep = (step: TransformationStep) => {
@@ -74,6 +172,24 @@ export function LaundromaPage() {
 
         {activeTable && (
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleUndo}
+              disabled={!canUndo() || undoStackLength === 0}
+              title="Undo (Ctrl+Z)"
+            >
+              <Undo2 className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleRedo}
+              disabled={!canRedo() || redoStackLength === 0}
+              title="Redo (Ctrl+Y)"
+            >
+              <Redo2 className="w-4 h-4" />
+            </Button>
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="w-4 h-4 mr-2" />
               Export CSV
@@ -137,6 +253,8 @@ export function LaundromaPage() {
                         tableName={activeTable.name}
                         rowCount={activeTable.rowCount}
                         columns={activeTable.columns.map((c) => c.name)}
+                        editable={true}
+                        tableId={activeTable.id}
                       />
                     </div>
                   </CardContent>
@@ -201,6 +319,17 @@ export function LaundromaPage() {
         accept=".csv,.json,.parquet,.xlsx,.xls"
         onChange={handleFileInputChange}
         className="hidden"
+      />
+
+      {/* CSV Ingestion Wizard */}
+      <IngestionWizard
+        open={showWizard}
+        onOpenChange={(open) => {
+          setShowWizard(open)
+          if (!open) handleWizardCancel()
+        }}
+        file={pendingFile}
+        onConfirm={handleWizardConfirm}
       />
     </div>
   )

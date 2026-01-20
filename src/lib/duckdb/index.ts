@@ -1,6 +1,7 @@
 import * as duckdb from '@duckdb/duckdb-wasm'
 import duckdb_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
 import duckdb_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
+import type { CSVIngestionSettings } from '@/types'
 
 let db: duckdb.AsyncDuckDB | null = null
 let conn: duckdb.AsyncDuckDBConnection | null = null
@@ -60,7 +61,8 @@ export async function execute(sql: string): Promise<void> {
 
 export async function loadCSV(
   tableName: string,
-  file: File
+  file: File,
+  settings?: CSVIngestionSettings
 ): Promise<{ columns: string[]; rowCount: number }> {
   const db = await initDuckDB()
   const connection = await getConnection()
@@ -68,10 +70,35 @@ export async function loadCSV(
   // Register the file with DuckDB
   await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
+  // Build read_csv options based on settings
+  const options: string[] = []
+
+  if (settings?.headerRow !== undefined) {
+    options.push('header=true')
+    // Skip rows before header (0-indexed skip count)
+    if (settings.headerRow > 1) {
+      options.push(`skip=${settings.headerRow - 1}`)
+    }
+  } else {
+    options.push('header=true')
+  }
+
+  if (settings?.delimiter) {
+    // Escape the delimiter for SQL
+    const delimEscaped = settings.delimiter === '\t' ? '\\t' : settings.delimiter
+    options.push(`delim='${delimEscaped}'`)
+  }
+
+  // Build the SQL query
+  const optionsStr = options.length > 0 ? `, ${options.join(', ')}` : ''
+  const readCsvQuery = settings
+    ? `read_csv('${file.name}'${optionsStr})`
+    : `read_csv_auto('${file.name}')`
+
   // Create table from CSV
   await connection.query(`
     CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT * FROM read_csv_auto('${file.name}')
+    SELECT * FROM ${readCsvQuery}
   `)
 
   // Get column info
@@ -269,6 +296,60 @@ export async function tableExists(tableName: string): Promise<boolean> {
     WHERE table_name = '${tableName}'
   `)
   return Number(result.toArray()[0].toJSON().count) > 0
+}
+
+/**
+ * Update a single cell value in a table
+ * Uses rowid for precise row targeting
+ */
+export async function updateCell(
+  tableName: string,
+  rowIndex: number,
+  columnName: string,
+  newValue: unknown
+): Promise<void> {
+  const connection = await getConnection()
+
+  // Escape the value for SQL
+  let sqlValue: string
+  if (newValue === null || newValue === undefined || newValue === '') {
+    sqlValue = 'NULL'
+  } else if (typeof newValue === 'number') {
+    sqlValue = String(newValue)
+  } else if (typeof newValue === 'boolean') {
+    sqlValue = newValue ? 'TRUE' : 'FALSE'
+  } else {
+    // String value - escape single quotes
+    const escaped = String(newValue).replace(/'/g, "''")
+    sqlValue = `'${escaped}'`
+  }
+
+  // DuckDB uses 0-based rowid
+  // We need to use a subquery to target the specific row
+  await connection.query(`
+    UPDATE "${tableName}"
+    SET "${columnName}" = ${sqlValue}
+    WHERE rowid = ${rowIndex}
+  `)
+}
+
+/**
+ * Get the value of a specific cell
+ */
+export async function getCellValue(
+  tableName: string,
+  rowIndex: number,
+  columnName: string
+): Promise<unknown> {
+  const connection = await getConnection()
+  const result = await connection.query(`
+    SELECT "${columnName}" as value
+    FROM "${tableName}"
+    WHERE rowid = ${rowIndex}
+  `)
+  const rows = result.toArray()
+  if (rows.length === 0) return undefined
+  return rows[0].toJSON().value
 }
 
 export { db, conn }
