@@ -5,6 +5,23 @@ export interface TableInfo {
   rowCount: number
   createdAt: Date
   updatedAt: Date
+  parentTableId?: string        // Source table ID (for checkpoints)
+  isCheckpoint?: boolean        // Flag for checkpoint tables
+  lineage?: TableLineage        // Full transformation history
+}
+
+export interface TableLineage {
+  sourceTableId: string
+  sourceTableName: string
+  transformations: LineageTransformation[]
+  checkpointedAt: Date
+}
+
+export interface LineageTransformation {
+  action: string
+  details: string
+  timestamp: Date
+  rowsAffected?: number
 }
 
 export interface ColumnInfo {
@@ -112,3 +129,19 @@ export type ObfuscationMethod =
   | 'jitter'
 
 export type PersistenceStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+// Combiner types (FR-E)
+export type JoinType = 'left' | 'inner' | 'full_outer'
+
+export interface StackValidation {
+  isValid: boolean
+  missingInA: string[]
+  missingInB: string[]
+  warnings: string[]
+}
+
+export interface JoinValidation {
+  isValid: boolean
+  keyColumnMismatch: boolean
+  warnings: string[]
+}

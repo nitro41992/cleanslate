@@ -6,6 +6,7 @@ import { LaundromaPage } from '@/features/laundromat/LaundromaPage'
 import { DiffPage } from '@/features/diff/DiffPage'
 import { MatcherPage } from '@/features/matcher/MatcherPage'
 import { ScrubberPage } from '@/features/scrubber/ScrubberPage'
+import { CombinerPage } from '@/features/combiner/CombinerPage'
 
 function App() {
   return (
@@ -15,9 +16,10 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/laundromat" replace />} />
           <Route path="/laundromat" element={<LaundromaPage />} />
-          <Route path="/diff" element={<DiffPage />} />
           <Route path="/matcher" element={<MatcherPage />} />
+          <Route path="/combiner" element={<CombinerPage />} />
           <Route path="/scrubber" element={<ScrubberPage />} />
+          <Route path="/diff" element={<DiffPage />} />
         </Routes>
       </AppShell>
       <Toaster />

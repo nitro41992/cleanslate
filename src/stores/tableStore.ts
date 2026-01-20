@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { TableInfo, ColumnInfo } from '@/types'
+import type { TableInfo, ColumnInfo, LineageTransformation } from '@/types'
 import { generateId } from '@/lib/utils'
 
 interface TableState {
@@ -17,6 +17,13 @@ interface TableActions {
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   clearTables: () => void
+  checkpointTable: (
+    sourceId: string,
+    newName: string,
+    columns: ColumnInfo[],
+    rowCount: number,
+    transformations: LineageTransformation[]
+  ) => string
 }
 
 export const useTableStore = create<TableState & TableActions>((set) => ({
@@ -72,5 +79,38 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
 
   clearTables: () => {
     set({ tables: [], activeTableId: null })
+  },
+
+  checkpointTable: (sourceId, newName, columns, rowCount, transformations) => {
+    const id = generateId()
+    const now = new Date()
+    const state = useTableStore.getState()
+    const sourceTable = state.tables.find((t) => t.id === sourceId)
+
+    if (!sourceTable) return id
+
+    const newTable: TableInfo = {
+      id,
+      name: newName,
+      columns,
+      rowCount,
+      createdAt: now,
+      updatedAt: now,
+      parentTableId: sourceId,
+      isCheckpoint: true,
+      lineage: {
+        sourceTableId: sourceId,
+        sourceTableName: sourceTable.name,
+        transformations,
+        checkpointedAt: now,
+      },
+    }
+
+    set((s) => ({
+      tables: [...s.tables, newTable],
+      activeTableId: id,
+    }))
+
+    return id
   },
 }))

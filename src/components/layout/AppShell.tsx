@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Sparkles,
   GitCompare,
@@ -13,6 +13,9 @@ import {
   FolderOpen,
   Loader2,
   AlertTriangle,
+  Merge,
+  Plus,
+  Copy,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -26,6 +29,8 @@ import {
 } from '@/components/ui/tooltip'
 import { useTableStore } from '@/stores/tableStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useAuditStore } from '@/stores/auditStore'
+import { duplicateTable } from '@/lib/duckdb'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
 import { formatNumber } from '@/lib/utils'
 import { usePersistence } from '@/hooks/usePersistence'
@@ -48,22 +53,28 @@ const navItems = [
     description: 'Clean & transform data',
   },
   {
-    label: 'Diff',
-    icon: GitCompare,
-    path: '/diff',
-    description: 'Compare tables',
-  },
-  {
     label: 'Matcher',
     icon: Users,
     path: '/matcher',
     description: 'Find duplicates',
   },
   {
+    label: 'Combiner',
+    icon: Merge,
+    path: '/combiner',
+    description: 'Stack & join tables',
+  },
+  {
     label: 'Scrubber',
     icon: Shield,
     path: '/scrubber',
     description: 'Obfuscate data',
+  },
+  {
+    label: 'Diff',
+    icon: GitCompare,
+    path: '/diff',
+    description: 'Compare tables',
   },
 ]
 
@@ -73,12 +84,15 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   const location = useLocation()
+  const navigate = useNavigate()
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
   const removeTable = useTableStore((s) => s.removeTable)
+  const checkpointTable = useTableStore((s) => s.checkpointTable)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
+  const auditEntries = useAuditStore((s) => s.entries)
 
   const {
     isAvailable: isStorageAvailable,
@@ -89,6 +103,55 @@ export function AppShell({ children }: AppShellProps) {
   } = usePersistence()
 
   const [showRestoreDialog, setShowRestoreDialog] = useState(false)
+  const [checkpointLoading, setCheckpointLoading] = useState<string | null>(null)
+
+  // Checkpoint handler - create a snapshot of the current table state
+  const handleCheckpoint = async (tableId: string) => {
+    const table = tables.find((t) => t.id === tableId)
+    if (!table) return
+
+    setCheckpointLoading(tableId)
+    try {
+      // Generate checkpoint name with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      const checkpointName = `${table.name}_checkpoint_${timestamp}`
+
+      // Duplicate the table in DuckDB
+      const { columns, rowCount } = await duplicateTable(table.name, checkpointName)
+
+      // Get transformations applied to this table from audit log
+      const tableTransformations = auditEntries
+        .filter((e) => e.tableId === tableId)
+        .map((e) => ({
+          action: e.action,
+          details: e.details,
+          timestamp: e.timestamp,
+          rowsAffected: e.rowsAffected,
+        }))
+
+      // Add to table store with lineage info
+      checkpointTable(
+        tableId,
+        checkpointName,
+        columns.map((c) => ({ ...c, nullable: true })),
+        rowCount,
+        tableTransformations
+      )
+    } catch (error) {
+      console.error('Failed to create checkpoint:', error)
+    } finally {
+      setCheckpointLoading(null)
+    }
+  }
+
+  // Navigate to Laundromat and trigger file upload
+  const handleNewTable = () => {
+    navigate('/laundromat')
+    // Dispatch custom event to trigger file upload dialog
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('trigger-file-upload'))
+    }, 100)
+  }
 
   // Check for saved data on mount
   useEffect(() => {
@@ -165,7 +228,24 @@ export function AppShell({ children }: AppShellProps) {
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Tables
                 </span>
-                <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                <div className="flex items-center gap-1">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={handleNewTable}
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Import new table</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                </div>
               </div>
               <ScrollArea className="flex-1 px-2">
                 <div className="space-y-1 pb-4">
@@ -189,22 +269,59 @@ export function AppShell({ children }: AppShellProps) {
                       >
                         <Table className="w-4 h-4 shrink-0 text-muted-foreground" />
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm truncate">{table.name}</p>
+                          <p className="text-sm truncate">
+                            {table.name}
+                            {table.isCheckpoint && (
+                              <span className="ml-1 text-[10px] text-muted-foreground">(checkpoint)</span>
+                            )}
+                          </p>
                           <p className="text-xs text-muted-foreground">
                             {formatNumber(table.rowCount)} rows
                           </p>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            removeTable(table.id)
-                          }}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                disabled={checkpointLoading === table.id}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleCheckpoint(table.id)
+                                }}
+                              >
+                                {checkpointLoading === table.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Create checkpoint</p>
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  removeTable(table.id)
+                                }}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Delete table</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
                       </div>
                     ))
                   )}

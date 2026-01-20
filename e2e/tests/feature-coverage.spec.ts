@@ -684,17 +684,12 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
   })
 
   test('should stack two CSV files with Union All', async () => {
-    // TDD: Expected to fail until combiner feature is implemented
-    test.fail()
+    // Clean up any existing tables
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_e1_jan_sales')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_e1_feb_sales')
+    await inspector.runQuery('DROP TABLE IF EXISTS stacked_result')
 
-    // Fail-fast guard: Assert combiner page exists before proceeding
-    await page.goto('/combiner')
-    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible({ timeout: 1000 })
-
-    await laundromat.goto()
-    await inspector.waitForDuckDBReady()
-
-    // Upload first file
+    // Upload first file (page is already on laundromat from beforeAll)
     await laundromat.uploadFile(getFixturePath('fr_e1_jan_sales.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -706,18 +701,41 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_e1_feb_sales', 5)
 
-    // Navigate to combiner and trigger stack
-    await page.goto('/combiner')
+    // Navigate to combiner using client-side navigation (not page.goto which reloads)
+    await page.click('a[href="/combiner"]')
+    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible()
+
+    // Select Stack tab (should be default)
+    await expect(page.getByTestId('combiner-stack-tab')).toBeVisible()
+
+    // Add first table
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_e1_jan_sales/i }).click()
+    await page.getByRole('button', { name: 'Add' }).click()
+
+    // Add second table
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_e1_feb_sales/i }).click()
+    await page.getByRole('button', { name: 'Add' }).click()
+
+    // Enter result table name
+    await page.getByLabel('Result Table Name').fill('stacked_result')
+
+    // Click Stack Tables button
+    await page.getByTestId('combiner-stack-btn').click()
+
+    // Wait for the operation to complete (toast notification)
+    await expect(page.getByText('Tables Stacked', { exact: true })).toBeVisible({ timeout: 5000 })
 
     // Verify via SQL - should have 9 rows (4+5)
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM stacked_result')
     expect(Number(result[0].cnt)).toBe(9)
 
-    // Verify data integrity - check months from both files
+    // Verify data integrity - check sale_ids from both files (J=Jan, F=Feb)
     const data = await inspector.getTableData('stacked_result', 9)
-    const months = data.map((r) => r.month)
-    expect(months.filter((m) => m === 'January')).toHaveLength(4)
-    expect(months.filter((m) => m === 'February')).toHaveLength(5)
+    const saleIds = data.map((r) => r.sale_id as string)
+    expect(saleIds.filter((id) => id.startsWith('J'))).toHaveLength(4)
+    expect(saleIds.filter((id) => id.startsWith('F'))).toHaveLength(5)
   })
 })
 
@@ -741,17 +759,12 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test('should perform inner join on customer_id', async () => {
-    // TDD: Expected to fail until combiner feature is implemented
-    test.fail()
+    // Clean up any existing tables
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_customers')
+    await inspector.runQuery('DROP TABLE IF EXISTS join_result')
 
-    // Fail-fast guard: Assert combiner page exists before proceeding
-    await page.goto('/combiner')
-    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible({ timeout: 1000 })
-
-    await laundromat.goto()
-    await inspector.waitForDuckDBReady()
-
-    // Upload orders file
+    // Upload orders file (page is already on laundromat from beforeAll)
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -761,10 +774,39 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await laundromat.uploadFile(getFixturePath('fr_e2_customers.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('fr_e2_customers', 3)
+    await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
-    // Navigate to combiner and trigger inner join
-    await page.goto('/combiner')
+    // Navigate to combiner using client-side navigation
+    await page.click('a[href="/combiner"]')
+    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible()
+
+    // Switch to Join tab and wait for it to be active
+    await page.getByRole('tab', { name: 'Join' }).click()
+    await expect(page.getByRole('heading', { name: 'Join Tables' })).toBeVisible()
+
+    // Select left table (orders)
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_e2_orders/i }).click()
+
+    // Select right table (customers)
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: /fr_e2_customers/i }).click()
+
+    // Select key column
+    await page.getByRole('combobox').nth(2).click()
+    await page.getByRole('option', { name: 'customer_id' }).click()
+
+    // Inner join should be default, but let's make sure
+    await page.getByLabel('Inner').click()
+
+    // Enter result table name
+    await page.getByLabel('Result Table Name').fill('join_result')
+
+    // Click Join Tables button
+    await page.getByTestId('combiner-join-btn').click()
+
+    // Wait for the operation to complete (toast notification)
+    await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })
 
     // Verify result count via SQL - inner join excludes non-matching rows
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM join_result')
@@ -773,15 +815,14 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test('should perform left join preserving unmatched orders', async () => {
-    // TDD: Expected to fail until combiner feature is implemented
-    test.fail()
+    // Drop existing tables from previous test
+    await inspector.runQuery('DROP TABLE IF EXISTS join_result')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_customers')
 
-    // Fail-fast guard: Assert combiner page exists before proceeding
-    await page.goto('/combiner')
-    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible({ timeout: 1000 })
-
+    // Navigate back to laundromat for fresh file upload
     await laundromat.goto()
-    await inspector.waitForDuckDBReady()
+    await page.waitForLoadState('networkidle')
 
     // Upload orders file
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
@@ -793,10 +834,39 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await laundromat.uploadFile(getFixturePath('fr_e2_customers.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('fr_e2_customers', 3)
+    await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
-    // Navigate to combiner and trigger left join
-    await page.goto('/combiner')
+    // Navigate to combiner using client-side navigation
+    await page.click('a[href="/combiner"]')
+    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible()
+
+    // Switch to Join tab and wait for it to be active
+    await page.getByRole('tab', { name: 'Join' }).click()
+    await expect(page.getByRole('heading', { name: 'Join Tables' })).toBeVisible()
+
+    // Select left table (orders)
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_e2_orders/i }).click()
+
+    // Select right table (customers)
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: /fr_e2_customers/i }).click()
+
+    // Select key column
+    await page.getByRole('combobox').nth(2).click()
+    await page.getByRole('option', { name: 'customer_id' }).click()
+
+    // Select Left join type
+    await page.getByLabel('Left').click()
+
+    // Enter result table name
+    await page.getByLabel('Result Table Name').fill('join_result')
+
+    // Click Join Tables button
+    await page.getByTestId('combiner-join-btn').click()
+
+    // Wait for the operation to complete (toast notification)
+    await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })
 
     // Verify all orders preserved (left join keeps unmatched rows)
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM join_result')
@@ -804,7 +874,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
     // Verify unmatched orders have NULL customer info
     const unmatched = await inspector.runQuery(
-      'SELECT count(*) as cnt FROM join_result WHERE customer_name IS NULL'
+      'SELECT count(*) as cnt FROM join_result WHERE name IS NULL'
     )
     expect(Number(unmatched[0].cnt)).toBeGreaterThan(0) // C004 order has no matching customer
   })

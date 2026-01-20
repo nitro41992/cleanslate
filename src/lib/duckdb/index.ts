@@ -352,4 +352,42 @@ export async function getCellValue(
   return rows[0].toJSON().value
 }
 
+/**
+ * Duplicate a table with a new name
+ * Uses CREATE TABLE AS SELECT for efficient copying
+ */
+export async function duplicateTable(
+  sourceName: string,
+  targetName: string
+): Promise<{ columns: { name: string; type: string }[]; rowCount: number }> {
+  const connection = await getConnection()
+
+  // Create the duplicate table
+  await connection.query(`
+    CREATE TABLE "${targetName}" AS
+    SELECT * FROM "${sourceName}"
+  `)
+
+  // Get column info
+  const columnsResult = await connection.query(`
+    SELECT column_name, data_type
+    FROM information_schema.columns
+    WHERE table_name = '${targetName}'
+    ORDER BY ordinal_position
+  `)
+  const columns = columnsResult.toArray().map((row) => {
+    const json = row.toJSON()
+    return {
+      name: json.column_name as string,
+      type: json.data_type as string,
+    }
+  })
+
+  // Get row count
+  const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${targetName}"`)
+  const rowCount = Number(countResult.toArray()[0].toJSON().count)
+
+  return { columns, rowCount }
+}
+
 export { db, conn }
