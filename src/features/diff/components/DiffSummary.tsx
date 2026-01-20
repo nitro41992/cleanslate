@@ -12,38 +12,47 @@ interface DiffSummaryProps {
 }
 
 export function DiffSummary({ summary }: DiffSummaryProps) {
+  // Convert BigInt to number if needed (DuckDB returns BigInt for counts)
+  const toNum = (val: number | bigint): number =>
+    typeof val === 'bigint' ? Number(val) : val
+
+  const added = toNum(summary.added)
+  const removed = toNum(summary.removed)
+  const modified = toNum(summary.modified)
+  const unchanged = toNum(summary.unchanged)
+
   const items = [
     {
       label: 'Added',
-      value: summary.added,
+      value: added,
       icon: Plus,
       color: 'text-green-400',
       bg: 'bg-green-500/10',
     },
     {
       label: 'Removed',
-      value: summary.removed,
+      value: removed,
       icon: Minus,
       color: 'text-red-400',
       bg: 'bg-red-500/10',
     },
     {
       label: 'Modified',
-      value: summary.modified,
+      value: modified,
       icon: RefreshCw,
       color: 'text-yellow-400',
       bg: 'bg-yellow-500/10',
     },
     {
       label: 'Unchanged',
-      value: summary.unchanged,
+      value: unchanged,
       icon: Equal,
       color: 'text-muted-foreground',
       bg: 'bg-muted',
     },
   ]
 
-  const total = summary.added + summary.removed + summary.modified + summary.unchanged
+  const total = added + removed + modified + unchanged
 
   return (
     <div className="grid grid-cols-4 gap-4">

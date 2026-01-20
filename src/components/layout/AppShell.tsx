@@ -1,4 +1,4 @@
-import { ReactNode } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   Sparkles,
@@ -9,6 +9,10 @@ import {
   Trash2,
   HardDrive,
   ChevronDown,
+  Save,
+  FolderOpen,
+  Loader2,
+  AlertTriangle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -24,6 +28,17 @@ import { useTableStore } from '@/stores/tableStore'
 import { useUIStore } from '@/stores/uiStore'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
 import { formatNumber } from '@/lib/utils'
+import { usePersistence } from '@/hooks/usePersistence'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 const navItems = [
   {
@@ -64,6 +79,27 @@ export function AppShell({ children }: AppShellProps) {
   const removeTable = useTableStore((s) => s.removeTable)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
+
+  const {
+    isAvailable: isStorageAvailable,
+    isLoading: isStorageLoading,
+    saveToStorage,
+    loadFromStorage,
+    autoRestore,
+  } = usePersistence()
+
+  const [showRestoreDialog, setShowRestoreDialog] = useState(false)
+
+  // Check for saved data on mount
+  useEffect(() => {
+    const checkForSavedData = async () => {
+      const hasSavedData = await autoRestore()
+      if (hasSavedData) {
+        setShowRestoreDialog(true)
+      }
+    }
+    checkForSavedData()
+  }, [autoRestore])
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -182,6 +218,53 @@ export function AppShell({ children }: AppShellProps) {
             {!sidebarCollapsed && (
               <div className="p-3 space-y-3">
                 <MemoryIndicator />
+
+                {/* Storage Actions */}
+                {isStorageAvailable && (
+                  <div className="flex gap-2">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          onClick={saveToStorage}
+                          disabled={isStorageLoading || tables.length === 0}
+                        >
+                          {isStorageLoading ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Save to browser storage</p>
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          onClick={loadFromStorage}
+                          disabled={isStorageLoading}
+                        >
+                          {isStorageLoading ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <FolderOpen className="w-3.5 h-3.5" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Load from browser storage</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <HardDrive className="w-3.5 h-3.5" />
                   <span>
@@ -194,6 +277,14 @@ export function AppShell({ children }: AppShellProps) {
                       : 'Ready'}
                   </span>
                 </div>
+
+                {/* Warning about clearing browser data */}
+                {isStorageAvailable && persistenceStatus === 'saved' && (
+                  <p className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    Clearing browser data will erase saved tables
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -204,6 +295,30 @@ export function AppShell({ children }: AppShellProps) {
           {children}
         </main>
       </div>
+
+      {/* Restore Data Dialog */}
+      <AlertDialog open={showRestoreDialog} onOpenChange={setShowRestoreDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restore Previous Session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              We found tables from a previous session saved in your browser.
+              Would you like to restore them?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Start Fresh</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                loadFromStorage()
+                setShowRestoreDialog(false)
+              }}
+            >
+              Restore Tables
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </TooltipProvider>
   )
 }

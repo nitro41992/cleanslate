@@ -1,4 +1,4 @@
-import { GitCompare, Play, Loader2 } from 'lucide-react'
+import { GitCompare, Play, Loader2, EyeOff } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +12,13 @@ import {
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Switch } from '@/components/ui/switch'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { DiffGrid } from './components/DiffGrid'
 import { DiffSummary } from './components/DiffSummary'
 import { useTableStore } from '@/stores/tableStore'
@@ -28,12 +35,14 @@ export function DiffPage() {
     results,
     summary,
     isComparing,
+    blindMode,
     setTableA,
     setTableB,
     setKeyColumns,
     setResults,
     setSummary,
     setIsComparing,
+    setBlindMode,
     reset,
   } = useDiffStore()
 
@@ -105,11 +114,38 @@ export function DiffPage() {
           </div>
         </div>
 
-        {results.length > 0 && (
-          <Button variant="outline" size="sm" onClick={handleReset}>
-            New Comparison
-          </Button>
-        )}
+        <div className="flex items-center gap-4">
+          {results.length > 0 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="blind-mode"
+                      checked={blindMode}
+                      onCheckedChange={setBlindMode}
+                    />
+                    <Label
+                      htmlFor="blind-mode"
+                      className="text-sm cursor-pointer flex items-center gap-1.5"
+                    >
+                      <EyeOff className="w-4 h-4" />
+                      Blind Mode
+                    </Label>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Hide row status for unbiased review</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          {results.length > 0 && (
+            <Button variant="outline" size="sm" onClick={handleReset}>
+              New Comparison
+            </Button>
+          )}
+        </div>
       </header>
 
       {/* Main Content */}
@@ -250,6 +286,7 @@ export function DiffPage() {
                   results={results}
                   columns={commonColumns}
                   keyColumns={keyColumns}
+                  blindMode={blindMode}
                 />
               </CardContent>
             </Card>

@@ -4,6 +4,7 @@ import {
   loadCSV,
   loadJSON,
   loadParquet,
+  loadXLSX,
   getTableData,
   exportToCSV,
   dropTable,
@@ -53,6 +54,8 @@ export function useDuckDB() {
           result = await loadJSON(tableName, file)
         } else if (ext === 'parquet') {
           result = await loadParquet(tableName, file)
+        } else if (ext === 'xlsx' || ext === 'xls') {
+          result = await loadXLSX(tableName, file)
         } else {
           throw new Error(`Unsupported file type: ${ext}`)
         }

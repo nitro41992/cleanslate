@@ -146,6 +146,60 @@ export async function loadParquet(
   return { columns, rowCount }
 }
 
+export async function loadXLSX(
+  tableName: string,
+  file: File
+): Promise<{ columns: string[]; rowCount: number }> {
+  // Use SheetJS (xlsx) to parse the Excel file
+  const { read, utils } = await import('xlsx')
+
+  const arrayBuffer = await file.arrayBuffer()
+  const workbook = read(arrayBuffer, { type: 'array' })
+
+  // Get the first sheet
+  const firstSheetName = workbook.SheetNames[0]
+  const worksheet = workbook.Sheets[firstSheetName]
+
+  // Convert to JSON
+  const jsonData = utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' })
+
+  if (jsonData.length === 0) {
+    throw new Error('Excel file is empty or has no data rows')
+  }
+
+  // Get column names from the first row
+  const columns = Object.keys(jsonData[0])
+
+  const connection = await getConnection()
+
+  // Create table with proper column definitions
+  const columnDefs = columns.map((col) => `"${col}" VARCHAR`).join(', ')
+  await connection.query(`CREATE OR REPLACE TABLE "${tableName}" (${columnDefs})`)
+
+  // Insert data in batches
+  const batchSize = 500
+  for (let i = 0; i < jsonData.length; i += batchSize) {
+    const batch = jsonData.slice(i, i + batchSize)
+    const values = batch
+      .map((row) => {
+        const vals = columns.map((col) => {
+          const val = row[col]
+          if (val === null || val === undefined || val === '') return 'NULL'
+          const str = String(val).replace(/'/g, "''")
+          return `'${str}'`
+        })
+        return `(${vals.join(', ')})`
+      })
+      .join(', ')
+
+    await connection.query(`INSERT INTO "${tableName}" VALUES ${values}`)
+  }
+
+  const rowCount = jsonData.length
+
+  return { columns, rowCount }
+}
+
 export async function getTableData(
   tableName: string,
   offset = 0,

@@ -114,8 +114,19 @@ export async function runDiff(
     )
   `
 
-  const summaryResult = await query<DiffSummary>(summaryQuery)
-  const summary = summaryResult[0]
+  const summaryResult = await query<Record<string, unknown>>(summaryQuery)
+  const rawSummary = summaryResult[0]
+
+  // Convert BigInt to number (DuckDB returns BigInt for counts)
+  const toNum = (val: unknown): number =>
+    typeof val === 'bigint' ? Number(val) : Number(val) || 0
+
+  const summary: DiffSummary = {
+    added: toNum(rawSummary.added),
+    removed: toNum(rawSummary.removed),
+    modified: toNum(rawSummary.modified),
+    unchanged: toNum(rawSummary.unchanged),
+  }
 
   return { results, summary }
 }

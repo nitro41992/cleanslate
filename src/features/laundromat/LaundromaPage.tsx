@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Download, Play, Plus, Sparkles } from 'lucide-react'
+import { useState, useRef } from 'react'
+import { Download, Play, Plus, Sparkles, Upload } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -21,6 +21,20 @@ export function LaundromaPage() {
   const [recipe, setRecipe] = useState<TransformationStep[]>([])
   const [isPickerOpen, setIsPickerOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('data')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleAddFileClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      handleFileDrop(file)
+      // Reset the input so the same file can be selected again
+      e.target.value = ''
+    }
+  }
 
   const handleFileDrop = async (file: File) => {
     await loadFile(file)
@@ -109,10 +123,10 @@ export function LaundromaPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => loadFile}
+                        onClick={handleAddFileClick}
                         className="text-muted-foreground"
                       >
-                        <Plus className="w-4 h-4 mr-1" />
+                        <Upload className="w-4 h-4 mr-1" />
                         Add file
                       </Button>
                     </CardTitle>
@@ -178,6 +192,15 @@ export function LaundromaPage() {
         onOpenChange={setIsPickerOpen}
         columns={activeTable?.columns.map((c) => c.name) || []}
         onSelect={handleAddStep}
+      />
+
+      {/* Hidden file input for "Add file" button */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,.json,.parquet,.xlsx,.xls"
+        onChange={handleFileInputChange}
+        className="hidden"
       />
     </div>
   )

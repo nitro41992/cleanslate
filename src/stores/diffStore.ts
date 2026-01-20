@@ -7,6 +7,7 @@ interface DiffState {
   keyColumns: string[]
   results: DiffResult[]
   isComparing: boolean
+  blindMode: boolean
   summary: {
     added: number
     removed: number
@@ -22,6 +23,7 @@ interface DiffActions {
   setResults: (results: DiffResult[]) => void
   setSummary: (summary: DiffState['summary']) => void
   setIsComparing: (comparing: boolean) => void
+  setBlindMode: (enabled: boolean) => void
   reset: () => void
 }
 
@@ -31,6 +33,7 @@ const initialState: DiffState = {
   keyColumns: [],
   results: [],
   isComparing: false,
+  blindMode: false,
   summary: null,
 }
 
@@ -43,5 +46,6 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   setResults: (results) => set({ results }),
   setSummary: (summary) => set({ summary }),
   setIsComparing: (comparing) => set({ isComparing: comparing }),
+  setBlindMode: (enabled) => set({ blindMode: enabled }),
   reset: () => set(initialState),
 }))

@@ -10,7 +10,7 @@ interface TableState {
 }
 
 interface TableActions {
-  addTable: (name: string, columns: ColumnInfo[], rowCount: number) => string
+  addTable: (name: string, columns: ColumnInfo[], rowCount: number, existingId?: string) => string
   removeTable: (id: string) => void
   setActiveTable: (id: string | null) => void
   updateTable: (id: string, updates: Partial<TableInfo>) => void
@@ -25,8 +25,8 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
   isLoading: false,
   error: null,
 
-  addTable: (name, columns, rowCount) => {
-    const id = generateId()
+  addTable: (name, columns, rowCount, existingId) => {
+    const id = existingId || generateId()
     const now = new Date()
     const newTable: TableInfo = {
       id,

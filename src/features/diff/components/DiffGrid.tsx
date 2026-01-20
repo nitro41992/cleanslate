@@ -7,9 +7,10 @@ interface DiffGridProps {
   results: DiffResult[]
   columns: string[]
   keyColumns: string[]
+  blindMode?: boolean
 }
 
-export function DiffGrid({ results, columns, keyColumns }: DiffGridProps) {
+export function DiffGrid({ results, columns, keyColumns, blindMode = false }: DiffGridProps) {
   const displayResults = useMemo(
     () => results.filter((r) => r.status !== 'unchanged').slice(0, 500),
     [results]
@@ -37,6 +38,10 @@ export function DiffGrid({ results, columns, keyColumns }: DiffGridProps) {
   }
 
   const getRowClass = (status: DiffResult['status']) => {
+    // In blind mode, don't show status-based coloring
+    if (blindMode) {
+      return 'hover:bg-muted/50'
+    }
     switch (status) {
       case 'added':
         return 'bg-green-500/10 hover:bg-green-500/20'
@@ -50,6 +55,10 @@ export function DiffGrid({ results, columns, keyColumns }: DiffGridProps) {
   }
 
   const getCellClass = (result: DiffResult, column: string) => {
+    // In blind mode, don't highlight modified cells
+    if (blindMode) {
+      return ''
+    }
     if (result.status === 'modified' && result.modifiedColumns?.includes(column)) {
       return 'bg-yellow-500/20 font-medium'
     }
@@ -70,9 +79,11 @@ export function DiffGrid({ results, columns, keyColumns }: DiffGridProps) {
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-muted z-10">
             <tr>
-              <th className="px-3 py-2 text-left font-medium text-muted-foreground w-20">
-                Status
-              </th>
+              {!blindMode && (
+                <th className="px-3 py-2 text-left font-medium text-muted-foreground w-20">
+                  Status
+                </th>
+              )}
               {columns.map((col) => (
                 <th
                   key={col}
@@ -98,21 +109,23 @@ export function DiffGrid({ results, columns, keyColumns }: DiffGridProps) {
                   getRowClass(result.status)
                 )}
               >
-                <td className="px-3 py-2">
-                  <span
-                    className={cn(
-                      'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
-                      result.status === 'added' &&
-                        'bg-green-500/20 text-green-400',
-                      result.status === 'removed' &&
-                        'bg-red-500/20 text-red-400',
-                      result.status === 'modified' &&
-                        'bg-yellow-500/20 text-yellow-400'
-                    )}
-                  >
-                    {result.status}
-                  </span>
-                </td>
+                {!blindMode && (
+                  <td className="px-3 py-2">
+                    <span
+                      className={cn(
+                        'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
+                        result.status === 'added' &&
+                          'bg-green-500/20 text-green-400',
+                        result.status === 'removed' &&
+                          'bg-red-500/20 text-red-400',
+                        result.status === 'modified' &&
+                          'bg-yellow-500/20 text-yellow-400'
+                      )}
+                    >
+                      {result.status}
+                    </span>
+                  </td>
+                )}
                 {columns.map((col) => (
                   <td
                     key={col}
