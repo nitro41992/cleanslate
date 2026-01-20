@@ -441,9 +441,6 @@ test.describe('FR-A6: Ingestion Wizard', () => {
   })
 
   test('should show raw preview of file content', async ({ page }) => {
-    // TDD: Expected to fail until raw-preview test-id is added to component
-    test.fail()
-
     await laundromat.uploadFile(getFixturePath('fr_a6_legacy_garbage.csv'))
     await wizard.waitForOpen()
 
@@ -491,23 +488,51 @@ test.describe('FR-B2: Visual Diff', () => {
   })
 
   test('should identify added, removed, and modified rows', async ({ page }) => {
-    // TDD: Expected to fail until Visual Diff comparison feature is implemented
-    test.fail()
-
-    await page.goto('/diff')
+    const laundromat = new LaundromatPage(page)
+    const wizard = new IngestionWizardPage(page)
     const inspector = createStoreInspector(page)
+
+    // Load both tables via laundromat first
+    await laundromat.goto()
     await inspector.waitForDuckDBReady()
 
-    // Fail-fast guard: Assert diff comparison UI exists
-    await expect(page.getByTestId('diff-compare-btn')).toBeVisible({ timeout: 1000 })
+    // Upload first file (base)
+    await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_b2_base', 5)
 
-    // Full diff test with fr_b2_base.csv and fr_b2_new.csv
-    // Expected results:
-    // - Row 3 (Charlie): REMOVED
-    // - Row 6 (Frank): ADDED
-    // - Row 1 (Alice): MODIFIED (salary 75000 -> 78000)
-    // - Row 4 (Diana): MODIFIED (salary 80000 -> 85000)
-    // - Row 5 (Eve): MODIFIED (department HR -> Human Resources, salary 55000 -> 58000)
+    // Upload second file (new)
+    await laundromat.uploadFile(getFixturePath('fr_b2_new.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_b2_new', 5)
+
+    // Navigate to diff page using sidebar (preserves state)
+    await page.getByRole('link', { name: 'Diff' }).click()
+    await page.waitForURL('/diff')
+
+    // Fail-fast guard: Assert diff comparison UI exists (requires 2+ tables)
+    await expect(page.getByTestId('diff-compare-btn')).toBeVisible({ timeout: 5000 })
+
+    // Select tables and key column
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: 'fr_b2_base' }).click()
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: 'fr_b2_new' }).click()
+
+    // Select id as key column
+    await page.getByRole('checkbox', { name: 'id' }).click()
+
+    // Run comparison
+    await page.getByTestId('diff-compare-btn').click()
+
+    // Wait for diff results to appear
+    await expect(page.getByRole('heading', { name: 'Diff Results' })).toBeVisible({ timeout: 10000 })
+
+    // Verify diff found expected changes
+    // Expected: 1 added (Frank), 1 removed (Charlie), 3 modified (Alice, Diana, Eve)
+    await expect(page.getByText('Found 1 added, 1 removed, 3 modified rows').first()).toBeVisible()
   })
 })
 

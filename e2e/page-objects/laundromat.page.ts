@@ -32,7 +32,8 @@ export class LaundromatPage {
   }
 
   async uploadFile(filePath: string): Promise<void> {
-    await this.fileInput.setInputFiles(filePath)
+    // Use first() to handle both initial upload (FileDropzone) and subsequent uploads (hidden input)
+    await this.fileInput.first().setInputFiles(filePath)
   }
 
   async getRowCount(): Promise<string | null> {

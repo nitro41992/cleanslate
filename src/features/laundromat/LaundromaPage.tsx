@@ -320,6 +320,7 @@ export function LaundromaPage() {
         accept=".csv,.json,.parquet,.xlsx,.xls"
         onChange={handleFileInputChange}
         className="hidden"
+        data-testid="file-input"
       />
 
       {/* CSV Ingestion Wizard */}

@@ -239,6 +239,7 @@ export function DiffPage() {
                         keyColumns.length === 0 ||
                         isComparing
                       }
+                      data-testid="diff-compare-btn"
                     >
                       {isComparing ? (
                         <>

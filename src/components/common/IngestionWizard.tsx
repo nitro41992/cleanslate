@@ -224,7 +224,7 @@ export function IngestionWizard({
               <Label className="text-xs text-muted-foreground mb-2">
                 Raw File Preview (first {preview?.lines.length || 0} lines)
               </Label>
-              <ScrollArea className="flex-1 rounded-lg border border-border/50 bg-background">
+              <ScrollArea className="flex-1 rounded-lg border border-border/50 bg-background" data-testid="raw-preview">
                 <div className="p-3 font-mono text-xs">
                   {preview?.lines.map((line, i) => {
                     const lineNum = i + 1
