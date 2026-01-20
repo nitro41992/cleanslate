@@ -194,6 +194,28 @@
   .memory-bar-fill.critical {
     @apply from-red-500 to-red-600;
   }
+
+  /* Glide Data Grid dark theme overrides */
+  .gdg-container {
+    @apply h-full w-full;
+  }
+
+  .gdg-container > div {
+    @apply h-full w-full !important;
+  }
+
+  /* Force dark background on grid canvas */
+  .dvn-scroller {
+    background-color: #18191c !important;
+  }
+
+  /* Portal styling for overlays */
+  #portal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 9999;
+  }
 }
 
 @layer utilities {

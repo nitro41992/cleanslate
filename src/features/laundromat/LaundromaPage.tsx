@@ -96,9 +96,9 @@ export function LaundromaPage() {
                 </TabsList>
               </div>
 
-              <TabsContent value="data" className="flex-1 m-0 p-4">
-                <Card className="h-full flex flex-col">
-                  <CardHeader className="py-3">
+              <TabsContent value="data" className="flex-1 m-0 p-4 min-h-0">
+                <Card className="h-full flex flex-col overflow-hidden">
+                  <CardHeader className="py-3 shrink-0">
                     <CardTitle className="text-sm flex items-center justify-between">
                       <span>
                         {activeTable.name}
@@ -117,12 +117,14 @@ export function LaundromaPage() {
                       </Button>
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="flex-1 p-0 min-h-0">
-                    <DataGrid
-                      tableName={activeTable.name}
-                      rowCount={activeTable.rowCount}
-                      columns={activeTable.columns.map((c) => c.name)}
-                    />
+                  <CardContent className="flex-1 p-0 min-h-0 overflow-hidden relative">
+                    <div className="absolute inset-0">
+                      <DataGrid
+                        tableName={activeTable.name}
+                        rowCount={activeTable.rowCount}
+                        columns={activeTable.columns.map((c) => c.name)}
+                      />
+                    </div>
                   </CardContent>
                 </Card>
               </TabsContent>

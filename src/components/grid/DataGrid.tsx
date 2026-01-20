@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useEffect, useState } from 'react'
+import { useCallback, useMemo, useEffect, useState, useRef } from 'react'
 import DataGridLib, {
   GridColumn,
   GridCellKind,
@@ -8,6 +8,40 @@ import DataGridLib, {
 import '@glideapps/glide-data-grid/dist/index.css'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
+
+function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
+  const [size, setSize] = useState({ width: 0, height: 0 })
+
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        setSize({ width: rect.width, height: rect.height })
+      }
+    }
+
+    // Use ResizeObserver for updates
+    const observer = new ResizeObserver(() => {
+      updateSize()
+    })
+
+    observer.observe(element)
+
+    // Initial measurement with slight delay to ensure layout is complete
+    updateSize()
+    const timeoutId = setTimeout(updateSize, 100)
+
+    return () => {
+      observer.disconnect()
+      clearTimeout(timeoutId)
+    }
+  }, [ref])
+
+  return size
+}
 
 interface DataGridProps {
   tableName: string
@@ -32,6 +66,8 @@ export function DataGrid({
   const [data, setData] = useState<Record<string, unknown>[]>([])
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
   const [isLoading, setIsLoading] = useState(true)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const containerSize = useContainerSize(containerRef)
 
   const gridColumns: GridColumn[] = useMemo(
     () =>
@@ -139,39 +175,50 @@ export function DataGrid({
     )
   }
 
+  // Use container size or fallback to reasonable defaults
+  const gridWidth = containerSize.width || 800
+  const gridHeight = containerSize.height || 500
+
   return (
-    <div className="h-full w-full gdg-container">
-      <DataGridLib
-        columns={gridColumns}
-        rows={rowCount}
-        getCellContent={getCellContent}
-        onVisibleRegionChanged={onVisibleRegionChanged}
-        getRowThemeOverride={getRowThemeOverride}
-        onCellClicked={
-          onCellClick
-            ? ([col, row]) => onCellClick(col, row)
-            : undefined
-        }
-        smoothScrollX
-        smoothScrollY
-        theme={{
-          bgCell: 'hsl(220, 14%, 11%)',
-          bgCellMedium: 'hsl(220, 12%, 18%)',
-          bgHeader: 'hsl(220, 12%, 14%)',
-          bgHeaderHasFocus: 'hsl(35, 50%, 18%)',
-          bgHeaderHovered: 'hsl(220, 12%, 16%)',
-          textDark: 'hsl(40, 15%, 90%)',
-          textMedium: 'hsl(220, 10%, 55%)',
-          textLight: 'hsl(220, 10%, 55%)',
-          textHeader: 'hsl(40, 15%, 90%)',
-          borderColor: 'hsl(220, 12%, 20%)',
-          accentColor: 'hsl(35, 90%, 55%)',
-          accentFg: 'hsl(220, 15%, 8%)',
-          accentLight: 'hsl(35, 50%, 18%)',
-          linkColor: 'hsl(35, 90%, 55%)',
-          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-        }}
-      />
+    <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]">
+      {data.length > 0 && (
+        <DataGridLib
+          columns={gridColumns}
+          rows={rowCount}
+          getCellContent={getCellContent}
+          onVisibleRegionChanged={onVisibleRegionChanged}
+          getRowThemeOverride={getRowThemeOverride}
+          onCellClicked={
+            onCellClick
+              ? ([col, row]) => onCellClick(col, row)
+              : undefined
+          }
+          width={gridWidth}
+          height={gridHeight}
+          smoothScrollX
+          smoothScrollY
+          theme={{
+            bgCell: '#18191c',
+            bgCellMedium: '#28292d',
+            bgHeader: '#1f2024',
+            bgHeaderHasFocus: '#3d3020',
+            bgHeaderHovered: '#252629',
+            textDark: '#e8e6e3',
+            textMedium: '#8b8d93',
+            textLight: '#8b8d93',
+            textHeader: '#e8e6e3',
+            borderColor: '#2d2e33',
+            accentColor: '#e09520',
+            accentFg: '#141517',
+            accentLight: '#3d3020',
+            linkColor: '#e09520',
+            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+            baseFontStyle: '13px',
+            headerFontStyle: '600 13px',
+            editorFontSize: '13px',
+          }}
+        />
+      )}
     </div>
   )
 }

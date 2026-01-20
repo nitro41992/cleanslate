@@ -311,11 +311,11 @@ export function ScrubberPage() {
         <div className="flex-1 flex flex-col min-w-0 gap-4">
           {/* Column Rules */}
           {selectedTable && (
-            <Card className="flex-1 min-h-0">
+            <Card className="flex-1 min-h-0 flex flex-col">
               <CardHeader className="py-3">
                 <CardTitle className="text-sm">Column Rules</CardTitle>
               </CardHeader>
-              <CardContent className="h-full pb-0">
+              <CardContent className="flex-1 min-h-0 pb-0">
                 <ColumnRuleTable
                   columns={selectedTable.columns}
                   rules={rules}
