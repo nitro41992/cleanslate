@@ -27,9 +27,20 @@ export class IngestionWizardPage {
     await this.dialog.waitFor({ state: 'hidden', timeout: 15000 })
   }
 
+  /**
+   * Select header row (1-indexed, matching UI display).
+   * Row 1 = first row of file, Row 5 = fifth row.
+   * This matches Excel/human-style row numbering shown in the UI.
+   * @param row - 1-indexed row number (1-10)
+   * @throws Error if row is outside valid range
+   */
   async selectHeaderRow(row: number): Promise<void> {
+    if (row < 1 || row > 10) {
+      throw new Error(`Header row must be between 1 and 10, got: ${row}`)
+    }
     await this.headerRowSelect.click()
-    await this.page.locator(`[role="option"]`).filter({ hasText: `Row ${row}` }).click()
+    // Use exact match to avoid "Row 1" matching "Row 10"
+    await this.page.getByRole('option', { name: `Row ${row}`, exact: true }).click()
   }
 
   async selectEncoding(encoding: 'utf-8' | 'latin-1'): Promise<void> {

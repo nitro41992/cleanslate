@@ -28,6 +28,13 @@ export interface StoreInspector {
   getAuditEntries: (tableId?: string) => Promise<AuditEntry[]>
   waitForDuckDBReady: () => Promise<void>
   waitForTableLoaded: (tableName: string, expectedRowCount?: number) => Promise<void>
+  /**
+   * Execute arbitrary SQL query against DuckDB for verification.
+   * Use this to verify join results, counts, or any SQL-level assertions.
+   * @param sql - SQL query to execute
+   * @returns Query result rows
+   */
+  runQuery: (sql: string) => Promise<Record<string, unknown>[]>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -112,6 +119,14 @@ export function createStoreInspector(page: Page): StoreInspector {
         { tableName, expectedRowCount },
         { timeout: 30000 }
       )
+    },
+
+    async runQuery(sql: string): Promise<Record<string, unknown>[]> {
+      return page.evaluate(async (sql) => {
+        const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<Record<string, unknown>[]>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
+        if (!duckdb?.query) throw new Error('DuckDB not available')
+        return duckdb.query(sql)
+      }, sql)
     },
   }
 }

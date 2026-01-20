@@ -76,4 +76,50 @@ export class LaundromatPage {
   async switchToDataPreviewTab(): Promise<void> {
     await this.dataPreviewTab.click()
   }
+
+  /**
+   * Edit a cell in the data grid.
+   * Glide Data Grid is canvas-based - uses keyboard navigation for reliability.
+   * @param row - 0-indexed row number
+   * @param col - 0-indexed column number
+   * @param newValue - The new value to enter
+   */
+  async editCell(row: number, col: number, newValue: string): Promise<void> {
+    // Wait for grid to be fully rendered
+    await this.gridContainer.waitFor({ state: 'visible' })
+    await this.page.waitForTimeout(200)
+
+    // Click the grid to focus it
+    await this.gridContainer.click()
+    await this.page.waitForTimeout(100)
+
+    // Navigate to home position (first cell)
+    await this.page.keyboard.press('Control+Home')
+    await this.page.waitForTimeout(100)
+
+    // Navigate to target row
+    for (let i = 0; i < row; i++) {
+      await this.page.keyboard.press('ArrowDown')
+      await this.page.waitForTimeout(20)
+    }
+
+    // Navigate to target column
+    for (let i = 0; i < col; i++) {
+      await this.page.keyboard.press('ArrowRight')
+      await this.page.waitForTimeout(20)
+    }
+    await this.page.waitForTimeout(100)
+
+    // Enter edit mode - Glide Data Grid uses F2 or just start typing
+    await this.page.keyboard.press('F2')
+    await this.page.waitForTimeout(150)
+
+    // Select all and type new value
+    await this.page.keyboard.press('Control+a')
+    await this.page.keyboard.type(newValue, { delay: 10 })
+
+    // Commit with Enter
+    await this.page.keyboard.press('Enter')
+    await this.page.waitForTimeout(200)
+  }
 }
