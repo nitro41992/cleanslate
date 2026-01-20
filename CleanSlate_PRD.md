@@ -77,6 +77,23 @@
         * **Type B (Manual Edits):** Logs the Action, Target Row (ID), and **Value Change**.
             * *Example:* `[14:06:22] Manual Edit on Row #104, Col 'Status'. Value: 'Pennding' -> 'Pending'.`
     * **Export:** User can download this log as a timestamped PDF or Text file.
+* **FR-A6: The Ingestion Wizard (Crucial for Legacy Data):**
+    * **Trigger:** On drag-and-drop of any file.
+    * **UI:** Modal showing first 50 lines of raw text.
+    * **Controls:**
+        * "Header Row": User selects which row contains column names (Default: Row 1).
+        * "Encoding": Auto-detect (UTF-8 vs Latin-1) but allow manual override.
+        * "Delimiter": Auto-detect but allow override (Comma, Tab, Pipe).
+    * **Why:** Prevents "Garbage In" from older reporting systems.
+
+* **FR-A7: Data Health Sidebar (The "Sanity Check"):**
+    * **Trigger:** Selecting any column header.
+    * **Display:** DuckDB `SUMMARIZE` stats for that column.
+    * **Metrics:**
+        * *All Types:* Null Count, Unique Count (% Distinct).
+        * *Numeric:* Min, Max, Average, Distribution Histogram (Small SVG).
+        * *Text:* Min Length, Max Length, Top 5 Most Common Values.
+    * **Why:** Guides the user on *what* to clean.
 
 ### Module B: The Visual Diff (Reconciliation)
 * **FR-B1:** User selects two loaded tables to compare (e.g., "Old Version" vs "New Version").
