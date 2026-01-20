@@ -190,7 +190,7 @@ export function LaundromaPage() {
             >
               <Redo2 className="w-4 h-4" />
             </Button>
-            <Button variant="outline" size="sm" onClick={handleExport}>
+            <Button variant="outline" size="sm" onClick={handleExport} data-testid="export-csv-btn">
               <Download className="w-4 h-4 mr-2" />
               Export CSV
             </Button>
@@ -296,6 +296,7 @@ export function LaundromaPage() {
               className="w-full"
               onClick={() => setIsPickerOpen(true)}
               disabled={!activeTable}
+              data-testid="add-transformation-btn"
             >
               <Plus className="w-4 h-4 mr-2" />
               Add Transformation

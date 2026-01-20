@@ -150,6 +150,7 @@ export function RecipePanel({
             className="w-full"
             onClick={handleRunRecipe}
             disabled={isRunning || !tableName}
+            data-testid="run-recipe-btn"
           >
             {isRunning ? (
               <>

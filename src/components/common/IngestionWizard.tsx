@@ -107,7 +107,7 @@ export function IngestionWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+      <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col" data-testid="ingestion-wizard">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <FileText className="w-5 h-5" />
@@ -254,10 +254,10 @@ export function IngestionWizard({
         )}
 
         <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={handleCancel}>
+          <Button variant="outline" onClick={handleCancel} data-testid="cancel-btn">
             Cancel
           </Button>
-          <Button onClick={handleConfirm} disabled={isLoading || !preview}>
+          <Button onClick={handleConfirm} disabled={isLoading || !preview} data-testid="import-btn">
             Import
           </Button>
         </DialogFooter>

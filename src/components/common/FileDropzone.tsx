@@ -49,6 +49,7 @@ export function FileDropzone({
   return (
     <div
       {...getRootProps()}
+      data-testid="file-dropzone"
       className={cn(
         'dropzone',
         'flex flex-col items-center justify-center gap-4 p-8 min-h-[200px]',
@@ -57,7 +58,7 @@ export function FileDropzone({
         className
       )}
     >
-      <input {...getInputProps()} />
+      <input {...getInputProps()} data-testid="file-input" />
 
       <div
         className={cn(

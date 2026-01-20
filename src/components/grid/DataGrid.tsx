@@ -293,7 +293,7 @@ export function DataGrid({
   const gridHeight = containerSize.height || 500
 
   return (
-    <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]">
+    <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
       {data.length > 0 && (
         <DataGridLib
           columns={gridColumns}

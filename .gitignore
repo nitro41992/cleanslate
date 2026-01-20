@@ -8,6 +8,8 @@ build
 npm-debug.log
 yarn-error.log
 coverage
+playwright-report
+test-results
 *.log
 *.tsbuildinfo
 .cache
