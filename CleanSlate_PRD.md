@@ -1,12 +1,12 @@
 # Product Requirements Document (PRD): CleanSlate
-**Version:** 3.0 (Transformation & Operations Edition)
+**Version:** 3.3 (System Guardrails Edition)
 **Status:** Approved
 **Tech Stack:** React (Vite) + DuckDB-WASM + Glide Data Grid + OPFS
 
 ---
 
 ## 1. Executive Summary
-**CleanSlate** is a local-first, "Zero-Trust" data operations suite designed for regulated industries (Healthcare, Legal, Finance). It allows users to clean, reconcile, deduplicate, and **obfuscate** sensitive datasets entirely within the browser. By bypassing the need for server uploads or software installation, it provides a "Compliance Safety Net" for professionals who need to manipulate data on locked-down corporate machines.
+**CleanSlate** is a local-first, "Zero-Trust" data operations suite designed for regulated industries (Healthcare, Legal, Finance). It allows users to clean, reconcile, deduplicate, **join**, and **obfuscate** sensitive datasets entirely within the browser. By bypassing the need for server uploads or software installation, it provides a "Compliance Safety Net" for professionals who need to manipulate data on locked-down corporate machines.
 
 
 
@@ -65,12 +65,18 @@
         * **Calculate Age:** New column diffing `DOB` vs `Today`.
         * **Shift Date:** Add/Subtract random N days (Anonymization).
 * **FR-A4: Manual Remediation (Cell Editing):**
-    * **Double-Click Edit:** Value-only edits (No formulas).
-    * **Dirty State:** Visually highlight manually edited cells.
+    * **Double-Click Edit:** Support value-only edits (Text/Number/Boolean). No formulas.
+    * **Dirty State:** Visually highlight manually edited cells (e.g., small red triangle or background tint).
     * **Undo Stack:** `Ctrl+Z` support for at least 10 steps.
-* **FR-A5: Transformation Audit Log:**
-    * Every action (e.g., "Trim Whitespace on Col A") is recorded in a session log.
-    * User can export a PDF/Text log certifying the cleaning steps performed.
+    * **Audit Integration:** **CRITICAL.** Every manual edit must trigger an entry in the Audit Log with `Previous_Value` and `New_Value`.
+* **FR-A5: Granular Transformation Audit Log:**
+    * **Requirement:** The system must maintain a linear, immutable history of all changes.
+    * **Granularity Level:**
+        * **Type A (Bulk Ops):** Logs the Action, Target Column, and **Count** of rows modified.
+            * *Example:* `[14:05:00] Applied 'Trim Whitespace' to Col 'Email'. Impact: 450 rows.`
+        * **Type B (Manual Edits):** Logs the Action, Target Row (ID), and **Value Change**.
+            * *Example:* `[14:06:22] Manual Edit on Row #104, Col 'Status'. Value: 'Pennding' -> 'Pending'.`
+    * **Export:** User can download this log as a timestamped PDF or Text file.
 
 ### Module B: The Visual Diff (Reconciliation)
 * **FR-B1:** User selects two loaded tables to compare (e.g., "Old Version" vs "New Version").
@@ -101,17 +107,41 @@
 * **FR-D3: Key Map Export:**
     * Checkbox on Export: *"Generate Key Map?"* (CSV with `Original, Obfuscated` pairs).
 
+### Module E: The Combiner (Joins & Unions)
+* **FR-E1: Stack Files (Union All):**
+    * **User Action:** Select 2+ files -> Click "Stack".
+    * **Logic:** System aligns columns by header name.
+    * **Validation:** Warn if headers don't match (e.g., "File A has 'Email', File B has 'E-mail'").
+* **FR-E2: Merge Files (VLOOKUP / Joins):**
+    * **UI:** "Left Side" (Base Table) vs. "Right Side" (Lookup Table).
+    * **Key Selection:** User selects the common column (e.g., `Patient_ID`).
+    * **Join Types (User Facing Names):**
+        * "Lookup" (Left Join) - *Default*.
+        * "Keep Only Matches" (Inner Join).
+        * "Keep Everything" (Full Outer Join).
+* **FR-E3: The "Clean-First" Guardrail:**
+    * **Constraint:** System must warn user if they try to join without cleaning key columns first.
+    * **Feature:** "Auto-Clean Keys" button in the Join modal (Trims whitespace & casts types on both sides automatically before joining).
+
+
+
 ---
 
 ## 5. Non-Functional Requirements & Limitations
 
 ### 5.1 Performance Limits (Stability Guardrails)
-* **Memory Cap:** Monitor `performance.memory`. Warn at 80% usage.
-* **Hard Limits:**
-    * **Ingestion:** ~2M Rows / 2GB.
-    * **Visual Diff:** ~1.5GB Combined (A+B). Disable button if exceeded.
-    * **Fuzzy Match:** ~500k Rows (Require strict blocking).
-    * **Excel Export:** < 100k Rows (Force CSV streaming for larger files).
+**Requirement:** The system must actively poll resource usage and check file sizes before expensive operations.
+* **Memory Watchdog:** Poll `performance.memory` every 5 seconds. If usage > 80%, trigger global warning banner: *"High Memory Usage - Please Save & Reload."*
+
+**The Guardrail Table (Hard Enforcement):**
+
+| Feature | Safe Row Limit | Safe Size Limit | Logic/Reason | UI Action When Exceeded |
+| :--- | :--- | :--- | :--- | :--- |
+| **Ingestion** | **2,000,000 Rows** | ~2.0 GB | 2M rows is the 60fps scrolling limit. | **Warn:** *"File is large. Performance may be slower."* (Allow proceed). |
+| **Visual Diff** | **1,500,000 Rows** | ~1.5 GB (A+B) | Requires holding Table A + Table B + Join Result in RAM. | **Disable Button.** Tooltip: *"Combined file size too large to compare safely."* |
+| **Fuzzy Match** | **500,000 Rows** | ~500 MB | Levenshtein distance is CPU/RAM heavy even with blocking. | **Force Strict Blocking.** Disable "Loose" matching options; require 3-char prefix block. |
+| **Excel Export** | **100,000 Rows** | ~50 MB | Generating `.xlsx` XML tree crashes the browser. | **Force CSV.** Hide `.xlsx` option. Msg: *"Datasets >100k rows must export as CSV."* |
+| **Audit Log** | **Unlimited** | N/A | Text logs are negligible in size. | **No Action.** Always allow export. |
 
 ### 5.2 Offline & Persistence
 * **Service Worker:** Cache assets for 100% offline use.
@@ -125,5 +155,5 @@
 | :--- | :--- | :--- |
 | **Lost Salt** | User cannot join data later. | **UX Warning:** "Write this secret down. It is not saved." |
 | **Liability** | User misuses "Compliance" tools. | **Disclaimer:** "Tool assists with de-identification but does not guarantee legal compliance." |
-| **Browser Crash** | Large Excel export freezes UI. | **Auto-Switch:** Force CSV for >100k rows. |
+| **Browser Crash** | Large Excel export freezes UI. | **Auto-Switch:** Force CSV for >100k rows (See Guardrails). |
 | **UI Freeze** | Heavy SQL queries lock main thread. | **Web Workers:** Run DuckDB strictly in a background worker. |
