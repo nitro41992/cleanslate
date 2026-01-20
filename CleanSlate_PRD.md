@@ -64,7 +64,7 @@
         * **Standardize Format:** ISO 8601 (`YYYY-MM-DD`).
         * **Calculate Age:** New column diffing `DOB` vs `Today`.
         * **Shift Date:** Add/Subtract random N days (Anonymization).
-* **FR-A4: Manual Remediation (Cell Editing):**
+* **FR-A4: Manual Remediation (Cell Editing):** ✅ **IMPLEMENTED**
     * **Double-Click Edit:** Support value-only edits (Text/Number/Boolean). No formulas.
     * **Dirty State:** Visually highlight manually edited cells (e.g., small red triangle or background tint).
     * **Undo Stack:** `Ctrl+Z` support for at least 10 steps.
@@ -77,7 +77,7 @@
         * **Type B (Manual Edits):** Logs the Action, Target Row (ID), and **Value Change**.
             * *Example:* `[14:06:22] Manual Edit on Row #104, Col 'Status'. Value: 'Pennding' -> 'Pending'.`
     * **Export:** User can download this log as a timestamped PDF or Text file.
-* **FR-A6: The Ingestion Wizard (Crucial for Legacy Data):**
+* **FR-A6: The Ingestion Wizard (Crucial for Legacy Data):** ✅ **IMPLEMENTED**
     * **Trigger:** On drag-and-drop of any file.
     * **UI:** Modal showing first 50 lines of raw text.
     * **Controls:**

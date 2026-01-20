@@ -23,7 +23,7 @@ npm run preview   # Preview production build locally
 - **React 18 + TypeScript + Vite** - Frontend framework
 - **DuckDB-WASM** - In-browser SQL engine (runs in Web Worker)
 - **Glide Data Grid** - Canvas-based grid for 100k+ rows
-- **Zustand** - State management (6 stores)
+- **Zustand** - State management (7 stores)
 - **Radix UI + Tailwind CSS** - UI components with dark mode
 - **OPFS** - Origin Private File System for local persistence
 
@@ -46,9 +46,10 @@ src/
 │   ├── transformations.ts
 │   ├── diff-engine.ts
 │   ├── fuzzy-matcher.ts
-│   └── obfuscation.ts
+│   ├── obfuscation.ts
+│   └── fileUtils.ts     # CSV parsing, encoding/delimiter detection
 ├── hooks/               # useDuckDB, usePersistence, useToast
-├── stores/              # Zustand stores (table, audit, diff, matcher, scrubber, ui)
+├── stores/              # Zustand stores (table, audit, diff, matcher, scrubber, ui, edit)
 └── types/               # TypeScript interfaces
 ```
 
@@ -73,6 +74,21 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - Strict mode enabled
 - Path alias: `@/*` maps to `./src/*`
 - Target: ES2020
+
+## Implemented Features
+
+### FR-A4: Manual Cell Editing
+- Double-click any cell to edit (Text/Number/Boolean)
+- Red triangle indicator on edited cells (dirty state)
+- Undo/Redo with Ctrl+Z / Ctrl+Y (10-step stack)
+- Type B audit log entries with previous/new values
+
+### FR-A6: Ingestion Wizard
+- Modal triggered on CSV file drop
+- Raw text preview (first 50 lines)
+- Header row selection (rows 1-10)
+- Encoding detection (UTF-8/Latin-1) with override
+- Delimiter detection (Comma/Tab/Pipe/Semicolon) with override
 
 ## Important Notes
 
