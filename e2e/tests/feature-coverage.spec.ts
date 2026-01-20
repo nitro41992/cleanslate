@@ -1,8 +1,8 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, Page } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
-import { createStoreInspector } from '../helpers/store-inspector'
+import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
 /**
@@ -10,30 +10,42 @@ import { getFixturePath } from '../helpers/file-upload'
  *
  * Uses dedicated fixture files to test PRD requirements.
  * Tests are organized by FR (Functional Requirement) identifier.
+ *
+ * Optimized for DuckDB-WASM cold start by using test.describe.serial
+ * with shared page context - DuckDB initializes once per serial group.
  */
 
-test.describe('FR-A3: Text Cleaning Transformations', () => {
+test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-
     await laundromat.goto()
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should trim whitespace from text fields', async ({ page }) => {
-    const inspector = createStoreInspector(page)
+  test.afterAll(async () => {
+    await page.close()
+  })
 
+  async function loadTestData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+  }
+
+  test('should trim whitespace from text fields', async () => {
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -46,13 +58,8 @@ test.describe('FR-A3: Text Cleaning Transformations', () => {
     expect(data[5].name).toBe('MIKE  JONES') // Internal spaces preserved, edge trimmed
   })
 
-  test('should convert text to uppercase', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+  test('should convert text to uppercase', async () => {
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -65,13 +72,8 @@ test.describe('FR-A3: Text Cleaning Transformations', () => {
     expect(data[2].email).toBe('ACCENT@TEST.COM')
   })
 
-  test('should convert text to lowercase', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+  test('should convert text to lowercase', async () => {
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -84,16 +86,11 @@ test.describe('FR-A3: Text Cleaning Transformations', () => {
     expect(data[1].email).toBe('jane@test.org')
   })
 
-  test('should convert text to title case', async ({ page }) => {
+  test('should convert text to title case', async () => {
     // TDD: Expected to fail until Title Case transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -109,16 +106,11 @@ test.describe('FR-A3: Text Cleaning Transformations', () => {
     expect(data[1].name).toBe('Jane Doe')
   })
 
-  test('should remove accents from text', async ({ page }) => {
+  test('should remove accents from text', async () => {
     // TDD: Expected to fail until Remove Accents transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -136,16 +128,11 @@ test.describe('FR-A3: Text Cleaning Transformations', () => {
     expect(data[7].name).toBe('Uber driver') // Über driver -> Uber driver
   })
 
-  test('should remove non-printable characters', async ({ page }) => {
+  test('should remove non-printable characters', async () => {
     // TDD: Expected to fail until Remove Non-Printable transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -163,31 +150,40 @@ test.describe('FR-A3: Text Cleaning Transformations', () => {
   })
 })
 
-test.describe('FR-A3: Finance & Number Transformations', () => {
+test.describe.serial('FR-A3: Finance & Number Transformations', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-
     await laundromat.goto()
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should unformat currency values', async ({ page }) => {
-    // TDD: Expected to fail until Unformat Currency transformation is implemented
-    test.fail()
+  test.afterAll(async () => {
+    await page.close()
+  })
 
-    const inspector = createStoreInspector(page)
-
+  async function loadTestData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_finance')
     await laundromat.uploadFile(getFixturePath('fr_a3_finance.csv'))
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('fr_a3_finance', 8)
+  }
+
+  test('should unformat currency values', async () => {
+    // TDD: Expected to fail until Unformat Currency transformation is implemented
+    test.fail()
+
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -204,16 +200,11 @@ test.describe('FR-A3: Finance & Number Transformations', () => {
     expect(data[1].currency_value).toBe(50000.00) // $50000.00 -> 50000.00
   })
 
-  test('should fix negative number formatting', async ({ page }) => {
+  test('should fix negative number formatting', async () => {
     // TDD: Expected to fail until Fix Negatives transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_finance.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_finance', 8)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -230,16 +221,11 @@ test.describe('FR-A3: Finance & Number Transformations', () => {
     expect(data[5].formatted_negative).toBe(-500) // (500) -> -500
   })
 
-  test('should pad numbers with zeros', async ({ page }) => {
+  test('should pad numbers with zeros', async () => {
     // TDD: Expected to fail until Pad Zeros transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_finance.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_finance', 8)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -258,31 +244,40 @@ test.describe('FR-A3: Finance & Number Transformations', () => {
   })
 })
 
-test.describe('FR-A3: Dates & Structure Transformations', () => {
+test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-
     await laundromat.goto()
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should standardize date formats', async ({ page }) => {
-    // TDD: Expected to fail until Standardize Date transformation is implemented
-    test.fail()
+  test.afterAll(async () => {
+    await page.close()
+  })
 
-    const inspector = createStoreInspector(page)
-
+  async function loadTestData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_dates_split')
     await laundromat.uploadFile(getFixturePath('fr_a3_dates_split.csv'))
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('fr_a3_dates_split', 5)
+  }
+
+  test('should standardize date formats', async () => {
+    // TDD: Expected to fail until Standardize Date transformation is implemented
+    test.fail()
+
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -302,16 +297,11 @@ test.describe('FR-A3: Dates & Structure Transformations', () => {
     expect(data[1].date_us).toBe('1990-07-22') // 07/22/1990 -> 1990-07-22
   })
 
-  test('should calculate age from birth date', async ({ page }) => {
+  test('should calculate age from birth date', async () => {
     // TDD: Expected to fail until Calculate Age transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_dates_split.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_dates_split', 5)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -329,16 +319,11 @@ test.describe('FR-A3: Dates & Structure Transformations', () => {
     expect(data[0].age as number).toBeGreaterThan(30)
   })
 
-  test('should split column by delimiter', async ({ page }) => {
+  test('should split column by delimiter', async () => {
     // TDD: Expected to fail until Split Column transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('fr_a3_dates_split.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_dates_split', 5)
+    await loadTestData()
 
     await laundromat.clickAddTransformation()
     await picker.waitForOpen()
@@ -359,27 +344,32 @@ test.describe('FR-A3: Dates & Structure Transformations', () => {
   })
 })
 
-test.describe('FR-A3: Fill Down Transformation', () => {
+test.describe.serial('FR-A3: Fill Down Transformation', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-
     await laundromat.goto()
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should fill down empty cells from above', async ({ page }) => {
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should fill down empty cells from above', async () => {
     // TDD: Expected to fail until Fill Down transformation is implemented
     test.fail()
 
-    const inspector = createStoreInspector(page)
-
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_fill_down')
     await laundromat.uploadFile(getFixturePath('fr_a3_fill_down.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -404,22 +394,47 @@ test.describe('FR-A3: Fill Down Transformation', () => {
   })
 })
 
-test.describe('FR-A6: Ingestion Wizard', () => {
+test.describe.serial('FR-A6: Ingestion Wizard', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
-
     await laundromat.goto()
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should detect and skip garbage header rows', async ({ page }) => {
-    const inspector = createStoreInspector(page)
+  test.afterAll(async () => {
+    await page.close()
+  })
 
+  test('should show raw preview of file content', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a6_legacy_garbage')
+    await laundromat.uploadFile(getFixturePath('fr_a6_legacy_garbage.csv'))
+    await wizard.waitForOpen()
+
+    // Fail-fast guard: Assert raw-preview element exists before proceeding
+    await expect(page.getByTestId('raw-preview')).toBeVisible({ timeout: 1000 })
+
+    // Verify raw preview content
+    const previewText = await wizard.getRawPreviewText()
+    expect(previewText).toContain('ACME Corp Report Generator')
+    expect(previewText).toContain('Widget A')
+
+    await wizard.cancel()
+  })
+
+  test('should detect and skip garbage header rows', async () => {
+    // Refresh page to ensure clean state after wizard cancel
+    await laundromat.goto()
+    await inspector.waitForDuckDBReady()
+
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a6_legacy_garbage')
     await laundromat.uploadFile(getFixturePath('fr_a6_legacy_garbage.csv'))
     await wizard.waitForOpen()
 
@@ -440,22 +455,12 @@ test.describe('FR-A6: Ingestion Wizard', () => {
     expect(columns).toContain('quantity')
   })
 
-  test('should show raw preview of file content', async ({ page }) => {
-    await laundromat.uploadFile(getFixturePath('fr_a6_legacy_garbage.csv'))
-    await wizard.waitForOpen()
+  test('should handle Row 1 header selection (boundary)', async () => {
+    // Refresh page to ensure clean state
+    await laundromat.goto()
+    await inspector.waitForDuckDBReady()
 
-    // Fail-fast guard: Assert raw-preview element exists before proceeding
-    await expect(page.getByTestId('raw-preview')).toBeVisible({ timeout: 1000 })
-
-    // Verify raw preview content
-    const previewText = await wizard.getRawPreviewText()
-    expect(previewText).toContain('ACME Corp Report Generator')
-    expect(previewText).toContain('Widget A')
-  })
-
-  test('should handle Row 1 header selection (boundary)', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
     // Upload file where row 1 IS the header (standard CSV)
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()
@@ -466,35 +471,51 @@ test.describe('FR-A6: Ingestion Wizard', () => {
 
     // Verify header parsed correctly from row 1
     const tables = await inspector.getTables()
-    expect(tables[0].columns.map((c) => c.name)).toContain('id')
-    expect(tables[0].columns.map((c) => c.name)).toContain('name')
-    expect(tables[0].columns.map((c) => c.name)).toContain('email')
+    const textDirtyTable = tables.find((t) => t.name === 'fr_a3_text_dirty')
+    expect(textDirtyTable).toBeDefined()
+    expect(textDirtyTable!.columns.map((c) => c.name)).toContain('id')
+    expect(textDirtyTable!.columns.map((c) => c.name)).toContain('name')
+    expect(textDirtyTable!.columns.map((c) => c.name)).toContain('email')
   })
 })
 
-test.describe('FR-B2: Visual Diff', () => {
-  test('should detect row changes between two tables', async ({ page }) => {
+test.describe.serial('FR-B2: Visual Diff', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should detect row changes between two tables', async () => {
     // Navigate to diff page
     await page.goto('/diff')
-    const inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
-
-    // This test requires uploading two files and comparing them
-    // Implementation depends on the diff UI structure
-    // Marking as basic structure test
 
     // Verify diff page loads
     await expect(page.getByRole('heading', { name: 'Visual Diff' })).toBeVisible({ timeout: 10000 })
   })
 
-  test('should identify added, removed, and modified rows', async ({ page }) => {
-    const laundromat = new LaundromatPage(page)
-    const wizard = new IngestionWizardPage(page)
-    const inspector = createStoreInspector(page)
-
-    // Load both tables via laundromat first
+  test('should identify added, removed, and modified rows', async () => {
+    // Return to laundromat to upload files
     await laundromat.goto()
-    await inspector.waitForDuckDBReady()
+    // DuckDB is already initialized, just wait for page to be ready
+    await page.waitForLoadState('networkidle')
+
+    // Clean up any existing tables
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_new')
 
     // Upload first file (base)
     await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
@@ -536,22 +557,28 @@ test.describe('FR-B2: Visual Diff', () => {
   })
 })
 
-test.describe('FR-C1: Fuzzy Matcher', () => {
-  test('should load matcher page', async ({ page }) => {
-    await page.goto('/matcher')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
+test.describe.serial('FR-C1: Fuzzy Matcher', () => {
+  let page: Page
+  let inspector: StoreInspector
 
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    await page.goto('/matcher')
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should load matcher page', async () => {
     await expect(page.getByRole('heading', { name: 'Fuzzy Matcher' })).toBeVisible({ timeout: 10000 })
   })
 
-  test('should detect duplicate records with fuzzy matching', async ({ page }) => {
+  test('should detect duplicate records with fuzzy matching', async () => {
     // TDD: Expected to fail until fuzzy matching feature is implemented
     test.fail()
-
-    await page.goto('/matcher')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
 
     // Fail-fast guard: Assert fuzzy match UI exists
     await expect(page.getByTestId('run-match-btn')).toBeVisible({ timeout: 1000 })
@@ -564,13 +591,9 @@ test.describe('FR-C1: Fuzzy Matcher', () => {
     // - Sarah Williams / Sara Williams (similar name, similar phone)
   })
 
-  test('should support blocking strategy for performance', async ({ page }) => {
+  test('should support blocking strategy for performance', async () => {
     // TDD: Expected to fail until blocking strategy feature is implemented
     test.fail()
-
-    await page.goto('/matcher')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
 
     // Fail-fast guard: Assert blocking strategy UI exists
     await expect(page.getByTestId('blocking-strategy-select')).toBeVisible({ timeout: 1000 })
@@ -579,22 +602,28 @@ test.describe('FR-C1: Fuzzy Matcher', () => {
   })
 })
 
-test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
-  test('should load scrubber page', async ({ page }) => {
-    await page.goto('/scrubber')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
+test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
+  let page: Page
+  let inspector: StoreInspector
 
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    await page.goto('/scrubber')
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should load scrubber page', async () => {
     await expect(page.getByRole('heading', { name: 'Smart Scrubber' })).toBeVisible({ timeout: 10000 })
   })
 
-  test('should hash sensitive columns', async ({ page }) => {
+  test('should hash sensitive columns', async () => {
     // TDD: Expected to fail until hash obfuscation is implemented
     test.fail()
-
-    await page.goto('/scrubber')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
 
     // Fail-fast guard: Assert hash option exists in scrubber
     await expect(page.getByRole('option', { name: /hash/i })).toBeVisible({ timeout: 1000 })
@@ -603,13 +632,9 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Verify hash is consistent (same input = same output)
   })
 
-  test('should redact PII patterns', async ({ page }) => {
+  test('should redact PII patterns', async () => {
     // TDD: Expected to fail until redact obfuscation is implemented
     test.fail()
-
-    await page.goto('/scrubber')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
 
     // Fail-fast guard: Assert redact option exists in scrubber
     await expect(page.getByRole('option', { name: /redact/i })).toBeVisible({ timeout: 1000 })
@@ -618,13 +643,9 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // john.smith@email.com -> j***@e***.com or [REDACTED]
   })
 
-  test('should mask partial values', async ({ page }) => {
+  test('should mask partial values', async () => {
     // TDD: Expected to fail until mask obfuscation is implemented
     test.fail()
-
-    await page.goto('/scrubber')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
 
     // Fail-fast guard: Assert mask option exists in scrubber
     await expect(page.getByRole('option', { name: /mask/i })).toBeVisible({ timeout: 1000 })
@@ -632,13 +653,9 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Test masking credit card: 4111-1111-1111-1111 -> ****-****-****-1111
   })
 
-  test('should extract year only from dates', async ({ page }) => {
+  test('should extract year only from dates', async () => {
     // TDD: Expected to fail until year_only obfuscation is implemented
     test.fail()
-
-    await page.goto('/scrubber')
-    const inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
 
     // Fail-fast guard: Assert year_only option exists in scrubber
     await expect(page.getByRole('option', { name: /year/i })).toBeVisible({ timeout: 1000 })
@@ -647,18 +664,32 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   })
 })
 
-test.describe('FR-E1: Combiner - Stack Files', () => {
-  test('should stack two CSV files with Union All', async ({ page }) => {
+test.describe.serial('FR-E1: Combiner - Stack Files', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should stack two CSV files with Union All', async () => {
     // TDD: Expected to fail until combiner feature is implemented
     test.fail()
 
     // Fail-fast guard: Assert combiner page exists before proceeding
     await page.goto('/combiner')
     await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible({ timeout: 1000 })
-
-    const laundromat = new LaundromatPage(page)
-    const wizard = new IngestionWizardPage(page)
-    const inspector = createStoreInspector(page)
 
     await laundromat.goto()
     await inspector.waitForDuckDBReady()
@@ -690,18 +721,32 @@ test.describe('FR-E1: Combiner - Stack Files', () => {
   })
 })
 
-test.describe('FR-E2: Combiner - Join Files', () => {
-  test('should perform inner join on customer_id', async ({ page }) => {
+test.describe.serial('FR-E2: Combiner - Join Files', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should perform inner join on customer_id', async () => {
     // TDD: Expected to fail until combiner feature is implemented
     test.fail()
 
     // Fail-fast guard: Assert combiner page exists before proceeding
     await page.goto('/combiner')
     await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible({ timeout: 1000 })
-
-    const laundromat = new LaundromatPage(page)
-    const wizard = new IngestionWizardPage(page)
-    const inspector = createStoreInspector(page)
 
     await laundromat.goto()
     await inspector.waitForDuckDBReady()
@@ -727,17 +772,13 @@ test.describe('FR-E2: Combiner - Join Files', () => {
     expect(Number(result[0].cnt)).toBe(5)
   })
 
-  test('should perform left join preserving unmatched orders', async ({ page }) => {
+  test('should perform left join preserving unmatched orders', async () => {
     // TDD: Expected to fail until combiner feature is implemented
     test.fail()
 
     // Fail-fast guard: Assert combiner page exists before proceeding
     await page.goto('/combiner')
     await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible({ timeout: 1000 })
-
-    const laundromat = new LaundromatPage(page)
-    const wizard = new IngestionWizardPage(page)
-    const inspector = createStoreInspector(page)
 
     await laundromat.goto()
     await inspector.waitForDuckDBReady()
@@ -769,22 +810,39 @@ test.describe('FR-E2: Combiner - Join Files', () => {
   })
 })
 
-test.describe('FR-A4: Manual Cell Editing', () => {
+test.describe.serial('FR-A4: Manual Cell Editing', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
-
     await laundromat.goto()
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should commit cell edit and record in audit log', async ({ page }) => {
-    const inspector = createStoreInspector(page)
+  test.afterAll(async () => {
+    await page.close()
+  })
 
+  test('should show dirty indicator on edited cells', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    // Verify undo/redo buttons exist (basic UI check)
+    await expect(laundromat.undoButton).toBeVisible()
+    await expect(laundromat.redoButton).toBeVisible()
+  })
+
+  test('should commit cell edit and record in audit log', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
     // 1. Load data
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()
@@ -821,9 +879,8 @@ test.describe('FR-A4: Manual Cell Editing', () => {
     expect(editEntry?.columnName).toBe('name')
   })
 
-  test('should undo/redo cell edits', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  test('should undo/redo cell edits', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -857,18 +914,5 @@ test.describe('FR-A4: Manual Cell Editing', () => {
     await page.waitForTimeout(100)
     const afterRedoData = await inspector.getTableData('fr_a3_text_dirty')
     expect(afterRedoData[0].name).toBe('CHANGED')
-  })
-
-  test('should show dirty indicator on edited cells', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // Verify undo/redo buttons exist (basic UI check)
-    await expect(laundromat.undoButton).toBeVisible()
-    await expect(laundromat.redoButton).toBeVisible()
   })
 })

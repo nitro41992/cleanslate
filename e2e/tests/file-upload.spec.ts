@@ -1,37 +1,65 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, Page } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
-import { createStoreInspector } from '../helpers/store-inspector'
+import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
-test.describe('File Upload', () => {
+/**
+ * File Upload Tests
+ *
+ * All tests share a single page context to minimize DuckDB-WASM cold start overhead.
+ * Tests are ordered to run read-only tests first, then tests that modify data.
+ */
+test.describe.serial('File Upload', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     await laundromat.goto()
 
     // Wait for DuckDB to initialize
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  // Read-only test - just checks initial state
   test('should show dropzone on initial load', async () => {
     await expect(laundromat.dropzone).toBeVisible()
   })
 
+  // Read-only test - opens wizard but cancels
   test('should open ingestion wizard when CSV is uploaded', async () => {
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
 
     await wizard.waitForOpen()
     expect(await wizard.getDetectedColumnCount()).toBe(4)
+
+    await wizard.cancel() // Cancel to reset state
   })
 
-  test('should load file with default settings', async ({ page }) => {
-    const inspector = createStoreInspector(page)
+  // Read-only test - checks delimiter detection then cancels
+  test('should detect pipe delimiter', async () => {
+    await laundromat.uploadFile(getFixturePath('pipe-delimited.csv'))
+    await wizard.waitForOpen()
 
+    // Verify auto-detected delimiter shows in UI
+    await expect(page.locator('text=/Auto.*Pipe/')).toBeVisible()
+
+    await wizard.cancel() // Cancel to reset state
+  })
+
+  // Loads data - tests that need loaded data come after this
+  test('should load file with default settings', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -41,33 +69,20 @@ test.describe('File Upload', () => {
 
     // Verify via store
     const tables = await inspector.getTables()
-    expect(tables).toHaveLength(1)
-    expect(tables[0].name).toBe('basic_data')
-    expect(tables[0].rowCount).toBe(5)
+    expect(tables.length).toBeGreaterThanOrEqual(1)
+    const basicDataTable = tables.find((t) => t.name === 'basic_data')
+    expect(basicDataTable).toBeDefined()
+    expect(basicDataTable?.rowCount).toBe(5)
   })
 
-  test('should show data grid after file is loaded', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-
-    await inspector.waitForTableLoaded('basic_data', 5)
+  // Uses loaded data from previous test
+  test('should show data grid after file is loaded', async () => {
     await expect(laundromat.gridContainer).toBeVisible()
   })
 
-  test('should detect pipe delimiter', async ({ page }) => {
-    await laundromat.uploadFile(getFixturePath('pipe-delimited.csv'))
-    await wizard.waitForOpen()
-
-    // Verify auto-detected delimiter shows in UI
-    await expect(page.locator('text=/Auto.*Pipe/')).toBeVisible()
-  })
-
-  test('should allow custom header row selection', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  // Loads different data with custom settings
+  test('should allow custom header row selection', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
 
@@ -82,6 +97,7 @@ test.describe('File Upload', () => {
 
     // The data should be loaded (though with wrong headers in this case)
     const tables = await inspector.getTables()
-    expect(tables).toHaveLength(1)
+    const basicDataTable = tables.find((t) => t.name === 'basic_data')
+    expect(basicDataTable).toBeDefined()
   })
 })

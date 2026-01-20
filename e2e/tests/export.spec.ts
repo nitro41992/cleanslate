@@ -1,29 +1,39 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, Page } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { downloadAndVerifyCSV } from '../helpers/download-helpers'
-import { createStoreInspector } from '../helpers/store-inspector'
+import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
-test.describe('Export', () => {
+/**
+ * Export Tests
+ *
+ * All tests share a single page context to minimize DuckDB-WASM cold start overhead.
+ */
+test.describe.serial('Export', () => {
+  let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
+  let inspector: StoreInspector
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
     await laundromat.goto()
-
-    const inspector = createStoreInspector(page)
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test('should export CSV with correct filename', async ({ page }) => {
-    const inspector = createStoreInspector(page)
+  test.afterAll(async () => {
+    await page.close()
+  })
 
+  test('should export CSV with correct filename', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -33,9 +43,8 @@ test.describe('Export', () => {
     expect(result.filename).toBe('basic_data_cleaned.csv')
   })
 
-  test('should export data with correct headers', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  test('should export data with correct headers', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -47,9 +56,8 @@ test.describe('Export', () => {
     expect(result.rows[0]).toEqual(['id', 'name', 'email', 'city'])
   })
 
-  test('should export all data rows', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  test('should export all data rows', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -64,9 +72,8 @@ test.describe('Export', () => {
     expect(result.rows[1]).toEqual(['1', 'John Doe', 'john@example.com', 'New York'])
   })
 
-  test('should export transformed data', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  test('should export transformed data', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS mixed_case')
     await laundromat.uploadFile(getFixturePath('mixed-case.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -86,9 +93,8 @@ test.describe('Export', () => {
     expect(result.rows[3][1]).toBe('BOB JOHNSON')
   })
 
-  test('should export data after multiple transformations', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  test('should export data after multiple transformations', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
     await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -113,9 +119,8 @@ test.describe('Export', () => {
     expect(result.rows[3][1]).toBe('BOB JOHNSON')
   })
 
-  test('should export reduced rows after deduplication', async ({ page }) => {
-    const inspector = createStoreInspector(page)
-
+  test('should export reduced rows after deduplication', async () => {
+    await inspector.runQuery('DROP TABLE IF EXISTS with_duplicates')
     await laundromat.uploadFile(getFixturePath('with-duplicates.csv'))
     await wizard.waitForOpen()
     await wizard.import()
