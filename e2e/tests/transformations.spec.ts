@@ -93,7 +93,9 @@ test.describe.serial('Transformations: Whitespace Data', () => {
     const auditEntries = await inspector.getAuditEntries()
     const trimEntry = auditEntries.find((e) => e.action.includes('Trim'))
     expect(trimEntry).toBeDefined()
-    expect(trimEntry?.details).toContain('Rows affected')
+    expect(trimEntry?.entryType).toBe('A')
+    // Verify rowsAffected is tracked (2 rows have whitespace to trim)
+    expect(trimEntry?.rowsAffected).toBeDefined()
   })
 })
 
