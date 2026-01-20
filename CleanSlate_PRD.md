@@ -74,9 +74,10 @@
     * **Granularity Level:**
         * **Type A (Bulk Ops):** Logs the Action, Target Column, and **Count** of rows modified.
             * *Example:* `[14:05:00] Applied 'Trim Whitespace' to Col 'Email'. Impact: 450 rows.`
+            * **Row-Level Details:** Click audit entry to view modal with affected rows (before/after values).
         * **Type B (Manual Edits):** Logs the Action, Target Row (ID), and **Value Change**.
             * *Example:* `[14:06:22] Manual Edit on Row #104, Col 'Status'. Value: 'Pennding' -> 'Pending'.`
-    * **Export:** User can download this log as a timestamped PDF or Text file.
+    * **Export:** User can download this log as a timestamped PDF or Text file. Row details exportable as CSV.
 * **FR-A6: The Ingestion Wizard (Crucial for Legacy Data):** ✅ **IMPLEMENTED**
     * **Trigger:** On drag-and-drop of any file.
     * **UI:** Modal showing first 50 lines of raw text.
@@ -95,14 +96,14 @@
         * *Text:* Min Length, Max Length, Top 5 Most Common Values.
     * **Why:** Guides the user on *what* to clean.
 
-### Module B: The Visual Diff (Reconciliation) 🔶 **UI SHELL ONLY**
-* **FR-B1:** User selects two loaded tables to compare (e.g., "Old Version" vs "New Version").
-* **FR-B2:** System executes a `FULL OUTER JOIN` to determine `ADDED`, `REMOVED`, or `MODIFIED` status.
-* **FR-B3:** Render Logic (Glide Data Grid):
+### Module B: The Visual Diff (Reconciliation) ✅ **IMPLEMENTED**
+* **FR-B1:** User selects two loaded tables to compare (e.g., "Old Version" vs "New Version"). ✅
+* **FR-B2:** System executes a `FULL OUTER JOIN` to determine `ADDED`, `REMOVED`, or `MODIFIED` status. ✅
+* **FR-B3:** Render Logic (Glide Data Grid): ✅
     * **Green Background:** Row exists in File B but not A.
     * **Red Background:** Row exists in File A but not B.
     * **Yellow Highlight:** Cell value mismatch.
-* **FR-B4: Blind Diff Support:** Allow diffing on *hashed* columns to find overlap without revealing raw data.
+* **FR-B4: Blind Diff Support:** Allow diffing on *hashed* columns to find overlap without revealing raw data. 🔶 (pending)
 
 ### Module C: The Fuzzy Matcher (Deduplication) 🔶 **UI SHELL ONLY**
 * **FR-C1: Blocking Strategy (Crucial):**
@@ -124,19 +125,19 @@
 * **FR-D3: Key Map Export:**
     * Checkbox on Export: *"Generate Key Map?"* (CSV with `Original, Obfuscated` pairs).
 
-### Module E: The Combiner (Joins & Unions) ❌ **NOT STARTED**
-* **FR-E1: Stack Files (Union All):**
+### Module E: The Combiner (Joins & Unions) ✅ **IMPLEMENTED**
+* **FR-E1: Stack Files (Union All):** ✅
     * **User Action:** Select 2+ files -> Click "Stack".
     * **Logic:** System aligns columns by header name.
     * **Validation:** Warn if headers don't match (e.g., "File A has 'Email', File B has 'E-mail'").
-* **FR-E2: Merge Files (VLOOKUP / Joins):**
+* **FR-E2: Merge Files (VLOOKUP / Joins):** ✅
     * **UI:** "Left Side" (Base Table) vs. "Right Side" (Lookup Table).
     * **Key Selection:** User selects the common column (e.g., `Patient_ID`).
     * **Join Types (User Facing Names):**
-        * "Lookup" (Left Join) - *Default*.
-        * "Keep Only Matches" (Inner Join).
-        * "Keep Everything" (Full Outer Join).
-* **FR-E3: The "Clean-First" Guardrail:**
+        * "Lookup" (Left Join) - *Default*. ✅
+        * "Keep Only Matches" (Inner Join). ✅
+        * "Keep Everything" (Full Outer Join). ✅
+* **FR-E3: The "Clean-First" Guardrail:** ✅
     * **Constraint:** System must warn user if they try to join without cleaning key columns first.
     * **Feature:** "Auto-Clean Keys" button in the Join modal (Trims whitespace & casts types on both sides automatically before joining).
 

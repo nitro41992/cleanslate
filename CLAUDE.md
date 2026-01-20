@@ -23,33 +23,35 @@ npm run preview   # Preview production build locally
 - **React 18 + TypeScript + Vite** - Frontend framework
 - **DuckDB-WASM** - In-browser SQL engine (runs in Web Worker)
 - **Glide Data Grid** - Canvas-based grid for 100k+ rows
-- **Zustand** - State management (7 stores)
+- **Zustand** - State management (8 stores)
 - **Radix UI + Tailwind CSS** - UI components with dark mode
 - **OPFS** - Origin Private File System for local persistence
 
-### Core Modules (4 tabs)
+### Core Modules (5 tabs)
 | Module | Route | Purpose |
 |--------|-------|---------|
 | Data Laundromat | `/laundromat` | File ingestion, transformations, manual editing, audit log |
-| Visual Diff | `/diff` | Compare tables with FULL OUTER JOIN reconciliation |
-| Fuzzy Matcher | `/matcher` | Duplicate detection with blocking strategies |
-| Smart Scrubber | `/scrubber` | Data obfuscation (hash, mask, redact, faker) |
+| Matcher | `/matcher` | Duplicate detection with blocking strategies |
+| Combiner | `/combiner` | Stack (UNION ALL) and join tables |
+| Scrubber | `/scrubber` | Data obfuscation (hash, mask, redact, faker) |
+| Diff | `/diff` | Compare tables with FULL OUTER JOIN reconciliation |
 
 ### Directory Structure
 ```
 src/
 ├── components/          # Reusable UI (common/, grid/, layout/, ui/)
-├── features/            # Feature modules (laundromat/, diff/, matcher/, scrubber/)
+├── features/            # Feature modules (laundromat/, matcher/, combiner/, scrubber/, diff/)
 ├── lib/                 # Core business logic
 │   ├── duckdb/          # DuckDB initialization & queries
 │   ├── opfs/            # OPFS storage utilities
 │   ├── transformations.ts
 │   ├── diff-engine.ts
+│   ├── combiner-engine.ts  # Stack/join table operations
 │   ├── fuzzy-matcher.ts
 │   ├── obfuscation.ts
 │   └── fileUtils.ts     # CSV parsing, encoding/delimiter detection
 ├── hooks/               # useDuckDB, usePersistence, useToast
-├── stores/              # Zustand stores (table, audit, diff, matcher, scrubber, ui, edit)
+├── stores/              # Zustand stores (table, audit, diff, matcher, combiner, scrubber, ui, edit)
 └── types/               # TypeScript interfaces
 ```
 
@@ -97,6 +99,8 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 ### FR-A5: Audit Log ✅
 - Type A entries for bulk transformations (action, column, row count)
 - Type B entries for manual edits (previous/new values)
+- Row-level audit details with modal viewer (click to see affected rows)
+- Export row details as CSV from modal
 - Immutable history with timestamps
 
 ### FR-A6: Ingestion Wizard ✅
@@ -106,11 +110,20 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - Encoding detection (UTF-8/Latin-1) with override
 - Delimiter detection (Comma/Tab/Pipe/Semicolon) with override
 
+### FR-B2: Visual Diff ✅
+- Compare two tables with FULL OUTER JOIN
+- Detect added, removed, and modified rows
+- Color-coded diff display (green/red/yellow)
+
+### FR-E: Combiner ✅
+- Stack tables (UNION ALL) with column alignment
+- Join tables with Left/Inner/Full Outer join types
+- Key column selection for joins
+- Validation warnings for mismatched columns
+
 ### Module Pages (UI Shell)
-- ✅ Visual Diff (`/diff`) - page loads, diff engine pending
 - ✅ Fuzzy Matcher (`/matcher`) - page loads, matching logic pending
 - ✅ Smart Scrubber (`/scrubber`) - page loads, obfuscation pending
-- 🔲 Combiner (`/combiner`) - not yet implemented
 
 ## E2E Testing
 
@@ -286,6 +299,8 @@ Located in `e2e/fixtures/csv/`:
 - `with-duplicates.csv` - Data with duplicate rows
 - `fr_a3_*.csv` - FR-A3 transformation test fixtures
 - `fr_b2_*.csv` - Visual Diff test fixtures
+- `fr_e1_*.csv` - Combiner Stack test fixtures (jan/feb sales)
+- `fr_e2_*.csv` - Combiner Join test fixtures (orders/customers)
 
 ## Important Notes
 
