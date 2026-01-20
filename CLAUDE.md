@@ -77,18 +77,58 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 
 ## Implemented Features
 
-### FR-A4: Manual Cell Editing
+### FR-A3: Text Cleaning Transformations (Partial)
+- ✅ Trim Whitespace
+- ✅ Uppercase
+- ✅ Lowercase
+- 🔲 Title Case (pending)
+- 🔲 Remove Accents (pending)
+- 🔲 Remove Non-Printable (pending)
+- 🔲 Finance transforms: Unformat Currency, Fix Negatives, Pad Zeros (pending)
+- 🔲 Date transforms: Standardize Format, Calculate Age (pending)
+- 🔲 Split Column, Fill Down (pending)
+
+### FR-A4: Manual Cell Editing ✅
 - Double-click any cell to edit (Text/Number/Boolean)
 - Red triangle indicator on edited cells (dirty state)
 - Undo/Redo with Ctrl+Z / Ctrl+Y (10-step stack)
 - Type B audit log entries with previous/new values
 
-### FR-A6: Ingestion Wizard
+### FR-A5: Audit Log ✅
+- Type A entries for bulk transformations (action, column, row count)
+- Type B entries for manual edits (previous/new values)
+- Immutable history with timestamps
+
+### FR-A6: Ingestion Wizard ✅
 - Modal triggered on CSV file drop
 - Raw text preview (first 50 lines)
 - Header row selection (rows 1-10)
 - Encoding detection (UTF-8/Latin-1) with override
 - Delimiter detection (Comma/Tab/Pipe/Semicolon) with override
+
+### Module Pages (UI Shell)
+- ✅ Visual Diff (`/diff`) - page loads, diff engine pending
+- ✅ Fuzzy Matcher (`/matcher`) - page loads, matching logic pending
+- ✅ Smart Scrubber (`/scrubber`) - page loads, obfuscation pending
+- 🔲 Combiner (`/combiner`) - not yet implemented
+
+## E2E Testing
+
+```bash
+npm test                           # Run all Playwright E2E tests
+npm test -- --grep "FR-A4"         # Run specific feature tests
+npm test -- --ui                   # Open Playwright UI mode
+```
+
+### Test Pattern (TDD)
+- Tests for unimplemented features use `test.fail()` with fail-fast guards
+- When implementing a feature, remove `test.fail()` and the test should pass
+- See `e2e/tests/feature-coverage.spec.ts` for full coverage
+
+### Test Helpers
+- `e2e/helpers/store-inspector.ts` - Access Zustand stores and DuckDB from tests
+- `e2e/page-objects/*.page.ts` - Page object models for UI interaction
+- `e2e/fixtures/csv/` - Test data fixtures
 
 ## Important Notes
 

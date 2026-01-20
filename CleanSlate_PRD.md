@@ -43,15 +43,15 @@
 ### Module A: The Data Laundromat (Ingestion & Cleaning)
 * **FR-A1:** Support drag-and-drop for `.csv`, `.xlsx`, `.json`, and `.parquet`.
 * **FR-A2:** Stream data directly to OPFS/DuckDB to avoid crashing the main thread JS Heap.
-* **FR-A3: Context-Aware Transformation Sidebar:**
+* **FR-A3: Context-Aware Transformation Sidebar:** 🔶 **PARTIAL**
     * UI must display actions relevant to the selected column's data type.
     * **Text Columns:**
-        * **Trim Whitespace:** `trim(col)`
+        * ✅ **Trim Whitespace:** `trim(col)`
         * **Collapse Spaces:** `regexp_replace(col, '\s+', ' ', 'g')`
         * **Remove Non-Printable:** Remove tabs, newlines, zero-width chars.
         * **Remove Accents:** `José` -> `Jose`.
         * **Casing:**
-            * `UPPERCASE`, `lowercase`.
+            * ✅ `UPPERCASE`, ✅ `lowercase`.
             * `Title Case`: "John Smith" (Capitalize first letter of words). *Distinct from CamelCase.*
             * `Sentence case`: "Patient arrived at..."
         * **Split Column:** By delimiter (comma, space) or extract domain (email).
@@ -69,7 +69,7 @@
     * **Dirty State:** Visually highlight manually edited cells (e.g., small red triangle or background tint).
     * **Undo Stack:** `Ctrl+Z` support for at least 10 steps.
     * **Audit Integration:** **CRITICAL.** Every manual edit must trigger an entry in the Audit Log with `Previous_Value` and `New_Value`.
-* **FR-A5: Granular Transformation Audit Log:**
+* **FR-A5: Granular Transformation Audit Log:** ✅ **IMPLEMENTED**
     * **Requirement:** The system must maintain a linear, immutable history of all changes.
     * **Granularity Level:**
         * **Type A (Bulk Ops):** Logs the Action, Target Column, and **Count** of rows modified.
@@ -95,7 +95,7 @@
         * *Text:* Min Length, Max Length, Top 5 Most Common Values.
     * **Why:** Guides the user on *what* to clean.
 
-### Module B: The Visual Diff (Reconciliation)
+### Module B: The Visual Diff (Reconciliation) 🔶 **UI SHELL ONLY**
 * **FR-B1:** User selects two loaded tables to compare (e.g., "Old Version" vs "New Version").
 * **FR-B2:** System executes a `FULL OUTER JOIN` to determine `ADDED`, `REMOVED`, or `MODIFIED` status.
 * **FR-B3:** Render Logic (Glide Data Grid):
@@ -104,7 +104,7 @@
     * **Yellow Highlight:** Cell value mismatch.
 * **FR-B4: Blind Diff Support:** Allow diffing on *hashed* columns to find overlap without revealing raw data.
 
-### Module C: The Fuzzy Matcher (Deduplication)
+### Module C: The Fuzzy Matcher (Deduplication) 🔶 **UI SHELL ONLY**
 * **FR-C1: Blocking Strategy (Crucial):**
     * System must force a "Block" selection (e.g., "First Letter" or "Soundex") before allowing fuzzy matching to prevent $O(N^2)$ browser crash.
 * **FR-C2: "Tinder" Review UI:**
@@ -113,7 +113,7 @@
 
 
 
-### Module D: The Smart Scrubber (Obfuscation)
+### Module D: The Smart Scrubber (Obfuscation) 🔶 **UI SHELL ONLY**
 * **FR-D1: Project Secret (The Salt):**
     * Input field for a "Secret Phrase." Logic: `SHA256(Column_Value + Secret_Phrase)`.
     * Ensures referential integrity across sessions.
@@ -124,7 +124,7 @@
 * **FR-D3: Key Map Export:**
     * Checkbox on Export: *"Generate Key Map?"* (CSV with `Original, Obfuscated` pairs).
 
-### Module E: The Combiner (Joins & Unions)
+### Module E: The Combiner (Joins & Unions) ❌ **NOT STARTED**
 * **FR-E1: Stack Files (Union All):**
     * **User Action:** Select 2+ files -> Click "Stack".
     * **Logic:** System aligns columns by header name.
