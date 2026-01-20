@@ -41,7 +41,14 @@ export function TransformationPicker({
   const handleSelect = (transformation: TransformationDefinition) => {
     setSelected(transformation)
     setSelectedColumn('')
-    setParams({})
+    // Pre-populate params with defaults
+    const defaultParams: Record<string, string> = {}
+    transformation.params?.forEach((param) => {
+      if (param.default) {
+        defaultParams[param.name] = param.default
+      }
+    })
+    setParams(defaultParams)
   }
 
   const handleConfirm = () => {
@@ -113,77 +120,79 @@ export function TransformationPicker({
           </ScrollArea>
 
           {/* Configuration Panel */}
-          <div className="w-1/2 p-4 border border-border rounded-lg">
+          <div className="w-1/2 border border-border rounded-lg overflow-hidden">
             {!selected ? (
               <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
                 Select a transformation from the list
               </div>
             ) : (
-              <div className="space-y-4">
-                <div>
-                  <h3 className="font-semibold flex items-center gap-2">
-                    <span className="text-xl">{selected.icon}</span>
-                    {selected.label}
-                  </h3>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {selected.description}
-                  </p>
-                </div>
-
-                {selected.requiresColumn && (
-                  <div className="space-y-2">
-                    <Label>Column</Label>
-                    <Select
-                      value={selectedColumn}
-                      onValueChange={setSelectedColumn}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select column" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {columns.map((col) => (
-                          <SelectItem key={col} value={col}>
-                            {col}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+              <ScrollArea className="h-full">
+                <div className="p-4 space-y-4">
+                  <div>
+                    <h3 className="font-semibold flex items-center gap-2">
+                      <span className="text-xl">{selected.icon}</span>
+                      {selected.label}
+                    </h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {selected.description}
+                    </p>
                   </div>
-                )}
 
-                {selected.params?.map((param) => (
-                  <div key={param.name} className="space-y-2">
-                    <Label>{param.label}</Label>
-                    {param.type === 'select' && param.options ? (
+                  {selected.requiresColumn && (
+                    <div className="space-y-2">
+                      <Label>Column</Label>
                       <Select
-                        value={params[param.name] || ''}
-                        onValueChange={(v) =>
-                          setParams({ ...params, [param.name]: v })
-                        }
+                        value={selectedColumn}
+                        onValueChange={setSelectedColumn}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder={`Select ${param.label}`} />
+                          <SelectValue placeholder="Select column" />
                         </SelectTrigger>
                         <SelectContent>
-                          {param.options.map((opt) => (
-                            <SelectItem key={opt.value} value={opt.value}>
-                              {opt.label}
+                          {columns.map((col) => (
+                            <SelectItem key={col} value={col}>
+                              {col}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                    ) : (
-                      <Input
-                        value={params[param.name] || ''}
-                        onChange={(e) =>
-                          setParams({ ...params, [param.name]: e.target.value })
-                        }
-                        placeholder={param.label}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
+                    </div>
+                  )}
+
+                  {selected.params?.map((param) => (
+                    <div key={param.name} className="space-y-2">
+                      <Label>{param.label}</Label>
+                      {param.type === 'select' && param.options ? (
+                        <Select
+                          value={params[param.name] || ''}
+                          onValueChange={(v) =>
+                            setParams({ ...params, [param.name]: v })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder={`Select ${param.label}`} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {param.options.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          value={params[param.name] || ''}
+                          onChange={(e) =>
+                            setParams({ ...params, [param.name]: e.target.value })
+                          }
+                          placeholder={param.label}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
             )}
           </div>
         </div>

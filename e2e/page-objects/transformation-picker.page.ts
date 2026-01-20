@@ -36,17 +36,29 @@ export class TransformationPickerPage {
     await this.page.locator(`input[placeholder*="${paramName}" i]`).fill(value)
   }
 
+  async selectParam(paramLabel: string, optionLabel: string): Promise<void> {
+    // Find the label and then the adjacent combobox
+    const labelElement = this.dialog.locator('label').filter({ hasText: paramLabel })
+    const selectTrigger = labelElement.locator('..').locator('[role="combobox"]')
+    await selectTrigger.click()
+    await this.page.getByRole('option', { name: optionLabel }).click()
+  }
+
   async addToRecipe(): Promise<void> {
     await this.addToRecipeButton.click()
     await this.waitForClose()
   }
 
   /**
-   * Add a transformation with optional column and params
+   * Add a transformation with optional column, params, and select params
    */
   async addTransformation(
     type: string,
-    options?: { column?: string; params?: Record<string, string> }
+    options?: {
+      column?: string
+      params?: Record<string, string>
+      selectParams?: Record<string, string>
+    }
   ): Promise<void> {
     await this.selectTransformation(type)
 
@@ -57,6 +69,12 @@ export class TransformationPickerPage {
     if (options?.params) {
       for (const [key, value] of Object.entries(options.params)) {
         await this.fillParam(key, value)
+      }
+    }
+
+    if (options?.selectParams) {
+      for (const [label, option] of Object.entries(options.selectParams)) {
+        await this.selectParam(label, option)
       }
     }
 

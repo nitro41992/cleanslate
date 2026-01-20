@@ -12,6 +12,7 @@ export interface TransformationDefinition {
     type: 'text' | 'number' | 'select'
     label: string
     options?: { value: string; label: string }[]
+    default?: string
   }[]
 }
 
@@ -60,6 +61,26 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     params: [
       { name: 'find', type: 'text', label: 'Find' },
       { name: 'replace', type: 'text', label: 'Replace with' },
+      {
+        name: 'caseSensitive',
+        type: 'select',
+        label: 'Case Sensitive',
+        options: [
+          { value: 'true', label: 'Yes' },
+          { value: 'false', label: 'No' },
+        ],
+        default: 'true',
+      },
+      {
+        name: 'matchType',
+        type: 'select',
+        label: 'Match Type',
+        options: [
+          { value: 'contains', label: 'Contains' },
+          { value: 'exact', label: 'Exact Match' },
+        ],
+        default: 'contains',
+      },
     ],
   },
   {
@@ -167,10 +188,47 @@ export async function applyTransformation(
     case 'replace': {
       const find = (step.params?.find as string) || ''
       const replaceWith = (step.params?.replace as string) || ''
-      sql = `
-        UPDATE "${tableName}"
-        SET "${step.column}" = REPLACE("${step.column}", '${find.replace(/'/g, "''")}', '${replaceWith.replace(/'/g, "''")}')
-      `
+      const caseSensitive = (step.params?.caseSensitive as string) ?? 'true'
+      const matchType = (step.params?.matchType as string) ?? 'contains'
+
+      const escapedFind = find.replace(/'/g, "''")
+      const escapedReplace = replaceWith.replace(/'/g, "''")
+
+      if (matchType === 'exact') {
+        // Exact match: replace entire cell value only if it matches
+        if (caseSensitive === 'false') {
+          sql = `
+            UPDATE "${tableName}" SET "${step.column}" =
+            CASE WHEN LOWER("${step.column}") = LOWER('${escapedFind}')
+            THEN '${escapedReplace}'
+            ELSE "${step.column}" END
+          `
+        } else {
+          sql = `
+            UPDATE "${tableName}" SET "${step.column}" =
+            CASE WHEN "${step.column}" = '${escapedFind}'
+            THEN '${escapedReplace}'
+            ELSE "${step.column}" END
+          `
+        }
+      } else {
+        // Contains: replace all occurrences of substring
+        if (caseSensitive === 'false') {
+          // Case-insensitive substring replacement using REGEXP_REPLACE
+          // Escape special regex characters in the find string
+          const regexEscaped = escapedFind.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          sql = `
+            UPDATE "${tableName}" SET "${step.column}" =
+            REGEXP_REPLACE("${step.column}", '(?i)${regexEscaped}', '${escapedReplace}', 'g')
+          `
+        } else {
+          // Default: case-sensitive substring replacement
+          sql = `
+            UPDATE "${tableName}"
+            SET "${step.column}" = REPLACE("${step.column}", '${escapedFind}', '${escapedReplace}')
+          `
+        }
+      }
       await execute(sql)
       break
     }

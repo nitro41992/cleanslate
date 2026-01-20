@@ -173,4 +173,227 @@ test.describe('Transformations', () => {
     expect(trimEntry).toBeDefined()
     expect(trimEntry?.details).toContain('Rows affected')
   })
+
+  test('should apply find and replace transformation', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('find-replace-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('find_replace_data', 3)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    const data = await inspector.getTableData('find_replace_data')
+    expect(data[0].name).toBe('hi world')
+    expect(data[1].name).toBe('say hi')
+    expect(data[2].name).toBe('goodbye')
+  })
+
+  test('should replace multiple occurrences in find and replace', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('find-replace-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('find_replace_data', 3)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'description',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    const data = await inspector.getTableData('find_replace_data')
+    expect(data[0].description).toBe('hi there')
+    expect(data[1].description).toBe('hi hi') // Multiple occurrences replaced
+    expect(data[2].description).toBe('no match here')
+  })
+
+  test('should rename column', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Rename Column', {
+      column: 'name',
+      params: { 'New column name': 'full_name' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    // Verify column was renamed by querying the data
+    const data = await inspector.getTableData('basic_data')
+    expect(data[0].full_name).toBeDefined()
+    expect(data[0].name).toBeUndefined()
+  })
+
+  test('should cast string to integer', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('numeric-strings.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('numeric_strings', 3)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Cast Type', {
+      column: 'amount',
+      selectParams: { 'Target type': 'Integer' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    // Verify data is still accessible (cast succeeded)
+    const data = await inspector.getTableData('numeric_strings')
+    expect(data[0].amount).toBe(100)
+    expect(data[1].amount).toBe(200)
+    expect(data[2].amount).toBe(300)
+  })
+
+  test('should cast string to date', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('numeric-strings.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('numeric_strings', 3)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Cast Type', {
+      column: 'date_str',
+      selectParams: { 'Target type': 'Date' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    // Verify data is still accessible (cast succeeded)
+    const data = await inspector.getTableData('numeric_strings')
+    // Date values should be present (format may vary)
+    expect(data[0].date_str).toBeDefined()
+    expect(data[1].date_str).toBeDefined()
+    expect(data[2].date_str).toBeDefined()
+  })
+
+  test('should apply custom SQL transformation', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('numeric-strings.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('numeric_strings', 3)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Custom SQL', {
+      params: {
+        'SQL Query':
+          'CREATE OR REPLACE TABLE numeric_strings AS SELECT *, amount * 2 as doubled FROM numeric_strings',
+      },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    // Verify new column was created with correct values
+    // Note: DuckDB may return BigInt for integer calculations
+    const data = await inspector.getTableData('numeric_strings')
+    expect(Number(data[0].doubled)).toBe(200)
+    expect(Number(data[1].doubled)).toBe(400)
+    expect(Number(data[2].doubled)).toBe(600)
+  })
+
+  test('should apply case-insensitive find and replace', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('case_sensitive_data', 4)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    const data = await inspector.getTableData('case_sensitive_data')
+    // All variations of "hello" should be replaced regardless of case
+    expect(data[0].name).toBe('hi')
+    expect(data[1].name).toBe('hi')
+    expect(data[2].name).toBe('hi')
+    expect(data[3].name).toBe('say hi')
+  })
+
+  test('should apply exact match find and replace', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('case_sensitive_data', 4)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Match Type': 'Exact Match' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    const data = await inspector.getTableData('case_sensitive_data')
+    // Only exact match "hello" should be replaced
+    expect(data[0].name).toBe('Hello') // Not replaced (different case)
+    expect(data[1].name).toBe('hi') // Replaced (exact match)
+    expect(data[2].name).toBe('HELLO') // Not replaced (different case)
+    expect(data[3].name).toBe('say hello') // Not replaced (contains, not exact)
+  })
+
+  test('should apply case-insensitive exact match find and replace', async ({ page }) => {
+    const inspector = createStoreInspector(page)
+
+    await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('case_sensitive_data', 4)
+
+    await laundromat.clickAddTransformation()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No', 'Match Type': 'Exact Match' },
+    })
+
+    await laundromat.clickRunRecipe()
+
+    const data = await inspector.getTableData('case_sensitive_data')
+    // All exact matches regardless of case should be replaced
+    expect(data[0].name).toBe('hi') // Replaced (case-insensitive exact match)
+    expect(data[1].name).toBe('hi') // Replaced (exact match)
+    expect(data[2].name).toBe('hi') // Replaced (case-insensitive exact match)
+    expect(data[3].name).toBe('say hello') // Not replaced (contains, not exact)
+  })
 })
