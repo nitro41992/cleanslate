@@ -64,4 +64,9 @@ export class IngestionWizardPage {
     await this.cancelButton.click()
     await this.waitForClose()
   }
+
+  async getRawPreviewText(): Promise<string> {
+    const preview = this.page.getByTestId('raw-preview')
+    return (await preview.textContent()) ?? ''
+  }
 }

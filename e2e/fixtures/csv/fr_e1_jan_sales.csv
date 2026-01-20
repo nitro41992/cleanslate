@@ -1,0 +1,5 @@
+sale_id,product,amount,sale_date
+J001,Widget A,150.00,2024-01-05
+J002,Gadget X,299.99,2024-01-12
+J003,Tool Z,89.50,2024-01-18
+J004,Widget B,125.00,2024-01-25

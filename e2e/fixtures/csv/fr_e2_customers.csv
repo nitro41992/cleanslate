@@ -1,0 +1,5 @@
+customer_id,name,email,tier
+C001,Acme Corp,acme@corp.com,Gold
+C002,Beta Inc,beta@inc.com,Silver
+C003,Gamma LLC,gamma@llc.com,Bronze
+C005,Delta Co,delta@co.com,Gold

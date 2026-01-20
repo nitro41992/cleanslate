@@ -1,0 +1,11 @@
+region,store,product,sales
+North,Store A,Widget,100
+,,Gadget,150
+,,Tool,75
+North,Store B,Widget,200
+,,Gadget,180
+South,Store C,Widget,90
+,,Gadget,120
+,,Tool,60
+,,Accessory,45
+South,Store D,Widget,110

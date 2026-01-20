@@ -1,0 +1,10 @@
+id,name,email,notes
+1,  John Smith  ,JOHN@EXAMPLE.COM,Clean record
+2,JANE DOE,jane@test.org,  Extra spaces
+3,café résumé,accent@test.com,"Has accents: naïve"
+4,"Bob	Wilson",bob@test.com,"Has	tab	characters"
+5,"Alice
+Brown",alice@test.com,Has newline in name
+6,  MIKE  JONES  ,mike@test.com,Multiple   internal   spaces
+7,São Paulo,city@test.com,Brazilian city name
+8,Über driver,uber@test.com,German umlaut

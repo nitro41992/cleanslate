@@ -1,0 +1,10 @@
+ACME Corp Report Generator v2.1
+Generated: 2024-01-15 09:30:00
+Report Type: Monthly Sales Summary
+-----------------------------------
+id,product,quantity,price,region
+1,Widget A,100,29.99,North
+2,Widget B,250,15.50,South
+3,Gadget X,75,199.00,East
+4,Gadget Y,500,45.00,West
+5,Tool Z,30,89.99,North

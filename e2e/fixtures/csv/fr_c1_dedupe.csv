@@ -1,0 +1,9 @@
+id,first_name,last_name,email,phone,city
+1,John,Smith,john.smith@email.com,555-1234,New York
+2,Jon,Smith,jsmith@email.com,555-1234,New York
+3,Jane,Doe,jane.doe@test.org,555-5678,Los Angeles
+4,Janet,Doe,j.doe@test.org,555-5679,Los Angeles
+5,Robert,Johnson,bob.johnson@mail.com,555-9999,Chicago
+6,Bob,Johnson,robert.j@mail.com,555-9999,Chicago
+7,Sarah,Williams,sarah.w@email.com,555-1111,Miami
+8,Sara,Williams,s.williams@email.com,555-1112,Miami

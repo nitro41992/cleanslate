@@ -1,0 +1,6 @@
+id,full_name,ssn,email,phone,birth_date,credit_card
+1,John Smith,123-45-6789,john.smith@email.com,555-123-4567,1985-03-15,4111-1111-1111-1111
+2,Jane Doe,987-65-4321,jane.doe@test.org,555-987-6543,1990-07-22,5500-0000-0000-0004
+3,Bob Wilson,111-22-3333,bob.wilson@mail.com,555-111-2222,1978-11-30,3400-000000-00009
+4,Alice Brown,444-55-6666,alice.b@email.com,555-444-5555,2000-01-01,6011-0000-0000-0004
+5,Charlie Davis,777-88-9999,charlie.d@test.org,555-777-8888,1965-12-25,3530-1113-3330-0000
