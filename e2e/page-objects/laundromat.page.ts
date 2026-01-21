@@ -198,12 +198,19 @@ export class LaundromatPage {
   }
 
   /**
-   * Open the Match panel for duplicate detection
+   * Open the Match view (full-screen overlay) for duplicate detection
    */
-  async openMatchPanel(): Promise<void> {
+  async openMatchView(): Promise<void> {
     await this.closePanel()
     await this.matchButton.click()
-    await this.page.getByTestId('panel-match').waitFor({ state: 'visible', timeout: 5000 })
+    await this.page.getByTestId('match-view').waitFor({ state: 'visible', timeout: 5000 })
+  }
+
+  /**
+   * @deprecated Use openMatchView() instead - Match now uses full-screen overlay
+   */
+  async openMatchPanel(): Promise<void> {
+    await this.openMatchView()
   }
 
   /**

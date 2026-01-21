@@ -103,11 +103,25 @@ export interface DiffResult {
   modifiedColumns?: string[]
 }
 
+export type BlockingStrategy = 'first_letter' | 'double_metaphone' | 'ngram' | 'none'
+
+export type FieldSimilarityStatus = 'exact' | 'similar' | 'different'
+
+export interface FieldSimilarity {
+  column: string
+  valueA: unknown
+  valueB: unknown
+  similarity: number
+  status: FieldSimilarityStatus
+}
+
 export interface MatchPair {
   id: string
   rowA: Record<string, unknown>
   rowB: Record<string, unknown>
   score: number
+  similarity: number // 0-100 percentage (higher = more similar)
+  fieldSimilarities: FieldSimilarity[]
   status: 'pending' | 'merged' | 'kept_separate'
 }
 

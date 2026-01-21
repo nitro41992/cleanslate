@@ -95,11 +95,14 @@ export function DataGrid({
     [columns]
   )
 
-  // Load initial data
+  // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
   useEffect(() => {
     if (!tableName || columns.length === 0) return
 
     setIsLoading(true)
+    setData([]) // Clear stale data immediately
+    setLoadedRange({ start: 0, end: 0 }) // Reset loaded range
+
     getData(tableName, 0, PAGE_SIZE)
       .then((rows) => {
         setData(rows)
@@ -110,7 +113,7 @@ export function DataGrid({
         console.error('Error loading data:', err)
         setIsLoading(false)
       })
-  }, [tableName, columns, getData])
+  }, [tableName, columns, getData, rowCount])
 
   // Load more data on scroll
   const onVisibleRegionChanged = useCallback(

@@ -23,10 +23,10 @@ import { Label } from '@/components/ui/label'
 import { CleanPanel } from '@/components/panels/CleanPanel'
 import { CombinePanel } from '@/components/panels/CombinePanel'
 import { ScrubPanel } from '@/components/panels/ScrubPanel'
-import { MatchPanel } from '@/components/panels/MatchPanel'
 
-// Diff View (full-screen overlay)
+// Full-screen overlay views
 import { DiffView } from '@/components/diff'
+import { MatchView } from '@/features/matcher'
 
 // Stores and hooks
 import { useTableStore } from '@/stores/tableStore'
@@ -34,6 +34,7 @@ import { usePreviewStore } from '@/stores/previewStore'
 import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useDiffStore } from '@/stores/diffStore'
+import { useMatcherStore } from '@/stores/matcherStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
 import { toast } from 'sonner'
@@ -74,6 +75,10 @@ function App() {
   // Diff view state
   const isDiffViewOpen = useDiffStore((s) => s.isViewOpen)
   const closeDiffView = useDiffStore((s) => s.closeView)
+
+  // Match view state
+  const isMatchViewOpen = useMatcherStore((s) => s.isViewOpen)
+  const closeMatchView = useMatcherStore((s) => s.closeView)
 
   // Sync table selection to preview store
   useEffect(() => {
@@ -261,7 +266,7 @@ function App() {
   }
 
   // Get panel content based on active panel
-  // Note: Diff is handled as a full-screen overlay, not a side panel
+  // Note: Diff and Match are handled as full-screen overlays, not side panels
   const getPanelContent = () => {
     switch (activePanel) {
       case 'clean':
@@ -271,7 +276,8 @@ function App() {
       case 'scrub':
         return <ScrubPanel />
       case 'match':
-        return <MatchPanel />
+        // Match is handled as full-screen overlay via MatchView
+        return null
       case 'diff':
         // Diff is handled as full-screen overlay via DiffView
         return null
@@ -411,6 +417,9 @@ function App() {
 
       {/* Diff View Full-Screen Overlay */}
       <DiffView open={isDiffViewOpen} onClose={closeDiffView} />
+
+      {/* Match View Full-Screen Overlay */}
+      <MatchView open={isMatchViewOpen} onClose={closeMatchView} />
 
       {/* Sonner Toaster */}
       <Toaster />

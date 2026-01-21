@@ -3,6 +3,7 @@ import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { DiffViewPage } from '../page-objects/diff-view.page'
+import { MatchViewPage } from '../page-objects/match-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
@@ -533,56 +534,108 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
+  let matchView: MatchViewPage
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
+    matchView = new MatchViewPage(page)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
-    // Load a table so toolbar is enabled
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
   })
 
   test.afterAll(async () => {
     await page.close()
   })
 
-  test('should load matcher panel', async () => {
-    // Open match panel via toolbar (single-page app)
-    await laundromat.openMatchPanel()
-    await expect(page.getByRole('heading', { name: 'Find Duplicates' })).toBeVisible({ timeout: 10000 })
+  async function loadDedupeData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
+    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+  }
+
+  test('should open match view and find duplicates with similarity percentages', async () => {
+    await loadDedupeData()
+
+    // Open match view via toolbar (full-screen overlay)
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+
+    // Verify match view is open with correct title
+    await expect(page.getByText('DUPLICATE FINDER')).toBeVisible()
+
+    // Select table and column, then find duplicates
+    await matchView.selectTable('fr_c1_dedupe')
+    await matchView.selectColumn('first_name')
+    await matchView.findDuplicates()
+    await matchView.waitForPairs()
+
+    // Verify pairs are displayed with similarity percentages
+    const pairCount = await matchView.getPairCount()
+    expect(pairCount).toBeGreaterThan(0)
+
+    // Verify "% Similar" format is displayed
+    await expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible()
   })
 
-  test('should detect duplicate records with fuzzy matching', async () => {
-    // TDD: Expected to fail until fuzzy matching feature is implemented
-    test.fail()
+  test('should mark pairs as merged and display apply bar', async () => {
+    // Get initial stats
+    const initialStats = await matchView.getStats()
+    expect(initialStats.merged).toBe(0)
 
-    // Fail-fast guard: Assert fuzzy match UI exists
-    await expect(page.getByTestId('run-match-btn')).toBeVisible({ timeout: 1000 })
+    // Mark first pair as merged
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300) // Allow state update
 
-    // Test with fr_c1_dedupe.csv
-    // Expected matches:
-    // - John Smith / Jon Smith (same phone, city)
-    // - Jane Doe / Janet Doe (similar name, city)
-    // - Robert Johnson / Bob Johnson (same phone, city)
-    // - Sarah Williams / Sara Williams (similar name, similar phone)
+    // Verify stats updated
+    const afterMergeStats = await matchView.getStats()
+    expect(afterMergeStats.merged).toBe(1)
+
+    // Verify Apply Merges bar is visible
+    const hasApplyBar = await matchView.hasApplyMergesBar()
+    expect(hasApplyBar).toBe(true)
   })
 
-  test('should support blocking strategy for performance', async () => {
-    // TDD: Expected to fail until blocking strategy feature is implemented
-    test.fail()
+  test('should apply merges and refresh DataGrid row count', async () => {
+    // Get initial row count
+    const tablesBefore = await inspector.getTables()
+    const dedupeTableBefore = tablesBefore.find((t) => t.name === 'fr_c1_dedupe')
+    const initialRowCount = dedupeTableBefore?.rowCount || 0
+    expect(initialRowCount).toBe(8)
 
-    // Fail-fast guard: Assert blocking strategy UI exists
-    await expect(page.getByTestId('blocking-strategy-select')).toBeVisible({ timeout: 1000 })
+    // Apply merges (will close the match view)
+    await matchView.applyMerges()
 
-    // Test blocking by city or phone prefix
+    // Verify table row count decreased
+    const tablesAfter = await inspector.getTables()
+    const dedupeTableAfter = tablesAfter.find((t) => t.name === 'fr_c1_dedupe')
+    const newRowCount = dedupeTableAfter?.rowCount || 0
+
+    // Should have removed 1 row (the merged duplicate)
+    expect(newRowCount).toBeLessThan(initialRowCount)
+    expect(newRowCount).toBe(7) // 8 - 1 merged pair = 7
+
+    // Verify DataGrid refresh - this tests the bug fix (rowCount dependency)
+    await page.waitForTimeout(500) // Allow grid to refresh
+    const rowCountText = await laundromat.getRowCount()
+    expect(rowCountText).toContain('7')
+  })
+
+  test('should log merge operations to audit', async () => {
+    // Open audit sidebar to verify the merge was logged
+    await laundromat.openAuditSidebar()
+    await page.waitForTimeout(300)
+
+    // Verify audit entry exists for the merge operation
+    await expect(page.locator('text=/Apply Merges|Find Duplicates/').first()).toBeVisible({ timeout: 5000 })
+
+    // Close audit sidebar
+    await laundromat.closeAuditSidebar()
   })
 })
 

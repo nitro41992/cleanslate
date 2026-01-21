@@ -7,6 +7,7 @@ import {
 } from '@/components/ui/tooltip'
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
+import { useMatcherStore } from '@/stores/matcherStore'
 import { cn } from '@/lib/utils'
 
 const actions: { id: PanelType; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
@@ -56,11 +57,18 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   const setActivePanel = usePreviewStore((s) => s.setActivePanel)
   const openDiffView = useDiffStore((s) => s.openView)
   const isDiffViewOpen = useDiffStore((s) => s.isViewOpen)
+  const openMatchView = useMatcherStore((s) => s.openView)
+  const isMatchViewOpen = useMatcherStore((s) => s.isViewOpen)
 
   const handleClick = (panelId: PanelType) => {
-    // Diff opens as a full-screen overlay instead of a side panel
+    // Diff and Match open as full-screen overlays instead of side panels
     if (panelId === 'diff') {
       openDiffView()
+      return
+    }
+
+    if (panelId === 'match') {
+      openMatchView()
       return
     }
 
@@ -75,8 +83,15 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   return (
     <div className="flex items-center gap-1" role="toolbar" aria-label="Data operations">
       {actions.map((action) => {
-        // Diff uses overlay state, others use panel state
-        const isActive = action.id === 'diff' ? isDiffViewOpen : activePanel === action.id
+        // Diff and Match use overlay state, others use panel state
+        let isActive = false
+        if (action.id === 'diff') {
+          isActive = isDiffViewOpen
+        } else if (action.id === 'match') {
+          isActive = isMatchViewOpen
+        } else {
+          isActive = activePanel === action.id
+        }
         const Icon = action.icon
 
         return (

@@ -5,6 +5,8 @@ import { StatusBar } from './StatusBar'
 import { AuditSidebar } from './AuditSidebar'
 import { FeaturePanel } from './FeaturePanel'
 import { usePreviewStore } from '@/stores/previewStore'
+import { useDiffStore } from '@/stores/diffStore'
+import { useMatcherStore } from '@/stores/matcherStore'
 
 interface AppLayoutProps {
   children: ReactNode
@@ -22,6 +24,8 @@ export function AppLayout({
   isPersisting,
 }: AppLayoutProps) {
   const setActivePanel = usePreviewStore((s) => s.setActivePanel)
+  const openDiffView = useDiffStore((s) => s.openView)
+  const openMatchView = useMatcherStore((s) => s.openView)
 
   // Keyboard shortcuts for panels
   useEffect(() => {
@@ -34,14 +38,14 @@ export function AppLayout({
         return
       }
 
-      // Number keys 1-5 for panels
+      // Number keys 1-5 for panels (2 and 5 open overlays)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         switch (e.key) {
           case '1':
             setActivePanel('clean')
             break
           case '2':
-            setActivePanel('match')
+            openMatchView()
             break
           case '3':
             setActivePanel('combine')
@@ -50,7 +54,7 @@ export function AppLayout({
             setActivePanel('scrub')
             break
           case '5':
-            setActivePanel('diff')
+            openDiffView()
             break
           case 'Escape':
             setActivePanel(null)
@@ -61,7 +65,7 @@ export function AppLayout({
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setActivePanel])
+  }, [setActivePanel, openDiffView, openMatchView])
 
   return (
     <TooltipProvider delayDuration={200}>
