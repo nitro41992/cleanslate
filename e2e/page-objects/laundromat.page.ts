@@ -10,6 +10,12 @@ export class LaundromatPage {
   readonly gridContainer: Locator
   readonly dataPreviewTab: Locator
   readonly auditLogTab: Locator
+  // Toolbar buttons for panels
+  readonly cleanButton: Locator
+  readonly matchButton: Locator
+  readonly combineButton: Locator
+  readonly scrubButton: Locator
+  readonly diffButton: Locator
 
   constructor(page: Page) {
     this.page = page
@@ -21,6 +27,12 @@ export class LaundromatPage {
     this.gridContainer = page.getByTestId('data-grid')
     this.dataPreviewTab = page.getByRole('tab', { name: 'Data Preview' })
     this.auditLogTab = page.getByRole('tab', { name: 'Audit Log' })
+    // Toolbar panel buttons
+    this.cleanButton = page.getByTestId('toolbar-clean')
+    this.matchButton = page.getByTestId('toolbar-match')
+    this.combineButton = page.getByTestId('toolbar-combine')
+    this.scrubButton = page.getByTestId('toolbar-scrub')
+    this.diffButton = page.getByTestId('toolbar-diff')
   }
 
   async goto(): Promise<void> {
@@ -143,5 +155,52 @@ export class LaundromatPage {
     // Commit with Enter
     await this.page.keyboard.press('Enter')
     await this.page.waitForTimeout(300)
+  }
+
+  // Panel navigation methods for new single-page app architecture
+
+  /**
+   * Open the Clean panel for transformations
+   */
+  async openCleanPanel(): Promise<void> {
+    await this.cleanButton.click()
+  }
+
+  /**
+   * Open the Match panel for duplicate detection
+   */
+  async openMatchPanel(): Promise<void> {
+    await this.matchButton.click()
+  }
+
+  /**
+   * Open the Combine panel for stack/join operations
+   */
+  async openCombinePanel(): Promise<void> {
+    await this.combineButton.click()
+  }
+
+  /**
+   * Open the Scrub panel for obfuscation
+   */
+  async openScrubPanel(): Promise<void> {
+    await this.scrubButton.click()
+  }
+
+  /**
+   * Open the Diff view (full-screen overlay)
+   */
+  async openDiffView(): Promise<void> {
+    await this.diffButton.click()
+    // Wait for the DiffView overlay to appear
+    await this.page.getByTestId('diff-view').waitFor({ state: 'visible', timeout: 5000 })
+  }
+
+  /**
+   * Close any open panel by pressing Escape
+   */
+  async closePanel(): Promise<void> {
+    await this.page.keyboard.press('Escape')
+    await this.page.waitForTimeout(200)
   }
 }

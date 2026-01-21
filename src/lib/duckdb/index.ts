@@ -390,4 +390,75 @@ export async function duplicateTable(
   return { columns, rowCount }
 }
 
+/**
+ * Get the original snapshot table name for a table
+ */
+export function getOriginalSnapshotName(tableName: string): string {
+  return `_original_${tableName}`
+}
+
+/**
+ * Check if an original snapshot exists for a table
+ */
+export async function hasOriginalSnapshot(tableName: string): Promise<boolean> {
+  const snapshotName = getOriginalSnapshotName(tableName)
+  return tableExists(snapshotName)
+}
+
+/**
+ * Create an original snapshot of a table (if it doesn't exist)
+ * Called before the first transformation is applied
+ */
+export async function createOriginalSnapshot(tableName: string): Promise<boolean> {
+  const snapshotName = getOriginalSnapshotName(tableName)
+
+  // Check if snapshot already exists
+  const exists = await tableExists(snapshotName)
+  if (exists) {
+    return false // Snapshot already exists
+  }
+
+  const connection = await getConnection()
+
+  // Create a copy of the original table
+  await connection.query(`
+    CREATE TABLE "${snapshotName}" AS
+    SELECT * FROM "${tableName}"
+  `)
+
+  return true // New snapshot created
+}
+
+/**
+ * Delete the original snapshot for a table
+ * Called when the table is deleted or when user resets to original
+ */
+export async function deleteOriginalSnapshot(tableName: string): Promise<void> {
+  const snapshotName = getOriginalSnapshotName(tableName)
+  await dropTable(snapshotName)
+}
+
+/**
+ * Restore a table from its original snapshot
+ */
+export async function restoreFromOriginalSnapshot(tableName: string): Promise<boolean> {
+  const snapshotName = getOriginalSnapshotName(tableName)
+
+  const exists = await tableExists(snapshotName)
+  if (!exists) {
+    return false // No snapshot to restore from
+  }
+
+  const connection = await getConnection()
+
+  // Replace current table with original
+  await connection.query(`DROP TABLE IF EXISTS "${tableName}"`)
+  await connection.query(`
+    CREATE TABLE "${tableName}" AS
+    SELECT * FROM "${snapshotName}"
+  `)
+
+  return true
+}
+
 export { db, conn }

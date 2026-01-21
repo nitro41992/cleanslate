@@ -23,14 +23,17 @@ import { Label } from '@/components/ui/label'
 import { CleanPanel } from '@/components/panels/CleanPanel'
 import { CombinePanel } from '@/components/panels/CombinePanel'
 import { ScrubPanel } from '@/components/panels/ScrubPanel'
-import { DiffPanel } from '@/components/panels/DiffPanel'
 import { MatchPanel } from '@/components/panels/MatchPanel'
+
+// Diff View (full-screen overlay)
+import { DiffView } from '@/components/diff'
 
 // Stores and hooks
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
+import { useDiffStore } from '@/stores/diffStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
 import { toast } from 'sonner'
@@ -67,6 +70,10 @@ function App() {
   const undo = useEditStore((s) => s.undo)
   const redo = useEditStore((s) => s.redo)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
+
+  // Diff view state
+  const isDiffViewOpen = useDiffStore((s) => s.isViewOpen)
+  const closeDiffView = useDiffStore((s) => s.closeView)
 
   // Sync table selection to preview store
   useEffect(() => {
@@ -254,6 +261,7 @@ function App() {
   }
 
   // Get panel content based on active panel
+  // Note: Diff is handled as a full-screen overlay, not a side panel
   const getPanelContent = () => {
     switch (activePanel) {
       case 'clean':
@@ -262,10 +270,11 @@ function App() {
         return <CombinePanel />
       case 'scrub':
         return <ScrubPanel />
-      case 'diff':
-        return <DiffPanel />
       case 'match':
         return <MatchPanel />
+      case 'diff':
+        // Diff is handled as full-screen overlay via DiffView
+        return null
       default:
         return null
     }
@@ -399,6 +408,9 @@ function App() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Diff View Full-Screen Overlay */}
+      <DiffView open={isDiffViewOpen} onClose={closeDiffView} />
 
       {/* Sonner Toaster */}
       <Toaster />

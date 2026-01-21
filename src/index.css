@@ -54,10 +54,24 @@
     --input: 25 5% 18%;
     --ring: 211 100% 50%;
 
-    /* Diff colors - slightly muted for dark mode */
-    --diff-added: 142 60% 30%;
-    --diff-removed: 0 60% 40%;
-    --diff-modified: 45 80% 40%;
+    /* Diff colors - vibrant editorial palette */
+    --diff-added: 152 60% 35%;
+    --diff-added-bg: 152 60% 12%;
+    --diff-added-text: 152 80% 60%;
+    --diff-added-border: 152 70% 30%;
+
+    --diff-removed: 350 60% 45%;
+    --diff-removed-bg: 350 60% 14%;
+    --diff-removed-text: 350 80% 65%;
+    --diff-removed-border: 350 70% 35%;
+
+    --diff-modified: 40 70% 45%;
+    --diff-modified-bg: 40 60% 12%;
+    --diff-modified-text: 40 90% 60%;
+    --diff-modified-border: 40 70% 30%;
+
+    --diff-unchanged-bg: 25 5% 15%;
+    --diff-unchanged-text: 0 0% 50%;
   }
 }
 
@@ -149,20 +163,53 @@
 
   /* Data grid row colors */
   .row-added {
-    background-color: hsl(var(--diff-added) / 0.15) !important;
+    background-color: hsl(var(--diff-added-bg)) !important;
+    border-left: 3px solid hsl(var(--diff-added-border));
   }
 
   .row-removed {
-    background-color: hsl(var(--diff-removed) / 0.15) !important;
+    background-color: hsl(var(--diff-removed-bg)) !important;
+    border-left: 3px solid hsl(var(--diff-removed-border));
   }
 
   .row-modified {
-    background-color: hsl(var(--diff-modified) / 0.1) !important;
+    background-color: hsl(var(--diff-modified-bg)) !important;
+    border-left: 3px solid hsl(var(--diff-modified-border));
   }
 
   .cell-modified {
-    background-color: hsl(var(--diff-modified) / 0.3) !important;
+    background-color: hsl(var(--diff-modified) / 0.25) !important;
     font-weight: 600;
+  }
+
+  /* Diff summary pill animations */
+  @keyframes countUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes pillGlow {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 20px 4px currentColor; }
+  }
+
+  .diff-pill {
+    animation: countUp 0.4s ease-out backwards;
+  }
+
+  .diff-pill-added { animation-delay: 0ms; }
+  .diff-pill-removed { animation-delay: 50ms; }
+  .diff-pill-modified { animation-delay: 100ms; }
+  .diff-pill-unchanged { animation-delay: 150ms; }
+
+  /* Diff result row stagger animation */
+  @keyframes rowFadeIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .diff-row-animate {
+    animation: rowFadeIn 0.3s ease-out backwards;
   }
 
   /* File dropzone */
