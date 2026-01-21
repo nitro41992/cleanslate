@@ -7,11 +7,13 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Download, Clock, Table2 } from 'lucide-react'
+import { Download, Clock, Table2, GitMerge } from 'lucide-react'
 import { AuditDetailTable } from './AuditDetailTable'
+import { MergeDetailTable } from './MergeDetailTable'
 import type { AuditLogEntry } from '@/types'
 import { formatDate } from '@/lib/utils'
 import { getAuditRowDetails } from '@/lib/transformations'
+import { getMergeAuditDetails } from '@/lib/fuzzy-matcher'
 
 interface AuditDetailModalProps {
   entry: AuditLogEntry | null
@@ -24,31 +26,59 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
     return null
   }
 
+  const isMergeAction = entry.action === 'Apply Merges'
+
   const handleExportCSV = async () => {
     try {
-      // Fetch all rows (up to 10k)
-      const { rows, total } = await getAuditRowDetails(entry.auditEntryId!, 10000, 0)
+      if (isMergeAction) {
+        // Export merge details
+        const details = await getMergeAuditDetails(entry.auditEntryId!)
 
-      // Build CSV content
-      const csvLines = [
-        'Row Index,Column,Previous Value,New Value',
-        ...rows.map((row) => {
-          const prev = row.previousValue?.replace(/"/g, '""') ?? ''
-          const newVal = row.newValue?.replace(/"/g, '""') ?? ''
-          return `${row.rowIndex},"${row.columnName}","${prev}","${newVal}"`
-        }),
-      ]
+        // Build CSV content for merge pairs
+        const csvLines = [
+          'Pair Index,Similarity,Match Column,Kept Data,Deleted Data',
+          ...details.map((detail) => {
+            const keptData = JSON.stringify(detail.keptRowData).replace(/"/g, '""')
+            const deletedData = JSON.stringify(detail.deletedRowData).replace(/"/g, '""')
+            return `${detail.pairIndex},${detail.similarity},"${detail.matchColumn}","${keptData}","${deletedData}"`
+          }),
+        ]
 
-      const csvContent = csvLines.join('\n')
-      const blob = new Blob([csvContent], { type: 'text/csv' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `audit_details_${entry.auditEntryId}_${total}rows.csv`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+        const csvContent = csvLines.join('\n')
+        const blob = new Blob([csvContent], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `merge_details_${entry.auditEntryId}_${details.length}pairs.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else {
+        // Export regular audit details
+        const { rows, total } = await getAuditRowDetails(entry.auditEntryId!, 10000, 0)
+
+        // Build CSV content
+        const csvLines = [
+          'Row Index,Column,Previous Value,New Value',
+          ...rows.map((row) => {
+            const prev = row.previousValue?.replace(/"/g, '""') ?? ''
+            const newVal = row.newValue?.replace(/"/g, '""') ?? ''
+            return `${row.rowIndex},"${row.columnName}","${prev}","${newVal}"`
+          }),
+        ]
+
+        const csvContent = csvLines.join('\n')
+        const blob = new Blob([csvContent], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `audit_details_${entry.auditEntryId}_${total}rows.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
     } catch (err) {
       console.error('Failed to export CSV:', err)
     }
@@ -61,11 +91,17 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
           <div className="flex items-center justify-between">
             <div>
               <DialogTitle className="flex items-center gap-2">
-                <Table2 className="h-5 w-5" />
-                Row-Level Changes
+                {isMergeAction ? (
+                  <GitMerge className="h-5 w-5" />
+                ) : (
+                  <Table2 className="h-5 w-5" />
+                )}
+                {isMergeAction ? 'Merge Details' : 'Row-Level Changes'}
               </DialogTitle>
               <DialogDescription className="mt-1">
-                Detailed view of changes made by this transformation
+                {isMergeAction
+                  ? 'Detailed view of merged duplicate pairs'
+                  : 'Detailed view of changes made by this transformation'}
               </DialogDescription>
             </div>
             <Button variant="outline" size="sm" onClick={handleExportCSV} data-testid="audit-detail-export-csv-btn">
@@ -86,7 +122,9 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
             <Badge variant="secondary">{entry.tableName}</Badge>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Rows Affected:</span>
+            <span className="text-sm text-muted-foreground">
+              {isMergeAction ? 'Pairs:' : 'Rows Affected:'}
+            </span>
             <Badge variant="outline">{entry.rowsAffected?.toLocaleString()}</Badge>
           </div>
           <div className="flex items-center gap-2 ml-auto text-muted-foreground">
@@ -95,9 +133,13 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
           </div>
         </div>
 
-        {/* Detail Table */}
+        {/* Detail Table - Conditional rendering */}
         <div className="flex-1 min-h-0 mt-2">
-          <AuditDetailTable auditEntryId={entry.auditEntryId} />
+          {isMergeAction ? (
+            <MergeDetailTable auditEntryId={entry.auditEntryId} />
+          ) : (
+            <AuditDetailTable auditEntryId={entry.auditEntryId} />
+          )}
         </div>
       </DialogContent>
     </Dialog>

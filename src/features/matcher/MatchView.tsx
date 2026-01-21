@@ -12,6 +12,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { findDuplicates, mergeDuplicates } from '@/lib/fuzzy-matcher'
+import { generateId } from '@/lib/utils'
 import { toast } from 'sonner'
 
 interface MatchViewProps {
@@ -23,6 +24,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   const tables = useTableStore((s) => s.tables)
   const updateTable = useTableStore((s) => s.updateTable)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
+  const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
 
   const {
     tableId,
@@ -52,6 +54,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     markPairAsKeptSeparate,
     markSelectedAsMerged,
     markSelectedAsKeptSeparate,
+    swapKeepRow,
     classifyPair,
     reset,
   } = useMatcherStore()
@@ -161,20 +164,24 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     if (!tableName || !matchColumn) return
 
     try {
-      const deletedCount = await mergeDuplicates(tableName, pairs, matchColumn)
+      // Generate audit entry ID before merge to link details
+      const auditEntryId = generateId()
+      const deletedCount = await mergeDuplicates(tableName, pairs, matchColumn, auditEntryId)
 
       if (deletedCount > 0 && tableId) {
         const newRowCount = (selectedTable?.rowCount || 0) - deletedCount
         updateTable(tableId, { rowCount: newRowCount })
 
-        // Add audit entry
-        addAuditEntry(
+        // Add audit entry with row details flag
+        addTransformationEntry({
           tableId,
           tableName,
-          'Apply Merges',
-          `Removed ${deletedCount} duplicate rows from table`,
-          'A'
-        )
+          action: 'Apply Merges',
+          details: `Removed ${deletedCount} duplicate rows from table`,
+          rowsAffected: deletedCount,
+          hasRowDetails: true,
+          auditEntryId,
+        })
       }
 
       toast.success('Merges Applied', {
@@ -189,7 +196,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
         description: error instanceof Error ? error.message : 'An error occurred',
       })
     }
-  }, [tableName, matchColumn, pairs, tableId, selectedTable, updateTable, addAuditEntry, reset, onClose])
+  }, [tableName, matchColumn, pairs, tableId, selectedTable, updateTable, addTransformationEntry, reset, onClose])
 
   const handleNewSearch = () => {
     reset()
@@ -364,6 +371,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                       onToggleExpand={() => setExpandedId(expandedId === pair.id ? null : pair.id)}
                       onMerge={() => markPairAsMerged(pair.id)}
                       onKeepSeparate={() => markPairAsKeptSeparate(pair.id)}
+                      onSwapKeepRow={() => swapKeepRow(pair.id)}
                     />
                   ))}
 

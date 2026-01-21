@@ -1,4 +1,4 @@
-import { Check, X, ChevronDown, ChevronUp } from 'lucide-react'
+import { Check, X, ChevronDown, ChevronUp, ArrowLeftRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
@@ -15,6 +15,7 @@ interface MatchRowProps {
   onToggleExpand: () => void
   onMerge: () => void
   onKeepSeparate: () => void
+  onSwapKeepRow: () => void
 }
 
 const classStyles = {
@@ -46,6 +47,7 @@ export function MatchRow({
   onToggleExpand,
   onMerge,
   onKeepSeparate,
+  onSwapKeepRow,
 }: MatchRowProps) {
   const matchFieldSimilarity = pair.fieldSimilarities.find(
     (f) => f.column === matchColumn
@@ -145,46 +147,107 @@ export function MatchRow({
       {isExpanded && (
         <div className="px-4 pb-4 border-t border-border/50">
           <div className="pt-3">
-            {/* Field Headers */}
-            <div className="grid grid-cols-[1fr,auto,1fr] gap-2 text-xs font-medium text-muted-foreground mb-2">
-              <div className="text-right">Record A</div>
-              <div className="text-center">Match</div>
-              <div>Record B</div>
+            {/* Side-by-Side Comparison with Swap Button */}
+            <div className="grid grid-cols-[1fr,auto,1fr] gap-4">
+              {/* Left Column - KEEPING */}
+              <div
+                className={cn(
+                  'rounded-lg p-3',
+                  pair.keepRow === 'A'
+                    ? 'border-l-4 border-green-500 bg-green-500/5'
+                    : 'border-l-4 border-red-500 bg-red-500/5'
+                )}
+              >
+                <div className={cn(
+                  'text-xs font-semibold mb-2 flex items-center gap-1',
+                  pair.keepRow === 'A' ? 'text-green-400' : 'text-red-400'
+                )}>
+                  {pair.keepRow === 'A' ? (
+                    <><Check className="w-3 h-3" /> KEEPING</>
+                  ) : (
+                    <><X className="w-3 h-3" /> DELETING</>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  {pair.fieldSimilarities.map((field) => (
+                    <div
+                      key={field.column}
+                      className={cn(
+                        'text-xs',
+                        pair.keepRow === 'B' && 'text-muted-foreground'
+                      )}
+                    >
+                      <span className="text-muted-foreground">{field.column}:</span>{' '}
+                      <span className={cn(
+                        field.column === matchColumn && 'font-medium'
+                      )}>
+                        {formatValue(field.valueA)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Swap Button */}
+              <div className="flex items-center justify-center">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-10 w-10 rounded-full hover:bg-muted"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSwapKeepRow()
+                  }}
+                  title="Swap which row to keep"
+                >
+                  <ArrowLeftRight className="w-5 h-5 text-muted-foreground" />
+                </Button>
+              </div>
+
+              {/* Right Column - DELETING */}
+              <div
+                className={cn(
+                  'rounded-lg p-3',
+                  pair.keepRow === 'B'
+                    ? 'border-l-4 border-green-500 bg-green-500/5'
+                    : 'border-l-4 border-red-500 bg-red-500/5'
+                )}
+              >
+                <div className={cn(
+                  'text-xs font-semibold mb-2 flex items-center gap-1',
+                  pair.keepRow === 'B' ? 'text-green-400' : 'text-red-400'
+                )}>
+                  {pair.keepRow === 'B' ? (
+                    <><Check className="w-3 h-3" /> KEEPING</>
+                  ) : (
+                    <><X className="w-3 h-3" /> DELETING</>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  {pair.fieldSimilarities.map((field) => (
+                    <div
+                      key={field.column}
+                      className={cn(
+                        'text-xs',
+                        pair.keepRow === 'A' && 'text-muted-foreground'
+                      )}
+                    >
+                      <span className="text-muted-foreground">{field.column}:</span>{' '}
+                      <span className={cn(
+                        field.column === matchColumn && 'font-medium'
+                      )}>
+                        {formatValue(field.valueB)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            {/* Field Comparison */}
-            <div className="space-y-2">
-              {pair.fieldSimilarities.map((field) => {
-                const statusIcon =
-                  field.status === 'exact' ? '=' :
-                  field.status === 'similar' ? '\u2248' : '\u2260'
-
-                const statusColor =
-                  field.status === 'exact' ? 'text-green-400 bg-green-500/10' :
-                  field.status === 'similar' ? 'text-yellow-400 bg-yellow-500/10' : 'text-red-400 bg-red-500/10'
-
-                const isMatchColumn = field.column === matchColumn
-
-                return (
-                  <div
-                    key={field.column}
-                    className={cn(
-                      'grid grid-cols-[1fr,auto,1fr] gap-2 text-xs items-center py-1.5 px-2 rounded',
-                      isMatchColumn && 'bg-muted/50 border border-border/50'
-                    )}
-                  >
-                    <div className="text-right">
-                      <span className="text-muted-foreground mr-2">{field.column}:</span>
-                      <span className="truncate">{formatValue(field.valueA)}</span>
-                    </div>
-                    <div className={cn('font-mono text-center px-2 py-0.5 rounded', statusColor)}>
-                      {statusIcon}
-                    </div>
-                    <div className="truncate">{formatValue(field.valueB)}</div>
-                  </div>
-                )
-              })}
-            </div>
+            {/* Summary */}
+            <p className="text-xs text-muted-foreground mt-3 text-center">
+              {getExplanation()}
+            </p>
           </div>
         </div>
       )}

@@ -123,6 +123,7 @@ export interface MatchPair {
   similarity: number // 0-100 percentage (higher = more similar)
   fieldSimilarities: FieldSimilarity[]
   status: 'pending' | 'merged' | 'kept_separate'
+  keepRow: 'A' | 'B' // Which row to keep when merging (default 'A')
 }
 
 export interface ObfuscationRule {

@@ -72,6 +72,7 @@ interface MatcherActions {
   markPairAsKeptSeparate: (pairId: string) => void
   markSelectedAsMerged: () => void
   markSelectedAsKeptSeparate: () => void
+  swapKeepRow: (pairId: string) => void
   nextPair: () => void
   previousPair: () => void
 
@@ -297,6 +298,17 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     set({
       pairs: updatedPairs,
       selectedIds: new Set(),
+      stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
+    })
+  },
+
+  swapKeepRow: (pairId) => {
+    const { pairs, definiteThreshold, maybeThreshold } = get()
+    const updatedPairs = pairs.map((p) =>
+      p.id === pairId ? { ...p, keepRow: p.keepRow === 'A' ? 'B' as const : 'A' as const } : p
+    )
+    set({
+      pairs: updatedPairs,
       stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
     })
   },

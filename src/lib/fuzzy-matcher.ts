@@ -468,6 +468,7 @@ export async function findDuplicates(
       similarity,
       fieldSimilarities,
       status: 'pending',
+      keepRow: 'A', // Default to keeping first row
     })
   }
 
@@ -565,6 +566,7 @@ async function findDuplicatesWithJSBlocking(
         similarity,
         fieldSimilarities,
         status: 'pending',
+        keepRow: 'A', // Default to keeping first row
       })
     }
   })
@@ -578,22 +580,68 @@ async function findDuplicatesWithJSBlocking(
 export async function mergeDuplicates(
   tableName: string,
   pairs: MatchPair[],
-  keyColumn: string
+  keyColumn: string,
+  auditEntryId?: string
 ): Promise<number> {
   const mergedPairs = pairs.filter((p) => p.status === 'merged')
 
   if (mergedPairs.length === 0) return 0
 
-  // For each merged pair, delete the second row (rowB)
-  // This is a simplified merge - in production you might want to merge values
+  // Capture merge details before deletion (if audit tracking requested)
+  if (auditEntryId) {
+    await ensureMergeAuditTable()
+
+    // Custom JSON serializer to handle BigInt values from DuckDB
+    const jsonReplacer = (_key: string, value: unknown) => {
+      if (typeof value === 'bigint') {
+        return Number(value)
+      }
+      return value
+    }
+
+    for (let i = 0; i < mergedPairs.length; i++) {
+      const pair = mergedPairs[i]
+      const keptRow = pair.keepRow === 'A' ? pair.rowA : pair.rowB
+      const deletedRow = pair.keepRow === 'A' ? pair.rowB : pair.rowA
+
+      // Escape for SQL - replace single quotes and backslashes
+      const escapeForSql = (str: string) => str.replace(/\\/g, '\\\\').replace(/'/g, "''")
+      const keptRowJson = escapeForSql(JSON.stringify(keptRow, jsonReplacer))
+      const deletedRowJson = escapeForSql(JSON.stringify(deletedRow, jsonReplacer))
+      const matchColEscaped = escapeForSql(keyColumn)
+
+      try {
+        await query(`
+          INSERT INTO _merge_audit_details (id, audit_entry_id, pair_index, similarity, match_column, kept_row_data, deleted_row_data, created_at)
+          VALUES (
+            '${generateId()}',
+            '${auditEntryId}',
+            ${i},
+            ${Math.round(pair.similarity)},
+            '${matchColEscaped}',
+            '${keptRowJson}',
+            '${deletedRowJson}',
+            CURRENT_TIMESTAMP
+          )
+        `)
+      } catch (e) {
+        console.error('Could not record merge audit detail:', e)
+      }
+    }
+  }
+
+  // For each merged pair, delete the row that should NOT be kept
+  // Uses keepRow to determine which row to delete
   let deletedCount = 0
 
   for (const pair of mergedPairs) {
-    const keyValueB = pair.rowB[keyColumn]
-    if (keyValueB !== null && keyValueB !== undefined) {
+    // Delete the row that is NOT being kept
+    const rowToDelete = pair.keepRow === 'A' ? pair.rowB : pair.rowA
+    const keyValue = rowToDelete[keyColumn]
+    if (keyValue !== null && keyValue !== undefined) {
       try {
         await query(
-          `DELETE FROM "${tableName}" WHERE "${keyColumn}" = '${String(keyValueB).replace(/'/g, "''")}'`
+          `DELETE FROM "${tableName}" WHERE "${keyColumn}" = '${String(keyValue).replace(/'/g, "''")}'`
         )
         deletedCount++
       } catch (e) {
@@ -603,4 +651,84 @@ export async function mergeDuplicates(
   }
 
   return deletedCount
+}
+
+/**
+ * Ensure the merge audit details table exists
+ */
+async function ensureMergeAuditTable(): Promise<void> {
+  await query(`
+    CREATE TABLE IF NOT EXISTS _merge_audit_details (
+      id VARCHAR PRIMARY KEY,
+      audit_entry_id VARCHAR NOT NULL,
+      pair_index INTEGER NOT NULL,
+      similarity INTEGER NOT NULL,
+      match_column VARCHAR NOT NULL,
+      kept_row_data VARCHAR NOT NULL,
+      deleted_row_data VARCHAR NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `)
+}
+
+/**
+ * Get merge audit details for a specific audit entry
+ */
+export async function getMergeAuditDetails(
+  auditEntryId: string
+): Promise<{
+  id: string
+  pairIndex: number
+  similarity: number
+  matchColumn: string
+  keptRowData: Record<string, unknown>
+  deletedRowData: Record<string, unknown>
+}[]> {
+  try {
+    // Ensure table exists before querying
+    await ensureMergeAuditTable()
+
+    const results = await query<{
+      id: string
+      pair_index: number
+      similarity: number
+      match_column: string
+      kept_row_data: string
+      deleted_row_data: string
+    }>(`
+      SELECT id, pair_index, similarity, match_column, kept_row_data, deleted_row_data
+      FROM _merge_audit_details
+      WHERE audit_entry_id = '${auditEntryId.replace(/'/g, "''")}'
+      ORDER BY pair_index
+    `)
+
+    return results.map((row) => {
+      let keptRowData: Record<string, unknown> = {}
+      let deletedRowData: Record<string, unknown> = {}
+
+      try {
+        keptRowData = JSON.parse(row.kept_row_data)
+      } catch {
+        console.error('Failed to parse kept_row_data:', row.kept_row_data)
+      }
+
+      try {
+        deletedRowData = JSON.parse(row.deleted_row_data)
+      } catch {
+        console.error('Failed to parse deleted_row_data:', row.deleted_row_data)
+      }
+
+      return {
+        id: row.id,
+        pairIndex: row.pair_index,
+        similarity: row.similarity,
+        matchColumn: row.match_column,
+        keptRowData,
+        deletedRowData,
+      }
+    })
+  } catch (e) {
+    console.error('Failed to get merge audit details:', e)
+    return []
+  }
 }
