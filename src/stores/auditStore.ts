@@ -80,8 +80,9 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
   },
 
   addManualEditEntry: (params) => {
+    const entryId = generateId()
     const entry: AuditLogEntry = {
-      id: generateId(),
+      id: entryId,
       timestamp: new Date(),
       tableId: params.tableId,
       tableName: params.tableName,
@@ -93,6 +94,8 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       rowIndex: params.rowIndex,
       columnName: params.columnName,
       rowsAffected: 1,
+      hasRowDetails: true,
+      auditEntryId: entryId,
     }
     set((state) => ({
       entries: [entry, ...state.entries],

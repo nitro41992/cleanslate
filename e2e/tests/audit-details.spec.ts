@@ -297,8 +297,7 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     expect(allUppercase).toBe(true)
   })
 
-  test('should not show View details link for entries without row details', async () => {
-    // Manual edits (Type B) don't have row details in _audit_details table
+  test('should show View details link for manual edit entries and open modal', async () => {
     await loadWhitespaceData()
 
     // Perform a manual cell edit on row 0, column 0 (id column)
@@ -321,11 +320,13 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
       (e) => e.action === 'Manual Edit' || e.entryType === 'B'
     )
 
-    // Manual edit should not have hasRowDetails
+    // Manual edit should have hasRowDetails and auditEntryId set
     expect(manualEditEntry).toBeDefined()
-    expect(manualEditEntry?.hasRowDetails).toBeFalsy()
+    expect(manualEditEntry?.hasRowDetails).toBe(true)
+    expect(manualEditEntry?.auditEntryId).toBeDefined()
+    expect(typeof manualEditEntry?.auditEntryId).toBe('string')
 
-    // Find the Manual Edit entry in the UI (uses p-2 class in new sidebar)
+    // Find the Manual Edit entry in the UI
     const manualEditElement = page
       .locator('[data-testid="audit-sidebar"]')
       .locator('button')
@@ -334,7 +335,90 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
 
     await expect(manualEditElement).toBeVisible({ timeout: 10000 })
 
-    // This element should NOT have the "View details" text
-    await expect(manualEditElement.locator('text=View details')).not.toBeVisible()
+    // This element SHOULD have the "View details" text since it now has drill-down
+    await expect(manualEditElement.locator('text=View details')).toBeVisible()
+
+    // Click to open the modal
+    await manualEditElement.click()
+
+    // Verify modal opens
+    const modal = page.getByTestId('audit-detail-modal')
+    await expect(modal).toBeVisible()
+
+    // Verify modal title shows "Manual Edit Details"
+    await expect(modal.locator('text=Manual Edit Details')).toBeVisible()
+
+    // Verify ManualEditDetailView is displayed
+    await expect(page.getByTestId('manual-edit-detail-view')).toBeVisible()
+    await expect(page.getByTestId('manual-edit-detail-table')).toBeVisible()
+    await expect(page.getByTestId('manual-edit-detail-row')).toBeVisible()
+
+    // Close the modal
+    await page.keyboard.press('Escape')
+    await expect(modal).not.toBeVisible()
+  })
+
+  test('should export manual edit details as CSV', async () => {
+    // Perform another manual edit to have fresh data
+    await loadWhitespaceData()
+
+    await laundromat.switchToDataPreviewTab()
+    await laundromat.editCell(1, 1, 'Modified Value')
+
+    // Wait for edit to be processed
+    await page.waitForTimeout(500)
+
+    // Switch to audit log
+    await laundromat.switchToAuditLogTab()
+    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    await page.waitForTimeout(300)
+
+    // Find and click the Manual Edit entry
+    const manualEditElement = page
+      .locator('[data-testid="audit-sidebar"]')
+      .locator('button')
+      .filter({ hasText: 'Manual Edit' })
+      .first()
+
+    await expect(manualEditElement).toBeVisible({ timeout: 10000 })
+    await manualEditElement.click()
+
+    // Verify modal opens
+    const modal = page.getByTestId('audit-detail-modal')
+    await expect(modal).toBeVisible()
+
+    // Start waiting for download before clicking
+    const downloadPromise = page.waitForEvent('download')
+
+    // Click export CSV button in modal
+    await page.getByTestId('audit-detail-export-csv-btn').click()
+
+    // Wait for download
+    const download = await downloadPromise
+
+    // Verify filename pattern: manual_edit_*_1row.csv
+    const filename = download.suggestedFilename()
+    expect(filename).toMatch(/^manual_edit_.*_1row\.csv$/)
+
+    // Get file content
+    const stream = await download.createReadStream()
+    const chunks: Buffer[] = []
+    if (stream) {
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk))
+      }
+    }
+    const content = Buffer.concat(chunks).toString('utf-8')
+
+    // Verify CSV header
+    expect(content).toContain('Row Index,Column,Previous Value,New Value')
+
+    // Verify single data row exists (header + 1 data row = 2 lines)
+    const lines = content.trim().split('\n')
+    expect(lines.length).toBe(2)
+
+    // Close the modal
+    await page.keyboard.press('Escape')
+    await expect(modal).not.toBeVisible()
   })
 })

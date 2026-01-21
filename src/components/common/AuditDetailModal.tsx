@@ -7,9 +7,10 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Download, Clock, Table2, GitMerge } from 'lucide-react'
+import { Download, Clock, Table2, GitMerge, Edit3 } from 'lucide-react'
 import { AuditDetailTable } from './AuditDetailTable'
 import { MergeDetailTable } from './MergeDetailTable'
+import { ManualEditDetailView } from './ManualEditDetailView'
 import type { AuditLogEntry } from '@/types'
 import { formatDate } from '@/lib/utils'
 import { getAuditRowDetails } from '@/lib/transformations'
@@ -27,6 +28,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
   }
 
   const isMergeAction = entry.action === 'Apply Merges'
+  const isManualEdit = entry.entryType === 'B'
 
   const handleExportCSV = async () => {
     try {
@@ -50,6 +52,32 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         const a = document.createElement('a')
         a.href = url
         a.download = `merge_details_${entry.auditEntryId}_${details.length}pairs.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else if (isManualEdit) {
+        // Export manual edit details (single row from entry data)
+        const formatValue = (value: unknown): string => {
+          if (value === null) return '<null>'
+          if (value === undefined) return '<undefined>'
+          if (value === '') return '<empty>'
+          return String(value)
+        }
+        const prev = formatValue(entry.previousValue).replace(/"/g, '""')
+        const newVal = formatValue(entry.newValue).replace(/"/g, '""')
+
+        const csvLines = [
+          'Row Index,Column,Previous Value,New Value',
+          `${entry.rowIndex},"${entry.columnName}","${prev}","${newVal}"`,
+        ]
+
+        const csvContent = csvLines.join('\n')
+        const blob = new Blob([csvContent], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `manual_edit_${entry.auditEntryId}_1row.csv`
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
@@ -93,15 +121,19 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
               <DialogTitle className="flex items-center gap-2">
                 {isMergeAction ? (
                   <GitMerge className="h-5 w-5" />
+                ) : isManualEdit ? (
+                  <Edit3 className="h-5 w-5" />
                 ) : (
                   <Table2 className="h-5 w-5" />
                 )}
-                {isMergeAction ? 'Merge Details' : 'Row-Level Changes'}
+                {isMergeAction ? 'Merge Details' : isManualEdit ? 'Manual Edit Details' : 'Row-Level Changes'}
               </DialogTitle>
               <DialogDescription className="mt-1">
                 {isMergeAction
                   ? 'Detailed view of merged duplicate pairs'
-                  : 'Detailed view of changes made by this transformation'}
+                  : isManualEdit
+                    ? 'Details of the manual cell edit'
+                    : 'Detailed view of changes made by this transformation'}
               </DialogDescription>
             </div>
             <Button variant="outline" size="sm" onClick={handleExportCSV} data-testid="audit-detail-export-csv-btn">
@@ -137,6 +169,8 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         <div className="flex-1 min-h-0 mt-2">
           {isMergeAction ? (
             <MergeDetailTable auditEntryId={entry.auditEntryId} />
+          ) : isManualEdit ? (
+            <ManualEditDetailView entry={entry} />
           ) : (
             <AuditDetailTable auditEntryId={entry.auditEntryId} />
           )}
