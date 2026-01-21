@@ -33,26 +33,26 @@
   }
 
   .dark {
-    /* Notion-inspired Dark Mode - Warm & Inviting */
-    --background: 220 15% 8%;
-    --foreground: 40 15% 90%;
-    --card: 220 14% 11%;
-    --card-foreground: 40 15% 90%;
-    --popover: 220 14% 10%;
-    --popover-foreground: 40 15% 90%;
-    --primary: 35 90% 55%;
-    --primary-foreground: 220 15% 8%;
-    --secondary: 220 12% 16%;
-    --secondary-foreground: 40 12% 80%;
-    --muted: 220 12% 18%;
-    --muted-foreground: 220 10% 55%;
-    --accent: 35 50% 18%;
-    --accent-foreground: 35 90% 70%;
+    /* Notion-inspired Dark Mode - Clean & Professional */
+    --background: 25 5% 10%;       /* #191919 */
+    --foreground: 0 0% 98%;
+    --card: 25 5% 12%;             /* #202020 */
+    --card-foreground: 0 0% 98%;
+    --popover: 25 5% 14%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 211 100% 50%;       /* Notion blue #2383e2 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 25 5% 20%;
+    --secondary-foreground: 0 0% 90%;
+    --muted: 25 5% 25%;
+    --muted-foreground: 0 0% 60%;
+    --accent: 25 5% 18%;
+    --accent-foreground: 211 100% 70%;
     --destructive: 0 62% 50%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 12% 20%;
-    --input: 220 12% 20%;
-    --ring: 35 90% 55%;
+    --border: 25 5% 18%;
+    --input: 25 5% 18%;
+    --ring: 211 100% 50%;
 
     /* Diff colors - slightly muted for dark mode */
     --diff-added: 142 60% 30%;
