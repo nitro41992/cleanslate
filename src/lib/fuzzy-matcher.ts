@@ -890,8 +890,9 @@ export async function mergeDuplicates(
       const keptRow = pair.keepRow === 'A' ? pair.rowA : pair.rowB
       const deletedRow = pair.keepRow === 'A' ? pair.rowB : pair.rowA
 
-      // Escape for SQL - replace single quotes and backslashes
-      const escapeForSql = (str: string) => str.replace(/\\/g, '\\\\').replace(/'/g, "''")
+      // Escape for SQL - only escape single quotes for SQL insertion
+      // Do NOT escape backslashes as this corrupts JSON strings containing escape sequences
+      const escapeForSql = (str: string) => str.replace(/'/g, "''")
       const keptRowJson = escapeForSql(JSON.stringify(keptRow, jsonReplacer))
       const deletedRowJson = escapeForSql(JSON.stringify(deletedRow, jsonReplacer))
       const matchColEscaped = escapeForSql(keyColumn)
@@ -994,14 +995,28 @@ export async function getMergeAuditDetails(
 
       try {
         keptRowData = JSON.parse(row.kept_row_data)
-      } catch {
-        console.error('Failed to parse kept_row_data:', row.kept_row_data)
+      } catch (parseError) {
+        console.error('Failed to parse kept_row_data:', row.kept_row_data, parseError)
+        // Attempt recovery: unescape SQL-doubled single quotes
+        try {
+          const recovered = row.kept_row_data.replace(/''/g, "'")
+          keptRowData = JSON.parse(recovered)
+        } catch {
+          keptRowData = { _parseError: true, _rawData: row.kept_row_data }
+        }
       }
 
       try {
         deletedRowData = JSON.parse(row.deleted_row_data)
-      } catch {
-        console.error('Failed to parse deleted_row_data:', row.deleted_row_data)
+      } catch (parseError) {
+        console.error('Failed to parse deleted_row_data:', row.deleted_row_data, parseError)
+        // Attempt recovery: unescape SQL-doubled single quotes
+        try {
+          const recovered = row.deleted_row_data.replace(/''/g, "'")
+          deletedRowData = JSON.parse(recovered)
+        } catch {
+          deletedRowData = { _parseError: true, _rawData: row.deleted_row_data }
+        }
       }
 
       return {

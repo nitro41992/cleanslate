@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -102,11 +101,40 @@ export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1 max-h-[400px]">
-        <div className="space-y-4 pr-4" data-testid="merge-detail-cards">
+    <div className="flex flex-col">
+      <div className="overflow-y-auto" style={{ height: 'calc(90vh - 250px)' }}>
+        <div className="space-y-4 pr-2" data-testid="merge-detail-cards">
           {paginatedDetails.map((detail) => {
-            const columns = Object.keys(detail.keptRowData)
+            const columns = Object.keys(detail.keptRowData || {})
+
+            // Handle parse errors or empty data
+            if (columns.length === 0 || detail.keptRowData._parseError) {
+              return (
+                <div
+                  key={detail.id}
+                  className="border border-amber-500/30 rounded-lg p-4"
+                  data-testid="merge-detail-card"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium">Pair {detail.pairIndex + 1}</span>
+                    <span className={cn(
+                      'px-2.5 py-1 rounded-full text-xs font-medium',
+                      getSimilarityClass(detail.similarity)
+                    )}>
+                      {detail.similarity}% Similar
+                    </span>
+                  </div>
+                  <div className="text-amber-400 text-sm">
+                    <p>Unable to display row data - parsing failed</p>
+                    {'_rawData' in detail.keptRowData && detail.keptRowData._rawData && (
+                      <p className="mt-1 text-xs text-muted-foreground font-mono truncate">
+                        Raw: {String(detail.keptRowData._rawData).substring(0, 100)}...
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )
+            }
 
             return (
               <div
@@ -180,7 +208,7 @@ export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
             )
           })}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* Pagination */}
       {allDetails.length > PAGE_SIZE && (

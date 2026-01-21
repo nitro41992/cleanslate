@@ -639,6 +639,176 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 })
 
+test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let matchView: MatchViewPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    matchView = new MatchViewPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should display row data in merge audit drill-down', async () => {
+    // Note: This test depends on the Fuzzy Matcher finding duplicates.
+    // If FR-C1: Fuzzy Matcher tests are failing, this test will also fail.
+    // The code fix (escapeForSql) is verified by the _merge_audit_details table structure test.
+
+    // Load dedupe data
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
+    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+
+    // Open match view and find duplicates
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_dedupe')
+    await matchView.selectColumn('first_name')
+    await matchView.findDuplicates()
+
+    // Wait for matching to complete - progress bar should disappear
+    await expect(page.locator('[data-testid="match-view"]').locator('role=progressbar')).toBeHidden({ timeout: 30000 })
+    await matchView.waitForPairs()
+
+    // Merge a pair
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300)
+
+    // Apply merges
+    await matchView.applyMerges()
+
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
+    await page.waitForTimeout(300)
+
+    // Click on the Apply Merges audit entry (it has row details)
+    await page.locator('[data-testid="audit-entry-with-details"]').first().click()
+
+    // Wait for the modal to open
+    await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Verify KEPT and DELETED sections are visible with actual data
+    await expect(page.getByText('KEPT')).toBeVisible()
+    await expect(page.getByText('DELETED')).toBeVisible()
+
+    // Verify column data is rendered (proves data parsing worked)
+    await expect(page.locator('text=/first_name:/').first()).toBeVisible({ timeout: 5000 })
+
+    // Close modal
+    await page.keyboard.press('Escape')
+    await laundromat.closeAuditSidebar()
+  })
+
+  test('should handle special characters in merge audit', async () => {
+    // Load special characters fixture
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_special_chars')
+    await laundromat.uploadFile(getFixturePath('fr_c1_special_chars.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_special_chars', 4)
+
+    // Open match view and find duplicates
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_special_chars')
+    await matchView.selectColumn('name')
+    await matchView.findDuplicates()
+
+    // Wait for matching to complete
+    await expect(page.locator('[data-testid="match-view"]').locator('role=progressbar')).toBeHidden({ timeout: 30000 })
+    await matchView.waitForPairs()
+
+    // Merge a pair (O'Brien / O'Brian should match)
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300)
+
+    // Apply merges
+    await matchView.applyMerges()
+
+    // Open audit sidebar and drill-down
+    await laundromat.openAuditSidebar()
+    await page.waitForTimeout(300)
+    await page.locator('[data-testid="audit-entry-with-details"]').first().click()
+    await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Verify data with apostrophes is displayed correctly
+    await expect(page.locator('text=/O\'Bri/').first()).toBeVisible({ timeout: 5000 })
+
+    // Close modal
+    await page.keyboard.press('Escape')
+    await laundromat.closeAuditSidebar()
+  })
+
+  test('should export merge details as CSV', async () => {
+    // Re-open audit sidebar from previous test data
+    await laundromat.openAuditSidebar()
+    await page.waitForTimeout(300)
+
+    // Click on an audit entry with details
+    await page.locator('[data-testid="audit-entry-with-details"]').first().click()
+    await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Setup download listener
+    const downloadPromise = page.waitForEvent('download')
+
+    // Click Export CSV button
+    await page.getByTestId('audit-detail-export-csv-btn').click()
+
+    // Wait for download
+    const download = await downloadPromise
+    const filename = download.suggestedFilename()
+
+    // Verify filename pattern
+    expect(filename).toMatch(/merge_details_.*\.csv/)
+
+    // Close modal
+    await page.keyboard.press('Escape')
+    await laundromat.closeAuditSidebar()
+  })
+
+  test('should store valid JSON in _merge_audit_details table', async () => {
+    // Query the merge audit details table directly
+    const auditDetails = await inspector.runQuery(`
+      SELECT kept_row_data, deleted_row_data
+      FROM _merge_audit_details
+      LIMIT 1
+    `)
+
+    // Verify we have data
+    expect(auditDetails.length).toBeGreaterThan(0)
+
+    // Verify JSON is valid by parsing it
+    const row = auditDetails[0] as { kept_row_data: string; deleted_row_data: string }
+    let keptData: Record<string, unknown> | null = null
+    let deletedData: Record<string, unknown> | null = null
+
+    try {
+      keptData = JSON.parse(row.kept_row_data)
+      deletedData = JSON.parse(row.deleted_row_data)
+    } catch (e) {
+      // If parse fails, test fails
+      expect(e).toBeNull()
+    }
+
+    // Verify the parsed data has columns
+    expect(Object.keys(keptData!).length).toBeGreaterThan(0)
+    expect(Object.keys(deletedData!).length).toBeGreaterThan(0)
+  })
+})
+
 test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   let page: Page
   let laundromat: LaundromatPage

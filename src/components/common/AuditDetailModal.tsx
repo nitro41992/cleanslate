@@ -114,7 +114,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col" data-testid="audit-detail-modal">
+      <DialogContent className="max-w-[90vw] w-[1200px] max-h-[90vh] flex flex-col" data-testid="audit-detail-modal">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -136,7 +136,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
                     : 'Detailed view of changes made by this transformation'}
               </DialogDescription>
             </div>
-            <Button variant="outline" size="sm" onClick={handleExportCSV} data-testid="audit-detail-export-csv-btn">
+            <Button variant="outline" size="sm" onClick={handleExportCSV} data-testid="audit-detail-export-csv-btn" className="mr-8">
               <Download className="h-4 w-4 mr-2" />
               Export CSV
             </Button>
@@ -166,7 +166,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         </div>
 
         {/* Detail Table - Conditional rendering */}
-        <div className="flex-1 min-h-0 mt-2">
+        <div className="flex-1 min-h-0 mt-2 overflow-hidden">
           {isMergeAction ? (
             <MergeDetailTable auditEntryId={entry.auditEntryId} />
           ) : isManualEdit ? (
