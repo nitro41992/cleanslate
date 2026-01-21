@@ -17,14 +17,17 @@ The UI redesign changed from:
 
 ## Complete Test Inventory (72 Tests)
 
-| File | Test Count | Status | Fix Required |
-|------|------------|--------|--------------|
-| feature-coverage.spec.ts | 30 | BROKEN | Route + method fixes |
-| transformations.spec.ts | 19 | PARTIAL | Add openCleanPanel() calls |
-| export.spec.ts | 6 | BROKEN | Method fixes |
-| file-upload.spec.ts | 6 | OK | None (no transformation calls) |
-| audit-details.spec.ts | 9 | BROKEN | Method fixes |
-| e2e-flow.spec.ts | 3 | NEEDS REVIEW | Verify flow |
+| File | Test Count | Initial Status | Current Status | Fix Required |
+|------|------------|----------------|----------------|--------------|
+| feature-coverage.spec.ts | 30 | BROKEN | ✅ UPDATED | Panel toggle fix |
+| transformations.spec.ts | 19 | PARTIAL | ✅ UPDATED | Panel toggle fix |
+| export.spec.ts | 6 | BROKEN | ✅ UPDATED | Panel toggle fix |
+| file-upload.spec.ts | 6 | OK | ✅ OK | None |
+| audit-details.spec.ts | 9 | BROKEN | ✅ UPDATED | Panel toggle fix |
+| e2e-flow.spec.ts | 3 | NEEDS REVIEW | ✅ UPDATED | Panel toggle fix |
+
+**Test Run Results After Initial Fixes:** 21 failed, 26 did not run, 29 passed
+**Root Cause:** Panel toggle behavior (Part 4 fix needed)
 
 ---
 
@@ -499,36 +502,122 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
 
 ---
 
-## Implementation Order
+## Part 4: CRITICAL FIX - Panel Toggle Bug
 
-1. **Fix page objects** (laundromat.page.ts route, diff-view.page.ts dual modes)
-2. **Fix transformations.spec.ts** (add openCleanPanel() - easiest, validates pattern works)
-3. **Fix export.spec.ts** (6 changes)
-4. **Fix feature-coverage.spec.ts** (largest file, ~22 method changes + ~8 route changes)
-5. **Fix audit-details.spec.ts**
-6. **Review e2e-flow.spec.ts**
-7. **Add new tests** (Persist as Table, Diff dual modes)
+### Issue Discovered During Implementation
+
+After initial implementation, tests were run and **21 failed, 26 did not run, 29 passed**. The failures followed a pattern: **second tests in serial groups fail**.
+
+**Root Cause:** Panel methods use simple `.click()` which **toggles** the panel state:
+- First test: Panel is closed → click opens it ✅
+- Second test: Panel is still open → click **closes** it ❌
+
+### Fix: Make Panel Methods Idempotent
+
+**File:** `e2e/page-objects/laundromat.page.ts`
+
+The panel methods need to close any existing panel before opening the requested one:
+
+```typescript
+// BEFORE (current implementation - BROKEN)
+async openCleanPanel(): Promise<void> {
+  await this.cleanButton.click()  // Toggles - closes if already open!
+}
+
+// AFTER (idempotent - always ends with panel open)
+async openCleanPanel(): Promise<void> {
+  // Close any existing panel first to ensure clean state
+  await this.page.keyboard.press('Escape')
+  await this.page.waitForTimeout(100)
+  // Now open the clean panel
+  await this.cleanButton.click()
+  // Wait for panel to be visible
+  await this.page.getByTestId('transformation-picker').waitFor({ state: 'visible', timeout: 5000 })
+}
+
+async openMatchPanel(): Promise<void> {
+  await this.page.keyboard.press('Escape')
+  await this.page.waitForTimeout(100)
+  await this.matchButton.click()
+  await this.page.locator('text=Fuzzy Matcher').waitFor({ state: 'visible', timeout: 5000 })
+}
+
+async openCombinePanel(): Promise<void> {
+  await this.page.keyboard.press('Escape')
+  await this.page.waitForTimeout(100)
+  await this.combineButton.click()
+  await this.page.locator('text=Stack').first().waitFor({ state: 'visible', timeout: 5000 })
+}
+
+async openScrubPanel(): Promise<void> {
+  await this.page.keyboard.press('Escape')
+  await this.page.waitForTimeout(100)
+  await this.scrubButton.click()
+  await this.page.locator('text=Smart Scrubber').waitFor({ state: 'visible', timeout: 5000 })
+}
+
+async openDiffView(): Promise<void> {
+  await this.page.keyboard.press('Escape')
+  await this.page.waitForTimeout(100)
+  await this.diffButton.click()
+  await this.page.getByTestId('diff-view').waitFor({ state: 'visible', timeout: 5000 })
+}
+```
+
+---
+
+## Implementation Order (REVISED)
+
+1. ✅ **Fix page objects** (laundromat.page.ts route, diff-view.page.ts dual modes) - DONE
+2. ✅ **Fix transformations.spec.ts** (add openCleanPanel() calls) - DONE
+3. ✅ **Fix export.spec.ts** (6 changes) - DONE
+4. ✅ **Fix feature-coverage.spec.ts** (largest file) - DONE
+5. ✅ **Fix audit-details.spec.ts** - DONE
+6. ✅ **Fix e2e-flow.spec.ts** - DONE
+7. 🔄 **FIX PANEL TOGGLE BUG** ← CURRENT PRIORITY
+8. 🔲 **Add new tests** (Persist as Table, Diff dual modes)
 
 ---
 
 ## Verification
 
+### Step 1: Verify Code Patterns (Already Passed)
 ```bash
-# Run all tests - expect some TDD tests to fail (test.fail() expected)
-npm test
-
 # Verify no broken method calls remain
 grep -r "clickAddTransformation\|clickRunRecipe" e2e/
-# Expected: 0 results
+# Expected: 0 results ✅ PASSED
 
 # Verify no old routes remain
 grep -r "goto('/laundromat')\|goto('/matcher')\|goto('/scrubber')\|goto('/diff')\|goto('/combiner')" e2e/
-# Expected: 0 results
-
-# Run specific test files to validate
-npm test -- e2e/tests/transformations.spec.ts
-npm test -- e2e/tests/export.spec.ts
-npm test -- e2e/tests/feature-coverage.spec.ts
+# Expected: 0 results ✅ PASSED
 ```
 
-**Expected Result:** All tests pass except those marked with `test.fail()` (TDD tests for unimplemented features).
+### Step 2: Verify Panel Toggle Fix
+```bash
+# Run transformations tests first (most isolated)
+npm test -- e2e/tests/transformations.spec.ts
+
+# Run export tests
+npm test -- e2e/tests/export.spec.ts
+
+# Run e2e flow tests
+npm test -- e2e/tests/e2e-flow.spec.ts
+```
+
+### Step 3: Full Test Suite
+```bash
+# Run all tests
+npm test
+
+# Expected: All tests pass except those marked with test.fail() (TDD tests)
+```
+
+### Expected Results
+- **file-upload.spec.ts**: 6/6 pass (no panel usage)
+- **transformations.spec.ts**: ~16-19 pass (depending on TDD tests)
+- **export.spec.ts**: 6/6 pass
+- **e2e-flow.spec.ts**: 3/3 pass
+- **audit-details.spec.ts**: 9/9 pass
+- **feature-coverage.spec.ts**: Varies (many tests use `test.fail()` for TDD)
+
+**Total Expected:** ~50+ tests pass, TDD-marked tests fail as expected
