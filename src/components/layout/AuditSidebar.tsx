@@ -56,7 +56,7 @@ export function AuditSidebar() {
 
   return (
     <>
-      <aside className="w-80 border-l border-border/50 bg-card/30 flex flex-col shrink-0">
+      <aside className="w-80 border-l border-border/50 bg-card/30 flex flex-col shrink-0" data-testid="audit-sidebar">
         {/* Header */}
         <div className="h-12 flex items-center justify-between px-3 border-b border-border/50 shrink-0">
           <div className="flex items-center gap-2">
@@ -77,6 +77,7 @@ export function AuditSidebar() {
                   className="h-7 w-7"
                   onClick={handleExportLog}
                   disabled={tableEntries.length === 0}
+                  data-testid="audit-export-btn"
                 >
                   <Download className="w-3.5 h-3.5" />
                 </Button>
@@ -114,6 +115,7 @@ export function AuditSidebar() {
                     'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1'
                   )}
                   onClick={() => setSelectedEntry(entry)}
+                  data-testid={entry.hasRowDetails ? 'audit-entry-with-details' : undefined}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">

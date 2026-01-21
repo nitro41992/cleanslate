@@ -53,6 +53,7 @@ test.describe.serial('Audit Row Details', () => {
       params: { Find: 'hello', 'Replace with': 'hi' },
       selectParams: { 'Case Sensitive': 'No' },
     })
+    await laundromat.closePanel()
 
     // Verify audit entry has hasRowDetails and auditEntryId set
     const auditEntries = await inspector.getAuditEntries()
@@ -99,7 +100,7 @@ test.describe.serial('Audit Row Details', () => {
     await laundromat.switchToAuditLogTab()
 
     // Wait for audit log panel to be visible
-    await page.waitForSelector('[data-testid="audit-log-panel"]')
+    await page.waitForSelector('[data-testid="audit-sidebar"]')
 
     // Click the entry with details
     const entryWithDetails = page.getByTestId('audit-entry-with-details').first()
@@ -181,13 +182,13 @@ test.describe.serial('Audit Row Details', () => {
   test('should include row details in full audit log export', async () => {
     // Ensure we're on audit log tab
     await laundromat.switchToAuditLogTab()
-    await page.waitForSelector('[data-testid="audit-log-panel"]')
+    await page.waitForSelector('[data-testid="audit-sidebar"]')
 
     // Export the full audit log as TXT
     const result = await downloadAndVerifyTXT(page, '[data-testid="audit-export-btn"]')
 
-    // Verify filename pattern
-    expect(result.filename).toMatch(/^audit_log_\d{4}-\d{2}-\d{2}\.txt$/)
+    // Verify filename pattern (new sidebar uses simpler filename)
+    expect(result.filename).toMatch(/^audit_log.*\.txt$/)
 
     // Verify the content includes row details section
     expect(result.content).toContain('Row Details')
@@ -236,6 +237,7 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await laundromat.closePanel()
 
     // Verify audit entry has row details
     const auditEntries = await inspector.getAuditEntries()
@@ -272,6 +274,7 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
 
     // Verify audit entry has row details
     const auditEntries = await inspector.getAuditEntries()
@@ -307,7 +310,7 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
 
     // Switch to audit log
     await laundromat.switchToAuditLogTab()
-    await page.waitForSelector('[data-testid="audit-log-panel"]')
+    await page.waitForSelector('[data-testid="audit-sidebar"]')
 
     // Wait for audit entries to be visible
     await page.waitForTimeout(300)
@@ -322,14 +325,14 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     expect(manualEditEntry).toBeDefined()
     expect(manualEditEntry?.hasRowDetails).toBeFalsy()
 
-    // Find the Manual Edit entry in the UI
+    // Find the Manual Edit entry in the UI (uses p-2 class in new sidebar)
     const manualEditElement = page
-      .locator('[data-testid="audit-log-panel"]')
-      .locator('[class*="p-3"]')
+      .locator('[data-testid="audit-sidebar"]')
+      .locator('button')
       .filter({ hasText: 'Manual Edit' })
       .first()
 
-    await expect(manualEditElement).toBeVisible()
+    await expect(manualEditElement).toBeVisible({ timeout: 10000 })
 
     // This element should NOT have the "View details" text
     await expect(manualEditElement.locator('text=View details')).not.toBeVisible()

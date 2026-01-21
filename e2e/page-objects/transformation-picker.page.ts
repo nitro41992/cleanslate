@@ -18,8 +18,10 @@ export class TransformationPickerPage {
    * Wait for the CleanPanel to be visible and interactive
    */
   async waitForOpen(): Promise<void> {
+    // Wait for the panel container to be visible
+    await this.page.getByTestId('panel-clean').waitFor({ state: 'visible', timeout: 10000 })
     // Wait for transformation tiles to be visible
-    await this.page.locator('button:has-text("Trim Whitespace")').waitFor({ state: 'visible', timeout: 10000 })
+    await this.page.locator('button:has-text("Trim Whitespace")').waitFor({ state: 'visible', timeout: 5000 })
   }
 
   /**

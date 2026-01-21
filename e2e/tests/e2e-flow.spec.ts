@@ -42,6 +42,7 @@ test.describe('Full E2E Flow', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
 
     // 8. Verify transformation results via store
     const data = await inspector.getTableData('whitespace_data')
@@ -88,6 +89,7 @@ test.describe('Full E2E Flow', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
 
     // Verify transformation
     const data = await inspector.getTableData('pipe_delimited')
@@ -123,6 +125,7 @@ test.describe('Full E2E Flow', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
+    await laundromat.closePanel()
 
     // Verify reduced count
     tables = await inspector.getTables()

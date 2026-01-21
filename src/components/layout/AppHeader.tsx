@@ -176,6 +176,7 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
                   size="icon"
                   onClick={toggleAuditSidebar}
                   className="h-8 w-8"
+                  data-testid="toggle-audit-sidebar"
                 >
                   <History className="w-4 h-4" />
                 </Button>

@@ -532,14 +532,22 @@ test.describe.serial('FR-B2: Visual Diff', () => {
 test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   let page: Page
   let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+    // Load a table so toolbar is enabled
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
   })
 
   test.afterAll(async () => {
@@ -549,7 +557,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   test('should load matcher panel', async () => {
     // Open match panel via toolbar (single-page app)
     await laundromat.openMatchPanel()
-    await expect(page.locator('text=Fuzzy Matcher')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Find Duplicates' })).toBeVisible({ timeout: 10000 })
   })
 
   test('should detect duplicate records with fuzzy matching', async () => {
@@ -581,14 +589,22 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   let page: Page
   let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+    // Load a table so toolbar is enabled
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
   })
 
   test.afterAll(async () => {
@@ -598,7 +614,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should load scrubber panel', async () => {
     // Open scrub panel via toolbar (single-page app)
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Smart Scrubber')).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
   })
 
   test('should hash sensitive columns', async () => {

@@ -83,6 +83,7 @@ test.describe.serial('Export', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -107,6 +108,7 @@ test.describe.serial('Export', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -126,6 +128,7 @@ test.describe.serial('Export', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
+    await laundromat.closePanel()
 
     const result = await downloadAndVerifyCSV(page)
 

@@ -27,14 +27,18 @@ npm run preview   # Preview production build locally
 - **Radix UI + Tailwind CSS** - UI components with dark mode
 - **OPFS** - Origin Private File System for local persistence
 
-### Core Modules (5 tabs)
-| Module | Route | Purpose |
-|--------|-------|---------|
-| Data Laundromat | `/laundromat` | File ingestion, transformations, manual editing, audit log |
-| Matcher | `/matcher` | Duplicate detection with blocking strategies |
-| Combiner | `/combiner` | Stack (UNION ALL) and join tables |
-| Scrubber | `/scrubber` | Data obfuscation (hash, mask, redact, faker) |
-| Diff | `/diff` | Compare tables with FULL OUTER JOIN reconciliation |
+### Core Modules (Single-Page Architecture)
+The app uses a single-page design with panel-based navigation (slide-in sheets from the right).
+
+| Module | Toolbar Button | Purpose |
+|--------|----------------|---------|
+| Clean (Data Laundromat) | `toolbar-clean` | File ingestion, transformations, manual editing |
+| Match (Fuzzy Matcher) | `toolbar-match` | Duplicate detection with blocking strategies |
+| Combine | `toolbar-combine` | Stack (UNION ALL) and join tables |
+| Scrub (Smart Scrubber) | `toolbar-scrub` | Data obfuscation (hash, mask, redact, faker) |
+| Diff | `toolbar-diff` | Compare tables (overlay, not panel) |
+
+**Sidebar:** Audit Log accessible via `toggle-audit-sidebar` button in header.
 
 ### Directory Structure
 ```
@@ -80,15 +84,28 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 ## Implemented Features
 
 ### FR-A3: Text Cleaning Transformations (Partial)
+**Implemented:**
 - ✅ Trim Whitespace
 - ✅ Uppercase
 - ✅ Lowercase
-- 🔲 Title Case (pending)
-- 🔲 Remove Accents (pending)
-- 🔲 Remove Non-Printable (pending)
-- 🔲 Finance transforms: Unformat Currency, Fix Negatives, Pad Zeros (pending)
-- 🔲 Date transforms: Standardize Format, Calculate Age (pending)
-- 🔲 Split Column, Fill Down (pending)
+- ✅ Find & Replace (case-sensitive/insensitive, exact/contains match)
+- ✅ Remove Duplicates
+- ✅ Filter Empty (remove rows with empty values)
+- ✅ Rename Column
+- ✅ Cast Type (String → Integer, Date)
+- ✅ Custom SQL transformation
+
+**Pending (TDD tests written):**
+- 🔲 Title Case
+- 🔲 Remove Accents (café → cafe)
+- 🔲 Remove Non-Printable (tabs, newlines, zero-width chars)
+- 🔲 Unformat Currency ($1,234.56 → 1234.56)
+- 🔲 Fix Negatives ((500.00) → -500.00)
+- 🔲 Pad Zeros (123 → 00123)
+- 🔲 Standardize Date (MM/DD/YYYY → YYYY-MM-DD)
+- 🔲 Calculate Age (DOB → age in years)
+- 🔲 Split Column (by delimiter)
+- 🔲 Fill Down (copy value from row above if null)
 
 ### FR-A4: Manual Cell Editing ✅
 - Double-click any cell to edit (Text/Number/Boolean)
@@ -99,8 +116,10 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 ### FR-A5: Audit Log ✅
 - Type A entries for bulk transformations (action, column, row count)
 - Type B entries for manual edits (previous/new values)
-- Row-level audit details with modal viewer (click to see affected rows)
+- Row-level audit details stored in `_audit_details` table
+- Modal viewer for row-level changes (click audit entry)
 - Export row details as CSV from modal
+- Export full audit log as TXT
 - Immutable history with timestamps
 
 ### FR-A6: Ingestion Wizard ✅
@@ -110,20 +129,115 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - Encoding detection (UTF-8/Latin-1) with override
 - Delimiter detection (Comma/Tab/Pipe/Semicolon) with override
 
+### FR-A7: Data Health Sidebar 🔲
+- Not implemented (no tests written)
+
 ### FR-B2: Visual Diff ✅
 - Compare two tables with FULL OUTER JOIN
 - Detect added, removed, and modified rows
 - Color-coded diff display (green/red/yellow)
+- Compare with Preview mode (current table vs. original state)
+- Compare Two Tables mode (select any two tables)
+
+### FR-B4: Blind Diff Support 🔲
+- Not implemented (no tests written)
+
+### FR-C1: Fuzzy Matcher 🔲
+- Panel UI loads
+- 🔲 Fuzzy matching logic (TDD tests written)
+- 🔲 Blocking strategy for performance (TDD tests written)
+- 🔲 Tinder-style review UI (FR-C2, no tests)
+
+### FR-D2: Smart Scrubber 🔲
+- Panel UI loads
+- 🔲 Hash columns (SHA-256) - TDD tests written
+- 🔲 Redact PII patterns - TDD tests written
+- 🔲 Mask partial values - TDD tests written
+- 🔲 Year only from dates - TDD tests written
+- 🔲 Project Secret/Salt (FR-D1, no tests)
+- 🔲 Key Map Export (FR-D3, no tests)
 
 ### FR-E: Combiner ✅
 - Stack tables (UNION ALL) with column alignment
-- Join tables with Left/Inner/Full Outer join types
+- Join tables with Inner/Left join types
 - Key column selection for joins
 - Validation warnings for mismatched columns
+- 🔲 Full Outer Join (not tested)
+- 🔲 Clean-First Guardrail (FR-E3, no tests)
 
-### Module Pages (UI Shell)
-- ✅ Fuzzy Matcher (`/matcher`) - page loads, matching logic pending
-- ✅ Smart Scrubber (`/scrubber`) - page loads, obfuscation pending
+### Additional Features
+- ✅ Persist as Table (create copy with new name)
+- ✅ Export CSV
+- ✅ Single-page panel-based UI (toolbar → slide-in sheets)
+- ✅ Keyboard shortcuts (1-5 for panels, Escape to close)
+
+## Implementation Status Summary
+
+| Feature Area | Status | Passing Tests | TDD (Failing) | No Tests |
+|--------------|--------|---------------|---------------|----------|
+| FR-A3 Transformations | Partial | 9 | 10 | 0 |
+| FR-A4 Manual Editing | ✅ Complete | 4 | 0 | 0 |
+| FR-A5 Audit Log | ✅ Complete | 5 | 0 | 0 |
+| FR-A6 Ingestion Wizard | ✅ Complete | 3 | 0 | 0 |
+| FR-A7 Data Health | 🔲 Not Started | 0 | 0 | All |
+| FR-B2 Visual Diff | ✅ Complete | 3 | 0 | 0 |
+| FR-B4 Blind Diff | 🔲 Not Started | 0 | 0 | All |
+| FR-C1 Fuzzy Matcher | 🔲 Partial | 1 | 2 | 1 |
+| FR-C2 Review UI | 🔲 Not Started | 0 | 0 | All |
+| FR-D1 Project Secret | 🔲 Not Started | 0 | 0 | All |
+| FR-D2 Smart Scrubber | 🔲 Partial | 1 | 4 | 0 |
+| FR-D3 Key Map Export | 🔲 Not Started | 0 | 0 | All |
+| FR-E1 Stack Tables | ✅ Complete | 2 | 0 | 0 |
+| FR-E2 Join Tables | ✅ Complete | 2 | 0 | 0 |
+| FR-E3 Clean-First | 🔲 Not Started | 0 | 0 | All |
+
+**Totals:** ~58 passing, ~16 TDD failing (expected), multiple features with no test coverage
+
+### Pending Features (TDD Tests Written)
+
+These features have failing tests that document expected behavior:
+
+**FR-A3 Transformations:**
+- Title Case, Remove Accents, Remove Non-Printable
+- Unformat Currency, Fix Negatives, Pad Zeros
+- Standardize Date, Calculate Age, Split Column, Fill Down
+
+**FR-C1 Fuzzy Matcher:**
+- Fuzzy matching algorithm
+- Blocking strategy for performance
+
+**FR-D2 Smart Scrubber:**
+- SHA-256 hash columns
+- Redact PII patterns
+- Mask partial values
+- Year-only date extraction
+
+### Missing Test Coverage
+
+These features have no E2E tests written:
+
+| Feature | Priority | Complexity |
+|---------|----------|------------|
+| FR-A7 Data Health Sidebar | Medium | Low |
+| FR-B4 Blind Diff Support | Low | Medium |
+| FR-C2 Tinder-style Review | Medium | High |
+| FR-D1 Project Secret/Salt | High | Low |
+| FR-D3 Key Map Export | Medium | Medium |
+| FR-E3 Clean-First Guardrail | Low | Low |
+
+### Recommended Tests to Add
+
+**Priority 1 (High Impact, Low Effort):**
+1. FR-D1 Project Secret - Test salt persistence and hash consistency
+2. FR-A7 Data Health - Test column stats display (nulls, uniques)
+3. FR-E3 Clean-First - Test warning when combining uncleaned tables
+
+**Priority 2 (Medium Impact):**
+4. FR-D3 Key Map Export - Test CSV export of hash→original mappings
+5. FR-B4 Blind Diff - Test column-name-agnostic comparison
+
+**Priority 3 (Higher Complexity):**
+6. FR-C2 Review UI - Test swipe/approve/reject workflow
 
 ## E2E Testing
 

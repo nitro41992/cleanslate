@@ -96,12 +96,41 @@ export class LaundromatPage {
     await this.redoButton.click()
   }
 
-  async switchToAuditLogTab(): Promise<void> {
-    await this.auditLogTab.click()
+  /**
+   * Open the audit sidebar (replaces old tab-based approach)
+   */
+  async openAuditSidebar(): Promise<void> {
+    const toggleBtn = this.page.getByTestId('toggle-audit-sidebar')
+    // Check if sidebar is already open by looking for the audit log panel
+    const sidebarOpen = await this.page.locator('text=Audit Log').first().isVisible().catch(() => false)
+    if (!sidebarOpen) {
+      await toggleBtn.click()
+    }
+    await this.page.locator('.text-sm:has-text("Audit Log")').waitFor({ state: 'visible', timeout: 5000 })
   }
 
+  /**
+   * Close the audit sidebar
+   */
+  async closeAuditSidebar(): Promise<void> {
+    const sidebarOpen = await this.page.locator('aside').filter({ hasText: 'Audit Log' }).isVisible().catch(() => false)
+    if (sidebarOpen) {
+      await this.page.getByTestId('toggle-audit-sidebar').click()
+    }
+  }
+
+  /**
+   * @deprecated Use openAuditSidebar() instead - tabs no longer exist in the UI
+   */
+  async switchToAuditLogTab(): Promise<void> {
+    await this.openAuditSidebar()
+  }
+
+  /**
+   * @deprecated Use closeAuditSidebar() instead - tabs no longer exist in the UI
+   */
   async switchToDataPreviewTab(): Promise<void> {
-    await this.dataPreviewTab.click()
+    await this.closeAuditSidebar()
   }
 
   /**
@@ -163,34 +192,43 @@ export class LaundromatPage {
    * Open the Clean panel for transformations
    */
   async openCleanPanel(): Promise<void> {
+    await this.closePanel()
     await this.cleanButton.click()
+    await this.page.getByTestId('panel-clean').waitFor({ state: 'visible', timeout: 5000 })
   }
 
   /**
    * Open the Match panel for duplicate detection
    */
   async openMatchPanel(): Promise<void> {
+    await this.closePanel()
     await this.matchButton.click()
+    await this.page.getByTestId('panel-match').waitFor({ state: 'visible', timeout: 5000 })
   }
 
   /**
    * Open the Combine panel for stack/join operations
    */
   async openCombinePanel(): Promise<void> {
+    await this.closePanel()
     await this.combineButton.click()
+    await this.page.getByTestId('panel-combine').waitFor({ state: 'visible', timeout: 5000 })
   }
 
   /**
    * Open the Scrub panel for obfuscation
    */
   async openScrubPanel(): Promise<void> {
+    await this.closePanel()
     await this.scrubButton.click()
+    await this.page.getByTestId('panel-scrub').waitFor({ state: 'visible', timeout: 5000 })
   }
 
   /**
    * Open the Diff view (full-screen overlay)
    */
   async openDiffView(): Promise<void> {
+    await this.closePanel()
     await this.diffButton.click()
     // Wait for the DiffView overlay to appear
     await this.page.getByTestId('diff-view').waitFor({ state: 'visible', timeout: 5000 })

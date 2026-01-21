@@ -71,7 +71,7 @@ export function FeaturePanel({ children }: FeaturePanelProps) {
                 </div>
               </div>
             </SheetHeader>
-            <div className="flex-1 overflow-auto">
+            <div className="flex-1 overflow-auto" data-testid={`panel-${activePanel}`}>
               {children}
             </div>
           </>

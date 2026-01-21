@@ -45,25 +45,31 @@
 * **FR-A2:** Stream data directly to OPFS/DuckDB to avoid crashing the main thread JS Heap.
 * **FR-A3: Context-Aware Transformation Sidebar:** 🔶 **PARTIAL**
     * UI must display actions relevant to the selected column's data type.
-    * **Text Columns:**
+    * **Text Columns (Implemented):**
         * ✅ **Trim Whitespace:** `trim(col)`
-        * **Collapse Spaces:** `regexp_replace(col, '\s+', ' ', 'g')`
-        * **Remove Non-Printable:** Remove tabs, newlines, zero-width chars.
-        * **Remove Accents:** `José` -> `Jose`.
-        * **Casing:**
-            * ✅ `UPPERCASE`, ✅ `lowercase`.
-            * `Title Case`: "John Smith" (Capitalize first letter of words). *Distinct from CamelCase.*
-            * `Sentence case`: "Patient arrived at..."
-        * **Split Column:** By delimiter (comma, space) or extract domain (email).
-    * **Number Columns (Finance Focus):**
-        * **Unformat Currency:** Remove `$, £, ,` and cast to Decimal.
-        * **Fix Negatives:** Convert `(500.00)` to `-500.00`.
-        * **Pad Zeros:** `501` -> `00501` (Crucial for IDs/Zips).
-        * **Fill Down:** Copy value from row above if null.
-    * **Date Columns (Healthcare Focus):**
-        * **Standardize Format:** ISO 8601 (`YYYY-MM-DD`).
-        * **Calculate Age:** New column diffing `DOB` vs `Today`.
-        * **Shift Date:** Add/Subtract random N days (Anonymization).
+        * ✅ **Uppercase/Lowercase:** Case transformations
+        * ✅ **Find & Replace:** Case-sensitive/insensitive, exact/contains match
+        * ✅ **Remove Duplicates:** Deduplicate entire rows
+        * ✅ **Filter Empty:** Remove rows with null/empty values
+        * ✅ **Rename Column:** Change column name
+        * ✅ **Cast Type:** Convert to Integer, Date
+        * ✅ **Custom SQL:** Arbitrary SQL transformations
+    * **Text Columns (Pending - TDD tests written):**
+        * 🔲 **Collapse Spaces:** `regexp_replace(col, '\s+', ' ', 'g')`
+        * 🔲 **Remove Non-Printable:** Remove tabs, newlines, zero-width chars.
+        * 🔲 **Remove Accents:** `José` -> `Jose`.
+        * 🔲 **Title Case:** "John Smith" (Capitalize first letter of words).
+        * 🔲 **Sentence case:** "Patient arrived at..."
+        * 🔲 **Split Column:** By delimiter (comma, space) or extract domain (email).
+    * **Number Columns (Finance Focus) - Pending:**
+        * 🔲 **Unformat Currency:** Remove `$, £, ,` and cast to Decimal.
+        * 🔲 **Fix Negatives:** Convert `(500.00)` to `-500.00`.
+        * 🔲 **Pad Zeros:** `501` -> `00501` (Crucial for IDs/Zips).
+        * 🔲 **Fill Down:** Copy value from row above if null.
+    * **Date Columns (Healthcare Focus) - Pending:**
+        * 🔲 **Standardize Format:** ISO 8601 (`YYYY-MM-DD`).
+        * 🔲 **Calculate Age:** New column diffing `DOB` vs `Today`.
+        * 🔲 **Shift Date:** Add/Subtract random N days (Anonymization).
 * **FR-A4: Manual Remediation (Cell Editing):** ✅ **IMPLEMENTED**
     * **Double-Click Edit:** Support value-only edits (Text/Number/Boolean). No formulas.
     * **Dirty State:** Visually highlight manually edited cells (e.g., small red triangle or background tint).
@@ -87,7 +93,7 @@
         * "Delimiter": Auto-detect but allow override (Comma, Tab, Pipe).
     * **Why:** Prevents "Garbage In" from older reporting systems.
 
-* **FR-A7: Data Health Sidebar (The "Sanity Check"):**
+* **FR-A7: Data Health Sidebar (The "Sanity Check"):** 🔲 **NOT IMPLEMENTED**
     * **Trigger:** Selecting any column header.
     * **Display:** DuckDB `SUMMARIZE` stats for that column.
     * **Metrics:**
@@ -95,34 +101,39 @@
         * *Numeric:* Min, Max, Average, Distribution Histogram (Small SVG).
         * *Text:* Min Length, Max Length, Top 5 Most Common Values.
     * **Why:** Guides the user on *what* to clean.
+    * **Test Coverage:** None (no tests written).
 
 ### Module B: The Visual Diff (Reconciliation) ✅ **IMPLEMENTED**
 * **FR-B1:** User selects two loaded tables to compare (e.g., "Old Version" vs "New Version"). ✅
 * **FR-B2:** System executes a `FULL OUTER JOIN` to determine `ADDED`, `REMOVED`, or `MODIFIED` status. ✅
+    * ✅ **Compare Two Tables mode:** Select any two tables for comparison.
+    * ✅ **Compare with Preview mode:** Compare current table state vs. original state.
 * **FR-B3:** Render Logic (Glide Data Grid): ✅
     * **Green Background:** Row exists in File B but not A.
     * **Red Background:** Row exists in File A but not B.
     * **Yellow Highlight:** Cell value mismatch.
-* **FR-B4: Blind Diff Support:** Allow diffing on *hashed* columns to find overlap without revealing raw data. 🔶 (pending)
+* **FR-B4: Blind Diff Support:** 🔲 **NOT IMPLEMENTED** (no tests written)
+    * Allow diffing on *hashed* columns to find overlap without revealing raw data.
 
 ### Module C: The Fuzzy Matcher (Deduplication) 🔶 **UI SHELL ONLY**
-* **FR-C1: Blocking Strategy (Crucial):**
+* **FR-C1: Blocking Strategy (Crucial):** 🔲 **NOT IMPLEMENTED** (TDD tests written)
     * System must force a "Block" selection (e.g., "First Letter" or "Soundex") before allowing fuzzy matching to prevent $O(N^2)$ browser crash.
-* **FR-C2: "Tinder" Review UI:**
+* **FR-C2: "Tinder" Review UI:** 🔲 **NOT IMPLEMENTED** (no tests written)
     * Modal card stack. Keys: Right (Merge), Left (Keep Separate).
-* **FR-C3: Clean-First Workflow:** Ensure deduplication happens *before* obfuscation.
+* **FR-C3: Clean-First Workflow:** 🔲 **NOT IMPLEMENTED** (no tests written)
+    * Ensure deduplication happens *before* obfuscation.
 
 
 
 ### Module D: The Smart Scrubber (Obfuscation) 🔶 **UI SHELL ONLY**
-* **FR-D1: Project Secret (The Salt):**
+* **FR-D1: Project Secret (The Salt):** 🔲 **NOT IMPLEMENTED** (no tests written)
     * Input field for a "Secret Phrase." Logic: `SHA256(Column_Value + Secret_Phrase)`.
     * Ensures referential integrity across sessions.
-* **FR-D2: Type-Specific Obfuscation Options:**
+* **FR-D2: Type-Specific Obfuscation Options:** 🔲 **NOT IMPLEMENTED** (TDD tests written)
     * **String:** `Redact` ([REDACTED]), `Mask` (J***n D*e), `Hash` (SHA-256), `Faker` ("Jane Doe").
     * **Number/ID:** `Scramble` (Shuffle digits), `Last 4` (***-**-1234), `Zero` (0000).
     * **Date:** `Year Only` (1980-01-01), `Jitter` (Random +/- days), `Redact`.
-* **FR-D3: Key Map Export:**
+* **FR-D3: Key Map Export:** 🔲 **NOT IMPLEMENTED** (no tests written)
     * Checkbox on Export: *"Generate Key Map?"* (CSV with `Original, Obfuscated` pairs).
 
 ### Module E: The Combiner (Joins & Unions) ✅ **IMPLEMENTED**
@@ -136,8 +147,8 @@
     * **Join Types (User Facing Names):**
         * "Lookup" (Left Join) - *Default*. ✅
         * "Keep Only Matches" (Inner Join). ✅
-        * "Keep Everything" (Full Outer Join). ✅
-* **FR-E3: The "Clean-First" Guardrail:** ✅
+        * "Keep Everything" (Full Outer Join). 🔲 (not tested)
+* **FR-E3: The "Clean-First" Guardrail:** 🔲 **NOT IMPLEMENTED** (no tests written)
     * **Constraint:** System must warn user if they try to join without cleaning key columns first.
     * **Feature:** "Auto-Clean Keys" button in the Join modal (Trims whitespace & casts types on both sides automatically before joining).
 
