@@ -2,6 +2,7 @@ import { test, expect, Page } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
+import { DiffViewPage } from '../page-objects/diff-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
@@ -47,11 +48,9 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   test('should trim whitespace from text fields', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_text_dirty')
     expect(data[0].name).toBe('John Smith')
@@ -61,11 +60,9 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   test('should convert text to uppercase', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'email' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_text_dirty')
     expect(data[0].email).toBe('JOHN@EXAMPLE.COM')
@@ -75,11 +72,9 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   test('should convert text to lowercase', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'email' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_text_dirty')
     expect(data[0].email).toBe('john@example.com')
@@ -92,15 +87,13 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Title Case' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Title Case', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_text_dirty')
     expect(data[1].name).toBe('Jane Doe')
@@ -112,15 +105,13 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Remove Accents' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Remove Accents', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_text_dirty')
     expect(data[2].name).toBe('cafe resume') // café résumé -> cafe resume
@@ -134,15 +125,13 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Remove Non-Printable' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Remove Non-Printable', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_text_dirty')
     expect(data[3].name).toBe('BobWilson') // Tabs removed
@@ -185,15 +174,13 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Unformat Currency' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Unformat Currency', { column: 'currency_value' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_finance')
     expect(data[0].currency_value).toBe(1234.56) // $1234.56 -> 1234.56
@@ -206,15 +193,13 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Fix Negatives' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Fix Negatives', { column: 'formatted_negative' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_finance')
     expect(data[1].formatted_negative).toBe(-750.00) // $(750.00) -> -750.00
@@ -227,15 +212,13 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Pad Zeros' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Pad Zeros', { column: 'account_number', params: { length: '5' } })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_finance')
     expect(data[0].account_number).toBe('00123') // 123 -> 00123
@@ -279,7 +262,7 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
@@ -289,8 +272,6 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
       column: 'date_us',
       params: { format: 'YYYY-MM-DD' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_dates_split')
     expect(data[0].date_us).toBe('1985-03-15') // 03/15/1985 -> 1985-03-15
@@ -303,15 +284,13 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Calculate Age' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Calculate Age', { column: 'birth_date' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_dates_split')
     // Ages will vary based on current date, just check it's a reasonable number
@@ -325,7 +304,7 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
 
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
@@ -335,8 +314,6 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
       column: 'full_name',
       params: { delimiter: ' ' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_dates_split')
     expect(data[0].full_name_1).toBe('John')
@@ -375,15 +352,13 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_a3_fill_down', 10)
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
     // Fail-fast guard: Assert transformation option exists
     await expect(page.getByRole('option', { name: 'Fill Down' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Fill Down', { column: 'region' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('fr_a3_fill_down')
     expect(data[0].region).toBe('North')
@@ -499,19 +474,17 @@ test.describe.serial('FR-B2: Visual Diff', () => {
   })
 
   test('should detect row changes between two tables', async () => {
-    // Navigate to diff page
-    await page.goto('/diff')
-    await inspector.waitForDuckDBReady()
+    // Open diff view via panel-based navigation (single-page app)
+    await laundromat.openDiffView()
 
-    // Verify diff page loads
-    await expect(page.getByRole('heading', { name: 'Visual Diff' })).toBeVisible({ timeout: 10000 })
+    // Verify diff view loads
+    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
   })
 
   test('should identify added, removed, and modified rows', async () => {
-    // Return to laundromat to upload files
-    await laundromat.goto()
-    // DuckDB is already initialized, just wait for page to be ready
-    await page.waitForLoadState('networkidle')
+    // Close diff view to upload files
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
 
     // Clean up any existing tables
     await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
@@ -529,9 +502,8 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_b2_new', 5)
 
-    // Navigate to diff page using sidebar (preserves state)
-    await page.getByRole('link', { name: 'Diff' }).click()
-    await page.waitForURL('/diff')
+    // Open diff view via panel-based navigation
+    await laundromat.openDiffView()
 
     // Fail-fast guard: Assert diff comparison UI exists (requires 2+ tables)
     await expect(page.getByTestId('diff-compare-btn')).toBeVisible({ timeout: 5000 })
@@ -559,11 +531,13 @@ test.describe.serial('FR-B2: Visual Diff', () => {
 
 test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   let page: Page
+  let laundromat: LaundromatPage
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
-    await page.goto('/matcher')
+    laundromat = new LaundromatPage(page)
+    await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
@@ -572,8 +546,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await page.close()
   })
 
-  test('should load matcher page', async () => {
-    await expect(page.getByRole('heading', { name: 'Fuzzy Matcher' })).toBeVisible({ timeout: 10000 })
+  test('should load matcher panel', async () => {
+    // Open match panel via toolbar (single-page app)
+    await laundromat.openMatchPanel()
+    await expect(page.locator('text=Fuzzy Matcher')).toBeVisible({ timeout: 10000 })
   })
 
   test('should detect duplicate records with fuzzy matching', async () => {
@@ -604,11 +580,13 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
 test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   let page: Page
+  let laundromat: LaundromatPage
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
-    await page.goto('/scrubber')
+    laundromat = new LaundromatPage(page)
+    await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
@@ -617,8 +595,10 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.close()
   })
 
-  test('should load scrubber page', async () => {
-    await expect(page.getByRole('heading', { name: 'Smart Scrubber' })).toBeVisible({ timeout: 10000 })
+  test('should load scrubber panel', async () => {
+    // Open scrub panel via toolbar (single-page app)
+    await laundromat.openScrubPanel()
+    await expect(page.locator('text=Smart Scrubber')).toBeVisible({ timeout: 10000 })
   })
 
   test('should hash sensitive columns', async () => {
@@ -701,9 +681,9 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_e1_feb_sales', 5)
 
-    // Navigate to combiner using client-side navigation (not page.goto which reloads)
-    await page.click('a[href="/combiner"]')
-    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible()
+    // Open combine panel via toolbar (single-page app)
+    await laundromat.openCombinePanel()
+    await expect(page.locator('text=Stack').first()).toBeVisible()
 
     // Select Stack tab (should be default)
     await expect(page.getByTestId('combiner-stack-tab')).toBeVisible()
@@ -776,9 +756,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
-    // Navigate to combiner using client-side navigation
-    await page.click('a[href="/combiner"]')
-    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible()
+    // Open combine panel via toolbar (single-page app)
+    await laundromat.openCombinePanel()
+    await expect(page.locator('text=Stack').first()).toBeVisible()
 
     // Switch to Join tab and wait for it to be active
     await page.getByRole('tab', { name: 'Join' }).click()
@@ -820,9 +800,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_customers')
 
-    // Navigate back to laundromat for fresh file upload
-    await laundromat.goto()
-    await page.waitForLoadState('networkidle')
+    // Close any open panel and go back to main view
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
 
     // Upload orders file
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
@@ -836,9 +816,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
-    // Navigate to combiner using client-side navigation
-    await page.click('a[href="/combiner"]')
-    await expect(page.getByRole('heading', { name: /Combiner/i })).toBeVisible()
+    // Open combine panel via toolbar (single-page app)
+    await laundromat.openCombinePanel()
+    await expect(page.locator('text=Stack').first()).toBeVisible()
 
     // Switch to Join tab and wait for it to be active
     await page.getByRole('tab', { name: 'Join' }).click()
@@ -984,5 +964,161 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     await page.waitForTimeout(100)
     const afterRedoData = await inspector.getTableData('fr_a3_text_dirty')
     expect(afterRedoData[0].name).toBe('CHANGED')
+  })
+})
+
+test.describe.serial('Persist as Table', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let picker: TransformationPickerPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    picker = new TransformationPickerPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should create duplicate table with new name', async () => {
+    // 1. Load and transform data
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data_v2')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    // 2. Apply transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
+
+    // 3. Click Persist button
+    await page.getByTestId('persist-table-btn').click()
+
+    // 4. Enter new table name in dialog
+    await page.getByLabel(/table name/i).fill('basic_data_v2')
+    await page.getByRole('button', { name: /create/i }).click()
+
+    // 5. Verify new table created
+    await inspector.waitForTableLoaded('basic_data_v2', 5)
+    const tables = await inspector.getTables()
+    expect(tables.some((t) => t.name === 'basic_data_v2')).toBe(true)
+
+    // 6. Verify data was persisted correctly
+    const data = await inspector.getTableData('basic_data_v2')
+    expect(data[0].name).toBe('JOHN DOE') // Uppercase applied
+  })
+
+  test('should log persist operation to audit', async () => {
+    const auditEntries = await inspector.getAuditEntries()
+    const persistEntry = auditEntries.find((e) => e.action.includes('Persist'))
+    expect(persistEntry).toBeDefined()
+    expect(persistEntry?.entryType).toBe('A')
+  })
+})
+
+test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let picker: TransformationPickerPage
+  let inspector: StoreInspector
+  let diffView: DiffViewPage
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    picker = new TransformationPickerPage(page)
+    diffView = new DiffViewPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test('should support Compare with Preview mode', async () => {
+    // 1. Load table
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    // 2. Apply transformation to create difference
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
+
+    // 3. Open Diff view
+    await laundromat.openDiffView()
+    await diffView.waitForOpen()
+
+    // 4. Select Compare with Preview mode (should be default)
+    await diffView.selectComparePreviewMode()
+
+    // 5. Select key column and run comparison
+    await diffView.toggleKeyColumn('id')
+    await diffView.runComparison()
+
+    // 6. Verify results show modified rows
+    const summary = await diffView.getSummary()
+    expect(summary.modified).toBe(5) // All 5 rows have uppercase names
+    expect(summary.added).toBe(0)
+    expect(summary.removed).toBe(0)
+  })
+
+  test('should support Compare Two Tables mode', async () => {
+    // 1. Upload two tables
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_new')
+
+    await diffView.close()
+
+    await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_b2_base', 5)
+
+    await laundromat.uploadFile(getFixturePath('fr_b2_new.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_b2_new', 5)
+
+    // 2. Open Diff view
+    await laundromat.openDiffView()
+    await diffView.waitForOpen()
+
+    // 3. Select Compare Two Tables mode
+    await diffView.selectCompareTablesMode()
+
+    // 4. Select tables
+    await diffView.selectTableA('fr_b2_base')
+    await diffView.selectTableB('fr_b2_new')
+
+    // 5. Select key column and run comparison
+    await diffView.toggleKeyColumn('id')
+    await diffView.runComparison()
+
+    // 6. Verify expected differences
+    const summary = await diffView.getSummary()
+    expect(summary.added).toBe(1) // Frank added
+    expect(summary.removed).toBe(1) // Charlie removed
+    expect(summary.modified).toBe(3) // Alice, Diana, Eve modified
   })
 })

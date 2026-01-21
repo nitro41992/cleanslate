@@ -45,16 +45,14 @@ test.describe.serial('Audit Row Details', () => {
   test('should set hasRowDetails and auditEntryId after transformation', async () => {
     await loadTestData()
 
-    // Apply a transformation that affects some rows
-    await laundromat.clickAddTransformation()
+    // Apply a transformation that affects some rows (direct-apply model)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
       params: { Find: 'hello', 'Replace with': 'hi' },
       selectParams: { 'Case Sensitive': 'No' },
     })
-
-    await laundromat.clickRunRecipe()
 
     // Verify audit entry has hasRowDetails and auditEntryId set
     const auditEntries = await inspector.getAuditEntries()
@@ -234,12 +232,10 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
   test('should capture row details for trim transformation', async () => {
     await loadWhitespaceData()
 
-    // Apply trim transformation
-    await laundromat.clickAddTransformation()
+    // Apply trim transformation (direct-apply model)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     // Verify audit entry has row details
     const auditEntries = await inspector.getAuditEntries()
@@ -272,12 +268,10 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
   test('should capture row details for uppercase transformation', async () => {
     await loadWhitespaceData()
 
-    // Apply uppercase transformation
-    await laundromat.clickAddTransformation()
+    // Apply uppercase transformation (direct-apply model)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     // Verify audit entry has row details
     const auditEntries = await inspector.getAuditEntries()

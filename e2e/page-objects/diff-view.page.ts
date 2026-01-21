@@ -18,6 +18,9 @@ export class DiffViewPage {
   readonly newComparisonButton: Locator
   readonly resultsTable: Locator
   readonly summaryPills: Locator
+  // Dual comparison mode buttons
+  readonly comparePreviewModeButton: Locator
+  readonly compareTablesButton: Locator
 
   constructor(page: Page) {
     this.page = page
@@ -32,6 +35,9 @@ export class DiffViewPage {
     this.newComparisonButton = page.locator('button:has-text("New Comparison")')
     this.resultsTable = page.getByTestId('diff-results-table')
     this.summaryPills = page.locator('[data-testid^="diff-pill-"]')
+    // Dual comparison mode buttons
+    this.comparePreviewModeButton = page.locator('button').filter({ hasText: 'Compare with Preview' })
+    this.compareTablesButton = page.locator('button').filter({ hasText: 'Compare Two Tables' })
   }
 
   /**
@@ -173,5 +179,19 @@ export class DiffViewPage {
     }
 
     await this.runComparison()
+  }
+
+  /**
+   * Select "Compare with Preview" mode (compares current table with its preview state)
+   */
+  async selectComparePreviewMode(): Promise<void> {
+    await this.comparePreviewModeButton.click()
+  }
+
+  /**
+   * Select "Compare Two Tables" mode (compares two different tables)
+   */
+  async selectCompareTablesMode(): Promise<void> {
+    await this.compareTablesButton.click()
   }
 }

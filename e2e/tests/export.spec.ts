@@ -79,11 +79,10 @@ test.describe.serial('Export', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('mixed_case', 3)
 
-    // Apply uppercase transformation
-    await laundromat.clickAddTransformation()
+    // Apply uppercase transformation (direct-apply model)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-    await laundromat.clickRunRecipe()
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -100,16 +99,14 @@ test.describe.serial('Export', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('whitespace_data', 3)
 
-    // Apply trim then uppercase
-    await laundromat.clickAddTransformation()
+    // Apply trim then uppercase (direct-apply model)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
-    await picker.addTransformation('Trim', { column: 'name' })
+    await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -126,10 +123,9 @@ test.describe.serial('Export', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('with_duplicates', 5)
 
-    await laundromat.clickAddTransformation()
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
-    await laundromat.clickRunRecipe()
 
     const result = await downloadAndVerifyCSV(page)
 

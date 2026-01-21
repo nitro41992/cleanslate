@@ -34,10 +34,12 @@ test.describe('Full E2E Flow', () => {
     expect(tables[0].rowCount).toBe(3)
 
     // 6. Apply transformation: Trim whitespace (direct-apply)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
     // 7. Apply transformation: Uppercase (direct-apply)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
 
@@ -83,6 +85,7 @@ test.describe('Full E2E Flow', () => {
     expect(tables[0].rowCount).toBe(3)
 
     // Apply uppercase transformation (direct-apply)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
 
@@ -117,6 +120,7 @@ test.describe('Full E2E Flow', () => {
     expect(tables[0].rowCount).toBe(5)
 
     // Remove duplicates (direct-apply)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
 

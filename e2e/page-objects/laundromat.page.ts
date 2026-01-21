@@ -36,7 +36,7 @@ export class LaundromatPage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto('/laundromat')
+    await this.page.goto('/')
   }
 
   async uploadFile(filePath: string): Promise<void> {

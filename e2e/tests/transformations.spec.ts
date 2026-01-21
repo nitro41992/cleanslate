@@ -48,6 +48,7 @@ test.describe.serial('Transformations: Whitespace Data', () => {
     await loadTestData()
 
     // Apply trim transformation directly
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
@@ -62,10 +63,12 @@ test.describe.serial('Transformations: Whitespace Data', () => {
     await loadTestData()
 
     // Apply trim (directly applied)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
     // Apply uppercase (directly applied)
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
 
@@ -78,6 +81,7 @@ test.describe.serial('Transformations: Whitespace Data', () => {
   test('should log transformations to audit log', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
@@ -123,6 +127,7 @@ test.describe.serial('Transformations: Mixed Case Data', () => {
   test('should apply uppercase transformation', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
 
@@ -135,6 +140,7 @@ test.describe.serial('Transformations: Mixed Case Data', () => {
   test('should apply lowercase transformation', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'name' })
 
@@ -179,6 +185,7 @@ test.describe.serial('Transformations: Duplicates Data', () => {
     let tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(5)
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
 
@@ -216,6 +223,7 @@ test.describe.serial('Transformations: Empty Values Data', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('empty_values', 5)
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Filter Empty', { column: 'name' })
 
@@ -256,6 +264,7 @@ test.describe.serial('Transformations: Find Replace Data', () => {
   test('should apply find and replace transformation', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
@@ -271,6 +280,7 @@ test.describe.serial('Transformations: Find Replace Data', () => {
   test('should replace multiple occurrences in find and replace', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'description',
@@ -312,6 +322,7 @@ test.describe.serial('Transformations: Basic Data (Rename)', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Rename Column', {
       column: 'name',
@@ -357,6 +368,7 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   test('should cast string to integer', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Cast Type', {
       column: 'amount',
@@ -373,6 +385,7 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   test('should cast string to date', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Cast Type', {
       column: 'date_str',
@@ -390,6 +403,7 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   test('should apply custom SQL transformation', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Custom SQL', {
       params: {
@@ -439,6 +453,7 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   test('should apply case-insensitive find and replace', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
@@ -457,6 +472,7 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   test('should apply exact match find and replace', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
@@ -475,6 +491,7 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   test('should apply case-insensitive exact match find and replace', async () => {
     await loadTestData()
 
+    await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
