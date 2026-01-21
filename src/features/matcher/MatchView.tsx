@@ -1,9 +1,21 @@
-import { useCallback, useEffect, useMemo } from 'react'
-import { X, ArrowLeft, RotateCcw, Check } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { X, ArrowLeft, RotateCcw, Check, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { MatchConfigPanel } from './components/MatchConfigPanel'
 import { SimilaritySpectrum } from './components/SimilaritySpectrum'
 import { CategoryFilter } from './components/CategoryFilter'
@@ -11,7 +23,8 @@ import { MatchRow } from './components/MatchRow'
 import { useTableStore } from '@/stores/tableStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useAuditStore } from '@/stores/auditStore'
-import { findDuplicates, mergeDuplicates } from '@/lib/fuzzy-matcher'
+import { useFuzzyMatcher } from '@/hooks/useFuzzyMatcher'
+import { mergeDuplicates } from '@/lib/fuzzy-matcher'
 import { generateId } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -36,6 +49,13 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     pairs,
     filter,
     isMatching,
+    progress,
+    pairsFound,
+    progressPhase,
+    currentBlock,
+    totalBlocks,
+    currentBlockKey,
+    oversizedBlocks,
     stats,
     selectedIds,
     expandedId,
@@ -45,6 +65,8 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     setThresholds,
     setPairs,
     setIsMatching,
+    setDetailedProgress,
+    resetProgress,
     setFilter,
     toggleSelect,
     selectAll,
@@ -56,8 +78,20 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     markSelectedAsKeptSeparate,
     swapKeepRow,
     classifyPair,
+    clearPairs,
     reset,
   } = useMatcherStore()
+
+  // Fuzzy matcher worker hook
+  const { startMatching, cancelMatching } = useFuzzyMatcher()
+  const cancelMatchingRef = useRef(cancelMatching)
+  cancelMatchingRef.current = cancelMatching
+
+  // Confirmation dialog state
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+
+  // Virtualizer scroll container ref
+  const parentRef = useRef<HTMLDivElement>(null)
 
   const selectedTable = tables.find((t) => t.id === tableId)
   const hasResults = pairs.length > 0
@@ -72,6 +106,35 @@ export function MatchView({ open, onClose }: MatchViewProps) {
       return classification === filter
     })
   }, [pairs, filter, classifyPair])
+
+  // Virtualizer for efficient rendering of large lists
+  const virtualizer = useVirtualizer({
+    count: filteredPairs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 72, // Estimated row height in pixels
+    overscan: 5, // Render 5 extra items above/below visible area
+  })
+
+  // Memoized callbacks for MatchRow to prevent unnecessary re-renders
+  const handleToggleSelect = useCallback((pairId: string) => {
+    toggleSelect(pairId)
+  }, [toggleSelect])
+
+  const handleToggleExpand = useCallback((pairId: string) => {
+    setExpandedId(expandedId === pairId ? null : pairId)
+  }, [setExpandedId, expandedId])
+
+  const handleMerge = useCallback((pairId: string) => {
+    markPairAsMerged(pairId)
+  }, [markPairAsMerged])
+
+  const handleKeepSeparate = useCallback((pairId: string) => {
+    markPairAsKeptSeparate(pairId)
+  }, [markPairAsKeptSeparate])
+
+  const handleSwapKeepRow = useCallback((pairId: string) => {
+    swapKeepRow(pairId)
+  }, [swapKeepRow])
 
   // Handle escape key to close
   useEffect(() => {
@@ -120,45 +183,84 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     if (!tableName || !matchColumn) return
 
     setIsMatching(true)
+    resetProgress()
+
     try {
-      const matches = await findDuplicates(
+      // Use chunked multi-pass processing for scalability
+      // Processes data block-by-block with progress reporting
+      const result = await startMatching(
         tableName,
         matchColumn,
         blockingStrategy,
         definiteThreshold,
-        maybeThreshold
+        maybeThreshold,
+        (progressInfo) => {
+          setDetailedProgress(
+            progressInfo.phase,
+            progressInfo.currentBlock,
+            progressInfo.totalBlocks,
+            progressInfo.pairsFound,
+            progressInfo.maybeCount,
+            progressInfo.definiteCount,
+            progressInfo.currentBlockKey ?? null,
+            progressInfo.oversizedBlocks
+          )
+        }
       )
-      setPairs(matches)
+      const pairs = result.pairs
+      const totalFound = result.totalFound
 
-      // Add audit entry
+      setPairs(pairs)
+      resetProgress()
+
+      // Add audit entry with block processing details
       if (tableId) {
+        const oversizedNote = result.oversizedBlocksCount > 0
+          ? ` (${result.oversizedBlocksCount} large blocks sampled)`
+          : ''
         addAuditEntry(
           tableId,
           tableName,
           'Find Duplicates',
-          `Found ${matches.length} potential duplicates in '${matchColumn}' column using ${blockingStrategy} grouping`,
+          `Found ${totalFound.toLocaleString()} potential duplicates in '${matchColumn}' column using ${blockingStrategy} grouping, processed ${result.blocksProcessed} blocks${oversizedNote}`,
           'A'
         )
       }
 
-      if (matches.length === 0) {
+      if (pairs.length === 0) {
         toast.info('No Duplicates Found', {
           description: 'No potential duplicates were found with the current settings.',
         })
       } else {
+        const oversizedNote = result.oversizedBlocksCount > 0
+          ? ` (${result.oversizedBlocksCount} large blocks sampled)`
+          : ''
         toast.success('Duplicates Found', {
-          description: `Found ${matches.length} potential duplicate pairs to review.`,
+          description: `Found ${pairs.length.toLocaleString()} potential duplicate pairs from ${result.blocksProcessed} blocks.${oversizedNote}`,
         })
       }
     } catch (error) {
       console.error('Matching failed:', error)
-      toast.error('Matching Failed', {
-        description: error instanceof Error ? error.message : 'An error occurred',
-      })
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred'
+      if (errorMessage !== 'Matching cancelled') {
+        toast.error('Matching Failed', {
+          description: errorMessage,
+        })
+      }
     } finally {
       setIsMatching(false)
+      resetProgress()
     }
-  }, [tableName, matchColumn, blockingStrategy, definiteThreshold, maybeThreshold, tableId, setIsMatching, setPairs, addAuditEntry])
+  }, [tableName, matchColumn, blockingStrategy, definiteThreshold, maybeThreshold, tableId, setIsMatching, setPairs, addAuditEntry, startMatching, setDetailedProgress, resetProgress])
+
+  const handleCancelMatching = useCallback(() => {
+    cancelMatchingRef.current()
+    setIsMatching(false)
+    resetProgress()
+    toast.info('Matching Cancelled', {
+      description: 'The duplicate search was cancelled.',
+    })
+  }, [setIsMatching, resetProgress])
 
   const handleApplyMerges = useCallback(async () => {
     if (!tableName || !matchColumn) return
@@ -199,7 +301,17 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   }, [tableName, matchColumn, pairs, tableId, selectedTable, updateTable, addTransformationEntry, reset, onClose])
 
   const handleNewSearch = () => {
-    reset()
+    const hasDecisions = stats.merged > 0 || stats.keptSeparate > 0
+    if (hasDecisions) {
+      setShowDiscardConfirm(true)
+    } else {
+      clearPairs()
+    }
+  }
+
+  const handleConfirmDiscard = () => {
+    clearPairs()
+    setShowDiscardConfirm(false)
   }
 
   const handleClose = () => {
@@ -255,7 +367,46 @@ export function MatchView({ open, onClose }: MatchViewProps) {
         </div>
 
         <div className="flex items-center gap-3">
-          {hasResults && (
+          {/* Progress bar when matching */}
+          {isMatching && (
+            <>
+              <div className="flex flex-col items-end gap-1 min-w-[280px]">
+                <div className="flex items-center gap-3 w-full">
+                  <div className="flex-1">
+                    <Progress value={progress} className="h-2" />
+                  </div>
+                  <span className="text-sm text-muted-foreground whitespace-nowrap">
+                    {progress}%
+                  </span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {progressPhase === 'analyzing' && 'Analyzing data distribution...'}
+                  {progressPhase === 'processing' && (
+                    <>
+                      Block {currentBlock}/{totalBlocks}
+                      {currentBlockKey && ` ("${currentBlockKey}")`}
+                      {pairsFound > 0 && ` • ${pairsFound.toLocaleString()} pairs`}
+                    </>
+                  )}
+                  {oversizedBlocks > 0 && ` • ${oversizedBlocks} large blocks`}
+                </span>
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelMatching}
+                className="gap-2"
+              >
+                <Square className="w-3 h-3" />
+                Cancel
+              </Button>
+
+              <div className="h-6 w-px bg-border" />
+            </>
+          )}
+
+          {hasResults && !isMatching && (
             <>
               {/* Stats */}
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
@@ -356,32 +507,58 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                 </div>
               )}
 
-              {/* Pairs List */}
-              <ScrollArea className="flex-1">
-                <div className="p-4 space-y-2">
-                  {filteredPairs.map((pair) => (
-                    <MatchRow
-                      key={pair.id}
-                      pair={pair}
-                      matchColumn={matchColumn || ''}
-                      classification={classifyPair(pair.similarity)}
-                      isSelected={selectedIds.has(pair.id)}
-                      isExpanded={expandedId === pair.id}
-                      onToggleSelect={() => toggleSelect(pair.id)}
-                      onToggleExpand={() => setExpandedId(expandedId === pair.id ? null : pair.id)}
-                      onMerge={() => markPairAsMerged(pair.id)}
-                      onKeepSeparate={() => markPairAsKeptSeparate(pair.id)}
-                      onSwapKeepRow={() => swapKeepRow(pair.id)}
-                    />
-                  ))}
-
-                  {filteredPairs.length === 0 && (
-                    <div className="text-center text-muted-foreground py-8">
-                      No pairs match the current filter
-                    </div>
-                  )}
-                </div>
-              </ScrollArea>
+              {/* Pairs List - Virtualized */}
+              <div
+                ref={parentRef}
+                className="flex-1 overflow-auto"
+              >
+                {filteredPairs.length === 0 ? (
+                  <div className="text-center text-muted-foreground py-8">
+                    No pairs match the current filter
+                  </div>
+                ) : (
+                  <div
+                    className="p-4"
+                    style={{
+                      height: `${virtualizer.getTotalSize()}px`,
+                      width: '100%',
+                      position: 'relative',
+                    }}
+                  >
+                    {virtualizer.getVirtualItems().map((virtualRow) => {
+                      const pair = filteredPairs[virtualRow.index]
+                      return (
+                        <div
+                          key={pair.id}
+                          data-index={virtualRow.index}
+                          ref={virtualizer.measureElement}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            transform: `translateY(${virtualRow.start}px)`,
+                            paddingBottom: '8px',
+                          }}
+                        >
+                          <MatchRow
+                            pair={pair}
+                            matchColumn={matchColumn || ''}
+                            classification={classifyPair(pair.similarity)}
+                            isSelected={selectedIds.has(pair.id)}
+                            isExpanded={expandedId === pair.id}
+                            onToggleSelect={() => handleToggleSelect(pair.id)}
+                            onToggleExpand={() => handleToggleExpand(pair.id)}
+                            onMerge={() => handleMerge(pair.id)}
+                            onKeepSeparate={() => handleKeepSeparate(pair.id)}
+                            onSwapKeepRow={() => handleSwapKeepRow(pair.id)}
+                          />
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
 
               {/* Bulk Actions Bar */}
               {selectedIds.size > 0 && (
@@ -449,6 +626,25 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           )}
         </div>
       </div>
+
+      {/* Discard Confirmation Dialog */}
+      <AlertDialog open={showDiscardConfirm} onOpenChange={setShowDiscardConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard merge decisions?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have {stats.merged + stats.keptSeparate} reviewed pairs.
+              Starting a new search will discard these decisions.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmDiscard}>
+              Discard & Search
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

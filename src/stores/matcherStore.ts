@@ -15,8 +15,8 @@ interface MatcherState {
   blockingStrategy: BlockingStrategy
 
   // Dual thresholds for similarity classification
-  definiteThreshold: number // >= this = "definite" match (default 85%)
-  maybeThreshold: number    // >= this = "maybe" match (default 60%)
+  definiteThreshold: number // >= this = "definite" match (default 95%)
+  maybeThreshold: number    // >= this = "maybe" match (default 85%)
 
   // Match pairs and filtering
   pairs: MatchPair[]
@@ -27,6 +27,18 @@ interface MatcherState {
 
   // Processing state
   isMatching: boolean
+  progress: number           // 0-100 progress percentage
+  pairsFound: number         // Running count during matching
+  estimatedPairs: number     // Total expected pairs (for progress bar)
+
+  // Detailed progress for chunked processing
+  progressPhase: 'idle' | 'analyzing' | 'processing' | 'complete'
+  currentBlock: number
+  totalBlocks: number
+  currentBlockKey: string | null
+  oversizedBlocks: number
+  maybeCount: number         // Maybe matches found so far
+  definiteCount: number      // Definite matches found so far
 
   // Statistics
   stats: {
@@ -59,6 +71,18 @@ interface MatcherActions {
   setPairs: (pairs: MatchPair[]) => void
   setCurrentPairIndex: (index: number) => void
   setIsMatching: (matching: boolean) => void
+  setProgress: (progress: number, pairsFound: number, estimatedPairs: number) => void
+  setDetailedProgress: (
+    phase: 'idle' | 'analyzing' | 'processing' | 'complete',
+    currentBlock: number,
+    totalBlocks: number,
+    pairsFound: number,
+    maybeCount: number,
+    definiteCount: number,
+    currentBlockKey: string | null,
+    oversizedBlocks: number
+  ) => void
+  resetProgress: () => void
 
   // Selection and expansion
   setFilter: (filter: MatchFilter) => void
@@ -79,7 +103,8 @@ interface MatcherActions {
   // Utility
   classifyPair: (similarity: number) => MatchClassification
   getFilteredPairs: () => MatchPair[]
-  reset: () => void
+  clearPairs: () => void  // Clear pairs but keep config (for "New Search")
+  reset: () => void       // Full reset (for closing the view)
 }
 
 const initialState: MatcherState = {
@@ -87,15 +112,25 @@ const initialState: MatcherState = {
   tableId: null,
   tableName: null,
   matchColumn: null,
-  blockingStrategy: 'first_letter',
-  definiteThreshold: 85,
-  maybeThreshold: 60,
+  blockingStrategy: 'double_metaphone',
+  definiteThreshold: 95,
+  maybeThreshold: 85,
   pairs: [],
   filter: 'all',
   currentPairIndex: 0,
   selectedIds: new Set(),
   expandedId: null,
   isMatching: false,
+  progress: 0,
+  pairsFound: 0,
+  estimatedPairs: 0,
+  progressPhase: 'idle',
+  currentBlock: 0,
+  totalBlocks: 0,
+  currentBlockKey: null,
+  oversizedBlocks: 0,
+  maybeCount: 0,
+  definiteCount: 0,
   stats: {
     total: 0,
     merged: 0,
@@ -224,6 +259,33 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
 
   setCurrentPairIndex: (index) => set({ currentPairIndex: index }),
   setIsMatching: (matching) => set({ isMatching: matching }),
+  setProgress: (progress, pairsFound, estimatedPairs) => set({ progress, pairsFound, estimatedPairs }),
+  setDetailedProgress: (phase, currentBlock, totalBlocks, pairsFound, maybeCount, definiteCount, currentBlockKey, oversizedBlocks) => {
+    const progress = totalBlocks > 0 ? Math.round((currentBlock / totalBlocks) * 100) : 0
+    set({
+      progressPhase: phase,
+      currentBlock,
+      totalBlocks,
+      pairsFound,
+      maybeCount,
+      definiteCount,
+      currentBlockKey,
+      oversizedBlocks,
+      progress,
+    })
+  },
+  resetProgress: () => set({
+    progress: 0,
+    pairsFound: 0,
+    estimatedPairs: 0,
+    progressPhase: 'idle',
+    currentBlock: 0,
+    totalBlocks: 0,
+    currentBlockKey: null,
+    oversizedBlocks: 0,
+    maybeCount: 0,
+    definiteCount: 0,
+  }),
 
   // Selection and filtering
   setFilter: (filter) => set({ filter, selectedIds: new Set() }),
@@ -352,6 +414,26 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
       return classification === filter
     })
   },
+
+  clearPairs: () => set({
+    pairs: [],
+    filter: 'all',
+    currentPairIndex: 0,
+    selectedIds: new Set(),
+    expandedId: null,
+    isMatching: false,
+    progress: 0,
+    pairsFound: 0,
+    estimatedPairs: 0,
+    progressPhase: 'idle',
+    currentBlock: 0,
+    totalBlocks: 0,
+    currentBlockKey: null,
+    oversizedBlocks: 0,
+    maybeCount: 0,
+    definiteCount: 0,
+    stats: initialState.stats,
+  }),
 
   reset: () => set({ ...initialState, selectedIds: new Set() }),
 }))

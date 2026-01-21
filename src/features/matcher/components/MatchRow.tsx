@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react'
 import { Check, X, ChevronDown, ChevronUp, ArrowLeftRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -37,7 +38,7 @@ function formatValue(value: unknown): string {
   return String(value)
 }
 
-export function MatchRow({
+export const MatchRow = memo(function MatchRow({
   pair,
   matchColumn,
   classification,
@@ -49,12 +50,14 @@ export function MatchRow({
   onKeepSeparate,
   onSwapKeepRow,
 }: MatchRowProps) {
-  const matchFieldSimilarity = pair.fieldSimilarities.find(
-    (f) => f.column === matchColumn
+  // Memoize expensive lookups
+  const matchFieldSimilarity = useMemo(
+    () => pair.fieldSimilarities.find((f) => f.column === matchColumn),
+    [pair.fieldSimilarities, matchColumn]
   )
 
-  // Generate human-readable explanation
-  const getExplanation = (): string => {
+  // Memoize explanation calculation
+  const explanation = useMemo(() => {
     const exactFields = pair.fieldSimilarities.filter((f) => f.status === 'exact')
     const similarFields = pair.fieldSimilarities.filter((f) => f.status === 'similar')
     const differentFields = pair.fieldSimilarities.filter((f) => f.status === 'different')
@@ -71,7 +74,7 @@ export function MatchRow({
     }
 
     return parts.join(', ')
-  }
+  }, [pair.fieldSimilarities])
 
   return (
     <div className={cn('border rounded-lg transition-colors', classStyles[classification])}>
@@ -98,7 +101,7 @@ export function MatchRow({
             </div>
             {isExpanded && (
               <p className="text-xs text-muted-foreground mt-1">
-                {getExplanation()}
+                {explanation}
               </p>
             )}
           </div>
@@ -246,11 +249,11 @@ export function MatchRow({
 
             {/* Summary */}
             <p className="text-xs text-muted-foreground mt-3 text-center">
-              {getExplanation()}
+              {explanation}
             </p>
           </div>
         </div>
       )}
     </div>
   )
-}
+})

@@ -18,20 +18,22 @@ export function SimilaritySpectrum({
   onThresholdsChange,
   disabled = false,
 }: SimilaritySpectrumProps) {
-  // Create histogram buckets (10 buckets from 0-100)
+  // Create histogram buckets (20 buckets from 0-100, each 5% wide)
   const histogram = useMemo(() => {
-    const buckets = new Array(10).fill(0)
+    const bucketCount = 20
+    const bucketWidth = 100 / bucketCount // 5%
+    const buckets = new Array(bucketCount).fill(0)
     const pendingPairs = pairs.filter((p) => p.status === 'pending')
 
     pendingPairs.forEach((pair) => {
-      const bucketIndex = Math.min(Math.floor(pair.similarity / 10), 9)
+      const bucketIndex = Math.min(Math.floor(pair.similarity / bucketWidth), bucketCount - 1)
       buckets[bucketIndex]++
     })
 
     const maxCount = Math.max(...buckets, 1)
     return buckets.map((count, index) => ({
-      min: index * 10,
-      max: (index + 1) * 10,
+      min: index * bucketWidth,
+      max: (index + 1) * bucketWidth,
       count,
       height: (count / maxCount) * 100,
     }))
@@ -69,8 +71,8 @@ export function SimilaritySpectrum({
       <div className="relative h-16">
         <div className="absolute inset-0 flex items-end gap-px">
           {histogram.map((bucket, index) => {
-            // Determine bucket color based on thresholds
-            const bucketMid = bucket.min + 5
+            // Determine bucket color based on thresholds (use midpoint of bucket)
+            const bucketMid = bucket.min + (bucket.max - bucket.min) / 2
             let bgColor = 'bg-red-500/40'
             if (bucketMid >= definiteThreshold) {
               bgColor = 'bg-green-500/40'
@@ -86,8 +88,8 @@ export function SimilaritySpectrum({
                   bgColor,
                   bucket.count === 0 && 'opacity-30'
                 )}
-                style={{ height: `${Math.max(bucket.height, 10)}%` }}
-                title={`${bucket.min}-${bucket.max}%: ${bucket.count} pairs`}
+                style={{ height: `${Math.max(bucket.height, 8)}%` }}
+                title={`${bucket.min.toFixed(0)}-${bucket.max.toFixed(0)}%: ${bucket.count} pairs`}
               />
             )
           })}
@@ -101,8 +103,8 @@ export function SimilaritySpectrum({
           onValueChange={handleValueChange}
           min={0}
           max={100}
-          step={5}
-          minRange={5}
+          step={1}
+          minRange={1}
           disabled={disabled}
         />
       </div>
@@ -110,7 +112,9 @@ export function SimilaritySpectrum({
       {/* Scale labels */}
       <div className="flex justify-between text-xs text-muted-foreground px-1">
         <span>0%</span>
+        <span>25%</span>
         <span>50%</span>
+        <span>75%</span>
         <span>100%</span>
       </div>
 
