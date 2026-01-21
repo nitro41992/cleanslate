@@ -10,6 +10,9 @@ import { getFixturePath } from '../helpers/file-upload'
  *
  * Grouped by fixture file to minimize DuckDB-WASM cold start overhead.
  * Each serial group shares a page context, initializing DuckDB once.
+ *
+ * Note: With the new direct-apply transformation model, each transformation
+ * is applied immediately when configured (no more recipe/run flow).
  */
 
 test.describe.serial('Transformations: Whitespace Data', () => {
@@ -44,13 +47,9 @@ test.describe.serial('Transformations: Whitespace Data', () => {
   test('should apply trim transformation', async () => {
     await loadTestData()
 
-    // Add trim transformation
-    await laundromat.clickAddTransformation()
+    // Apply trim transformation directly
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
-
-    // Run recipe
-    await laundromat.clickRunRecipe()
 
     // Verify via DuckDB query
     const data = await inspector.getTableData('whitespace_data')
@@ -62,17 +61,13 @@ test.describe.serial('Transformations: Whitespace Data', () => {
   test('should chain multiple transformations', async () => {
     await loadTestData()
 
-    // Add trim
-    await laundromat.clickAddTransformation()
+    // Apply trim (directly applied)
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
-    // Add uppercase
-    await laundromat.clickAddTransformation()
+    // Apply uppercase (directly applied)
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('whitespace_data')
     expect(data[0].name).toBe('JOHN DOE') // Trimmed and uppercased
@@ -83,11 +78,8 @@ test.describe.serial('Transformations: Whitespace Data', () => {
   test('should log transformations to audit log', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     // Verify audit log entry
     const auditEntries = await inspector.getAuditEntries()
@@ -131,11 +123,8 @@ test.describe.serial('Transformations: Mixed Case Data', () => {
   test('should apply uppercase transformation', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('mixed_case')
     expect(data[0].name).toBe('JOHN DOE')
@@ -146,11 +135,8 @@ test.describe.serial('Transformations: Mixed Case Data', () => {
   test('should apply lowercase transformation', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('mixed_case')
     expect(data[0].name).toBe('john doe')
@@ -193,11 +179,8 @@ test.describe.serial('Transformations: Duplicates Data', () => {
     let tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(5)
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
-
-    await laundromat.clickRunRecipe()
 
     // Verify reduced count
     tables = await inspector.getTables()
@@ -233,11 +216,8 @@ test.describe.serial('Transformations: Empty Values Data', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('empty_values', 5)
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Filter Empty', { column: 'name' })
-
-    await laundromat.clickRunRecipe()
 
     const tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(3) // Rows with empty name removed
@@ -276,14 +256,11 @@ test.describe.serial('Transformations: Find Replace Data', () => {
   test('should apply find and replace transformation', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
       params: { Find: 'hello', 'Replace with': 'hi' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('find_replace_data')
     expect(data[0].name).toBe('hi world')
@@ -294,14 +271,11 @@ test.describe.serial('Transformations: Find Replace Data', () => {
   test('should replace multiple occurrences in find and replace', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'description',
       params: { Find: 'hello', 'Replace with': 'hi' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('find_replace_data')
     expect(data[0].description).toBe('hi there')
@@ -338,14 +312,11 @@ test.describe.serial('Transformations: Basic Data (Rename)', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Rename Column', {
       column: 'name',
       params: { 'New column name': 'full_name' },
     })
-
-    await laundromat.clickRunRecipe()
 
     // Verify column was renamed by querying the data
     const data = await inspector.getTableData('basic_data')
@@ -386,14 +357,11 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   test('should cast string to integer', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Cast Type', {
       column: 'amount',
       selectParams: { 'Target type': 'Integer' },
     })
-
-    await laundromat.clickRunRecipe()
 
     // Verify data is still accessible (cast succeeded)
     const data = await inspector.getTableData('numeric_strings')
@@ -405,14 +373,11 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   test('should cast string to date', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Cast Type', {
       column: 'date_str',
       selectParams: { 'Target type': 'Date' },
     })
-
-    await laundromat.clickRunRecipe()
 
     // Verify data is still accessible (cast succeeded)
     const data = await inspector.getTableData('numeric_strings')
@@ -425,7 +390,6 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   test('should apply custom SQL transformation', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Custom SQL', {
       params: {
@@ -433,8 +397,6 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
           'CREATE OR REPLACE TABLE numeric_strings AS SELECT *, amount * 2 as doubled FROM numeric_strings',
       },
     })
-
-    await laundromat.clickRunRecipe()
 
     // Verify new column was created with correct values
     // Note: DuckDB may return BigInt for integer calculations
@@ -477,15 +439,12 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   test('should apply case-insensitive find and replace', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
       params: { Find: 'hello', 'Replace with': 'hi' },
       selectParams: { 'Case Sensitive': 'No' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('case_sensitive_data')
     // All variations of "hello" should be replaced regardless of case
@@ -498,15 +457,12 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   test('should apply exact match find and replace', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
       params: { Find: 'hello', 'Replace with': 'hi' },
       selectParams: { 'Match Type': 'Exact Match' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('case_sensitive_data')
     // Only exact match "hello" should be replaced
@@ -519,15 +475,12 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   test('should apply case-insensitive exact match find and replace', async () => {
     await loadTestData()
 
-    await laundromat.clickAddTransformation()
     await picker.waitForOpen()
     await picker.addTransformation('Find & Replace', {
       column: 'name',
       params: { Find: 'hello', 'Replace with': 'hi' },
       selectParams: { 'Case Sensitive': 'No', 'Match Type': 'Exact Match' },
     })
-
-    await laundromat.clickRunRecipe()
 
     const data = await inspector.getTableData('case_sensitive_data')
     // All exact matches regardless of case should be replaced

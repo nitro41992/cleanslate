@@ -7,8 +7,6 @@ export class LaundromatPage {
   readonly exportButton: Locator
   readonly undoButton: Locator
   readonly redoButton: Locator
-  readonly addTransformationButton: Locator
-  readonly runRecipeButton: Locator
   readonly gridContainer: Locator
   readonly dataPreviewTab: Locator
   readonly auditLogTab: Locator
@@ -20,8 +18,6 @@ export class LaundromatPage {
     this.exportButton = page.getByTestId('export-csv-btn')
     this.undoButton = page.locator('button[title*="Undo"]')
     this.redoButton = page.locator('button[title*="Redo"]')
-    this.addTransformationButton = page.getByTestId('add-transformation-btn')
-    this.runRecipeButton = page.getByTestId('run-recipe-btn')
     this.gridContainer = page.getByTestId('data-grid')
     this.dataPreviewTab = page.getByRole('tab', { name: 'Data Preview' })
     this.auditLogTab = page.getByRole('tab', { name: 'Audit Log' })
@@ -78,24 +74,6 @@ export class LaundromatPage {
     }
 
     await this.page.waitForTimeout(100)
-  }
-
-  async clickAddTransformation(): Promise<void> {
-    // Dismiss any overlays that might be blocking the button
-    await this.dismissOverlays()
-    await this.addTransformationButton.click()
-  }
-
-  async clickRunRecipe(): Promise<void> {
-    await this.runRecipeButton.click()
-    // Wait for the run button to no longer be showing "Running..."
-    await this.page.waitForFunction(
-      () => {
-        const btn = document.querySelector('[data-testid="run-recipe-btn"]')
-        return btn === null || !btn.textContent?.includes('Running')
-      },
-      { timeout: 30000 }
-    )
   }
 
   async clickUndo(): Promise<void> {

@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import type { TransformationStep } from '@/types'
 
 export type PanelType = 'clean' | 'match' | 'combine' | 'scrub' | 'diff' | null
 
@@ -25,9 +24,6 @@ interface PreviewState {
 
   // Panel state
   activePanel: PanelType
-
-  // Recipe for Clean panel (transformation steps not yet applied)
-  pendingRecipe: TransformationStep[]
 
   // Pending operations queue (applied to preview but not yet persisted)
   pendingOperations: PendingOperation[]
@@ -55,12 +51,6 @@ interface PreviewActions {
 
   // Table management
   setActiveTable: (tableId: string | null, tableName: string | null) => void
-
-  // Recipe management (for Clean panel)
-  addRecipeStep: (step: TransformationStep) => void
-  removeRecipeStep: (index: number) => void
-  clearRecipe: () => void
-  reorderRecipe: (fromIndex: number, toIndex: number) => void
 
   // Pending operations management
   addPendingOperation: (operation: Omit<PendingOperation, 'id' | 'timestamp'>) => void
@@ -90,7 +80,6 @@ const initialState: PreviewState = {
   activeTableId: null,
   activeTableName: null,
   activePanel: null,
-  pendingRecipe: [],
   pendingOperations: [],
   isPreviewDirty: false,
   previewRowCount: 0,
@@ -119,36 +108,9 @@ export const usePreviewStore = create<PreviewState & PreviewActions>((set) => ({
       activeTableId: tableId,
       activeTableName: tableName,
       // Clear pending state when switching tables
-      pendingRecipe: [],
       pendingOperations: [],
       isPreviewDirty: false,
       changesSummary: null,
-    })
-  },
-
-  // Recipe management
-  addRecipeStep: (step) => {
-    set((state) => ({
-      pendingRecipe: [...state.pendingRecipe, step],
-    }))
-  },
-
-  removeRecipeStep: (index) => {
-    set((state) => ({
-      pendingRecipe: state.pendingRecipe.filter((_, i) => i !== index),
-    }))
-  },
-
-  clearRecipe: () => {
-    set({ pendingRecipe: [] })
-  },
-
-  reorderRecipe: (fromIndex, toIndex) => {
-    set((state) => {
-      const newRecipe = [...state.pendingRecipe]
-      const [item] = newRecipe.splice(fromIndex, 1)
-      newRecipe.splice(toIndex, 0, item)
-      return { pendingRecipe: newRecipe }
     })
   },
 

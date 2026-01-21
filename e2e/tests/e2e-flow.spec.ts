@@ -33,33 +33,28 @@ test.describe('Full E2E Flow', () => {
     const tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(3)
 
-    // 6. Add transformation: Trim whitespace
-    await laundromat.clickAddTransformation()
+    // 6. Apply transformation: Trim whitespace (direct-apply)
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
-    // 7. Add transformation: Uppercase
-    await laundromat.clickAddTransformation()
+    // 7. Apply transformation: Uppercase (direct-apply)
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
 
-    // 8. Run recipe
-    await laundromat.clickRunRecipe()
-
-    // 9. Verify transformation results via store
+    // 8. Verify transformation results via store
     const data = await inspector.getTableData('whitespace_data')
     expect(data[0].name).toBe('JOHN DOE')
     expect(data[1].name).toBe('JANE SMITH')
     expect(data[2].name).toBe('BOB JOHNSON')
 
-    // 10. Verify audit log has entries
+    // 9. Verify audit log has entries
     const auditEntries = await inspector.getAuditEntries()
     const transformEntries = auditEntries.filter(
       (e) => e.action.includes('Trim') || e.action.includes('Uppercase')
     )
     expect(transformEntries.length).toBeGreaterThanOrEqual(2)
 
-    // 11. Export and verify download
+    // 10. Export and verify download
     const downloadResult = await downloadAndVerifyCSV(page)
     expect(downloadResult.filename).toContain('cleaned.csv')
     expect(downloadResult.rows[1][1]).toBe('JOHN DOE')
@@ -87,11 +82,9 @@ test.describe('Full E2E Flow', () => {
     const tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(3)
 
-    // Apply uppercase transformation
-    await laundromat.clickAddTransformation()
+    // Apply uppercase transformation (direct-apply)
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-    await laundromat.clickRunRecipe()
 
     // Verify transformation
     const data = await inspector.getTableData('pipe_delimited')
@@ -123,11 +116,9 @@ test.describe('Full E2E Flow', () => {
     let tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(5)
 
-    // Remove duplicates
-    await laundromat.clickAddTransformation()
+    // Remove duplicates (direct-apply)
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
-    await laundromat.clickRunRecipe()
 
     // Verify reduced count
     tables = await inspector.getTables()

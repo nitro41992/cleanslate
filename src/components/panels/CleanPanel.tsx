@@ -1,9 +1,16 @@
 import { useState } from 'react'
-import { Play, Trash2, GripVertical, Loader2, Plus } from 'lucide-react'
+import { Loader2, Sparkles, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTableStore } from '@/stores/tableStore'
@@ -12,207 +19,279 @@ import {
   applyTransformation,
   getTransformationLabel,
   TRANSFORMATIONS,
+  TransformationDefinition,
 } from '@/lib/transformations'
-import { TransformationPicker } from '@/features/laundromat/components/TransformationPicker'
 import type { TransformationStep } from '@/types'
-import { cn } from '@/lib/utils'
+import { generateId, cn } from '@/lib/utils'
 
 export function CleanPanel() {
-  const [isRunning, setIsRunning] = useState(false)
-  const [currentStep, setCurrentStep] = useState(-1)
-  const [isPickerOpen, setIsPickerOpen] = useState(false)
+  const [isApplying, setIsApplying] = useState(false)
+  const [selectedTransform, setSelectedTransform] = useState<TransformationDefinition | null>(null)
+  const [selectedColumn, setSelectedColumn] = useState<string>('')
+  const [params, setParams] = useState<Record<string, string>>({})
+  const [lastApplied, setLastApplied] = useState<string | null>(null)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
   const updateTable = useTableStore((s) => s.updateTable)
   const activeTable = tables.find((t) => t.id === activeTableId)
 
-  const pendingRecipe = usePreviewStore((s) => s.pendingRecipe)
-  const addRecipeStep = usePreviewStore((s) => s.addRecipeStep)
-  const removeRecipeStep = usePreviewStore((s) => s.removeRecipeStep)
-  const clearRecipe = usePreviewStore((s) => s.clearRecipe)
   const addPendingOperation = usePreviewStore((s) => s.addPendingOperation)
   const updateChangesSummary = usePreviewStore((s) => s.updateChangesSummary)
 
   const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
 
-  const handleAddStep = (step: TransformationStep) => {
-    addRecipeStep(step)
-    setIsPickerOpen(false)
+  const columns = activeTable?.columns.map((c) => c.name) || []
+
+  const handleSelectTransform = (transform: TransformationDefinition) => {
+    setSelectedTransform(transform)
+    setSelectedColumn('')
+    setLastApplied(null)
+    // Pre-populate params with defaults
+    const defaultParams: Record<string, string> = {}
+    transform.params?.forEach((param) => {
+      if (param.default) {
+        defaultParams[param.name] = param.default
+      }
+    })
+    setParams(defaultParams)
   }
 
-  const handleRunRecipe = async () => {
-    if (!activeTable || pendingRecipe.length === 0) return
+  const resetForm = () => {
+    setSelectedTransform(null)
+    setSelectedColumn('')
+    setParams({})
+    setLastApplied(null)
+  }
 
-    setIsRunning(true)
-    let totalAffected = 0
-    let finalRowCount = 0
+  const isValid = () => {
+    if (!selectedTransform) return false
+    if (selectedTransform.requiresColumn && !selectedColumn) return false
+    if (selectedTransform.params) {
+      for (const param of selectedTransform.params) {
+        if (!params[param.name]) return false
+      }
+    }
+    return true
+  }
+
+  const handleApply = async () => {
+    if (!activeTable || !selectedTransform) return
+
+    setIsApplying(true)
 
     try {
-      for (let i = 0; i < pendingRecipe.length; i++) {
-        setCurrentStep(i)
-        const step = pendingRecipe[i]
-
-        const result = await applyTransformation(activeTable.name, step)
-        totalAffected += result.affected
-        finalRowCount = result.rowCount
-
-        addTransformationEntry({
-          tableId: activeTable.id,
-          tableName: activeTable.name,
-          action: getTransformationLabel(step),
-          details: `Applied transformation. Current row count: ${result.rowCount}`,
-          rowsAffected: result.affected,
-          hasRowDetails: result.hasRowDetails,
-          auditEntryId: result.auditEntryId,
-        })
-
-        // Track in pending operations
-        addPendingOperation({
-          type: 'transform',
-          label: getTransformationLabel(step),
-          config: step,
-        })
+      // 1. Build TransformationStep
+      const step: TransformationStep = {
+        id: generateId(),
+        type: selectedTransform.id,
+        label: selectedTransform.label,
+        column: selectedTransform.requiresColumn ? selectedColumn : undefined,
+        params: Object.keys(params).length > 0 ? params : undefined,
       }
 
-      // Update table metadata
-      updateTable(activeTable.id, { rowCount: finalRowCount })
+      // 2. Execute immediately
+      const result = await applyTransformation(activeTable.name, step)
 
-      // Update changes summary
-      updateChangesSummary({ transformsApplied: pendingRecipe.length })
-
-      toast.success('Recipe Applied', {
-        description: `${pendingRecipe.length} transformations completed. ${totalAffected} rows affected.`,
+      // 3. Log to audit store
+      addTransformationEntry({
+        tableId: activeTable.id,
+        tableName: activeTable.name,
+        action: getTransformationLabel(step),
+        details: `Applied transformation. Current row count: ${result.rowCount}`,
+        rowsAffected: result.affected,
+        hasRowDetails: result.hasRowDetails,
+        auditEntryId: result.auditEntryId,
       })
 
-      clearRecipe()
+      // 4. Track in pending operations
+      addPendingOperation({
+        type: 'transform',
+        label: getTransformationLabel(step),
+        config: step,
+      })
+
+      // 5. Update table metadata
+      updateTable(activeTable.id, { rowCount: result.rowCount })
+
+      // 6. Update changes summary
+      updateChangesSummary({ transformsApplied: 1 })
+
+      // 7. Show success, mark last applied
+      setLastApplied(selectedTransform.id)
+      toast.success('Transformation Applied', {
+        description: `${selectedTransform.label} completed. ${result.affected} rows affected.`,
+      })
+
+      // 8. Reset form after delay
+      setTimeout(() => {
+        resetForm()
+      }, 1500)
     } catch (error) {
-      console.error('Recipe execution failed:', error)
-      toast.error('Recipe Failed', {
+      console.error('Transformation failed:', error)
+      toast.error('Transformation Failed', {
         description: error instanceof Error ? error.message : 'An error occurred',
       })
     } finally {
-      setIsRunning(false)
-      setCurrentStep(-1)
+      setIsApplying(false)
     }
-  }
-
-  const getStepIcon = (type: string) => {
-    const def = TRANSFORMATIONS.find((t) => t.id === type)
-    return def?.icon || '?'
   }
 
   return (
     <div className="flex flex-col h-full">
-      {/* Recipe List */}
-      <ScrollArea className="flex-1 px-4">
-        <div className="py-4 space-y-2">
-          {pendingRecipe.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <p className="text-sm">No transformations yet</p>
-              <p className="text-xs mt-1">
-                Click "Add Transformation" to start building your recipe
-              </p>
-            </div>
-          ) : (
-            pendingRecipe.map((step, index) => (
-              <div
-                key={step.id}
+      <ScrollArea className="flex-1">
+        <div className="p-4 space-y-4">
+          {/* Transformation Grid */}
+          <div className="grid grid-cols-2 gap-2">
+            {TRANSFORMATIONS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => handleSelectTransform(t)}
+                disabled={!activeTable || isApplying}
                 className={cn(
-                  'group flex items-center gap-2 p-3 rounded-lg border border-border/50 bg-card',
-                  'hover:border-border transition-colors',
-                  currentStep === index && 'border-primary bg-primary/5'
+                  'flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all',
+                  'hover:bg-muted/50 hover:border-border',
+                  'disabled:opacity-50 disabled:cursor-not-allowed',
+                  selectedTransform?.id === t.id && 'border-primary bg-primary/5',
+                  lastApplied === t.id && 'border-green-500 bg-green-500/10'
                 )}
               >
-                <GripVertical className="w-4 h-4 text-muted-foreground/50 cursor-grab" />
-
-                <span className="text-lg">{getStepIcon(step.type)}</span>
-
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">
-                    {TRANSFORMATIONS.find((t) => t.id === step.type)?.label ||
-                      step.type}
-                  </p>
-                  {step.column && (
-                    <Badge variant="secondary" className="mt-1 text-xs">
-                      {step.column}
-                    </Badge>
+                <div className="relative">
+                  <span className="text-2xl">{t.icon}</span>
+                  {lastApplied === t.id && (
+                    <div className="absolute -top-1 -right-2 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+                      <Check className="w-3 h-3 text-white" />
+                    </div>
                   )}
                 </div>
+                <span className="text-xs font-medium text-center leading-tight">
+                  {t.label}
+                </span>
+              </button>
+            ))}
+          </div>
 
-                {currentStep === index ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                ) : (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={() => removeRecipeStep(index)}
-                    disabled={isRunning}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                )}
+          {/* Configuration Section */}
+          {selectedTransform && (
+            <div className="space-y-4 pt-4 border-t border-border/50 animate-in slide-in-from-top-2 duration-200">
+              {/* Transform Info */}
+              <div className="bg-muted/30 rounded-lg p-3">
+                <h3 className="font-medium flex items-center gap-2">
+                  <span className="text-lg">{selectedTransform.icon}</span>
+                  {selectedTransform.label}
+                </h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {selectedTransform.description}
+                </p>
               </div>
-            ))
+
+              {/* Column Selector */}
+              {selectedTransform.requiresColumn && (
+                <div className="space-y-2">
+                  <Label>Target Column</Label>
+                  <Select
+                    value={selectedColumn}
+                    onValueChange={setSelectedColumn}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select column..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {columns.map((col) => (
+                        <SelectItem key={col} value={col}>
+                          {col}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {/* Additional Params */}
+              {selectedTransform.params?.map((param) => (
+                <div key={param.name} className="space-y-2">
+                  <Label>{param.label}</Label>
+                  {param.type === 'select' && param.options ? (
+                    <Select
+                      value={params[param.name] || ''}
+                      onValueChange={(v) =>
+                        setParams({ ...params, [param.name]: v })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={`Select ${param.label}`} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {param.options.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      value={params[param.name] || ''}
+                      onChange={(e) =>
+                        setParams({ ...params, [param.name]: e.target.value })
+                      }
+                      placeholder={param.label}
+                    />
+                  )}
+                </div>
+              ))}
+
+              {/* Apply Button */}
+              <Button
+                className="w-full"
+                onClick={handleApply}
+                disabled={isApplying || !isValid()}
+                data-testid="apply-transformation-btn"
+              >
+                {isApplying ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Applying...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Apply Transformation
+                  </>
+                )}
+              </Button>
+
+              {/* Cancel Button */}
+              <Button
+                variant="ghost"
+                className="w-full"
+                onClick={resetForm}
+                disabled={isApplying}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
+
+          {/* Empty State */}
+          {!selectedTransform && !activeTable && (
+            <div className="text-center py-8 text-muted-foreground">
+              <p className="text-sm">No table selected</p>
+              <p className="text-xs mt-1">
+                Upload a CSV file to start transforming data
+              </p>
+            </div>
+          )}
+
+          {!selectedTransform && activeTable && (
+            <div className="text-center py-4 text-muted-foreground">
+              <p className="text-xs">
+                Select a transformation above to configure and apply
+              </p>
+            </div>
           )}
         </div>
       </ScrollArea>
-
-      <Separator />
-
-      {/* Actions */}
-      <div className="p-4 space-y-2">
-        <Button
-          variant="outline"
-          className="w-full"
-          onClick={() => setIsPickerOpen(true)}
-          disabled={!activeTable}
-          data-testid="add-transformation-btn"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Add Transformation
-        </Button>
-
-        {pendingRecipe.length > 0 && (
-          <>
-            <Button
-              className="w-full"
-              onClick={handleRunRecipe}
-              disabled={isRunning || !activeTable}
-              data-testid="run-recipe-btn"
-            >
-              {isRunning ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Running ({currentStep + 1}/{pendingRecipe.length})
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 mr-2" />
-                  Run Recipe ({pendingRecipe.length} steps)
-                </>
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              className="w-full"
-              onClick={clearRecipe}
-              disabled={isRunning}
-            >
-              Clear Recipe
-            </Button>
-          </>
-        )}
-      </div>
-
-      {/* Transformation Picker Dialog */}
-      <TransformationPicker
-        open={isPickerOpen}
-        onOpenChange={setIsPickerOpen}
-        columns={activeTable?.columns.map((c) => c.name) || []}
-        onSelect={handleAddStep}
-      />
     </div>
   )
 }
