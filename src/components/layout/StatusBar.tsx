@@ -1,4 +1,4 @@
-import { Save, X, AlertCircle } from 'lucide-react'
+import { X, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -8,14 +8,8 @@ import {
 } from '@/components/ui/tooltip'
 import { usePreviewStore } from '@/stores/previewStore'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
-import { cn } from '@/lib/utils'
 
-interface StatusBarProps {
-  onPersist?: () => void
-  isPersisting?: boolean
-}
-
-export function StatusBar({ onPersist, isPersisting = false }: StatusBarProps) {
+export function StatusBar() {
   const pendingOperations = usePreviewStore((s) => s.pendingOperations)
   const isPreviewDirty = usePreviewStore((s) => s.isPreviewDirty)
   const changesSummary = usePreviewStore((s) => s.changesSummary)
@@ -92,24 +86,8 @@ export function StatusBar({ onPersist, isPersisting = false }: StatusBarProps) {
         )}
       </div>
 
-      {/* Right: Persist button */}
-      <div className="flex items-center gap-2">
-        {hasPendingChanges && (
-          <Button
-            size="sm"
-            onClick={onPersist}
-            disabled={isPersisting || !hasPendingChanges}
-            className={cn(
-              'gap-2 transition-all',
-              hasPendingChanges && 'animate-pulse-subtle'
-            )}
-            data-testid="persist-table-btn"
-          >
-            <Save className="w-4 h-4" />
-            Persist as Table
-          </Button>
-        )}
-      </div>
+      {/* Right: Empty placeholder for layout balance */}
+      <div className="flex items-center gap-2" />
     </footer>
   )
 }

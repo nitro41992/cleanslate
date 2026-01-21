@@ -11,6 +11,7 @@ import {
   query,
   execute,
   updateCell as updateCellDb,
+  duplicateTable as duplicateTableDb,
 } from '@/lib/duckdb'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
@@ -168,6 +169,14 @@ export function useDuckDB() {
     []
   )
 
+  const duplicateTable = useCallback(
+    async (sourceName: string, targetName: string) => {
+      const result = await duplicateTableDb(sourceName, targetName)
+      return result
+    },
+    []
+  )
+
   return {
     isReady,
     isLoading,
@@ -178,5 +187,6 @@ export function useDuckDB() {
     exportTable,
     deleteTable,
     updateCell,
+    duplicateTable,
   }
 }

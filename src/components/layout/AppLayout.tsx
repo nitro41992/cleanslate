@@ -67,7 +67,7 @@ export function AppLayout({
     <TooltipProvider delayDuration={200}>
       <div className="flex flex-col h-screen bg-background">
         {/* Header */}
-        <AppHeader onNewTable={onNewTable} />
+        <AppHeader onNewTable={onNewTable} onPersist={onPersist} isPersisting={isPersisting} />
 
         {/* Main content area */}
         <div className="flex-1 flex min-h-0">
@@ -81,7 +81,7 @@ export function AppLayout({
         </div>
 
         {/* Status bar */}
-        <StatusBar onPersist={onPersist} isPersisting={isPersisting} />
+        <StatusBar />
 
         {/* Feature panel (slides in from right) */}
         <FeaturePanel>{panelContent}</FeaturePanel>

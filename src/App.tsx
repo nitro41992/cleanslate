@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Upload, FileText } from 'lucide-react'
+import { FileText } from 'lucide-react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { MobileBlocker } from '@/components/layout/MobileBlocker'
 import { Toaster } from '@/components/ui/sonner'
@@ -38,13 +38,16 @@ import { toast } from 'sonner'
 import type { CSVIngestionSettings } from '@/types'
 
 function App() {
-  const { loadFile, isLoading, isReady, updateCell } = useDuckDB()
+  const { loadFile, isLoading, isReady, updateCell, duplicateTable } = useDuckDB()
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
+  const addTable = useTableStore((s) => s.addTable)
+  const setActiveTable = useTableStore((s) => s.setActiveTable)
 
   const activePanel = usePreviewStore((s) => s.activePanel)
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
+  const clearPendingOperations = usePreviewStore((s) => s.clearPendingOperations)
 
   // Ingestion wizard state
   const [pendingFile, setPendingFile] = useState<File | null>(null)
@@ -184,19 +187,66 @@ function App() {
       return
     }
 
+    if (!activeTable || !activeTableId) {
+      toast.error('No active table selected')
+      return
+    }
+
+    // Check if table name already exists
+    const tableNameExists = tables.some(
+      (t) => t.name.toLowerCase() === persistTableName.trim().toLowerCase()
+    )
+    if (tableNameExists) {
+      toast.error('A table with this name already exists')
+      return
+    }
+
     setIsPersisting(true)
     try {
-      // In a real implementation, this would:
-      // 1. Execute all pending operations
-      // 2. Create a new table with the result
-      // 3. Clear pending operations
-      // For now, we just show success
+      // 1. Create new table as copy of current table
+      const result = await duplicateTable(activeTable.name, persistTableName.trim())
+
+      // 2. Convert columns to ColumnInfo format
+      const columns = result.columns.map((col) => ({
+        name: col.name,
+        type: col.type,
+        nullable: true,
+      }))
+
+      // 3. Add to tableStore and get new table ID
+      const newTableId = addTable(persistTableName.trim(), columns, result.rowCount)
+
+      // 4. Add audit entry for the source table
+      addAuditEntry(
+        activeTableId,
+        activeTable.name,
+        'Table Persisted',
+        `Saved as new table: ${persistTableName.trim()}`,
+        'A'
+      )
+
+      // 5. Add audit entry for the new table
+      addAuditEntry(
+        newTableId,
+        persistTableName.trim(),
+        'Table Created',
+        `Persisted from ${activeTable.name} (${result.rowCount} rows, ${result.columns.length} columns)`,
+        'A'
+      )
+
+      // 6. Clear pending operations
+      clearPendingOperations()
+
+      // 7. Switch to new table
+      setActiveTable(newTableId)
+
       toast.success('Table Persisted', {
         description: `Created new table: ${persistTableName}`,
       })
       setShowPersistDialog(false)
       setPersistTableName('')
-    } catch {
+    } catch (error) {
+      console.error('Failed to persist table:', error)
       toast.error('Failed to persist table')
     } finally {
       setIsPersisting(false)
@@ -248,23 +298,12 @@ function App() {
             /* Data Preview */
             <Card className="flex-1 flex flex-col overflow-hidden">
               <CardHeader className="py-3 shrink-0 border-b border-border/50">
-                <CardTitle className="text-sm flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-muted-foreground" />
-                    <span>{activeTable.name}</span>
-                    <span className="text-muted-foreground font-normal">
-                      {activeTable.rowCount.toLocaleString()} rows
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleNewTable}
-                    className="text-muted-foreground"
-                  >
-                    <Upload className="w-4 h-4 mr-1" />
-                    Add file
-                  </Button>
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-muted-foreground" />
+                  <span>{activeTable.name}</span>
+                  <span className="text-muted-foreground font-normal">
+                    {activeTable.rowCount.toLocaleString()} rows
+                  </span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-1 p-0 min-h-0 overflow-hidden relative">

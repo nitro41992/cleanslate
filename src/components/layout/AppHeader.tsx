@@ -1,4 +1,4 @@
-import { Sparkles, Download, Undo2, Redo2, History, Upload } from 'lucide-react'
+import { Sparkles, Download, Undo2, Redo2, History, Upload, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -16,9 +16,11 @@ import { useCallback } from 'react'
 
 interface AppHeaderProps {
   onNewTable?: () => void
+  onPersist?: () => void
+  isPersisting?: boolean
 }
 
-export function AppHeader({ onNewTable }: AppHeaderProps) {
+export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHeaderProps) {
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
@@ -37,6 +39,14 @@ export function AppHeader({ onNewTable }: AppHeaderProps) {
   const redoStackLength = useEditStore((s) => s.redoStack.length)
 
   const addAuditEntry = useAuditStore((s) => s.addEntry)
+  const auditEntries = useAuditStore((s) => s.entries)
+
+  // Check if there are meaningful changes (not just "File Loaded")
+  const hasChanges = activeTableId
+    ? auditEntries.some(
+        (entry) => entry.tableId === activeTableId && entry.action !== 'File Loaded'
+      )
+    : false
 
   const handleUndo = useCallback(async () => {
     const edit = undo()
@@ -67,8 +77,16 @@ export function AppHeader({ onNewTable }: AppHeaderProps) {
   }, [redo, activeTable, updateCell, addAuditEntry])
 
   const handleExport = () => {
-    if (activeTable) {
-      exportTable(activeTable.name, `${activeTable.name}_cleaned.csv`)
+    if (activeTable && activeTableId) {
+      const filename = `${activeTable.name}_cleaned.csv`
+      exportTable(activeTable.name, filename)
+      addAuditEntry(
+        activeTableId,
+        activeTable.name,
+        'Table Exported',
+        `Exported to ${filename}`,
+        'A'
+      )
     }
   }
 
@@ -164,6 +182,24 @@ export function AppHeader({ onNewTable }: AppHeaderProps) {
               </TooltipTrigger>
               <TooltipContent>Toggle audit log</TooltipContent>
             </Tooltip>
+
+            {hasChanges && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onPersist}
+                    disabled={isPersisting}
+                    data-testid="persist-table-btn"
+                  >
+                    <Save className="w-4 h-4 mr-2" />
+                    {isPersisting ? 'Saving...' : 'Persist as Table'}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Save current state as a new table</TooltipContent>
+              </Tooltip>
+            )}
 
             <Tooltip>
               <TooltipTrigger asChild>

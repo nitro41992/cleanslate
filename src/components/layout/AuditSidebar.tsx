@@ -56,7 +56,7 @@ export function AuditSidebar() {
 
   return (
     <>
-      <aside className="w-72 border-l border-border/50 bg-card/30 flex flex-col shrink-0">
+      <aside className="w-80 border-l border-border/50 bg-card/30 flex flex-col shrink-0">
         {/* Header */}
         <div className="h-12 flex items-center justify-between px-3 border-b border-border/50 shrink-0">
           <div className="flex items-center gap-2">
@@ -105,7 +105,7 @@ export function AuditSidebar() {
               </p>
             </div>
           ) : (
-            <div className="p-2 space-y-1">
+            <div className="p-2 px-3 space-y-1">
               {tableEntries.map((entry) => (
                 <button
                   key={entry.id}
@@ -117,8 +117,8 @@ export function AuditSidebar() {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium truncate">{entry.action}</p>
-                      <p className="text-xs text-muted-foreground truncate">
+                      <p className="text-sm font-medium">{entry.action}</p>
+                      <p className="text-xs text-muted-foreground line-clamp-2">
                         {entry.details}
                       </p>
                     </div>
