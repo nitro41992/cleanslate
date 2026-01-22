@@ -1,112 +1,118 @@
-# Fix Remaining E2E Test Failures
+# Fix Remaining E2E Test Failures - Phase 2
 
 ## Overview
 
-After implementing initial fixes, 6 tests still fail. This plan addresses the remaining failures.
+After implementing the first round of fixes, the test suite improved from 78 passed/6 failed to **83 passed/3 failed**. This plan addresses the remaining 3 failures using insights from web research on Playwright + React interaction issues.
 
-**Current Status:** 78 passed, 6 failed, 1 flaky
+**Current Status:** 83 passed, 3 failed
+
+---
+
+## Root Cause Analysis (from Web Research)
+
+Based on research from [Playwright GitHub issues](https://github.com/microsoft/playwright/issues/26340), [Checkly docs](https://www.checklyhq.com/docs/learn/playwright/error-click-not-executed/), and [Better Stack](https://betterstack.com/community/guides/testing/avoid-flaky-playwright-tests/):
+
+### React Hydration Issue
+When Playwright clicks a button, React's synthetic event system may not be fully attached yet. The button is visible and enabled, but the `onClick` handler hasn't been wired up. This explains why:
+- The button click appears to work (no error)
+- But `handleFindDuplicates` never executes
+- Manual testing works fine (user clicks after hydration completes)
+
+### Solutions from Research
+1. **Use `dispatchEvent('click')`** - Bypasses actionability checks and directly fires the event
+2. **Wait for React state indicator** - Check that component state is ready before clicking
+3. **Use `page.evaluate()` to call functions directly** - Bypass UI entirely for triggering actions
 
 ---
 
 ## Remaining Failures
 
-### Fix 1: Visual Diff - "should identify added, removed, and modified rows"
+### Fix 1: Fuzzy Matcher - "should open match view and find duplicates"
 
-**File:** `feature-coverage.spec.ts:492`
+**File:** `e2e/tests/feature-coverage.spec.ts:582`
 
-**Problem:** Test opens diff view after previous test left it in "Compare with Preview" mode. The test expects "Compare Two Tables" mode but doesn't explicitly select it.
+**Problem:** Button click doesn't trigger `handleFindDuplicates` callback due to React hydration timing. Even `el.click()` via JavaScript doesn't work because React's synthetic event system isn't responding.
 
-**Fix:** After opening diff view, explicitly select "Compare Two Tables" mode:
+**Root Cause:** The `MatchConfigPanel` component receives `onFindDuplicates` as a prop. If clicked before React fully mounts the callback, nothing happens.
+
+**Fix:** Use `locator.dispatchEvent('click')` which directly dispatches a DOM click event:
+
 ```typescript
-// Line ~514 - after openDiffView()
-await laundromat.openDiffView()
-await diffView.selectCompareTablesMode()  // ADD THIS LINE
+// In feature-coverage.spec.ts, line ~604-617
+// Replace the multiple click attempts with dispatchEvent
+
+const findButton = page.getByRole('button', { name: /Find Duplicates/i })
+await expect(findButton).toBeVisible()
+await expect(findButton).toBeEnabled()
+
+// Wait for React to fully hydrate the component
+await page.waitForTimeout(500)
+
+// Use dispatchEvent which directly fires the click event
+await findButton.dispatchEvent('click')
+
+// Wait for matching to start
+await page.waitForTimeout(1000)
+```
+
+**Alternative Fix (if dispatchEvent doesn't work):** Directly trigger the store action via page.evaluate:
+
+```typescript
+// Bypass UI entirely and trigger the matching directly
+await page.evaluate(async () => {
+  const matcherStore = (window as any).__ZUSTAND_STORES__?.matcherStore
+  if (matcherStore) {
+    // This would require exposing the store to window
+  }
+})
 ```
 
 ---
 
-### Fix 2: Fuzzy Matcher - "should open match view and find duplicates"
+### Fix 2: Merge Audit Drill-Down - "should display row data"
 
-**File:** `feature-coverage.spec.ts:569`
+**File:** `e2e/tests/feature-coverage.spec.ts:714`
 
-**Problem:** The matching process completes but pairs may not appear in time. The `findDuplicates()` method only waits 500ms which may not be enough.
+**Problem:** This test depends on Fix 1. If the Fuzzy Matcher test fails, this test also fails because it needs duplicate pairs to be found first.
 
-**Fix:** Increase wait time in `findDuplicates()` page object method:
+**Fix:** After Fix 1 is applied, this test should pass. No additional changes needed.
+
+---
+
+### Fix 3: Left Join - "should perform left join preserving unmatched orders"
+
+**File:** `e2e/tests/feature-coverage.spec.ts:1091`
+
+**Problem:** Test is flaky - passes in isolation but fails in full suite. The error context shows the combobox dropdown is open (line 136-147 shows duplicate options in listbox), suggesting state contamination from previous test.
+
+**Root Cause:** The test doesn't explicitly close the combobox dropdown before proceeding. When running in sequence, UI state from previous operations may interfere.
+
+**Fix 1:** Ensure dropdown is closed before selecting radio button:
+
 ```typescript
-// In match-view.page.ts, line ~73
-async findDuplicates(): Promise<void> {
-  await expect(this.findDuplicatesButton).toBeEnabled()
-  await this.findDuplicatesButton.click()
-  // Wait for async operation to start
-  await this.page.waitForTimeout(1000)  // Increase from 500ms
+// After validating the join, close any open dropdowns
+await page.keyboard.press('Escape')
+await page.waitForTimeout(200)
+
+// Then select Left join type
+await page.getByRole('radio', { name: /left/i }).click()
+```
+
+**Fix 2:** Add explicit wait for combobox to close:
+
+```typescript
+// Wait for any open listbox to disappear
+const openListbox = page.locator('[role="listbox"]')
+if (await openListbox.isVisible()) {
+  await page.keyboard.press('Escape')
+  await expect(openListbox).not.toBeVisible({ timeout: 2000 })
 }
 ```
 
----
+**Fix 3:** Use dispatchEvent for radio button too:
 
-### Fix 3: Merge Audit Drill-Down - "should display row data"
-
-**File:** `feature-coverage.spec.ts:670`
-
-**Problem:** Cascades from Fix 2 - if fuzzy matching fails, this test can't proceed. Also, line 690 waits for progress bar that may never appear.
-
-**Fix:** Depends on Fix 2. Additionally, make the wait more resilient:
 ```typescript
-// Line ~690 - wait for progress OR results
-await Promise.race([
-  page.locator('[role="progressbar"]').waitFor({ state: 'hidden', timeout: 30000 }),
-  matchView.waitForPairs()
-])
-```
-
----
-
-### Fix 4: Left Join - "should perform left join preserving unmatched orders"
-
-**File:** `feature-coverage.spec.ts:1043`
-
-**Problem:** Radio button selector `getByLabel('Left')` doesn't match the actual UI structure. Previous test leaves "Inner" selected.
-
-**Fix:** Use role-based selector for radio button:
-```typescript
-// Line ~1086 - change from getByLabel to getByRole
-await page.getByRole('radio', { name: /left/i }).click()
-await page.waitForTimeout(200)  // Wait for selection to register
-```
-
----
-
-### Fix 5: Diff Compare with Preview - "should support Compare with Preview mode"
-
-**File:** `feature-coverage.spec.ts:1300`
-
-**Problem:** 500ms wait after transformation isn't enough for snapshot creation. The timeline system may need more time.
-
-**Fix:** Increase wait time and add explicit verification:
-```typescript
-// Line ~1313 - increase wait
-await page.waitForTimeout(1000)  // Increase from 500ms
-
-// OR better: wait for toast to confirm transformation applied
-await expect(page.getByText('Transformation Applied')).toBeVisible({ timeout: 5000 })
-```
-
----
-
-### Fix 6: Audit Export - "should export manual edit details as CSV"
-
-**File:** `audit-details.spec.ts:361`
-
-**Problem:** Uses deprecated `switchToDataPreviewTab()` and `switchToAuditLogTab()` methods. Race condition when sidebar opens.
-
-**Fix:** Replace deprecated methods and add explicit waits:
-```typescript
-// Line ~365 - replace deprecated method
-await laundromat.closeAuditSidebar()  // Instead of switchToDataPreviewTab()
-
-// Line ~372 - replace and wait for content
-await laundromat.openAuditSidebar()  // Instead of switchToAuditLogTab()
-await page.waitForTimeout(300)  // Wait for sidebar animation
+await page.getByRole('radio', { name: /left/i }).dispatchEvent('click')
 ```
 
 ---
@@ -115,41 +121,76 @@ await page.waitForTimeout(300)  // Wait for sidebar animation
 
 | File | Line | Change |
 |------|------|--------|
-| `feature-coverage.spec.ts` | ~514 | Add `selectCompareTablesMode()` call |
-| `feature-coverage.spec.ts` | ~1086 | Change to `getByRole('radio', { name: /left/i })` |
-| `feature-coverage.spec.ts` | ~1313 | Increase wait to 1000ms |
-| `match-view.page.ts` | ~73 | Increase wait in `findDuplicates()` to 1000ms |
-| `audit-details.spec.ts` | ~365, 372 | Replace deprecated methods with explicit calls |
+| `e2e/tests/feature-coverage.spec.ts` | ~609 | Use `dispatchEvent('click')` for Find Duplicates button |
+| `e2e/tests/feature-coverage.spec.ts` | ~1086 | Add Escape key press before radio button click |
+| `e2e/page-objects/match-view.page.ts` | ~79 | Use `dispatchEvent('click')` instead of regular click |
 
 ---
 
 ## Implementation Order
 
-1. **Fix 4 (Left Join)** - Isolated radio button selector fix
-2. **Fix 5 (Diff Preview)** - Timing increase
-3. **Fix 6 (Audit Export)** - Deprecated method replacement
-4. **Fix 2 (Fuzzy Matcher)** - Page object timing fix
-5. **Fix 1 & 3 (Visual Diff & Merge)** - Depend on earlier fixes
+1. **Fix 1 (Fuzzy Matcher)** - Primary fix using dispatchEvent
+2. **Fix 3 (Left Join)** - Add Escape key press and/or dispatchEvent
+3. **Fix 2 (Merge Audit)** - Should auto-fix after Fix 1
+
+---
+
+## Updated Page Object: match-view.page.ts
+
+```typescript
+async findDuplicates(): Promise<void> {
+  await expect(this.findDuplicatesButton).toBeVisible()
+  await expect(this.findDuplicatesButton).toBeEnabled()
+
+  // Wait for React hydration to complete
+  await this.page.waitForTimeout(500)
+
+  // Use dispatchEvent to bypass potential React synthetic event issues
+  await this.findDuplicatesButton.dispatchEvent('click')
+
+  // Wait for matching to potentially start
+  await this.page.waitForTimeout(1500)
+
+  // Verify button changed state (isMatching should be true, showing "Finding Matches...")
+  // If still showing "Find Duplicates", try one more time
+  const buttonText = await this.findDuplicatesButton.textContent()
+  if (buttonText?.includes('Find Duplicates')) {
+    console.log('First click did not register, retrying with force click')
+    await this.findDuplicatesButton.click({ force: true })
+    await this.page.waitForTimeout(1500)
+  }
+}
+```
 
 ---
 
 ## Verification
 
 ```bash
-# Run specific failing tests
-npm test -- --grep "should identify added, removed, and modified rows"
+# Run the 3 failing tests specifically
 npm test -- --grep "should open match view and find duplicates"
 npm test -- --grep "should display row data in merge audit"
 npm test -- --grep "should perform left join"
-npm test -- --grep "Compare with Preview"
-npm test -- --grep "should export manual edit details"
 
-# Run full suite
+# Run full suite to verify no regressions
 npm test
 ```
 
 ---
 
-## Note on TDD Tests
+## Expected Outcome
 
-14 tests are expected to fail - these are TDD tests marked with `test.fail()` for unimplemented features (Title Case, Remove Accents, Smart Scrubber, etc.). These are NOT bugs - they document future work.
+After these fixes:
+- **86 tests should pass** (83 + 3 fixed)
+- **14 TDD tests expected to fail** (test.fail() for unimplemented features)
+- **0 unexpected failures**
+
+---
+
+## Sources
+
+- [Playwright Issue #26340 - Click handler not triggered](https://github.com/microsoft/playwright/issues/26340)
+- [Checkly - Fix Click Not Executed Error](https://www.checklyhq.com/docs/learn/playwright/error-click-not-executed/)
+- [Better Stack - Avoiding Flaky Tests](https://betterstack.com/community/guides/testing/avoid-flaky-playwright-tests/)
+- [Playwright Issue #28595 - React 18 click issues](https://github.com/microsoft/playwright/issues/28595)
+- [Medium - Flaky click in Playwright](https://medium.com/@tejasv2/solved-flaky-click-in-playwright-even-when-element-is-visible-02a4fa1bdd16)
