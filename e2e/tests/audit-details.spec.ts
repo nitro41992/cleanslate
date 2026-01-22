@@ -326,10 +326,10 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     expect(manualEditEntry?.auditEntryId).toBeDefined()
     expect(typeof manualEditEntry?.auditEntryId).toBe('string')
 
-    // Find the Manual Edit entry in the UI
+    // Find the Manual Edit entry in the UI (uses div with role="button", not actual button)
     const manualEditElement = page
       .locator('[data-testid="audit-sidebar"]')
-      .locator('button')
+      .locator('[data-testid="audit-entry-with-details"]')
       .filter({ hasText: 'Manual Edit' })
       .first()
 

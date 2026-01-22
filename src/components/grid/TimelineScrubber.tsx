@@ -84,7 +84,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
         <TooltipProvider delayDuration={300}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" disabled className="h-7 w-7">
+              <Button variant="ghost" size="icon" disabled className="h-7 w-7" data-testid="undo-btn">
                 <Undo2 className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
@@ -95,7 +95,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
 
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" disabled className="h-7 w-7">
+              <Button variant="ghost" size="icon" disabled className="h-7 w-7" data-testid="redo-btn">
                 <Redo2 className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
@@ -121,6 +121,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
                 onClick={handleUndo}
                 disabled={!canUndo || isReplaying}
                 className="h-7 w-7"
+                data-testid="undo-btn"
               >
                 {isReplaying ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -142,6 +143,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
                 onClick={handleRedo}
                 disabled={!canRedo || isReplaying}
                 className="h-7 w-7"
+                data-testid="redo-btn"
               >
                 <Redo2 className="h-4 w-4" />
               </Button>
@@ -192,6 +194,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
               onClick={handleUndo}
               disabled={!canUndo || isReplaying}
               className="h-7 w-7"
+              data-testid="undo-btn"
             >
               {isReplaying ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -296,6 +299,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
               onClick={handleRedo}
               disabled={!canRedo || isReplaying}
               className="h-7 w-7"
+              data-testid="redo-btn"
             >
               <Redo2 className="h-4 w-4" />
             </Button>

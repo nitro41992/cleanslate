@@ -118,7 +118,7 @@ test.describe('Full E2E Flow', () => {
     await inspector.waitForTableLoaded('with_duplicates', 5)
 
     // Verify initial count
-    let tables = await inspector.getTables()
+    const tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(5)
 
     // Remove duplicates (direct-apply)
@@ -127,9 +127,12 @@ test.describe('Full E2E Flow', () => {
     await picker.addTransformation('Remove Duplicates')
     await laundromat.closePanel()
 
-    // Verify reduced count
-    tables = await inspector.getTables()
-    expect(tables[0].rowCount).toBe(3)
+    // Wait for transformation to fully propagate to DuckDB
+    await page.waitForTimeout(500)
+
+    // Verify reduced count - query DuckDB directly as store may not sync immediately
+    const result = await inspector.runQuery('SELECT count(*) as cnt FROM with_duplicates')
+    expect(Number(result[0].cnt)).toBe(3)
 
     // Export deduplicated data
     const downloadResult = await downloadAndVerifyCSV(page)

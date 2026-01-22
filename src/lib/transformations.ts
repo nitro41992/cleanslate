@@ -1,4 +1,4 @@
-import { execute, query } from '@/lib/duckdb'
+import { execute, query, CS_ID_COLUMN, getTableColumns } from '@/lib/duckdb'
 import type { TransformationStep, TransformationType } from '@/types'
 import { generateId } from '@/lib/utils'
 
@@ -454,15 +454,21 @@ export async function applyTransformation(
       await execute(sql)
       break
 
-    case 'remove_duplicates':
+    case 'remove_duplicates': {
+      // Get user columns (exclude internal _cs_id column to properly detect duplicates)
+      const allCols = await getTableColumns(tableName, true)
+      const userCols = allCols.filter(c => c.name !== CS_ID_COLUMN).map(c => `"${c.name}"`)
+
       sql = `
         CREATE OR REPLACE TABLE "${tempTable}" AS
-        SELECT DISTINCT * FROM "${tableName}"
+        SELECT gen_random_uuid() as "${CS_ID_COLUMN}", ${userCols.join(', ')}
+        FROM (SELECT DISTINCT ${userCols.join(', ')} FROM "${tableName}")
       `
       await execute(sql)
       await execute(`DROP TABLE "${tableName}"`)
       await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
       break
+    }
 
     case 'filter_empty':
       sql = `

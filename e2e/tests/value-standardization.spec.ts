@@ -37,6 +37,9 @@ test.describe.serial('FR-F: Value Standardization', () => {
   })
 
   async function loadTestData() {
+    // Reload page to clear any stale table entries in store
+    await page.reload()
+    await inspector.waitForDuckDBReady()
     await inspector.runQuery('DROP TABLE IF EXISTS fr_f_standardize')
     await laundromat.uploadFile(getFixturePath('fr_f_standardize.csv'))
     await wizard.waitForOpen()
@@ -126,8 +129,8 @@ test.describe.serial('FR-F: Value Standardization', () => {
     // Expand first cluster and check master is shown
     await standardize.expandCluster(0)
 
-    // Look for the Master badge
-    const masterBadge = page.locator('text=Master')
+    // Look for the Master badge (exact match to avoid matching "Set Master" buttons)
+    const masterBadge = page.getByText('Master', { exact: true })
     await expect(masterBadge).toBeVisible()
 
     await standardize.close()

@@ -77,7 +77,12 @@ export class MatchViewPage {
    * Wait for duplicate pairs to appear
    */
   async waitForPairs(): Promise<void> {
-    // Wait for at least one pair to show in the list
+    // Wait for matching to complete (progress text disappears)
+    await this.page.waitForFunction(
+      () => !document.body.innerText.includes('Finding matches'),
+      { timeout: 30000 }
+    )
+    // Then check for pairs
     await expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 10000 })
   }
 

@@ -475,6 +475,13 @@ test.describe.serial('FR-B2: Visual Diff', () => {
   })
 
   test('should detect row changes between two tables', async () => {
+    // Load a table first (diff button disabled on empty state)
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
     // Open diff view via panel-based navigation (single-page app)
     await laundromat.openDiffView()
 
@@ -938,7 +945,7 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
     await page.getByRole('button', { name: 'Add' }).click()
 
     // Enter result table name
-    await page.getByLabel('Result Table Name').fill('stacked_result')
+    await page.getByPlaceholder('e.g., combined_sales').fill('stacked_result')
 
     // Click Stack Tables button
     await page.getByTestId('combiner-stack-btn').click()
@@ -1001,7 +1008,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
     // Switch to Join tab and wait for it to be active
     await page.getByRole('tab', { name: 'Join' }).click()
-    await expect(page.getByRole('heading', { name: 'Join Tables' })).toBeVisible()
+    await expect(page.locator('text=Join Tables').first()).toBeVisible()
 
     // Select left table (orders)
     await page.getByRole('combobox').first().click()
@@ -1019,7 +1026,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await page.getByLabel('Inner').click()
 
     // Enter result table name
-    await page.getByLabel('Result Table Name').fill('join_result')
+    await page.getByPlaceholder('e.g., orders_with_customers').fill('join_result')
 
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
@@ -1061,7 +1068,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
     // Switch to Join tab and wait for it to be active
     await page.getByRole('tab', { name: 'Join' }).click()
-    await expect(page.getByRole('heading', { name: 'Join Tables' })).toBeVisible()
+    await expect(page.locator('text=Join Tables').first()).toBeVisible()
 
     // Select left table (orders)
     await page.getByRole('combobox').first().click()
@@ -1079,7 +1086,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await page.getByLabel('Left').click()
 
     // Enter result table name
-    await page.getByLabel('Result Table Name').fill('join_result')
+    await page.getByPlaceholder('e.g., orders_with_customers').fill('join_result')
 
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
@@ -1303,6 +1310,7 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
+    await page.waitForTimeout(500) // Allow snapshot creation to complete
 
     // 3. Open Diff view
     await laundromat.openDiffView()
