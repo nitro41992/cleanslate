@@ -584,6 +584,11 @@ export async function duplicateTable(
 
 /**
  * Get the original snapshot table name for a table
+ *
+ * @deprecated This function is part of the legacy snapshot system (_original_${tableName}).
+ * The timeline system now uses _timeline_original_${timelineId} snapshots instead.
+ * This function is kept for backward compatibility with existing diff fallback logic.
+ * @see getTimelineOriginalName in timeline-engine.ts for the new system
  */
 export function getOriginalSnapshotName(tableName: string): string {
   return `_original_${tableName}`
@@ -591,6 +596,11 @@ export function getOriginalSnapshotName(tableName: string): string {
 
 /**
  * Check if an original snapshot exists for a table
+ *
+ * @deprecated This function is part of the legacy snapshot system (_original_${tableName}).
+ * The timeline system now uses _timeline_original_${timelineId} snapshots instead.
+ * This function is kept for backward compatibility with existing diff fallback logic.
+ * @see initializeTimeline in timeline-engine.ts for the new system
  */
 export async function hasOriginalSnapshot(tableName: string): Promise<boolean> {
   const snapshotName = getOriginalSnapshotName(tableName)
@@ -599,8 +609,13 @@ export async function hasOriginalSnapshot(tableName: string): Promise<boolean> {
 
 /**
  * Create an original snapshot of a table (if it doesn't exist)
- * Called before the first transformation is applied
- * Preserves _cs_id values to enable row-level tracking in diffs
+ *
+ * @deprecated This function is part of the legacy snapshot system.
+ * No longer called by transformations.ts or DataGrid.tsx.
+ * Use initializeTimeline() from timeline-engine.ts instead, which creates
+ * _timeline_original_${timelineId} snapshots that are properly tracked.
+ *
+ * @see initializeTimeline in timeline-engine.ts for the new system
  */
 export async function createOriginalSnapshot(tableName: string): Promise<boolean> {
   const snapshotName = getOriginalSnapshotName(tableName)
@@ -624,7 +639,12 @@ export async function createOriginalSnapshot(tableName: string): Promise<boolean
 
 /**
  * Delete the original snapshot for a table
- * Called when the table is deleted or when user resets to original
+ *
+ * @deprecated This function is part of the legacy snapshot system.
+ * Kept for cleaning up legacy _original_${tableName} snapshots.
+ * New code should use cleanupTimelineSnapshots() from timeline-engine.ts.
+ *
+ * @see cleanupTimelineSnapshots in timeline-engine.ts for the new system
  */
 export async function deleteOriginalSnapshot(tableName: string): Promise<void> {
   const snapshotName = getOriginalSnapshotName(tableName)
@@ -633,6 +653,12 @@ export async function deleteOriginalSnapshot(tableName: string): Promise<void> {
 
 /**
  * Restore a table from its original snapshot
+ *
+ * @deprecated This function is part of the legacy snapshot system.
+ * Use replayToPosition(tableId, -1) from timeline-engine.ts instead,
+ * which uses the timeline's original snapshot for restoration.
+ *
+ * @see replayToPosition in timeline-engine.ts for the new system
  */
 export async function restoreFromOriginalSnapshot(tableName: string): Promise<boolean> {
   const snapshotName = getOriginalSnapshotName(tableName)

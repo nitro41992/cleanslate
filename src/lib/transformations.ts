@@ -1,4 +1,4 @@
-import { execute, query, createOriginalSnapshot } from '@/lib/duckdb'
+import { execute, query } from '@/lib/duckdb'
 import type { TransformationStep, TransformationType } from '@/types'
 import { generateId } from '@/lib/utils'
 
@@ -404,9 +404,9 @@ export async function applyTransformation(
 
   let sql: string
 
-  // Create original snapshot before first transformation (if it doesn't exist)
-  // This preserves the original state for "Compare with Preview" functionality
-  await createOriginalSnapshot(tableName)
+  // NOTE: Original snapshot creation is now handled by initializeTimeline() in CleanPanel.tsx
+  // Timeline system creates _timeline_original_${timelineId} snapshots which are used
+  // by the diff system for "Compare with Preview" functionality
 
   // Get count before
   const beforeResult = await query<{ count: number }>(

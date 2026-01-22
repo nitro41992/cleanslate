@@ -13,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
-import { updateCell, createOriginalSnapshot } from '@/lib/duckdb'
+import { updateCell } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import type { TimelineHighlight, ManualEditParams } from '@/types'
 
@@ -272,11 +272,9 @@ export function DataGrid({
       try {
         // IMPORTANT: Initialize timeline BEFORE modifying data
         // This ensures the original snapshot captures the pre-modification state
+        // initializeTimeline creates _timeline_original_${timelineId} which is used by diff
         console.log('[DATAGRID] Initializing timeline before cell edit...')
         await initializeTimeline(tableId, tableName)
-
-        // Create original snapshot before first edit (for "Compare with Preview")
-        await createOriginalSnapshot(tableName)
 
         // Update DuckDB and get the row's _cs_id
         console.log('[DATAGRID] Updating cell in DuckDB...')

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { TableInfo, ColumnInfo, LineageTransformation } from '@/types'
 import { generateId } from '@/lib/utils'
+import { cleanupTimelineSnapshots } from '@/lib/timeline-engine'
 
 interface TableState {
   tables: TableInfo[]
@@ -53,6 +54,12 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
   },
 
   removeTable: (id) => {
+    // Clean up timeline snapshots (fire-and-forget)
+    // This removes _timeline_original_* and _timeline_snapshot_* tables from DuckDB
+    cleanupTimelineSnapshots(id).catch((err) => {
+      console.warn(`Failed to cleanup timeline snapshots for table ${id}:`, err)
+    })
+
     set((state) => ({
       tables: state.tables.filter((t) => t.id !== id),
       activeTableId: state.activeTableId === id ? null : state.activeTableId,
