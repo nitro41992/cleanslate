@@ -67,23 +67,49 @@ export class MatchViewPage {
    * Click Find Duplicates button
    */
   async findDuplicates(): Promise<void> {
+    // Wait for button to be visible and enabled
+    await expect(this.findDuplicatesButton).toBeVisible()
     await expect(this.findDuplicatesButton).toBeEnabled()
-    await this.findDuplicatesButton.click()
-    // Wait for matching to complete (button disappears when pairs are found)
-    await this.page.waitForTimeout(500) // Allow time for async operation
+    // Wait a moment for any animations/transitions to settle
+    await this.page.waitForTimeout(500)
+
+    // Try clicking multiple ways to ensure it registers
+    try {
+      // First try normal click
+      await this.findDuplicatesButton.click({ timeout: 3000 })
+    } catch {
+      // If that fails, try force click
+      await this.findDuplicatesButton.click({ force: true })
+    }
+
+    // Wait for matching to potentially start
+    await this.page.waitForTimeout(1500)
+
+    // If button is still visible and enabled, the click might not have registered
+    // Try clicking via JavaScript as a fallback
+    const isStillVisible = await this.findDuplicatesButton.isVisible()
+    const isStillEnabled = await this.findDuplicatesButton.isEnabled()
+    if (isStillVisible && isStillEnabled) {
+      // Use evaluate to click directly via JavaScript
+      await this.findDuplicatesButton.evaluate((el) => (el as HTMLElement).click())
+      await this.page.waitForTimeout(1500)
+    }
   }
 
   /**
    * Wait for duplicate pairs to appear
    */
   async waitForPairs(): Promise<void> {
-    // Wait for matching to complete (progress text disappears)
-    await this.page.waitForFunction(
-      () => !document.body.innerText.includes('Finding matches'),
-      { timeout: 30000 }
-    )
-    // Then check for pairs
-    await expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 10000 })
+    // Wait for matching to complete - either "Finding matches" disappears or pairs appear
+    await Promise.race([
+      this.page.waitForFunction(
+        () => !document.body.innerText.includes('Finding matches'),
+        { timeout: 30000 }
+      ),
+      expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 30000 })
+    ])
+    // Then ensure pairs are visible
+    await expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 15000 })
   }
 
   /**

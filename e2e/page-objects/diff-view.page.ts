@@ -91,15 +91,21 @@ export class DiffViewPage {
    */
   async runComparison(): Promise<void> {
     await this.compareButton.click()
-    // Wait for comparison to complete
-    await this.page.waitForFunction(
-      () => {
-        const btn = document.querySelector('[data-testid="diff-compare-btn"]')
-        return btn && !btn.textContent?.includes('Comparing')
-      },
-      { timeout: 30000 }
-    )
-    // Wait for results to appear
+    // Wait for comparison to complete - button disappears or stops showing "Comparing",
+    // or results appear (diff pills become visible)
+    await Promise.race([
+      this.page.waitForFunction(
+        () => {
+          const btn = document.querySelector('[data-testid="diff-compare-btn"]')
+          // Button either doesn't exist, or exists but not showing "Comparing"
+          return !btn || !btn.textContent?.includes('Comparing')
+        },
+        { timeout: 30000 }
+      ),
+      // Or wait for results to appear
+      this.page.getByTestId('diff-pill-added').waitFor({ state: 'visible', timeout: 30000 })
+    ])
+    // Wait for results to stabilize
     await this.page.waitForTimeout(500)
   }
 

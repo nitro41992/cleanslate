@@ -1,180 +1,151 @@
-# Fix Broken E2E Tests
+# Fix Remaining E2E Test Failures
 
 ## Overview
 
-Fix 12 failing E2E tests that broke due to recent snapshot system consolidation (commits 94a1638, 2db783d). Fixes are minimal - prefer updating tests over changing application code.
+After implementing initial fixes, 6 tests still fail. This plan addresses the remaining failures.
 
-**Note on skipped tests (`-`):** These are in serial groups where an earlier test failed. Once the first test in each group is fixed, these will run automatically.
+**Current Status:** 78 passed, 6 failed, 1 flaky
 
 ---
 
-## Fixes
+## Remaining Failures
 
-### Fix 1: Remove Duplicates (3 tests)
+### Fix 1: Visual Diff - "should identify added, removed, and modified rows"
 
-**Files:** `transformations.spec.ts:193`, `e2e-flow.spec.ts:132`, `export.spec.ts:136`
+**File:** `feature-coverage.spec.ts:492`
 
-**Problem:** Tests use `inspector.getTables()[0].rowCount` which queries the Zustand store, not DuckDB. Store may not sync immediately after transformation.
+**Problem:** Test opens diff view after previous test left it in "Compare with Preview" mode. The test expects "Compare Two Tables" mode but doesn't explicitly select it.
 
-**Fix:** Query DuckDB directly instead:
+**Fix:** After opening diff view, explicitly select "Compare Two Tables" mode:
 ```typescript
-// Before
-tables = await inspector.getTables()
-expect(tables[0].rowCount).toBe(3)
-
-// After
-const result = await inspector.runQuery('SELECT count(*) as cnt FROM table_name')
-expect(Number(result[0].cnt)).toBe(3)
-```
-
----
-
-### Fix 2: Undo Button Selector (unblocks 3 tests)
-
-**File:** `e2e/page-objects/laundromat.page.ts:25-26`
-
-**Problem:** Button uses `button[title*="Undo"]` but actual button has no title attribute - uses Radix Tooltip.
-
-**Fix:** Update selectors to find by icon:
-```typescript
-// Before
-readonly undoButton: Locator = page.locator('button[title*="Undo"]')
-readonly redoButton: Locator = page.locator('button[title*="Redo"]')
-
-// After
-readonly undoButton: Locator = page.locator('button:has(svg.lucide-undo-2)')
-readonly redoButton: Locator = page.locator('button:has(svg.lucide-redo-2)')
-```
-
----
-
-### Fix 3: Fuzzy Matcher Pairs (unblocks 7 tests)
-
-**File:** `e2e/page-objects/match-view.page.ts:79-82`
-
-**Problem:** `waitForPairs()` times out because matching takes longer than 10s on CI.
-
-**Fix:** Increase timeout and add progress check:
-```typescript
-async waitForPairs(): Promise<void> {
-  // Wait for matching to complete (progress text disappears)
-  await this.page.waitForFunction(
-    () => !document.body.innerText.includes('Finding matches'),
-    { timeout: 30000 }
-  )
-  // Then check for pairs
-  await expect(this.page.locator('text=/\\d+% Similar/').first())
-    .toBeVisible({ timeout: 10000 })
-}
-```
-
----
-
-### Fix 4: Combiner Panel (2 tests)
-
-**File:** `e2e/tests/feature-coverage.spec.ts:941, 1004`
-
-**Problems:**
-1. Stack test: `getByLabel('Result Table Name')` not found
-2. Join test: `getByRole('heading', { name: 'Join Tables' })` not found
-
-**Fix:** Update selectors to match actual UI:
-```typescript
-// Line 941 - Stack table name input
-await page.getByPlaceholder('Enter table name').fill('stacked_result')
-
-// Line 1004 - Join heading has icon inside, use text locator
-await expect(page.locator('text=Join Tables').first()).toBeVisible()
-```
-
----
-
-### Fix 5: Value Standardization Duplicate Tables (unblocks 10 tests)
-
-**File:** `e2e/tests/value-standardization.spec.ts:39-45`
-
-**Problem:** Stale table entries in store cause duplicate options in dropdown.
-
-**Fix:** Add page reload to clear state in `loadTestData()`:
-```typescript
-async function loadTestData() {
-  await page.reload()
-  await inspector.waitForDuckDBReady()
-  await inspector.runQuery('DROP TABLE IF EXISTS fr_f_standardize')
-  // ... rest of function
-}
-```
-
----
-
-### Fix 6: Audit Manual Edit Entry (1 test + 1 skipped)
-
-**File:** `e2e/tests/audit-details.spec.ts:329-336`
-
-**Problem:** Looking for `hasText: 'Manual Edit'` but entry may be labeled differently with timeline system.
-
-**Fix:** First verify what the actual audit entry looks like in the browser, then update selector. May need to check for `Edit` or a data-testid instead.
-
----
-
-### Fix 7: Visual Diff Button (2 tests)
-
-**File:** `e2e/tests/feature-coverage.spec.ts:477, 1293`
-
-**Problem:** Diff button disabled because `hasSnapshot` check fails. New timeline system stores snapshots differently.
-
-**Fix for test at 477:** Test needs to load a table first (it's trying to open diff view on empty state).
-
-**Fix for test at 1293:** After transformation, wait for snapshot to be created:
-```typescript
-await picker.addTransformation('Uppercase', { column: 'name' })
-await laundromat.closePanel()
-await page.waitForTimeout(500) // Allow snapshot creation to complete
+// Line ~514 - after openDiffView()
 await laundromat.openDiffView()
+await diffView.selectCompareTablesMode()  // ADD THIS LINE
+```
+
+---
+
+### Fix 2: Fuzzy Matcher - "should open match view and find duplicates"
+
+**File:** `feature-coverage.spec.ts:569`
+
+**Problem:** The matching process completes but pairs may not appear in time. The `findDuplicates()` method only waits 500ms which may not be enough.
+
+**Fix:** Increase wait time in `findDuplicates()` page object method:
+```typescript
+// In match-view.page.ts, line ~73
+async findDuplicates(): Promise<void> {
+  await expect(this.findDuplicatesButton).toBeEnabled()
+  await this.findDuplicatesButton.click()
+  // Wait for async operation to start
+  await this.page.waitForTimeout(1000)  // Increase from 500ms
+}
+```
+
+---
+
+### Fix 3: Merge Audit Drill-Down - "should display row data"
+
+**File:** `feature-coverage.spec.ts:670`
+
+**Problem:** Cascades from Fix 2 - if fuzzy matching fails, this test can't proceed. Also, line 690 waits for progress bar that may never appear.
+
+**Fix:** Depends on Fix 2. Additionally, make the wait more resilient:
+```typescript
+// Line ~690 - wait for progress OR results
+await Promise.race([
+  page.locator('[role="progressbar"]').waitFor({ state: 'hidden', timeout: 30000 }),
+  matchView.waitForPairs()
+])
+```
+
+---
+
+### Fix 4: Left Join - "should perform left join preserving unmatched orders"
+
+**File:** `feature-coverage.spec.ts:1043`
+
+**Problem:** Radio button selector `getByLabel('Left')` doesn't match the actual UI structure. Previous test leaves "Inner" selected.
+
+**Fix:** Use role-based selector for radio button:
+```typescript
+// Line ~1086 - change from getByLabel to getByRole
+await page.getByRole('radio', { name: /left/i }).click()
+await page.waitForTimeout(200)  // Wait for selection to register
+```
+
+---
+
+### Fix 5: Diff Compare with Preview - "should support Compare with Preview mode"
+
+**File:** `feature-coverage.spec.ts:1300`
+
+**Problem:** 500ms wait after transformation isn't enough for snapshot creation. The timeline system may need more time.
+
+**Fix:** Increase wait time and add explicit verification:
+```typescript
+// Line ~1313 - increase wait
+await page.waitForTimeout(1000)  // Increase from 500ms
+
+// OR better: wait for toast to confirm transformation applied
+await expect(page.getByText('Transformation Applied')).toBeVisible({ timeout: 5000 })
+```
+
+---
+
+### Fix 6: Audit Export - "should export manual edit details as CSV"
+
+**File:** `audit-details.spec.ts:361`
+
+**Problem:** Uses deprecated `switchToDataPreviewTab()` and `switchToAuditLogTab()` methods. Race condition when sidebar opens.
+
+**Fix:** Replace deprecated methods and add explicit waits:
+```typescript
+// Line ~365 - replace deprecated method
+await laundromat.closeAuditSidebar()  // Instead of switchToDataPreviewTab()
+
+// Line ~372 - replace and wait for content
+await laundromat.openAuditSidebar()  // Instead of switchToAuditLogTab()
+await page.waitForTimeout(300)  // Wait for sidebar animation
 ```
 
 ---
 
 ## Files to Modify
 
-| File | Changes |
-|------|---------|
-| `e2e/page-objects/laundromat.page.ts` | Update undo/redo button selectors (lines 25-26) |
-| `e2e/page-objects/match-view.page.ts` | Improve waitForPairs() timeout (lines 79-82) |
-| `e2e/tests/transformations.spec.ts` | Query DuckDB directly (line 193) |
-| `e2e/tests/e2e-flow.spec.ts` | Query DuckDB directly (line 132) |
-| `e2e/tests/export.spec.ts` | Query DuckDB directly (line 136) |
-| `e2e/tests/feature-coverage.spec.ts` | Update combiner selectors (lines 941, 1004), diff waits |
-| `e2e/tests/value-standardization.spec.ts` | Add page reload in loadTestData() |
-| `e2e/tests/audit-details.spec.ts` | Update manual edit entry selector (line 329) |
+| File | Line | Change |
+|------|------|--------|
+| `feature-coverage.spec.ts` | ~514 | Add `selectCompareTablesMode()` call |
+| `feature-coverage.spec.ts` | ~1086 | Change to `getByRole('radio', { name: /left/i })` |
+| `feature-coverage.spec.ts` | ~1313 | Increase wait to 1000ms |
+| `match-view.page.ts` | ~73 | Increase wait in `findDuplicates()` to 1000ms |
+| `audit-details.spec.ts` | ~365, 372 | Replace deprecated methods with explicit calls |
 
 ---
 
 ## Implementation Order
 
-1. **Page objects first** (unblocks multiple test groups):
-   - `laundromat.page.ts` - undo buttons
-   - `match-view.page.ts` - waitForPairs timeout
-
-2. **Remove Duplicates tests** (3 direct fixes)
-
-3. **Value Standardization** (unblocks 10 tests)
-
-4. **Remaining fixes** (combiner, diff, audit)
+1. **Fix 4 (Left Join)** - Isolated radio button selector fix
+2. **Fix 5 (Diff Preview)** - Timing increase
+3. **Fix 6 (Audit Export)** - Deprecated method replacement
+4. **Fix 2 (Fuzzy Matcher)** - Page object timing fix
+5. **Fix 1 & 3 (Visual Diff & Merge)** - Depend on earlier fixes
 
 ---
 
 ## Verification
 
 ```bash
-# Run all tests after fixes
-npm test
+# Run specific failing tests
+npm test -- --grep "should identify added, removed, and modified rows"
+npm test -- --grep "should open match view and find duplicates"
+npm test -- --grep "should display row data in merge audit"
+npm test -- --grep "should perform left join"
+npm test -- --grep "Compare with Preview"
+npm test -- --grep "should export manual edit details"
 
-# Run specific groups to verify
-npm test -- --grep "should remove duplicates"
-npm test -- --grep "FR-A4"  # Manual Editing
-npm test -- --grep "FR-C1"  # Fuzzy Matcher
-npm test -- --grep "FR-F"   # Standardization
+# Run full suite
+npm test
 ```
 
 ---

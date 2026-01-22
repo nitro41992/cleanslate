@@ -362,24 +362,23 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     // Perform another manual edit to have fresh data
     await loadWhitespaceData()
 
-    await laundromat.switchToDataPreviewTab()
+    await laundromat.closeAuditSidebar()
     await laundromat.editCell(1, 1, 'Modified Value')
 
     // Wait for edit to be processed
     await page.waitForTimeout(500)
 
-    // Switch to audit log
-    await laundromat.switchToAuditLogTab()
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
     await page.waitForSelector('[data-testid="audit-sidebar"]')
     await page.waitForTimeout(300)
 
-    // Find and click the Manual Edit entry
-    const manualEditElement = page
-      .locator('[data-testid="audit-sidebar"]')
-      .locator('button')
-      .filter({ hasText: 'Manual Edit' })
-      .first()
+    // Find and click the Manual Edit entry - use role selector for reliability
+    const sidebar = page.locator('aside[data-testid="audit-sidebar"]')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
+    // Look for the Manual Edit button within the sidebar
+    const manualEditElement = sidebar.getByRole('button', { name: /Manual Edit/i }).first()
     await expect(manualEditElement).toBeVisible({ timeout: 10000 })
     await manualEditElement.click()
 
