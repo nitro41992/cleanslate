@@ -125,6 +125,7 @@ export function CleanPanel() {
         rowsAffected: result.affected,
         hasRowDetails: result.hasRowDetails,
         auditEntryId,
+        isCapped: result.isCapped,
       })
 
       // 5. Record to timeline for undo/redo

@@ -50,6 +50,7 @@ export interface AuditLogEntry {
   rowsAffected?: number      // Actual count of modified rows
   hasRowDetails?: boolean    // Flag: row-level data exists in _audit_details
   auditEntryId?: string      // ID for looking up row details
+  isCapped?: boolean         // Flag: audit details capped at threshold (50k)
 }
 
 // Serialized version for persistence
@@ -68,6 +69,7 @@ export interface SerializedAuditLogEntry {
   rowsAffected?: number
   hasRowDetails?: boolean
   auditEntryId?: string
+  isCapped?: boolean
 }
 
 export interface CSVIngestionSettings {

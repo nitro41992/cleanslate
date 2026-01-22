@@ -201,6 +201,16 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
           </div>
         </div>
 
+        {/* Capped audit banner */}
+        {entry.isCapped && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-md p-3">
+            <p className="text-xs text-amber-400">
+              Audit log capped at 50,000 rows for performance.
+              Total affected: {entry.rowsAffected?.toLocaleString()}
+            </p>
+          </div>
+        )}
+
         {/* Detail Table - Conditional rendering */}
         <div className="flex-1 min-h-0 mt-2 overflow-hidden">
           {isMergeAction ? (

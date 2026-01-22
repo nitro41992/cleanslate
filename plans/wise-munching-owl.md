@@ -1,248 +1,36 @@
-# Plan: Enhanced Transformation Descriptions & Examples
+# Plan: Robust Audit Logging & Custom SQL - Final Architecture
 
-## Problem
-The transformation picker lacks clarity:
-1. Descriptions are too brief - users don't know what each transform actually does
-2. No examples showing before/after values
-3. Custom SQL is a "black box" - no guidance on table name, columns, or SQL syntax
-4. Users can't easily discover capabilities without trial and error
+## Executive Summary
 
-## Solution Overview
-
-Add a **rich help system** with:
-1. **Extended descriptions** with before → after examples for each transform
-2. **Context-aware SQL helper** showing table name, columns, and example queries
-3. **Inline hints** that appear when configuring transforms
+- **Performance**: Replace slow JavaScript loops with single SQL Bulk Insert (UNION ALL)
+- **Data Policy**: Implement "Cap, Don't Skip" - always capture up to 50k rows instead of skipping entirely
+- **Export**: Export CSV dumps full stored records; UI uses pagination
+- **Consistency**: Apply "Cap, Don't Skip" logic to ALL transformations (Standard & Custom SQL)
 
 ---
 
-## Implementation
+## Problems
 
-### 1. Extend TransformationDefinition with Examples
+1. Custom SQL has no row-level audit ("0 rows affected")
+2. Large transforms (>10k rows) currently skip audit generation entirely
+3. Performance risk: Looping through diff results in JS causes UI freezes
 
-**File:** `src/lib/transformations.ts`
+---
 
-Add `examples` and `hints` fields to each transformation:
+## Solution
 
-```typescript
-export interface TransformationDefinition {
-  id: TransformationType
-  label: string
-  description: string  // Keep short for UI
-  icon: string
-  requiresColumn: boolean
-  params?: ParamDefinition[]
-  // NEW FIELDS:
-  examples?: {
-    before: string
-    after: string
-  }[]
-  hints?: string[]  // Tips for using this transform
-}
-```
+### 1. Custom SQL Engine (Snapshot + Diff)
 
-**Example additions for key transforms:**
+- **Mechanism**: Create snapshot → Execute SQL → Run Diff Engine
+- **Capture**: Single Bulk SQL Insert to populate `_audit_details` from diff table
 
-```typescript
-{
-  id: 'trim',
-  label: 'Trim Whitespace',
-  description: 'Remove leading and trailing spaces',
-  icon: '✂️',
-  requiresColumn: true,
-  examples: [
-    { before: '"  hello  "', after: '"hello"' },
-    { before: '"  data  "', after: '"data"' },
-  ],
-  hints: ['Does not affect spaces between words'],
-},
-{
-  id: 'collapse_spaces',
-  label: 'Collapse Spaces',
-  description: 'Replace multiple spaces with single space',
-  icon: '⎵',
-  requiresColumn: true,
-  examples: [
-    { before: '"hello    world"', after: '"hello world"' },
-    { before: '"a   b   c"', after: '"a b c"' },
-  ],
-  hints: ['Also collapses tabs and newlines', 'Use with Trim for complete cleanup'],
-},
-{
-  id: 'custom_sql',
-  label: 'Custom SQL',
-  description: 'Run any DuckDB SQL command',
-  icon: '💻',
-  requiresColumn: false,
-  params: [{ name: 'sql', type: 'text', label: 'SQL Query' }],
-  examples: [
-    { before: 'UPDATE "${table}" SET col = UPPER(col)', after: 'Uppercase all values' },
-    { before: 'ALTER TABLE "${table}" DROP COLUMN temp', after: 'Remove a column' },
-  ],
-  hints: [
-    'Table name: "${table}" (auto-replaced)',
-    'Column names must be quoted: "column_name"',
-    'Use DuckDB SQL syntax',
-  ],
-},
-```
+### 2. "Cap, Don't Skip" Strategy (All Transforms)
 
-### 2. Enhanced Transform Info Panel in CleanPanel
-
-**File:** `src/components/panels/CleanPanel.tsx`
-
-Replace the simple info box (lines 312-321) with a richer component:
-
-```tsx
-{/* Enhanced Transform Info */}
-<div className="bg-muted/30 rounded-lg p-3 space-y-3">
-  {/* Header */}
-  <div>
-    <h3 className="font-medium flex items-center gap-2">
-      <span className="text-lg">{selectedTransform.icon}</span>
-      {selectedTransform.label}
-    </h3>
-    <p className="text-sm text-muted-foreground mt-1">
-      {selectedTransform.description}
-    </p>
-  </div>
-
-  {/* Examples */}
-  {selectedTransform.examples && selectedTransform.examples.length > 0 && (
-    <div className="border-t border-border/50 pt-2">
-      <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
-      <div className="space-y-1">
-        {selectedTransform.examples.slice(0, 2).map((ex, i) => (
-          <div key={i} className="flex items-center gap-2 text-xs font-mono">
-            <span className="text-red-400/80">{ex.before}</span>
-            <span className="text-muted-foreground">→</span>
-            <span className="text-green-400/80">{ex.after}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )}
-
-  {/* Hints */}
-  {selectedTransform.hints && selectedTransform.hints.length > 0 && (
-    <div className="border-t border-border/50 pt-2">
-      <ul className="text-xs text-muted-foreground space-y-0.5">
-        {selectedTransform.hints.map((hint, i) => (
-          <li key={i} className="flex items-start gap-1.5">
-            <span className="text-blue-400">•</span>
-            {hint}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )}
-</div>
-```
-
-### 3. Custom SQL Context Helper
-
-**File:** `src/components/panels/CleanPanel.tsx`
-
-Add a special section that appears only for Custom SQL, showing available context:
-
-```tsx
-{/* Custom SQL Context Helper */}
-{selectedTransform.id === 'custom_sql' && activeTable && (
-  <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 space-y-3">
-    {/* Table Info */}
-    <div>
-      <p className="text-xs font-medium text-slate-400 mb-1">Table</p>
-      <code className="text-sm text-cyan-400 font-mono">"{activeTable.name}"</code>
-      <span className="text-xs text-muted-foreground ml-2">
-        ({activeTable.rowCount?.toLocaleString() || 0} rows)
-      </span>
-    </div>
-
-    {/* Available Columns */}
-    <div>
-      <p className="text-xs font-medium text-slate-400 mb-1">
-        Columns ({columns.length})
-      </p>
-      <div className="flex flex-wrap gap-1">
-        {columns.slice(0, 10).map((col) => (
-          <button
-            key={col}
-            type="button"
-            onClick={() => {
-              // Copy column reference to clipboard or insert into SQL input
-              navigator.clipboard.writeText(`"${col}"`)
-              toast.success(`Copied "${col}" to clipboard`)
-            }}
-            className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800
-                       text-amber-400 hover:bg-slate-700 transition-colors"
-          >
-            "{col}"
-          </button>
-        ))}
-        {columns.length > 10 && (
-          <span className="text-xs text-muted-foreground self-center">
-            +{columns.length - 10} more
-          </span>
-        )}
-      </div>
-    </div>
-
-    {/* Quick Templates */}
-    <div>
-      <p className="text-xs font-medium text-slate-400 mb-1">Quick Templates</p>
-      <div className="space-y-1">
-        {[
-          { label: 'Update column', sql: `UPDATE "${activeTable.name}" SET "column" = value` },
-          { label: 'Add column', sql: `ALTER TABLE "${activeTable.name}" ADD COLUMN new_col VARCHAR` },
-          { label: 'Delete rows', sql: `DELETE FROM "${activeTable.name}" WHERE condition` },
-        ].map((template) => (
-          <button
-            key={template.label}
-            type="button"
-            onClick={() => setParams({ ...params, sql: template.sql })}
-            className="w-full text-left text-xs px-2 py-1.5 rounded
-                       bg-slate-800/50 hover:bg-slate-800 transition-colors"
-          >
-            <span className="text-slate-300">{template.label}</span>
-            <code className="block text-[10px] text-slate-500 font-mono truncate">
-              {template.sql}
-            </code>
-          </button>
-        ))}
-      </div>
-    </div>
-  </div>
-)}
-```
-
-### 4. SQL Input Enhancement
-
-Replace the basic text input for Custom SQL with a textarea that has syntax hints:
-
-```tsx
-{/* Custom SQL Input - Enhanced */}
-{selectedTransform.id === 'custom_sql' ? (
-  <div className="space-y-2">
-    <Label>SQL Query</Label>
-    <textarea
-      value={params.sql || ''}
-      onChange={(e) => setParams({ ...params, sql: e.target.value })}
-      placeholder={`UPDATE "${activeTable?.name || 'table'}" SET "column" = value WHERE condition`}
-      className="w-full h-24 px-3 py-2 text-sm font-mono rounded-md
-                 bg-slate-900 border border-slate-700
-                 text-cyan-300 placeholder:text-slate-600
-                 focus:outline-none focus:ring-2 focus:ring-primary/50"
-      spellCheck={false}
-    />
-    <p className="text-[10px] text-muted-foreground">
-      Use DuckDB SQL syntax. Column names must be double-quoted.
-    </p>
-  </div>
-) : (
-  // Regular input for other params
-  <Input ... />
-)}
-```
+- **Threshold**: Increase `ROW_DETAIL_THRESHOLD` to 50,000
+- **Logic**:
+  - Custom SQL: Insert all diffs `LIMIT 50000`
+  - Standard Transforms: Run `INSERT INTO ... SELECT ... LIMIT 50000`
+- **Benefit**: Users always get sample data, even for massive changes
 
 ---
 
@@ -250,83 +38,349 @@ Replace the basic text input for Custom SQL with a textarea that has syntax hint
 
 | File | Changes |
 |------|---------|
-| `src/lib/transformations.ts` | Add `examples` and `hints` to all 19 transforms |
-| `src/components/panels/CleanPanel.tsx` | Enhanced info panel, SQL context helper, textarea for SQL |
+| `src/lib/transformations.ts` | 1. Add single quote hint 2. Update threshold to 50k 3. Implement `captureCustomSqlDetails` with Bulk Insert 4. Remove "Skip > 10k" logic from `captureRowDetails` 5. Add LIMIT to all standard audit inserts 6. Add `isCapped` to return type |
+| `src/components/common/AuditDetailModal.tsx` | Add banner when audit is capped ("50k rows for performance") |
 
 ---
 
-## Full Examples Data
+## Implementation
 
-Add these examples and hints to each transformation:
+### Step 1: Update Constants & Add Single Quote Hint
 
-### Text Cleaning Group
-| Transform | Examples | Hints |
-|-----------|----------|-------|
-| trim | `"  hello  "` → `"hello"` | Does not affect spaces between words |
-| lowercase | `"HELLO"` → `"hello"` | Useful for case-insensitive matching |
-| uppercase | `"hello"` → `"HELLO"` | Standard for codes like country/state |
-| title_case | `"john doe"` → `"John Doe"` | Capitalizes first letter of each word |
-| sentence_case | `"HELLO WORLD"` → `"Hello world"` | Only first character capitalized |
-| remove_accents | `"café"` → `"cafe"` | Normalizes international characters |
-| remove_non_printable | `"hello\t\n"` → `"hello"` | Removes tabs, newlines, control chars |
-| collapse_spaces | `"a    b"` → `"a b"` | Also collapses tabs/newlines; pair with Trim |
+**File:** `src/lib/transformations.ts`
 
-### Find & Replace Group
-| Transform | Examples | Hints |
-|-----------|----------|-------|
-| replace | `"foo"` → `"bar"` (find: foo) | Case-insensitive option available |
-| replace_empty | `""` → `"N/A"` | Also replaces NULL values |
+```typescript
+// Increase limit to 50k (store more data for export)
+const ROW_DETAIL_THRESHOLD = 50_000
 
-### Structure Group
-| Transform | Examples | Hints |
-|-----------|----------|-------|
-| rename_column | Column: `"old"` → `"new"` | Does not affect data values |
-| remove_duplicates | 100 rows → 95 rows | Compares all columns for uniqueness |
-| split_column | `"a,b,c"` → `"a"`, `"b"`, `"c"` | Creates new columns; original preserved |
-| combine_columns | `"John"` + `"Doe"` → `"John Doe"` | Delimiter customizable |
-| cast_type | `"123"` → `123` (Integer) | Invalid values become NULL |
+// Update custom_sql hints (~line 165)
+hints: [
+  'Column names must be double-quoted: "column_name"',
+  'String values use single quotes: \'value\'',
+  'Use DuckDB SQL syntax (not MySQL/PostgreSQL)',
+  'Click column badges below to copy names',
+],
+```
 
-### Numeric Group
-| Transform | Examples | Hints |
-|-----------|----------|-------|
-| unformat_currency | `"$1,234.56"` → `1234.56` | Removes $, commas, spaces |
-| fix_negatives | `"(500)"` → `-500` | Accounting format to standard |
-| pad_zeros | `"42"` → `"00042"` | Set target length; good for IDs |
+### Step 2: Optimized Custom SQL Capture (Bulk Insert)
 
-### Dates Group
-| Transform | Examples | Hints |
-|-----------|----------|-------|
-| standardize_date | `"01/15/2024"` → `"2024-01-15"` | Supports 10+ input formats |
-| calculate_age | `"1990-05-15"` → `34` | Creates new "age" column |
-| fill_down | `NULL` → `"previous value"` | Fills from row above |
+Add new function after `captureRowDetails()`:
 
-### Advanced Group
-| Transform | Examples | Hints |
-|-----------|----------|-------|
-| custom_sql | `UPDATE ... SET ...` | Full DuckDB SQL; use quoted identifiers |
+```typescript
+/**
+ * Capture row-level details for custom SQL using snapshot + diff
+ * Uses bulk SQL insert instead of JS loops for performance
+ */
+async function captureCustomSqlDetails(
+  tableName: string,
+  beforeSnapshotName: string,
+  auditEntryId: string
+): Promise<{ hasRowDetails: boolean; affected: number }> {
+  const { runDiff, fetchDiffPage, cleanupDiffTable } = await import('./diff-engine')
+
+  // Run diff comparing current table to before snapshot
+  const diffConfig = await runDiff(tableName, beforeSnapshotName, [CS_ID_COLUMN])
+
+  const { modified, added, removed } = diffConfig.summary
+  const totalAffected = modified + added + removed
+
+  // Skip if no changes
+  if (totalAffected === 0) {
+    await cleanupDiffTable(diffConfig.diffTableName)
+    return { hasRowDetails: false, affected: 0 }
+  }
+
+  // Ensure audit details table exists
+  await ensureAuditDetailsTable()
+
+  // Get user columns (exclude _cs_id)
+  const userCols = diffConfig.allColumns.filter(c => c !== CS_ID_COLUMN)
+
+  // Chunk columns to avoid SQL parser limits (max ~20 per query)
+  const chunkSize = 20
+  const columnChunks: string[][] = []
+  for (let i = 0; i < userCols.length; i += chunkSize) {
+    columnChunks.push(userCols.slice(i, i + chunkSize))
+  }
+
+  // Bulk insert for each column chunk
+  // NOTE: _cs_id is UUID type, but row_index is INTEGER
+  // We use row_number() OVER () to generate sequential indices
+  for (const chunkCols of columnChunks) {
+    const unionParts = chunkCols.map(col => {
+      const safeCol = col.replace(/'/g, "''")
+      // Select changed rows for this specific column
+      return `
+        SELECT
+          uuid() as id,
+          '${auditEntryId}' as audit_entry_id,
+          row_number() OVER () as row_index,
+          '${safeCol}' as column_name,
+          CAST("b_${col}" AS VARCHAR) as previous_value,
+          CAST("a_${col}" AS VARCHAR) as new_value,
+          CURRENT_TIMESTAMP as created_at
+        FROM "${diffConfig.diffTableName}"
+        WHERE CAST("a_${col}" AS VARCHAR) IS DISTINCT FROM CAST("b_${col}" AS VARCHAR)
+      `
+    })
+
+    const bulkSql = `
+      INSERT INTO _audit_details
+      (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+      ${unionParts.join(' UNION ALL ')}
+      LIMIT ${ROW_DETAIL_THRESHOLD}
+    `
+
+    await execute(bulkSql)
+  }
+
+  // Cleanup diff table
+  await cleanupDiffTable(diffConfig.diffTableName)
+
+  // Check how many were actually inserted
+  const countResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
+  )
+  const insertedCount = Number(countResult[0].count)
+
+  return { hasRowDetails: insertedCount > 0, affected: totalAffected }
+}
+```
+
+### Step 3: Update custom_sql Case in applyTransformation()
+
+Replace the simple case (~line 1148):
+
+```typescript
+case 'custom_sql': {
+  const customSql = (step.params?.sql as string) || ''
+  if (!customSql.trim()) break
+
+  // Create before-snapshot for diff tracking
+  const beforeSnapshotName = `_custom_sql_before_${Date.now()}`
+  const { duplicateTable, dropTable } = await import('./duckdb')
+  await duplicateTable(tableName, beforeSnapshotName, true)
+
+  try {
+    // Execute the custom SQL
+    await execute(customSql)
+
+    // Capture changes using diff engine (bulk insert)
+    const auditResult = await captureCustomSqlDetails(
+      tableName,
+      beforeSnapshotName,
+      auditEntryId
+    )
+    hasRowDetails = auditResult.hasRowDetails
+    customSqlAffected = auditResult.affected
+  } finally {
+    // Always cleanup snapshot
+    await dropTable(beforeSnapshotName)
+  }
+  break
+}
+```
+
+Add variable at start of `applyTransformation()`:
+```typescript
+let customSqlAffected: number | undefined
+```
+
+### Step 4: Update Standard Transforms ("Cap, Don't Skip")
+
+In `captureRowDetails()`, remove the early return that skips large datasets:
+
+```typescript
+async function captureRowDetails(
+  tableName: string,
+  step: TransformationStep,
+  auditEntryId: string,
+  affectedCount: number
+): Promise<boolean> {
+  // REMOVE THIS CHECK - we now cap instead of skip:
+  // if (affectedCount > ROW_DETAIL_THRESHOLD || affectedCount <= 0 || !step.column) {
+  //   return false
+  // }
+
+  // NEW: Only skip if truly nothing to capture
+  if (affectedCount <= 0 || !step.column) {
+    return false
+  }
+
+  // ... rest of switch statement ...
+
+  // UPDATE: Add LIMIT to the insert SQL (around line 826)
+  const insertSql = `
+    INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+    SELECT
+      uuid(),
+      '${auditEntryId}',
+      rowid,
+      '${escapedColumn}',
+      CAST(${column} AS VARCHAR),
+      ${newValueExpression},
+      CURRENT_TIMESTAMP
+    FROM "${tableName}"
+    WHERE ${whereClause}
+    LIMIT ${ROW_DETAIL_THRESHOLD}
+  `
+  await execute(insertSql)
+
+  // ... rest of function
+}
+```
+
+### Step 5: Handle Custom SQL Affected Count in Result
+
+After the switch statement, update affected calculation:
+
+```typescript
+// Calculate affected rows
+let affected: number
+if (step.type === 'custom_sql' && customSqlAffected !== undefined) {
+  // Use diff-based count for custom SQL
+  affected = customSqlAffected
+} else if (preCountAffected >= 0) {
+  affected = preCountAffected
+} else {
+  affected = Math.abs(countBefore - countAfter)
+}
+
+// Determine if audit was capped
+const isCapped = affected > ROW_DETAIL_THRESHOLD
+```
+
+### Step 6: Update Return Type and Value
+
+Update `TransformationResult` interface:
+```typescript
+export interface TransformationResult {
+  rowCount: number
+  affected: number
+  hasRowDetails: boolean
+  auditEntryId?: string
+  isCapped?: boolean  // NEW: true if affected > threshold
+}
+```
+
+Update return statement:
+```typescript
+return {
+  rowCount: countAfter,
+  affected,
+  hasRowDetails,
+  auditEntryId: hasRowDetails ? auditEntryId : undefined,
+  isCapped,  // NEW
+}
+```
 
 ---
 
-## Verification
+## Verification Checklist
 
-1. `npm run dev` - Start dev server
-2. Upload any CSV file
-3. Click each transformation and verify:
-   - Examples appear in info panel with before → after format
-   - Hints appear as bullet points
-4. Click "Custom SQL" and verify:
-   - Table name shown with row count
-   - Clickable column badges (copy on click)
-   - Quick template buttons populate the SQL input
-   - Textarea with monospace font and placeholder
-5. Run `npm run lint` to verify no errors
+1. **Custom SQL Test**: Run `UPDATE "table" SET "col" = 'test'`
+   - Verify drill-down works
+   - Verify hints include single quote guidance
+
+2. **Bulk Test**: Run a transform on 20k rows
+   - Old behavior: Audit log would be empty
+   - New behavior: Audit log should have 20k entries
+   - Drill-down should load fast (paginated)
+   - Export should have 20k rows
+
+3. **Overflow Test**: Run a transform on 100k rows
+   - Result: Audit log has 50k entries (capped)
+   - Export has 50k entries
+   - UI is responsive
+
+4. Run `npm run lint` to verify no errors
 
 ---
 
-## Design Notes
+## Critical Safeguards
 
-- **Color scheme**: Red for "before", green for "after" (diff-like)
-- **Monospace**: Examples and SQL use `font-mono` for clarity
-- **Click-to-copy**: Column badges copy to clipboard for easy SQL construction
-- **Progressive disclosure**: Examples/hints only show when transform selected
-- **Consistent with existing UI**: Uses same muted backgrounds, border styles
+### 1. Snapshot Hygiene (Prevent Disk Quota Exhaustion)
+The `finally` block MUST wrap the entire custom SQL logic to ensure snapshot cleanup even on errors:
+
+```typescript
+try {
+  await execute(customSql)
+  const auditResult = await captureCustomSqlDetails(...)
+} finally {
+  // ALWAYS cleanup - even if captureCustomSqlDetails throws OOM
+  try {
+    await dropTable(beforeSnapshotName)
+  } catch {
+    // Ignore cleanup errors, but log them
+    console.warn(`Failed to cleanup snapshot: ${beforeSnapshotName}`)
+  }
+}
+```
+
+### 2. UI Pagination Discipline
+The `AuditDetailPanel` MUST use SQL-level pagination (LIMIT/OFFSET), not client-side:
+
+```typescript
+// In getAuditRowDetails() - already uses LIMIT/OFFSET:
+const rows = await query<...>(
+  `SELECT ... FROM _audit_details
+   WHERE audit_entry_id = '${auditEntryId}'
+   ORDER BY row_index
+   LIMIT ${limit} OFFSET ${offset}`  // ← SQL pagination, not JS
+)
+```
+
+**Verify**: Check `src/lib/transformations.ts:getAuditRowDetails()` - it already has pagination. The UI component should call this with reasonable page sizes (e.g., 100 rows per page).
+
+### 3. Communicate the Cap to Users
+When audit is capped, show a banner in the UI:
+
+**File:** Update `TransformationResult` interface:
+```typescript
+export interface TransformationResult {
+  rowCount: number
+  affected: number
+  hasRowDetails: boolean
+  auditEntryId?: string
+  isCapped?: boolean  // NEW: true if affected > ROW_DETAIL_THRESHOLD
+}
+```
+
+**File:** In `AuditDetailModal` or similar, show banner:
+```tsx
+{result.isCapped && (
+  <div className="bg-amber-500/10 border border-amber-500/30 rounded-md p-2 mb-3">
+    <p className="text-xs text-amber-400">
+      Audit log capped at 50,000 rows for performance.
+      Total affected: {result.affected.toLocaleString()}
+    </p>
+  </div>
+)}
+```
+
+---
+
+## Edge Cases Handled
+
+- **No changes**: Returns `affected: 0`, `hasRowDetails: false`
+- **Capped changes** (>50k): Captures first 50k, sets `isCapped: true`, returns actual total
+- **Schema changes** (ADD/DROP COLUMN): Diff engine handles automatically
+- **Row additions/deletions**: Captured via diff `added`/`removed` status
+- **Many columns**: Chunked into batches of 20 to avoid SQL parser limits
+- **Snapshot cleanup**: Always runs via `finally` block (with nested try/catch)
+- **UI freeze prevention**: SQL pagination enforced, never render 50k DOM nodes
+- **Type safety**: Uses `row_number() OVER ()` instead of UUID for `row_index INTEGER` column
+
+## Implementation Flow
+
+**Standard Transform** (fast path):
+```
+UPDATE → INSERT INTO _audit (LIMIT 50k) → Done
+```
+
+**Custom SQL** (heavier path - UI busy state required):
+```
+Snapshot → Execute SQL → Diff → Bulk INSERT (LIMIT 50k) → Cleanup
+```
+
+Note: The existing `isApplying` state in CleanPanel already shows a loading spinner during transformation, which covers the Custom SQL path.

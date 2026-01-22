@@ -4,14 +4,16 @@ import type { TransformationStep, TransformationType } from '@/types'
 import { generateId } from '@/lib/utils'
 
 // Max rows for which we capture row-level details (performance threshold)
-// 100k is safe for browser memory; existing pagination handles display efficiently
-const ROW_DETAIL_THRESHOLD = 100_000
+// 50k is safe for browser memory; existing pagination handles display efficiently
+// We cap instead of skip - users always get sample data, even for massive changes
+const ROW_DETAIL_THRESHOLD = 50_000
 
 export interface TransformationResult {
   rowCount: number
   affected: number
   hasRowDetails: boolean
   auditEntryId?: string
+  isCapped?: boolean  // true if affected > ROW_DETAIL_THRESHOLD
 }
 
 export interface RowDetail {
@@ -219,6 +221,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     ],
     hints: [
       'Column names must be double-quoted: "column_name"',
+      "String values use single quotes: 'value'",
       'Use DuckDB SQL syntax (not MySQL/PostgreSQL)',
       'Click column badges below to copy names',
     ],
@@ -735,8 +738,9 @@ async function captureRowDetails(
   auditEntryId: string,
   affectedCount: number
 ): Promise<boolean> {
-  // Skip if too many rows or no column involved
-  if (affectedCount > ROW_DETAIL_THRESHOLD || affectedCount <= 0 || !step.column) {
+  // "Cap, Don't Skip": Only skip if truly nothing to capture
+  // The INSERT uses LIMIT ${ROW_DETAIL_THRESHOLD} to cap large datasets
+  if (affectedCount <= 0 || !step.column) {
     return false
   }
 
@@ -953,6 +957,108 @@ async function captureRowDetails(
 }
 
 /**
+ * Capture row-level details for custom SQL using snapshot + diff
+ * Uses bulk SQL insert instead of JS loops for performance
+ */
+async function captureCustomSqlDetails(
+  tableName: string,
+  beforeSnapshotName: string,
+  auditEntryId: string
+): Promise<{ hasRowDetails: boolean; affected: number; isCapped: boolean }> {
+  const { runDiff, cleanupDiffTable } = await import('./diff-engine')
+  const { CS_ID_COLUMN } = await import('./duckdb')
+
+  // Run diff comparing current table to before snapshot
+  let diffConfig
+  try {
+    diffConfig = await runDiff(tableName, beforeSnapshotName, [CS_ID_COLUMN])
+  } catch (error) {
+    // If diff fails (e.g., schema changed drastically), return no details
+    console.warn('Custom SQL audit capture failed:', error)
+    return { hasRowDetails: false, affected: 0, isCapped: false }
+  }
+
+  const { modified, added, removed } = diffConfig.summary
+  const totalAffected = modified + added + removed
+
+  // Skip if no changes
+  if (totalAffected === 0) {
+    await cleanupDiffTable(diffConfig.diffTableName)
+    return { hasRowDetails: false, affected: 0, isCapped: false }
+  }
+
+  // Ensure audit details table exists
+  await ensureAuditDetailsTable()
+
+  // Get user columns (exclude _cs_id)
+  const userCols = diffConfig.allColumns.filter(c => c !== CS_ID_COLUMN)
+
+  // Chunk columns to avoid SQL parser limits (max ~20 per query)
+  const chunkSize = 20
+  const columnChunks: string[][] = []
+  for (let i = 0; i < userCols.length; i += chunkSize) {
+    columnChunks.push(userCols.slice(i, i + chunkSize))
+  }
+
+  // Track total inserted across chunks
+  let totalInserted = 0
+
+  // Bulk insert for each column chunk
+  for (const chunkCols of columnChunks) {
+    // Stop if we've already hit the cap
+    if (totalInserted >= ROW_DETAIL_THRESHOLD) break
+
+    const unionParts = chunkCols.map(col => {
+      const safeCol = col.replace(/'/g, "''")
+      // Select changed rows for this specific column
+      return `
+        SELECT
+          uuid() as id,
+          '${auditEntryId}' as audit_entry_id,
+          row_number() OVER () as row_index,
+          '${safeCol}' as column_name,
+          CAST("b_${col}" AS VARCHAR) as previous_value,
+          CAST("a_${col}" AS VARCHAR) as new_value,
+          CURRENT_TIMESTAMP as created_at
+        FROM "${diffConfig.diffTableName}"
+        WHERE diff_status != 'unchanged'
+          AND CAST("a_${col}" AS VARCHAR) IS DISTINCT FROM CAST("b_${col}" AS VARCHAR)
+      `
+    })
+
+    const remainingCapacity = ROW_DETAIL_THRESHOLD - totalInserted
+    const bulkSql = `
+      INSERT INTO _audit_details
+      (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+      ${unionParts.join(' UNION ALL ')}
+      LIMIT ${remainingCapacity}
+    `
+
+    try {
+      await execute(bulkSql)
+    } catch (error) {
+      console.warn('Custom SQL audit bulk insert failed for chunk:', error)
+      // Continue with other chunks
+    }
+
+    // Update count
+    const chunkCountResult = await query<{ count: number }>(
+      `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
+    )
+    totalInserted = Number(chunkCountResult[0].count)
+  }
+
+  // Cleanup diff table
+  await cleanupDiffTable(diffConfig.diffTableName)
+
+  return {
+    hasRowDetails: totalInserted > 0,
+    affected: totalAffected,
+    isCapped: totalAffected > ROW_DETAIL_THRESHOLD,
+  }
+}
+
+/**
  * Get row details for an audit entry
  */
 export async function getAuditRowDetails(
@@ -1009,9 +1115,11 @@ export async function applyTransformation(
   // Count affected rows BEFORE transformation
   const preCountAffected = await countAffectedRows(tableName, step)
 
-  // Capture row-level details if within threshold
+  // Capture row-level details (Cap, Don't Skip - always capture up to threshold)
   let hasRowDetails = false
-  if (preCountAffected > 0 && preCountAffected <= ROW_DETAIL_THRESHOLD) {
+  // Track custom SQL result separately (will be set by snapshot+diff)
+  let customSqlResult: { hasRowDetails: boolean; affected: number; isCapped: boolean } | undefined
+  if (preCountAffected > 0 && step.type !== 'custom_sql') {
     hasRowDetails = await captureRowDetails(tableName, step, auditEntryId, preCountAffected)
   }
 
@@ -1147,8 +1255,31 @@ export async function applyTransformation(
 
     case 'custom_sql': {
       const customSql = (step.params?.sql as string) || ''
-      if (customSql.trim()) {
+      if (!customSql.trim()) break
+
+      // Create before-snapshot for diff tracking
+      const beforeSnapshotName = `_custom_sql_before_${Date.now()}`
+      const { duplicateTable, dropTable } = await import('./duckdb')
+      await duplicateTable(tableName, beforeSnapshotName, true)
+
+      try {
+        // Execute the custom SQL
         await execute(customSql)
+
+        // Capture changes using diff engine (bulk insert)
+        customSqlResult = await captureCustomSqlDetails(
+          tableName,
+          beforeSnapshotName,
+          auditEntryId
+        )
+        hasRowDetails = customSqlResult.hasRowDetails
+      } finally {
+        // Always cleanup snapshot - even if captureCustomSqlDetails throws
+        try {
+          await dropTable(beforeSnapshotName)
+        } catch (cleanupError) {
+          console.warn(`Failed to cleanup snapshot: ${beforeSnapshotName}`, cleanupError)
+        }
       }
       break
     }
@@ -1460,17 +1591,27 @@ export async function applyTransformation(
   const countAfter = Number(afterResult[0].count)
 
   // Calculate affected rows:
+  // - For custom_sql: use diff-based count from captureCustomSqlDetails
   // - If preCountAffected >= 0, use that (precise count)
-  // - Otherwise fall back to row count diff (for remove_duplicates, custom_sql, etc.)
-  const affected = preCountAffected >= 0
-    ? preCountAffected
-    : Math.abs(countBefore - countAfter)
+  // - Otherwise fall back to row count diff (for remove_duplicates, etc.)
+  let affected: number
+  if (step.type === 'custom_sql' && customSqlResult !== undefined) {
+    affected = customSqlResult.affected
+  } else if (preCountAffected >= 0) {
+    affected = preCountAffected
+  } else {
+    affected = Math.abs(countBefore - countAfter)
+  }
+
+  // Determine if audit was capped (for custom SQL we have precise flag, otherwise compare)
+  const isCapped = customSqlResult?.isCapped ?? (affected > ROW_DETAIL_THRESHOLD)
 
     return {
       rowCount: countAfter,
       affected,
       hasRowDetails,
       auditEntryId: hasRowDetails ? auditEntryId : undefined,
+      isCapped: hasRowDetails ? isCapped : undefined,
     }
   })
 }

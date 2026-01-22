@@ -20,6 +20,7 @@ interface TransformationEntryParams {
   rowsAffected?: number
   hasRowDetails?: boolean
   auditEntryId?: string
+  isCapped?: boolean
 }
 
 interface AuditState {
@@ -73,6 +74,7 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       rowsAffected: params.rowsAffected,
       hasRowDetails: params.hasRowDetails,
       auditEntryId: params.auditEntryId,
+      isCapped: params.isCapped,
     }
     set((state) => ({
       entries: [entry, ...state.entries],
