@@ -21,7 +21,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTableStore } from '@/stores/tableStore'
 import { toast } from 'sonner'
@@ -52,9 +51,6 @@ export function CleanPanel() {
   const tables = useTableStore((s) => s.tables)
   const updateTable = useTableStore((s) => s.updateTable)
   const activeTable = tables.find((t) => t.id === activeTableId)
-
-  const addPendingOperation = usePreviewStore((s) => s.addPendingOperation)
-  const updateChangesSummary = usePreviewStore((s) => s.updateChangesSummary)
 
   const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
 
@@ -128,12 +124,41 @@ export function CleanPanel() {
         isCapped: result.isCapped,
       })
 
-      // 5. Record to timeline for undo/redo
+      // 5. Update table metadata - refresh column list from DuckDB (transforms may reorder columns)
+      // Do this BEFORE recording command so we can compute affectedColumns for split_column
+      const oldColumnNames = new Set(activeTable.columns.map(c => c.name))
+      const updatedColumns = await getTableColumns(activeTable.name)
+      const newColumnNames = updatedColumns.map(c => c.name)
+
+      updateTable(activeTable.id, {
+        rowCount: result.rowCount,
+        columns: updatedColumns,  // Sync with DuckDB column order/types
+      })
+
+      // 6. Record to timeline for undo/redo
       const timelineParams: TransformParams = {
         type: 'transform',
         transformationType: step.type,
         column: step.column,
         params: step.params,
+      }
+
+      // Determine affected columns for highlighting
+      let affectedColumns: string[] | undefined
+      if (step.column) {
+        affectedColumns = [step.column]
+      }
+      // combine_columns: highlight the new column
+      if (step.type === 'combine_columns' && step.params?.newColumnName) {
+        affectedColumns = [step.params.newColumnName as string]
+      }
+      // split_column: highlight the NEW columns created by the split
+      if (step.type === 'split_column') {
+        // Find columns that were added by the transformation
+        const addedColumns = newColumnNames.filter(name => !oldColumnNames.has(name))
+        if (addedColumns.length > 0) {
+          affectedColumns = addedColumns
+        }
       }
 
       await recordCommand(
@@ -144,30 +169,13 @@ export function CleanPanel() {
         timelineParams,
         {
           auditEntryId,
-          affectedColumns: step.column ? [step.column] : undefined,
+          affectedColumns,
           rowsAffected: result.affected,
           hasRowDetails: result.hasRowDetails,
         }
       )
 
-      // 6. Track in pending operations
-      addPendingOperation({
-        type: 'transform',
-        label: getTransformationLabel(step),
-        config: step,
-      })
-
-      // 7. Update table metadata - refresh column list from DuckDB (transforms may reorder columns)
-      const updatedColumns = await getTableColumns(activeTable.name)
-      updateTable(activeTable.id, {
-        rowCount: result.rowCount,
-        columns: updatedColumns,  // Sync with DuckDB column order/types
-      })
-
-      // 8. Update changes summary
-      updateChangesSummary({ transformsApplied: 1 })
-
-      // 9. Show success, mark last applied
+      // 7. Show success, mark last applied
       setLastApplied(selectedTransform.id)
       toast.success('Transformation Applied', {
         description: `${selectedTransform.label} completed. ${result.affected} rows affected.`,
@@ -444,7 +452,18 @@ export function CleanPanel() {
               )}
 
               {/* Additional Params */}
-              {selectedTransform.params?.map((param) => (
+              {selectedTransform.params
+                ?.filter((param) => {
+                  // For split_column, only show relevant params based on splitMode
+                  if (selectedTransform.id === 'split_column') {
+                    const splitMode = params.splitMode || 'delimiter'
+                    if (param.name === 'delimiter') return splitMode === 'delimiter'
+                    if (param.name === 'position') return splitMode === 'position'
+                    if (param.name === 'length') return splitMode === 'length'
+                  }
+                  return true
+                })
+                .map((param) => (
                 <div key={param.name} className="space-y-2">
                   <Label>{param.label}</Label>
                   {param.type === 'select' && param.options ? (

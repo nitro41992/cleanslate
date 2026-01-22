@@ -328,11 +328,19 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
         let diffMode: TimelineHighlight['diffMode'] = 'row'
         if (command.commandType === 'manual_edit' || command.commandType === 'batch_edit') {
           diffMode = 'cell'
-        } else if (command.isExpensive) {
-          diffMode = 'full'
         } else if (command.commandType === 'transform' || command.commandType === 'standardize') {
           // Transform and standardize operations highlight the affected column
-          diffMode = 'column'
+          // This check comes before isExpensive so that transforms with affectedColumns
+          // (like combine_columns, split_column) highlight specific columns, not the full grid
+          if (command.affectedColumns?.length) {
+            diffMode = 'column'
+          } else if (command.isExpensive) {
+            diffMode = 'full'
+          } else {
+            diffMode = 'column'
+          }
+        } else if (command.isExpensive) {
+          diffMode = 'full'
         } else if (command.affectedColumns?.length && !command.affectedRowIds?.length) {
           // Fallback: if we have columns but no specific rows, highlight the column
           diffMode = 'column'
@@ -384,11 +392,19 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     let diffMode: TimelineHighlight['diffMode'] = 'cell'
     if (command.commandType === 'manual_edit' || command.commandType === 'batch_edit') {
       diffMode = 'cell'
-    } else if (command.isExpensive) {
-      diffMode = 'full'
     } else if (command.commandType === 'transform' || command.commandType === 'standardize') {
       // Transform and standardize operations highlight the affected column
-      diffMode = 'column'
+      // This check comes before isExpensive so that transforms with affectedColumns
+      // (like combine_columns, split_column) highlight specific columns, not the full grid
+      if (command.affectedColumns?.length) {
+        diffMode = 'column'
+      } else if (command.isExpensive) {
+        diffMode = 'full'
+      } else {
+        diffMode = 'column'
+      }
+    } else if (command.isExpensive) {
+      diffMode = 'full'
     } else if (command.affectedColumns?.length && !command.affectedRowIds?.length) {
       // Fallback: if we have columns but no specific rows, highlight the column
       diffMode = 'column'

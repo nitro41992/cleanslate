@@ -700,7 +700,12 @@ async function countAffectedRows(
       const splitMode = (step.params?.splitMode as string) || 'delimiter'
 
       if (splitMode === 'delimiter') {
-        const delimiter = (step.params?.delimiter as string) || ' '
+        // Apply same trimming logic as transformation execution
+        // (handles case where delimiter field has default space that gets appended to user input)
+        let delimiter = (step.params?.delimiter as string) || ' '
+        if (delimiter.trim().length > 0) {
+          delimiter = delimiter.trim()
+        }
         const escapedDelim = delimiter.replace(/'/g, "''")
         const splitResult = await query<{ count: number }>(
           `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} LIKE '%${escapedDelim}%'`
@@ -740,7 +745,11 @@ async function captureRowDetails(
 ): Promise<boolean> {
   // "Cap, Don't Skip": Only skip if truly nothing to capture
   // The INSERT uses LIMIT ${ROW_DETAIL_THRESHOLD} to cap large datasets
-  if (affectedCount <= 0 || !step.column) {
+  const isStructuralTransform = step.type === 'combine_columns' || step.type === 'split_column'
+  if (affectedCount <= 0) {
+    return false
+  }
+  if (!step.column && !isStructuralTransform) {
     return false
   }
 
@@ -922,8 +931,101 @@ async function captureRowDetails(
       break
     }
 
+    case 'combine_columns': {
+      const columnList = (step.params?.columns as string || '').split(',').map(c => c.trim()).filter(Boolean)
+      // If delimiter contains non-whitespace chars, trim it (fixes " |" issue when user types "|")
+      let delimiter = (step.params?.delimiter as string) ?? ' '
+      if (delimiter.trim().length > 0) {
+        delimiter = delimiter.trim()
+      }
+      const newColName = (step.params?.newColumnName as string) || 'combined'
+      const ignoreEmpty = (step.params?.ignoreEmpty as string) !== 'false'
+      const escapedDelim = delimiter.replace(/'/g, "''")
+
+      if (columnList.length < 2) return false
+
+      // Previous value: show source columns joined with ' + ' for readability
+      const prevExpr = columnList.map(c => `COALESCE(TRIM(CAST("${c}" AS VARCHAR)), '<empty>')`).join(` || ' + ' || `)
+
+      // New value: the combined result
+      let combineNewExpr: string
+      if (ignoreEmpty) {
+        const colRefs = columnList.map(c => `NULLIF(TRIM(CAST("${c}" AS VARCHAR)), '')`).join(', ')
+        combineNewExpr = `CONCAT_WS('${escapedDelim}', ${colRefs})`
+      } else {
+        const colRefs = columnList.map(c => `COALESCE(TRIM(CAST("${c}" AS VARCHAR)), '')`).join(`, '${escapedDelim}', `)
+        combineNewExpr = `CONCAT(${colRefs})`
+      }
+
+      await ensureAuditDetailsTable()
+      const escapedNewCol = newColName.replace(/'/g, "''")
+      const combineInsertSql = `
+        INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+        SELECT uuid(), '${auditEntryId}', rowid, '${escapedNewCol}', ${prevExpr}, ${combineNewExpr}, CURRENT_TIMESTAMP
+        FROM "${tableName}"
+        LIMIT ${ROW_DETAIL_THRESHOLD}
+      `
+      await execute(combineInsertSql)
+
+      const combineCountResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
+      )
+      return Number(combineCountResult[0].count) > 0
+    }
+
+    case 'split_column': {
+      const col = step.column!
+      const splitMode = (step.params?.splitMode as string) || 'delimiter'
+
+      // Previous value: the original column value
+      const splitPrevExpr = `CAST("${col}" AS VARCHAR)`
+
+      // New value: shows actual split result for better audit fidelity
+      let splitNewExpr: string
+      if (splitMode === 'delimiter') {
+        const delimiter = (step.params?.delimiter as string) || ' '
+        const escapedDelim = delimiter.replace(/'/g, "''")
+        // Use DuckDB LIST output for readable "[a, b, c]" format
+        splitNewExpr = `'Split by "' || '${escapedDelim}' || '": ' || CAST(string_split(CAST("${col}" AS VARCHAR), '${escapedDelim}') AS VARCHAR)`
+      } else if (splitMode === 'position') {
+        const pos = Number(step.params?.position) || 3
+        // Show actual split values with CAST for numeric column safety
+        splitNewExpr = `'Split at ${pos}: "' || substring(CAST("${col}" AS VARCHAR), 1, ${pos}) || '", "' || substring(CAST("${col}" AS VARCHAR), ${pos + 1}) || '"'`
+      } else {
+        const len = Number(step.params?.length) || 2
+        splitNewExpr = `'Split every ${len} chars'`
+      }
+
+      whereClause = `"${col}" IS NOT NULL AND TRIM(CAST("${col}" AS VARCHAR)) != ''`
+      newValueExpression = splitNewExpr
+
+      // Override previous value expression for split_column
+      await ensureAuditDetailsTable()
+      const escapedCol = col.replace(/'/g, "''")
+      const splitInsertSql = `
+        INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+        SELECT
+          uuid(),
+          '${auditEntryId}',
+          rowid,
+          '${escapedCol}',
+          ${splitPrevExpr},
+          ${splitNewExpr},
+          CURRENT_TIMESTAMP
+        FROM "${tableName}"
+        WHERE "${col}" IS NOT NULL AND TRIM(CAST("${col}" AS VARCHAR)) != ''
+        LIMIT ${ROW_DETAIL_THRESHOLD}
+      `
+      await execute(splitInsertSql)
+
+      const splitCountResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
+      )
+      return Number(splitCountResult[0].count) > 0
+    }
+
     default:
-      // Cannot capture details for other transformation types (split_column creates new columns)
+      // Cannot capture details for other transformation types
       return false
   }
 
@@ -1471,8 +1573,8 @@ export async function applyTransformation(
         sql = `
           CREATE OR REPLACE TABLE "${tempTable}" AS
           SELECT *,
-            substring("${baseColName}", 1, ${position}) as "${prefix}_1",
-            substring("${baseColName}", ${position + 1}) as "${prefix}_2"
+            substring(CAST("${baseColName}" AS VARCHAR), 1, ${position}) as "${prefix}_1",
+            substring(CAST("${baseColName}" AS VARCHAR), ${position + 1}) as "${prefix}_2"
           FROM "${tableName}"
         `
       } else if (splitMode === 'length') {
@@ -1499,18 +1601,22 @@ export async function applyTransformation(
         `
       } else {
         // Default: delimiter mode
-        const delimiter = (step.params?.delimiter as string) || ' '
+        // If delimiter contains non-whitespace chars, trim it (fixes " -" becoming the delimiter when user types "-")
+        // But if it's only whitespace (e.g., just a space), keep it as-is for splitting by space
+        let delimiter = (step.params?.delimiter as string) || ' '
+        if (delimiter.trim().length > 0) {
+          delimiter = delimiter.trim()
+        }
         const escapedDelim = delimiter.replace(/'/g, "''")
 
         // Find max number of parts
         const maxParts = await query<{ max_parts: number }>(
-          `SELECT MAX(len(string_split("${baseColName}", '${escapedDelim}'))) as max_parts
-           FROM "${tableName}"`
+          `SELECT MAX(len(string_split(CAST("${baseColName}" AS VARCHAR), '${escapedDelim}'))) as max_parts FROM "${tableName}"`
         )
         const numParts = Math.min(Number(maxParts[0].max_parts) || 2, 10)
 
         const partColumns = Array.from({ length: numParts }, (_, i) =>
-          `string_split("${baseColName}", '${escapedDelim}')[${i + 1}] as "${prefix}_${i + 1}"`
+          `string_split(CAST("${baseColName}" AS VARCHAR), '${escapedDelim}')[${i + 1}] as "${prefix}_${i + 1}"`
         ).join(', ')
 
         sql = `
@@ -1548,7 +1654,12 @@ export async function applyTransformation(
 
     case 'combine_columns': {
       const columnList = (step.params?.columns as string || '').split(',').map(c => c.trim()).filter(Boolean)
-      const delimiter = (step.params?.delimiter as string) ?? ' '
+      // If delimiter contains non-whitespace chars, trim it (fixes " |" issue when user types "|")
+      // But if it's only whitespace (e.g., just a space), keep it as-is
+      let delimiter = (step.params?.delimiter as string) ?? ' '
+      if (delimiter.trim().length > 0) {
+        delimiter = delimiter.trim()
+      }
       const newColName = (step.params?.newColumnName as string) || 'combined'
       const ignoreEmpty = (step.params?.ignoreEmpty as string) !== 'false'
       const escapedDelim = delimiter.replace(/'/g, "''")
@@ -1565,7 +1676,8 @@ export async function applyTransformation(
         concatExpr = `CONCAT_WS('${escapedDelim}', ${colRefs})`
       } else {
         // Manual concat with COALESCE for empty string fallback
-        const colRefs = columnList.map(c => `COALESCE(CAST("${c}" AS VARCHAR), '')`).join(`, '${escapedDelim}', `)
+        // Add TRIM to match ignoreEmpty=true behavior (data hygiene)
+        const colRefs = columnList.map(c => `COALESCE(TRIM(CAST("${c}" AS VARCHAR)), '')`).join(`, '${escapedDelim}', `)
         concatExpr = `CONCAT(${colRefs})`
       }
 
