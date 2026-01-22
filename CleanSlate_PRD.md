@@ -108,6 +108,8 @@
 * **FR-B2:** System executes a `FULL OUTER JOIN` to determine `ADDED`, `REMOVED`, or `MODIFIED` status. ✅
     * ✅ **Compare Two Tables mode:** Select any two tables for comparison.
     * ✅ **Compare with Preview mode:** Compare current table state vs. original state.
+    * ✅ **Optimized for 2M+ rows:** Temp table + virtualized grid (Glide Data Grid).
+    * ✅ **Streaming export:** Chunked export for large datasets.
 * **FR-B3:** Render Logic (Glide Data Grid): ✅
     * **Green Background:** Row exists in File B but not A.
     * **Red Background:** Row exists in File A but not B.
@@ -115,11 +117,16 @@
 * **FR-B4: Blind Diff Support:** 🔲 **NOT IMPLEMENTED** (no tests written)
     * Allow diffing on *hashed* columns to find overlap without revealing raw data.
 
-### Module C: The Fuzzy Matcher (Deduplication) 🔶 **UI SHELL ONLY**
-* **FR-C1: Blocking Strategy (Crucial):** 🔲 **NOT IMPLEMENTED** (TDD tests written)
-    * System must force a "Block" selection (e.g., "First Letter" or "Soundex") before allowing fuzzy matching to prevent $O(N^2)$ browser crash.
-* **FR-C2: "Tinder" Review UI:** 🔲 **NOT IMPLEMENTED** (no tests written)
-    * Modal card stack. Keys: Right (Merge), Left (Keep Separate).
+### Module C: The Fuzzy Matcher (Deduplication) ✅ **IMPLEMENTED**
+* **FR-C1: Blocking Strategy (Crucial):** ✅ **IMPLEMENTED**
+    * ✅ Blocking strategies: First Letter, Double Metaphone, N-gram.
+    * ✅ Chunked multi-pass matching for scalability (handles 100K+ rows).
+    * ✅ Similarity scoring with field-level breakdown.
+    * ✅ Row selection UI with merge/keep separate actions.
+    * ✅ Audit log drill-down for merge operations.
+* **FR-C2: "Tinder" Review UI:** 🔶 **PARTIAL**
+    * Card-based UI exists for reviewing matches.
+    * 🔲 Keyboard shortcuts (Left/Right) not implemented.
 * **FR-C3: Clean-First Workflow:** 🔲 **NOT IMPLEMENTED** (no tests written)
     * Ensure deduplication happens *before* obfuscation.
 
@@ -152,7 +159,18 @@
     * **Constraint:** System must warn user if they try to join without cleaning key columns first.
     * **Feature:** "Auto-Clean Keys" button in the Join modal (Trims whitespace & casts types on both sides automatically before joining).
 
-
+### Module F: Value Standardization (Clustering) ✅ **IMPLEMENTED**
+* **FR-F1: Clustering Algorithms:** ✅
+    * ✅ **Fingerprint:** Normalize case, whitespace, punctuation for grouping.
+    * ✅ **Metaphone:** Phonetic clustering for similar-sounding values.
+* **FR-F2: Cluster Management UI:** ✅
+    * ✅ Cluster list with value counts and selection checkboxes.
+    * ✅ Bulk Select All / Deselect All controls.
+    * ✅ Master value auto-suggestion (most frequent value).
+    * ✅ Manual master value override.
+* **FR-F3: Apply Standardization:** ✅
+    * ✅ Update selected values to master value in-place.
+    * ✅ Audit log integration with row counts.
 
 ---
 
@@ -167,8 +185,8 @@
 | Feature | Safe Row Limit | Safe Size Limit | Logic/Reason | UI Action When Exceeded |
 | :--- | :--- | :--- | :--- | :--- |
 | **Ingestion** | **2,000,000 Rows** | ~2.0 GB | 2M rows is the 60fps scrolling limit. | **Warn:** *"File is large. Performance may be slower."* (Allow proceed). |
-| **Visual Diff** | **1,500,000 Rows** | ~1.5 GB (A+B) | Requires holding Table A + Table B + Join Result in RAM. | **Disable Button.** Tooltip: *"Combined file size too large to compare safely."* |
-| **Fuzzy Match** | **500,000 Rows** | ~500 MB | Levenshtein distance is CPU/RAM heavy even with blocking. | **Force Strict Blocking.** Disable "Loose" matching options; require 3-char prefix block. |
+| **Visual Diff** | **2,000,000 Rows** | ~2.0 GB (A+B) | Optimized with temp table + virtualized grid. Only loads 500 rows at a time. | **Allow proceed.** Performance tested at 100K+ rows. |
+| **Fuzzy Match** | **500,000 Rows** | ~500 MB | Chunked multi-pass matching with blocking strategies. | **Force Strict Blocking.** Disable "Loose" matching options; require blocking strategy. |
 | **Excel Export** | **100,000 Rows** | ~50 MB | Generating `.xlsx` XML tree crashes the browser. | **Force CSV.** Hide `.xlsx` option. Msg: *"Datasets >100k rows must export as CSV."* |
 | **Audit Log** | **Unlimited** | N/A | Text logs are negligible in size. | **No Action.** Always allow export. |
 

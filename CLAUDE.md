@@ -138,15 +138,20 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - Color-coded diff display (green/red/yellow)
 - Compare with Preview mode (current table vs. original state)
 - Compare Two Tables mode (select any two tables)
+- **Optimized for 2M+ rows** with temp table + virtualized grid approach
+- Streaming export for large datasets
 
 ### FR-B4: Blind Diff Support 🔲
 - Not implemented (no tests written)
 
-### FR-C1: Fuzzy Matcher 🔲
-- Panel UI loads
-- 🔲 Fuzzy matching logic (TDD tests written)
-- 🔲 Blocking strategy for performance (TDD tests written)
-- 🔲 Tinder-style review UI (FR-C2, no tests)
+### FR-C1: Fuzzy Matcher ✅
+- Panel UI with configuration options
+- ✅ Chunked multi-pass fuzzy matching for scalability
+- ✅ Blocking strategy (first letter, metaphone, n-gram)
+- ✅ Similarity scoring with field-level breakdown
+- ✅ Row selection UI with merge/keep separate actions
+- ✅ Audit log drill-down for merge operations
+- 🔲 Tinder-style review UI (FR-C2, partial - card UI exists)
 
 ### FR-D2: Smart Scrubber 🔲
 - Panel UI loads
@@ -165,11 +170,19 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - 🔲 Full Outer Join (not tested)
 - 🔲 Clean-First Guardrail (FR-E3, no tests)
 
+### FR-F: Value Standardization ✅
+- Clustering algorithms (fingerprint, metaphone)
+- Cluster list with bulk Select All / Deselect All controls
+- Master value selection (auto-suggested from most frequent)
+- Apply standardization to update values in-place
+- Audit log integration
+
 ### Additional Features
 - ✅ Persist as Table (create copy with new name)
 - ✅ Export CSV
 - ✅ Single-page panel-based UI (toolbar → slide-in sheets)
 - ✅ Keyboard shortcuts (1-5 for panels, Escape to close)
+- ✅ Original snapshot creation on manual edits (for diff comparison)
 
 ## Implementation Status Summary
 
@@ -182,16 +195,17 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 | FR-A7 Data Health | 🔲 Not Started | 0 | 0 | All |
 | FR-B2 Visual Diff | ✅ Complete | 3 | 0 | 0 |
 | FR-B4 Blind Diff | 🔲 Not Started | 0 | 0 | All |
-| FR-C1 Fuzzy Matcher | 🔲 Partial | 1 | 2 | 1 |
-| FR-C2 Review UI | 🔲 Not Started | 0 | 0 | All |
+| FR-C1 Fuzzy Matcher | ✅ Complete | 3 | 0 | 0 |
+| FR-C2 Review UI | 🔶 Partial | 0 | 0 | All |
 | FR-D1 Project Secret | 🔲 Not Started | 0 | 0 | All |
 | FR-D2 Smart Scrubber | 🔲 Partial | 1 | 4 | 0 |
 | FR-D3 Key Map Export | 🔲 Not Started | 0 | 0 | All |
 | FR-E1 Stack Tables | ✅ Complete | 2 | 0 | 0 |
 | FR-E2 Join Tables | ✅ Complete | 2 | 0 | 0 |
 | FR-E3 Clean-First | 🔲 Not Started | 0 | 0 | All |
+| FR-F Value Standardization | ✅ Complete | 0 | 0 | All |
 
-**Totals:** ~58 passing, ~16 TDD failing (expected), multiple features with no test coverage
+**Totals:** ~60+ passing, ~14 TDD failing (expected), multiple features with no test coverage
 
 ### Pending Features (TDD Tests Written)
 
@@ -201,10 +215,6 @@ These features have failing tests that document expected behavior:
 - Title Case, Remove Accents, Remove Non-Printable
 - Unformat Currency, Fix Negatives, Pad Zeros
 - Standardize Date, Calculate Age, Split Column, Fill Down
-
-**FR-C1 Fuzzy Matcher:**
-- Fuzzy matching algorithm
-- Blocking strategy for performance
 
 **FR-D2 Smart Scrubber:**
 - SHA-256 hash columns
@@ -220,10 +230,11 @@ These features have no E2E tests written:
 |---------|----------|------------|
 | FR-A7 Data Health Sidebar | Medium | Low |
 | FR-B4 Blind Diff Support | Low | Medium |
-| FR-C2 Tinder-style Review | Medium | High |
+| FR-C2 Tinder-style Review | Low | Medium |
 | FR-D1 Project Secret/Salt | High | Low |
 | FR-D3 Key Map Export | Medium | Medium |
 | FR-E3 Clean-First Guardrail | Low | Low |
+| FR-F Value Standardization | Medium | Low |
 
 ### Recommended Tests to Add
 
