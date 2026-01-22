@@ -220,7 +220,7 @@ test.describe.serial('Transformations: Empty Values Data', () => {
     await page.close()
   })
 
-  test('should filter empty values', async () => {
+  test('should replace empty values', async () => {
     await inspector.runQuery('DROP TABLE IF EXISTS empty_values')
     await laundromat.uploadFile(getFixturePath('empty-values.csv'))
     await wizard.waitForOpen()
@@ -229,10 +229,16 @@ test.describe.serial('Transformations: Empty Values Data', () => {
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-    await picker.addTransformation('Filter Empty', { column: 'name' })
+    await picker.addTransformation('Replace Empty', { column: 'name', params: { 'Replace with': 'N/A' } })
 
+    // Row count should remain the same - values are replaced, not removed
     const tables = await inspector.getTables()
-    expect(tables[0].rowCount).toBe(3) // Rows with empty name removed
+    expect(tables[0].rowCount).toBe(5)
+
+    // Verify the replacement was applied
+    const data = await inspector.getTableData('empty_values')
+    const emptyRows = data.filter((row: Record<string, unknown>) => row.name === 'N/A')
+    expect(emptyRows.length).toBe(2) // 2 rows had empty names
   })
 })
 

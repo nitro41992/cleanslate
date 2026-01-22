@@ -65,11 +65,14 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     requiresColumn: false,
   },
   {
-    id: 'filter_empty',
-    label: 'Filter Empty',
-    description: 'Remove rows where column is empty',
-    icon: '🚫',
+    id: 'replace_empty',
+    label: 'Replace Empty',
+    description: 'Replace empty/null values with a specified value',
+    icon: '🔄',
     requiresColumn: true,
+    params: [
+      { name: 'replaceWith', type: 'text', label: 'Replace with', default: '' },
+    ],
   },
   {
     id: 'replace',
@@ -317,12 +320,12 @@ async function countAffectedRows(
       return Number(replaceResult[0].count)
     }
 
-    case 'filter_empty': {
+    case 'replace_empty': {
       if (!column) return 0
-      const filterResult = await query<{ count: number }>(
-        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NULL OR TRIM(${column}) = ''`
+      const replaceEmptyResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
       )
-      return Number(filterResult[0].count)
+      return Number(replaceEmptyResult[0].count)
     }
 
     case 'rename_column':
@@ -611,12 +614,14 @@ async function captureRowDetails(
       break
     }
 
-    case 'filter_empty':
-      // Capture rows that WILL BE DELETED (empty/null values)
-      // previous_value shows the empty value, new_value shows '<deleted>' for UI clarity
+    case 'replace_empty': {
+      // Capture rows where empty/null values will be replaced
+      const replaceWith = (step.params?.replaceWith as string) ?? ''
+      const escapedReplacement = replaceWith.replace(/'/g, "''")
       whereClause = `${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
-      newValueExpression = `'<deleted>'`
+      newValueExpression = `'${escapedReplacement}'`
       break
+    }
 
     default:
       // Cannot capture details for other transformation types (split_column creates new columns)
@@ -761,13 +766,17 @@ export async function applyTransformation(
       break
     }
 
-    case 'filter_empty':
+    case 'replace_empty': {
+      const replaceWith = (step.params?.replaceWith as string) ?? ''
+      const escapedReplacement = replaceWith.replace(/'/g, "''")
       sql = `
-        DELETE FROM "${tableName}"
-        WHERE "${step.column}" IS NULL OR TRIM("${step.column}") = ''
+        UPDATE "${tableName}"
+        SET "${step.column}" = '${escapedReplacement}'
+        WHERE "${step.column}" IS NULL OR TRIM(CAST("${step.column}" AS VARCHAR)) = ''
       `
       await execute(sql)
       break
+    }
 
     case 'replace': {
       const find = (step.params?.find as string) || ''
@@ -970,10 +979,25 @@ export async function applyTransformation(
     }
 
     case 'calculate_age': {
+      // Use same COALESCE pattern as captureRowDetails for consistent date parsing
       sql = `
         CREATE OR REPLACE TABLE "${tempTable}" AS
         SELECT *,
-               DATE_DIFF('year', TRY_CAST("${step.column}" AS DATE), CURRENT_DATE) as age
+               DATE_DIFF('year',
+                 COALESCE(
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y-%m-%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y%m%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%m/%d/%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d/%m/%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y/%m/%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d-%m-%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%m-%d-%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y.%m.%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d.%m.%Y'),
+                   TRY_CAST("${step.column}" AS DATE)
+                 ),
+                 CURRENT_DATE
+               ) as age
         FROM "${tableName}"
       `
       await execute(sql)

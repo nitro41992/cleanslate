@@ -16,7 +16,6 @@ import { generateId } from '@/lib/utils'
  */
 const EXPENSIVE_OPERATIONS: Set<string> = new Set([
   'remove_duplicates',
-  'filter_empty',
   'join',
   'stack',
   'merge',

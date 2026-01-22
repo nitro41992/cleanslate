@@ -43,33 +43,33 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
 
   const handleUndo = useCallback(async () => {
     if (!tableId || isReplaying) return
-    const newRowCount = await undoTimeline(tableId)
-    if (typeof newRowCount === 'number') {
-      updateTable(tableId, { rowCount: newRowCount })
+    const result = await undoTimeline(tableId)
+    if (result) {
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
   }, [tableId, isReplaying, updateTable])
 
   const handleRedo = useCallback(async () => {
     if (!tableId || isReplaying) return
-    const newRowCount = await redoTimeline(tableId)
-    if (typeof newRowCount === 'number') {
-      updateTable(tableId, { rowCount: newRowCount })
+    const result = await redoTimeline(tableId)
+    if (result) {
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
   }, [tableId, isReplaying, updateTable])
 
   const handleReset = useCallback(async () => {
     if (!tableId || isReplaying) return
-    const newRowCount = await replayToPosition(tableId, -1)
-    if (typeof newRowCount === 'number') {
-      updateTable(tableId, { rowCount: newRowCount })
+    const result = await replayToPosition(tableId, -1)
+    if (result) {
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
   }, [tableId, isReplaying, updateTable])
 
   const handleStepClick = useCallback(async (stepIndex: number) => {
     if (!tableId || isReplaying) return
-    const newRowCount = await replayToPosition(tableId, stepIndex)
-    if (typeof newRowCount === 'number') {
-      updateTable(tableId, { rowCount: newRowCount })
+    const result = await replayToPosition(tableId, stepIndex)
+    if (result) {
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
   }, [tableId, isReplaying, updateTable])
 

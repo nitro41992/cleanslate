@@ -89,7 +89,7 @@ export type TransformationType =
   | 'lowercase'
   | 'uppercase'
   | 'remove_duplicates'
-  | 'filter_empty'
+  | 'replace_empty'
   | 'replace'
   | 'split'
   | 'merge_columns'

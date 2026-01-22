@@ -15,6 +15,7 @@ import {
   dropTable,
   updateCellByRowId,
   CS_ID_COLUMN,
+  getTableColumns,
 } from '@/lib/duckdb'
 import { applyTransformation } from '@/lib/transformations'
 import { applyStandardization } from '@/lib/standardizer-engine'
@@ -26,6 +27,7 @@ import type {
   ManualEditParams,
   StandardizeParams,
   BatchEditParams,
+  ColumnInfo,
 } from '@/types'
 
 /**
@@ -236,7 +238,7 @@ export async function replayToPosition(
   tableId: string,
   targetPosition: number,
   onProgress?: (progress: number, message: string) => void
-): Promise<number> {
+): Promise<{ rowCount: number; columns: ColumnInfo[] }> {
   console.log('[REPLAY] replayToPosition called', { tableId, targetPosition })
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
@@ -314,9 +316,11 @@ export async function replayToPosition(
       onProgress?.(100, 'Complete')
       store.setPosition(tableId, targetPosition)
       store.setIsReplaying(false)
-      // Get row count for caller to update tableStore
+      // Get row count AND columns for caller to update tableStore
       const countResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${tableName}"`)
-      return Number(countResult[0].count)
+      const columns = await getTableColumns(tableName)
+      const userColumns = columns.filter(c => c.name !== CS_ID_COLUMN)
+      return { rowCount: Number(countResult[0].count), columns: userColumns }
     }
 
     // Replay commands from (snapshotIndex + 1) to targetPosition
@@ -358,12 +362,13 @@ export async function replayToPosition(
     // Update position in store
     store.setPosition(tableId, targetPosition)
 
-    // Get row count for caller to update tableStore
+    // Get row count AND columns for caller to update tableStore
     const countResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${tableName}"`)
-    const newRowCount = Number(countResult[0].count)
+    const columns = await getTableColumns(tableName)
+    const userColumns = columns.filter(c => c.name !== CS_ID_COLUMN)
 
     onProgress?.(100, 'Complete')
-    return newRowCount
+    return { rowCount: Number(countResult[0].count), columns: userColumns }
   } finally {
     store.setIsReplaying(false)
     store.setReplayProgress(0)
@@ -372,12 +377,12 @@ export async function replayToPosition(
 
 /**
  * Undo to the previous position
- * Returns the new row count on success, or undefined if cannot undo
+ * Returns the new row count and columns on success, or undefined if cannot undo
  */
 export async function undoTimeline(
   tableId: string,
   onProgress?: (progress: number, message: string) => void
-): Promise<number | undefined> {
+): Promise<{ rowCount: number; columns: ColumnInfo[] } | undefined> {
   console.log('[TIMELINE] undoTimeline called for tableId:', tableId)
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
@@ -403,12 +408,12 @@ export async function undoTimeline(
 
 /**
  * Redo to the next position
- * Returns the new row count on success, or undefined if cannot redo
+ * Returns the new row count and columns on success, or undefined if cannot redo
  */
 export async function redoTimeline(
   tableId: string,
   onProgress?: (progress: number, message: string) => void
-): Promise<number | undefined> {
+): Promise<{ rowCount: number; columns: ColumnInfo[] } | undefined> {
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
@@ -622,7 +627,7 @@ function isExpensiveOperation(
 
   // Check for expensive transformations
   if (commandType === 'transform' && params.type === 'transform') {
-    const expensiveTransforms = new Set(['remove_duplicates', 'filter_empty'])
+    const expensiveTransforms = new Set(['remove_duplicates'])
     return expensiveTransforms.has(params.transformationType)
   }
 
