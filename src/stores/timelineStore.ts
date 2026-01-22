@@ -103,6 +103,7 @@ const initialHighlight: TimelineHighlight = {
   commandId: null,
   rowIds: new Set(),
   cellKeys: new Set(),
+  highlightedColumns: new Set(),
   ghostRows: [],
   diffMode: 'cell',
 }
@@ -330,16 +331,27 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     for (const timeline of state.timelines.values()) {
       const command = timeline.commands.find((c) => c.id === commandId)
       if (command) {
+        // Determine diff mode based on command type
+        let diffMode: TimelineHighlight['diffMode'] = 'row'
+        if (command.commandType === 'manual_edit' || command.commandType === 'batch_edit') {
+          diffMode = 'cell'
+        } else if (command.isExpensive) {
+          diffMode = 'full'
+        } else if (command.commandType === 'transform' || command.commandType === 'standardize') {
+          // Transform and standardize operations highlight the affected column
+          diffMode = 'column'
+        } else if (command.affectedColumns?.length && !command.affectedRowIds?.length) {
+          // Fallback: if we have columns but no specific rows, highlight the column
+          diffMode = 'column'
+        }
+
         const highlight: TimelineHighlight = {
           commandId,
           rowIds: new Set(command.affectedRowIds || []),
           cellKeys: new Set(),
+          highlightedColumns: new Set(command.affectedColumns || []),
           ghostRows: [],
-          diffMode: command.commandType === 'manual_edit' || command.commandType === 'batch_edit'
-            ? 'cell'
-            : command.isExpensive
-              ? 'full'
-              : 'row',
+          diffMode,
         }
 
         // Build cell keys from cell changes
@@ -375,14 +387,29 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     const command = timeline.commands.find((c) => c.id === commandId)
     if (!command) return null
 
+    // Determine diff mode based on command type
+    let diffMode: TimelineHighlight['diffMode'] = 'cell'
+    if (command.commandType === 'manual_edit' || command.commandType === 'batch_edit') {
+      diffMode = 'cell'
+    } else if (command.isExpensive) {
+      diffMode = 'full'
+    } else if (command.commandType === 'transform' || command.commandType === 'standardize') {
+      // Transform and standardize operations highlight the affected column
+      diffMode = 'column'
+    } else if (command.affectedColumns?.length && !command.affectedRowIds?.length) {
+      // Fallback: if we have columns but no specific rows, highlight the column
+      diffMode = 'column'
+    }
+
     return {
       commandId,
       rowIds: new Set(command.affectedRowIds || []),
       cellKeys: new Set(
         command.cellChanges?.map((c) => `${c.csId}:${c.columnName}`) || []
       ),
+      highlightedColumns: new Set(command.affectedColumns || []),
       ghostRows: [],
-      diffMode: command.isExpensive ? 'full' : 'cell',
+      diffMode,
     }
   },
 

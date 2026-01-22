@@ -107,6 +107,7 @@ export function useStandardizer() {
     rowsAffected: number
     auditEntryId: string | null
     hasRowDetails: boolean
+    affectedRowIds: string[]
     error?: string
   }> => {
     if (!tableName || !columnName) {
@@ -115,6 +116,7 @@ export function useStandardizer() {
         rowsAffected: 0,
         auditEntryId: null,
         hasRowDetails: false,
+        affectedRowIds: [],
         error: 'No table or column selected',
       }
     }
@@ -127,6 +129,7 @@ export function useStandardizer() {
         rowsAffected: 0,
         auditEntryId: null,
         hasRowDetails: false,
+        affectedRowIds: [],
         error: 'No values selected for standardization',
       }
     }
@@ -145,6 +148,7 @@ export function useStandardizer() {
         rowsAffected: result.rowsAffected,
         auditEntryId,
         hasRowDetails: result.hasRowDetails,
+        affectedRowIds: result.affectedRowIds,
       }
     } catch (error) {
       console.error('Apply standardization failed:', error)
@@ -153,6 +157,7 @@ export function useStandardizer() {
         rowsAffected: 0,
         auditEntryId: null,
         hasRowDetails: false,
+        affectedRowIds: [],
         error: error instanceof Error ? error.message : 'Apply failed',
       }
     }

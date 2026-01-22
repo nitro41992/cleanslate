@@ -270,9 +270,9 @@ export async function applyStandardization(
   columnName: string,
   mappings: StandardizationMapping[],
   auditEntryId: string
-): Promise<{ rowsAffected: number; hasRowDetails: boolean }> {
+): Promise<{ rowsAffected: number; hasRowDetails: boolean; affectedRowIds: string[] }> {
   if (mappings.length === 0) {
-    return { rowsAffected: 0, hasRowDetails: false }
+    return { rowsAffected: 0, hasRowDetails: false, affectedRowIds: [] }
   }
 
   // Ensure audit table exists
@@ -292,6 +292,20 @@ export async function applyStandardization(
     .map((m) => `'${m.fromValue.replace(/'/g, "''")}'`)
     .join(', ')
 
+  // Query affected row IDs BEFORE the update (for highlighting support)
+  let affectedRowIds: string[] = []
+  try {
+    const rowIdQuery = `
+      SELECT _cs_id FROM "${tableName}"
+      WHERE CAST("${columnName}" AS VARCHAR) IN (${whereValues})
+    `
+    const rowIdResult = await query<{ _cs_id: string }>(rowIdQuery)
+    affectedRowIds = rowIdResult.map((row) => row._cs_id)
+  } catch (e) {
+    // If _cs_id doesn't exist or query fails, continue without row IDs
+    console.warn('Could not get affected row IDs for highlighting:', e)
+  }
+
   // Execute UPDATE
   const sql = `
     UPDATE "${tableName}"
@@ -310,22 +324,24 @@ export async function applyStandardization(
     totalRowsAffected += mapping.rowCount
   }
 
-  // Record audit details
-  const hasRowDetails = totalRowsAffected <= 10_000
-  if (hasRowDetails) {
-    for (const mapping of mappings) {
-      const id = generateId()
-      const fromEscaped = mapping.fromValue.replace(/'/g, "''")
-      const toEscaped = mapping.toValue.replace(/'/g, "''")
+  // Record audit details - always store value mappings since they're small
+  // (we store value->value mappings, not row-level data, so even with many rows
+  // we typically only have a handful of mappings)
+  for (const mapping of mappings) {
+    const id = generateId()
+    const fromEscaped = mapping.fromValue.replace(/'/g, "''")
+    const toEscaped = mapping.toValue.replace(/'/g, "''")
 
-      await execute(`
-        INSERT INTO _standardize_audit_details (id, audit_entry_id, from_value, to_value, row_count, created_at)
-        VALUES ('${id}', '${auditEntryId}', '${fromEscaped}', '${toEscaped}', ${mapping.rowCount}, CURRENT_TIMESTAMP)
-      `)
-    }
+    await execute(`
+      INSERT INTO _standardize_audit_details (id, audit_entry_id, from_value, to_value, row_count, created_at)
+      VALUES ('${id}', '${auditEntryId}', '${fromEscaped}', '${toEscaped}', ${mapping.rowCount}, CURRENT_TIMESTAMP)
+    `)
   }
 
-  return { rowsAffected: totalRowsAffected, hasRowDetails }
+  // Always true for standardization since we store value mappings, not row-level data
+  const hasRowDetails = true
+
+  return { rowsAffected: totalRowsAffected, hasRowDetails, affectedRowIds }
 }
 
 /**

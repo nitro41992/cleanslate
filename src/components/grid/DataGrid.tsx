@@ -375,8 +375,11 @@ export function DataGrid({
 
       // Check for timeline cell highlight (yellow background for highlighted cells)
       const isCellHighlighted = activeHighlight?.cellKeys?.has(cellKey ?? '') ?? false
+      // Check for column highlight (when entire column is affected, e.g., standardization)
+      const isColumnHighlighted = activeHighlight?.diffMode === 'column' &&
+        activeHighlight?.highlightedColumns?.has(colName)
 
-      if (isCellHighlighted) {
+      if (isCellHighlighted || isColumnHighlighted) {
         // Draw yellow highlight background before the cell content
         ctx.save()
         ctx.fillStyle = 'rgba(234, 179, 8, 0.25)' // yellow-500 with opacity

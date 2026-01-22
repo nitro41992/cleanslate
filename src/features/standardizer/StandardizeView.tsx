@@ -167,6 +167,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
           timelineParams,
           {
             auditEntryId: result.auditEntryId || undefined,
+            affectedRowIds: result.affectedRowIds,
             affectedColumns: [columnName],
             rowsAffected: result.rowsAffected,
             hasRowDetails: result.hasRowDetails,

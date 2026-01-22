@@ -345,6 +345,7 @@ export interface TimelineHighlight {
   commandId: string | null
   rowIds: Set<string>                // _cs_id values to highlight
   cellKeys: Set<string>              // "csId:columnName" keys for cell highlights
+  highlightedColumns: Set<string>    // Column names to highlight entirely
   ghostRows: Record<string, unknown>[] // Deleted rows to show as "ghosts"
-  diffMode: 'cell' | 'row' | 'full'
+  diffMode: 'cell' | 'row' | 'full' | 'column'
 }
