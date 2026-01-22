@@ -116,6 +116,38 @@ export function generateMetaphoneKey(value: string): string {
 }
 
 /**
+ * Generate token phonetic key for a value
+ * Applies phonetic encoding to each word separately, then sorts and joins
+ * Ideal for multi-word values like full names where word order may vary
+ *
+ * Examples:
+ *   "John Smith"  → "JN SM0"
+ *   "Jon Smyth"   → "JN SM0"  (same cluster!)
+ *   "Smith, John" → "JN SM0"  (same cluster!)
+ */
+export function generateTokenPhoneticKey(value: string): string {
+  if (!value || typeof value !== 'string') return ''
+
+  // Normalize: lowercase, remove accents, remove punctuation except spaces
+  const normalized = value.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, '')
+
+  // Split into tokens, filter empty
+  const tokens = normalized.split(/\s+/).filter(t => t.length > 0)
+
+  // Apply metaphone to each token
+  const metaphoneCodes = tokens.map(token => {
+    const [primary] = doubleMetaphone(token)
+    return primary
+  }).filter(code => code.length > 0)
+
+  // Sort and join for order-independent matching
+  return metaphoneCodes.sort().join(' ')
+}
+
+/**
  * Get the clustering key based on algorithm
  */
 function getClusterKey(value: string, algorithm: ClusteringAlgorithm): string {
@@ -124,6 +156,8 @@ function getClusterKey(value: string, algorithm: ClusteringAlgorithm): string {
       return generateFingerprint(value)
     case 'metaphone':
       return generateMetaphoneKey(value)
+    case 'token_phonetic':
+      return generateTokenPhoneticKey(value)
     default:
       return generateFingerprint(value)
   }

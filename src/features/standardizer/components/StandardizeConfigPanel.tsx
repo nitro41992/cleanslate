@@ -147,12 +147,17 @@ export function StandardizeConfigPanel({
             <SelectItem value="metaphone">
               Metaphone (Phonetic)
             </SelectItem>
+            <SelectItem value="token_phonetic">
+              Token Phonetic (Names)
+            </SelectItem>
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
           {algorithm === 'fingerprint'
             ? 'Groups values by normalized form (case, punctuation, word order)'
-            : 'Groups values by phonetic similarity (sounds-alike matching)'}
+            : algorithm === 'metaphone'
+            ? 'Groups values by phonetic similarity (sounds-alike matching)'
+            : 'Phonetic matching per word - ideal for full names (handles word order + spelling variations)'}
         </p>
       </div>
 

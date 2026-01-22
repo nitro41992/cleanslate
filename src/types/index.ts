@@ -163,7 +163,7 @@ export interface JoinValidation {
 }
 
 // Value Standardization types (FR-F)
-export type ClusteringAlgorithm = 'fingerprint' | 'metaphone'
+export type ClusteringAlgorithm = 'fingerprint' | 'metaphone' | 'token_phonetic'
 
 export interface ValueCluster {
   id: string
