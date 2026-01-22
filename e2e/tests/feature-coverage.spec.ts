@@ -83,16 +83,10 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   })
 
   test('should convert text to title case', async () => {
-    // TDD: Expected to fail until Title Case transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Title Case' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Title Case', { column: 'name' })
 
@@ -101,16 +95,10 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   })
 
   test('should remove accents from text', async () => {
-    // TDD: Expected to fail until Remove Accents transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Remove Accents' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Remove Accents', { column: 'name' })
 
@@ -121,16 +109,10 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   })
 
   test('should remove non-printable characters', async () => {
-    // TDD: Expected to fail until Remove Non-Printable transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Remove Non-Printable' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Remove Non-Printable', { column: 'name' })
 
@@ -170,16 +152,10 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
   }
 
   test('should unformat currency values', async () => {
-    // TDD: Expected to fail until Unformat Currency transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Unformat Currency' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Unformat Currency', { column: 'currency_value' })
 
@@ -189,16 +165,10 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
   })
 
   test('should fix negative number formatting', async () => {
-    // TDD: Expected to fail until Fix Negatives transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Fix Negatives' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Fix Negatives', { column: 'formatted_negative' })
 
@@ -208,16 +178,10 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
   })
 
   test('should pad numbers with zeros', async () => {
-    // TDD: Expected to fail until Pad Zeros transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Pad Zeros' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Pad Zeros', { column: 'account_number', params: { length: '5' } })
 
@@ -258,20 +222,14 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
   }
 
   test('should standardize date formats', async () => {
-    // TDD: Expected to fail until Standardize Date transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Standardize Date' })).toBeVisible({ timeout: 1000 })
-
     await picker.addTransformation('Standardize Date', {
       column: 'date_us',
-      params: { format: 'YYYY-MM-DD' },
+      selectParams: { 'Target format': 'ISO (YYYY-MM-DD)' },
     })
 
     const data = await inspector.getTableData('fr_a3_dates_split')
@@ -280,36 +238,25 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
   })
 
   test('should calculate age from birth date', async () => {
-    // TDD: Expected to fail until Calculate Age transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Calculate Age' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Calculate Age', { column: 'birth_date' })
 
     const data = await inspector.getTableData('fr_a3_dates_split')
     // Ages will vary based on current date, just check it's a reasonable number
-    expect(typeof data[0].age).toBe('number')
-    expect(data[0].age as number).toBeGreaterThan(30)
+    // DuckDB returns bigint for DATE_DIFF, so accept both number and bigint
+    expect(['number', 'bigint']).toContain(typeof data[0].age)
+    expect(Number(data[0].age)).toBeGreaterThan(30)
   })
 
   test('should split column by delimiter', async () => {
-    // TDD: Expected to fail until Split Column transformation is implemented
-    test.fail()
-
     await loadTestData()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Split Column' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Split Column', {
       column: 'full_name',
@@ -344,9 +291,6 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
   })
 
   test('should fill down empty cells from above', async () => {
-    // TDD: Expected to fail until Fill Down transformation is implemented
-    test.fail()
-
     await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_fill_down')
     await laundromat.uploadFile(getFixturePath('fr_a3_fill_down.csv'))
     await wizard.waitForOpen()
@@ -355,9 +299,6 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-
-    // Fail-fast guard: Assert transformation option exists
-    await expect(page.getByRole('option', { name: 'Fill Down' })).toBeVisible({ timeout: 1000 })
 
     await picker.addTransformation('Fill Down', { column: 'region' })
 
@@ -865,64 +806,187 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
-    // Load a table so toolbar is enabled
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
   })
 
   test.afterAll(async () => {
     await page.close()
   })
 
+  async function loadPIIData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_d2_pii')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_d2_pii_scrubbed')
+    await laundromat.uploadFile(getFixturePath('fr_d2_pii.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_d2_pii', 5)
+  }
+
   test('should load scrubber panel', async () => {
+    // Load test data
+    await loadPIIData()
+
     // Open scrub panel via toolbar (single-page app)
     await laundromat.openScrubPanel()
     await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
   })
 
   test('should hash sensitive columns', async () => {
-    // TDD: Expected to fail until hash obfuscation is implemented
-    test.fail()
+    // Load fresh data for this test
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await loadPIIData()
 
-    // Fail-fast guard: Assert hash option exists in scrubber
-    await expect(page.getByRole('option', { name: /hash/i })).toBeVisible({ timeout: 1000 })
+    // Open scrub panel
+    await laundromat.openScrubPanel()
+    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
 
-    // Test SHA-256 hashing of SSN column in fr_d2_pii.csv
+    // Select the table (use first() to avoid strict mode issues with duplicates)
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
+    await page.waitForTimeout(300)
+
+    // Select hash method for SSN column using data-testid
+    await page.getByTestId('method-select-ssn').click()
+    await page.getByRole('option', { name: /Hash/i }).first().click()
+    await page.waitForTimeout(200)
+
+    // Enter project secret
+    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+
+    // Apply scrubbing
+    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+
+    // Wait for scrubbed table to be created
+    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
+
+    // Additional wait for data to be fully committed
+    await page.waitForTimeout(500)
+
+    // Verify hash format (16-char hex)
+    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    expect(data.length).toBeGreaterThan(0)
+    expect(data[0].ssn).toMatch(/^[a-f0-9]{16}$/)
+
     // Verify hash is consistent (same input = same output)
+    // Row 0 and Row 1 have different SSNs so hashes should be different
+    expect(data[0].ssn).not.toBe(data[1].ssn)
   })
 
   test('should redact PII patterns', async () => {
-    // TDD: Expected to fail until redact obfuscation is implemented
-    test.fail()
+    // Load fresh data for this test
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await loadPIIData()
 
-    // Fail-fast guard: Assert redact option exists in scrubber
-    await expect(page.getByRole('option', { name: /redact/i })).toBeVisible({ timeout: 1000 })
+    // Open scrub panel
+    await laundromat.openScrubPanel()
+    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
 
-    // Test redaction of email, phone, SSN patterns
-    // john.smith@email.com -> j***@e***.com or [REDACTED]
+    // Select the table (use first() to avoid strict mode issues with duplicates)
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
+    await page.waitForTimeout(300)
+
+    // Select redact method for email column
+    await page.getByTestId('method-select-email').click()
+    await page.getByRole('option', { name: /Redact/i }).first().click()
+    await page.waitForTimeout(200)
+
+    // Enter project secret
+    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+
+    // Apply scrubbing
+    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+
+    // Wait for scrubbed table to be created
+    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
+
+    // Additional wait for data to be fully committed
+    await page.waitForTimeout(500)
+
+    // Verify redaction
+    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    expect(data.length).toBeGreaterThan(0)
+    expect(data[0].email).toBe('[REDACTED]')
+    expect(data[1].email).toBe('[REDACTED]')
   })
 
   test('should mask partial values', async () => {
-    // TDD: Expected to fail until mask obfuscation is implemented
-    test.fail()
+    // Load fresh data for this test
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await loadPIIData()
 
-    // Fail-fast guard: Assert mask option exists in scrubber
-    await expect(page.getByRole('option', { name: /mask/i })).toBeVisible({ timeout: 1000 })
+    // Open scrub panel
+    await laundromat.openScrubPanel()
+    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
 
-    // Test masking credit card: 4111-1111-1111-1111 -> ****-****-****-1111
+    // Select the table (use first() to avoid strict mode issues with duplicates)
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
+    await page.waitForTimeout(300)
+
+    // Select mask method for full_name column
+    await page.getByTestId('method-select-full_name').click()
+    await page.getByRole('option', { name: /Mask/i }).first().click()
+    await page.waitForTimeout(200)
+
+    // Enter project secret
+    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+
+    // Apply scrubbing
+    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+
+    // Wait for scrubbed table to be created
+    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
+
+    // Additional wait for data to be fully committed
+    await page.waitForTimeout(500)
+
+    // Verify masking (shows first and last char with asterisks in between)
+    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    expect(data.length).toBeGreaterThan(0)
+    // "John Smith" should become something like "J*****h"
+    expect(data[0].full_name).toMatch(/^J\*+h$/)
   })
 
   test('should extract year only from dates', async () => {
-    // TDD: Expected to fail until year_only obfuscation is implemented
-    test.fail()
+    // Load fresh data for this test
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await loadPIIData()
 
-    // Fail-fast guard: Assert year_only option exists in scrubber
-    await expect(page.getByRole('option', { name: /year/i })).toBeVisible({ timeout: 1000 })
+    // Open scrub panel
+    await laundromat.openScrubPanel()
+    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
 
-    // Test year_only: 1985-03-15 -> 1985
+    // Select the table (use first() to avoid strict mode issues with duplicates)
+    await page.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
+    await page.waitForTimeout(300)
+
+    // Select year_only method for birth_date column
+    await page.getByTestId('method-select-birth_date').click()
+    await page.getByRole('option', { name: /Year Only/i }).first().click()
+    await page.waitForTimeout(200)
+
+    // Enter project secret
+    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+
+    // Apply scrubbing
+    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+
+    // Wait for scrubbed table to be created
+    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
+
+    // Additional wait for data to be fully committed
+    await page.waitForTimeout(500)
+
+    // Verify year_only: 1985-03-15 -> 1985-01-01
+    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    expect(data.length).toBeGreaterThan(0)
+    expect(data[0].birth_date).toBe('1985-01-01') // Original: 1985-03-15
+    expect(data[1].birth_date).toBe('1990-01-01') // Original: 1990-07-22
   })
 })
 

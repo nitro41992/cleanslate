@@ -96,6 +96,19 @@ export type TransformationType =
   | 'rename_column'
   | 'cast_type'
   | 'custom_sql'
+  // FR-A3 Text Transformations
+  | 'title_case'
+  | 'remove_accents'
+  | 'remove_non_printable'
+  // FR-A3 Finance Transformations
+  | 'unformat_currency'
+  | 'fix_negatives'
+  | 'pad_zeros'
+  // FR-A3 Date/Structure Transformations
+  | 'standardize_date'
+  | 'calculate_age'
+  | 'split_column'
+  | 'fill_down'
 
 export interface DiffResult {
   status: 'added' | 'removed' | 'modified' | 'unchanged'

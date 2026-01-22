@@ -140,6 +140,98 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     requiresColumn: false,
     params: [{ name: 'sql', type: 'text', label: 'SQL Query' }],
   },
+  // FR-A3 Text Transformations
+  {
+    id: 'title_case',
+    label: 'Title Case',
+    description: 'Capitalize first letter of each word',
+    icon: '🔤',
+    requiresColumn: true,
+  },
+  {
+    id: 'remove_accents',
+    label: 'Remove Accents',
+    description: 'Remove diacritical marks (café → cafe)',
+    icon: 'ê',
+    requiresColumn: true,
+  },
+  {
+    id: 'remove_non_printable',
+    label: 'Remove Non-Printable',
+    description: 'Remove tabs, newlines, control characters',
+    icon: '🚫',
+    requiresColumn: true,
+  },
+  // FR-A3 Finance Transformations
+  {
+    id: 'unformat_currency',
+    label: 'Unformat Currency',
+    description: 'Remove $ , and convert to number',
+    icon: '💵',
+    requiresColumn: true,
+  },
+  {
+    id: 'fix_negatives',
+    label: 'Fix Negatives',
+    description: 'Convert (500.00) to -500.00',
+    icon: '−',
+    requiresColumn: true,
+  },
+  {
+    id: 'pad_zeros',
+    label: 'Pad Zeros',
+    description: 'Left-pad numbers with zeros',
+    icon: '0',
+    requiresColumn: true,
+    params: [
+      { name: 'length', type: 'number', label: 'Target length', default: '5' },
+    ],
+  },
+  // FR-A3 Date/Structure Transformations
+  {
+    id: 'standardize_date',
+    label: 'Standardize Date',
+    description: 'Convert to ISO format (YYYY-MM-DD)',
+    icon: '📅',
+    requiresColumn: true,
+    params: [
+      {
+        name: 'format',
+        type: 'select',
+        label: 'Target format',
+        options: [
+          { value: 'YYYY-MM-DD', label: 'ISO (YYYY-MM-DD)' },
+          { value: 'MM/DD/YYYY', label: 'US (MM/DD/YYYY)' },
+          { value: 'DD/MM/YYYY', label: 'EU (DD/MM/YYYY)' },
+        ],
+        default: 'YYYY-MM-DD',
+      },
+    ],
+  },
+  {
+    id: 'calculate_age',
+    label: 'Calculate Age',
+    description: 'Create age column from date of birth',
+    icon: '🎂',
+    requiresColumn: true,
+  },
+  {
+    id: 'split_column',
+    label: 'Split Column',
+    description: 'Split by delimiter into multiple columns',
+    icon: '✂️',
+    requiresColumn: true,
+    params: [
+      { name: 'delimiter', type: 'text', label: 'Delimiter', default: ' ' },
+    ],
+  },
+  {
+    id: 'fill_down',
+    label: 'Fill Down',
+    description: 'Fill empty cells with value from above',
+    icon: '⬇️',
+    requiresColumn: true,
+  },
 ]
 
 /**
@@ -254,6 +346,92 @@ async function countAffectedRows(
     case 'custom_sql':
       // Cannot predict affected rows for custom SQL
       return -1
+
+    case 'title_case': {
+      if (!column) return 0
+      // Count rows where the value is not already in title case
+      // We use a simplified check: if lower != upper (i.e., it has letters), it might need title case
+      const titleResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND TRIM(${column}) != ''`
+      )
+      return Number(titleResult[0].count)
+    }
+
+    case 'remove_accents': {
+      if (!column) return 0
+      const accentResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} != strip_accents(${column})`
+      )
+      return Number(accentResult[0].count)
+    }
+
+    case 'remove_non_printable': {
+      if (!column) return 0
+      const nonPrintResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
+      )
+      return Number(nonPrintResult[0].count)
+    }
+
+    case 'unformat_currency': {
+      if (!column) return 0
+      const currencyResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND (${column} LIKE '%$%' OR ${column} LIKE '%,%')`
+      )
+      return Number(currencyResult[0].count)
+    }
+
+    case 'fix_negatives': {
+      if (!column) return 0
+      const negResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} LIKE '%(%' AND ${column} LIKE '%)'`
+      )
+      return Number(negResult[0].count)
+    }
+
+    case 'pad_zeros': {
+      if (!column) return 0
+      const targetLength = Number(step.params?.length) || 5
+      const padResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND LENGTH(CAST(${column} AS VARCHAR)) < ${targetLength}`
+      )
+      return Number(padResult[0].count)
+    }
+
+    case 'standardize_date': {
+      if (!column) return 0
+      // Count all non-null dates (all will be reformatted)
+      const dateResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND TRIM(CAST(${column} AS VARCHAR)) != ''`
+      )
+      return Number(dateResult[0].count)
+    }
+
+    case 'calculate_age': {
+      // Creates new column, all rows affected
+      const ageResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}"`
+      )
+      return Number(ageResult[0].count)
+    }
+
+    case 'split_column': {
+      if (!column) return 0
+      const delimiter = (step.params?.delimiter as string) || ' '
+      const escapedDelim = delimiter.replace(/'/g, "''")
+      const splitResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} LIKE '%${escapedDelim}%'`
+      )
+      return Number(splitResult[0].count)
+    }
+
+    case 'fill_down': {
+      if (!column) return 0
+      const fillResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
+      )
+      return Number(fillResult[0].count)
+    }
 
     default:
       return -1
@@ -554,6 +732,177 @@ export async function applyTransformation(
       if (customSql.trim()) {
         await execute(customSql)
       }
+      break
+    }
+
+    case 'title_case':
+      // initcap is not available in DuckDB-WASM, use list_transform approach
+      sql = `
+        UPDATE "${tableName}"
+        SET "${step.column}" = array_to_string(
+          list_transform(
+            string_split(lower("${step.column}"), ' '),
+            x -> upper(x[1]) || x[2:]
+          ),
+          ' '
+        )
+      `
+      await execute(sql)
+      break
+
+    case 'remove_accents':
+      sql = `
+        UPDATE "${tableName}"
+        SET "${step.column}" = strip_accents("${step.column}")
+      `
+      await execute(sql)
+      break
+
+    case 'remove_non_printable':
+      sql = `
+        UPDATE "${tableName}"
+        SET "${step.column}" = regexp_replace("${step.column}", '[\\x00-\\x1F\\x7F]', '', 'g')
+      `
+      await execute(sql)
+      break
+
+    case 'unformat_currency':
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT * EXCLUDE ("${step.column}"),
+               TRY_CAST(REPLACE(REPLACE(REPLACE("${step.column}", '$', ''), ',', ''), ' ', '') AS DOUBLE) as "${step.column}"
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+      break
+
+    case 'fix_negatives':
+      // Handle patterns like (500), $(750.00), (1,250.50)
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT * EXCLUDE ("${step.column}"),
+               CASE
+                 WHEN "${step.column}" LIKE '%(%' AND "${step.column}" LIKE '%)'
+                 THEN -TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE("${step.column}", '(', ''), ')', ''), '$', ''), ',', '') AS DOUBLE)
+                 ELSE TRY_CAST(REPLACE(REPLACE("${step.column}", '$', ''), ',', '') AS DOUBLE)
+               END as "${step.column}"
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+      break
+
+    case 'pad_zeros': {
+      const padLength = Number(step.params?.length) || 5
+      sql = `
+        UPDATE "${tableName}"
+        SET "${step.column}" = LPAD(CAST("${step.column}" AS VARCHAR), ${padLength}, '0')
+      `
+      await execute(sql)
+      break
+    }
+
+    case 'standardize_date': {
+      const format = (step.params?.format as string) || 'YYYY-MM-DD'
+      const formatMap: Record<string, string> = {
+        'YYYY-MM-DD': '%Y-%m-%d',
+        'MM/DD/YYYY': '%m/%d/%Y',
+        'DD/MM/YYYY': '%d/%m/%Y',
+      }
+      const strftimeFormat = formatMap[format] || '%Y-%m-%d'
+
+      // Try multiple input formats to parse the date, then output in target format
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT * EXCLUDE ("${step.column}"),
+               strftime(
+                 COALESCE(
+                   TRY_CAST("${step.column}" AS DATE),
+                   TRY_STRPTIME("${step.column}", '%m/%d/%Y'),
+                   TRY_STRPTIME("${step.column}", '%d/%m/%Y'),
+                   TRY_STRPTIME("${step.column}", '%Y-%m-%d'),
+                   TRY_STRPTIME("${step.column}", '%Y/%m/%d')
+                 ),
+                 '${strftimeFormat}'
+               ) as "${step.column}"
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+      break
+    }
+
+    case 'calculate_age': {
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT *,
+               DATE_DIFF('year', TRY_CAST("${step.column}" AS DATE), CURRENT_DATE) as age
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+      break
+    }
+
+    case 'split_column': {
+      const delimiter = (step.params?.delimiter as string) || ' '
+      const escapedDelim = delimiter.replace(/'/g, "''")
+      const baseColName = step.column!
+
+      // 1. Find max number of parts
+      const maxParts = await query<{ max_parts: number }>(
+        `SELECT MAX(len(string_split("${baseColName}", '${escapedDelim}'))) as max_parts
+         FROM "${tableName}"`
+      )
+      const numParts = Math.min(Number(maxParts[0].max_parts) || 2, 10)
+
+      // 2. Check for name collisions and determine prefix
+      const existingCols = await getTableColumns(tableName, true)
+      const colNames = existingCols.map(c => c.name)
+      let prefix = baseColName
+      if (colNames.some(c => c.startsWith(`${baseColName}_1`))) {
+        prefix = `${baseColName}_split`
+      }
+
+      // 3. Build column expressions
+      const partColumns = Array.from({ length: numParts }, (_, i) =>
+        `string_split("${baseColName}", '${escapedDelim}')[${i + 1}] as "${prefix}_${i + 1}"`
+      ).join(', ')
+
+      // 4. Create new table with split columns
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT *, ${partColumns}
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+      break
+    }
+
+    case 'fill_down': {
+      // Use window function to fill nulls/empty with last non-null value
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT * EXCLUDE ("${step.column}"),
+               COALESCE(
+                 NULLIF(TRIM(CAST("${step.column}" AS VARCHAR)), ''),
+                 LAST_VALUE(NULLIF(TRIM(CAST("${step.column}" AS VARCHAR)), '') IGNORE NULLS) OVER (
+                   ORDER BY rowid
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                 )
+               ) as "${step.column}"
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
       break
     }
 

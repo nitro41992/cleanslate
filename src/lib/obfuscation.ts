@@ -98,7 +98,16 @@ function last4Digits(value: string): string {
 }
 
 function yearOnly(value: string): string {
-  const date = new Date(value)
+  // Handle both string dates and numeric timestamps (from DuckDB)
+  let date: Date
+  const numValue = Number(value)
+  if (!isNaN(numValue) && String(numValue) === value) {
+    // It's a numeric timestamp
+    date = new Date(numValue)
+  } else {
+    // It's a string date
+    date = new Date(value)
+  }
   if (isNaN(date.getTime())) return value
   return `${date.getFullYear()}-01-01`
 }

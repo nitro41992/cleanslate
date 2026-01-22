@@ -158,7 +158,10 @@ export function ColumnRuleTable({ columns, rules }: ColumnRuleTableProps) {
                     value={method || 'none'}
                     onValueChange={(value) => handleMethodChange(column.name, value)}
                   >
-                    <SelectTrigger className={cn('h-9', hasRule && 'border-primary/30')}>
+                    <SelectTrigger
+                      className={cn('h-9', hasRule && 'border-primary/30')}
+                      data-testid={`method-select-${column.name}`}
+                    >
                       <SelectValue placeholder="No obfuscation" />
                     </SelectTrigger>
                     <SelectContent>
