@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { DiffResult } from '@/types'
+import type { DiffSummary } from '@/lib/diff-engine'
 
 export type DiffMode = 'compare-preview' | 'compare-tables'
 
@@ -15,16 +15,15 @@ interface DiffState {
   previewTableId: string | null
   // Key columns (shared between modes)
   keyColumns: string[]
-  // Results
-  results: DiffResult[]
+  // Diff results - now stored in temp table for scalability
+  diffTableName: string | null   // Temp table reference
+  totalDiffRows: number          // Total non-unchanged rows
+  allColumns: string[]           // For grid columns
+  keyOrderBy: string             // For consistent ordering
+  summary: DiffSummary | null    // Summary counts (small, keep in memory)
+  // UI state
   isComparing: boolean
   blindMode: boolean
-  summary: {
-    added: number
-    removed: number
-    modified: number
-    unchanged: number
-  } | null
 }
 
 interface DiffActions {
@@ -35,11 +34,18 @@ interface DiffActions {
   setTableB: (tableId: string | null) => void
   setPreviewTableId: (tableId: string | null) => void
   setKeyColumns: (columns: string[]) => void
-  setResults: (results: DiffResult[]) => void
+  setDiffConfig: (config: {
+    diffTableName: string
+    totalDiffRows: number
+    allColumns: string[]
+    keyOrderBy: string
+    summary: DiffSummary
+  }) => void
   setSummary: (summary: DiffState['summary']) => void
   setIsComparing: (comparing: boolean) => void
   setBlindMode: (enabled: boolean) => void
   reset: () => void
+  clearResults: () => void
 }
 
 const initialState: DiffState = {
@@ -49,10 +55,13 @@ const initialState: DiffState = {
   tableB: null,
   previewTableId: null,
   keyColumns: [],
-  results: [],
+  diffTableName: null,
+  totalDiffRows: 0,
+  allColumns: [],
+  keyOrderBy: '',
+  summary: null,
   isComparing: false,
   blindMode: false,
-  summary: null,
 }
 
 export const useDiffStore = create<DiffState & DiffActions>((set) => ({
@@ -63,7 +72,10 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   setMode: (mode) => set({
     mode,
     // Clear results when switching modes
-    results: [],
+    diffTableName: null,
+    totalDiffRows: 0,
+    allColumns: [],
+    keyOrderBy: '',
     summary: null,
     keyColumns: [],
   }),
@@ -71,9 +83,22 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   setTableB: (tableId) => set({ tableB: tableId }),
   setPreviewTableId: (tableId) => set({ previewTableId: tableId }),
   setKeyColumns: (columns) => set({ keyColumns: columns }),
-  setResults: (results) => set({ results }),
+  setDiffConfig: (config) => set({
+    diffTableName: config.diffTableName,
+    totalDiffRows: config.totalDiffRows,
+    allColumns: config.allColumns,
+    keyOrderBy: config.keyOrderBy,
+    summary: config.summary,
+  }),
   setSummary: (summary) => set({ summary }),
   setIsComparing: (comparing) => set({ isComparing: comparing }),
   setBlindMode: (enabled) => set({ blindMode: enabled }),
+  clearResults: () => set({
+    diffTableName: null,
+    totalDiffRows: 0,
+    allColumns: [],
+    keyOrderBy: '',
+    summary: null,
+  }),
   reset: () => set(initialState),
 }))

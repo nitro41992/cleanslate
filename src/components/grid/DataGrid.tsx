@@ -12,7 +12,7 @@ import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
-import { updateCell } from '@/lib/duckdb'
+import { updateCell, createOriginalSnapshot } from '@/lib/duckdb'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -178,6 +178,9 @@ export function DataGrid({
       if (previousValue === newCellValue) return
 
       try {
+        // Create original snapshot before first edit (for "Compare with Preview")
+        await createOriginalSnapshot(tableName)
+
         // Update DuckDB
         await updateCell(tableName, row, colName, newCellValue)
 

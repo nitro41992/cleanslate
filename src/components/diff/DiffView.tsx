@@ -10,12 +10,12 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { DiffConfigPanel } from './DiffConfigPanel'
-import { DiffResultsGrid } from './DiffResultsGrid'
+import { VirtualizedDiffGrid } from './VirtualizedDiffGrid'
 import { DiffSummaryPills } from './DiffSummaryPills'
 import { DiffExportMenu } from './DiffExportMenu'
 import { useTableStore } from '@/stores/tableStore'
 import { useDiffStore } from '@/stores/diffStore'
-import { runDiff } from '@/lib/diff-engine'
+import { runDiff, cleanupDiffTable } from '@/lib/diff-engine'
 import { getOriginalSnapshotName } from '@/lib/duckdb'
 import { toast } from 'sonner'
 
@@ -33,7 +33,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     tableA,
     tableB,
     keyColumns,
-    results,
+    diffTableName,
+    totalDiffRows,
+    allColumns,
+    keyOrderBy,
     summary,
     isComparing,
     blindMode,
@@ -41,31 +44,17 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     setTableA,
     setTableB,
     setKeyColumns,
-    setResults,
-    setSummary,
+    setDiffConfig,
     setIsComparing,
     setBlindMode,
     reset,
+    clearResults,
   } = useDiffStore()
 
   const tableAInfo = tables.find((t) => t.id === tableA)
   const tableBInfo = tables.find((t) => t.id === tableB)
   const activeTableInfo = tables.find((t) => t.id === activeTableId)
 
-  // Get columns for the current comparison context
-  const getComparisonColumns = (): string[] => {
-    if (mode === 'compare-preview' && activeTableInfo) {
-      return activeTableInfo.columns.map((c) => c.name)
-    }
-    if (mode === 'compare-tables' && tableAInfo && tableBInfo) {
-      return tableAInfo.columns
-        .map((c) => c.name)
-        .filter((c) => tableBInfo.columns.some((bc) => bc.name === c))
-    }
-    return []
-  }
-
-  const comparisonColumns = getComparisonColumns()
 
   // Handle escape key to close
   useEffect(() => {
@@ -78,8 +67,22 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose])
 
+  // Cleanup temp table when component unmounts or when starting new comparison
+  useEffect(() => {
+    return () => {
+      if (diffTableName) {
+        cleanupDiffTable(diffTableName)
+      }
+    }
+  }, [diffTableName])
+
   const handleRunDiff = useCallback(async () => {
     if (keyColumns.length === 0) return
+
+    // Cleanup previous temp table if exists
+    if (diffTableName) {
+      await cleanupDiffTable(diffTableName)
+    }
 
     setIsComparing(true)
     try {
@@ -102,16 +105,22 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         targetTableName = tableBInfo.name
       }
 
-      const { results: diffResults, summary: diffSummary } = await runDiff(
+      const config = await runDiff(
         sourceTableName,
         targetTableName,
         keyColumns
       )
-      setResults(diffResults)
-      setSummary(diffSummary)
+
+      setDiffConfig({
+        diffTableName: config.diffTableName,
+        totalDiffRows: config.totalDiffRows,
+        allColumns: config.allColumns,
+        keyOrderBy: config.keyOrderBy,
+        summary: config.summary,
+      })
 
       toast.success('Comparison Complete', {
-        description: `Found ${diffSummary.added} added, ${diffSummary.removed} removed, ${diffSummary.modified} modified rows`,
+        description: `Found ${config.summary.added} added, ${config.summary.removed} removed, ${config.summary.modified} modified rows`,
       })
     } catch (error) {
       console.error('Diff failed:', error)
@@ -121,19 +130,29 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     } finally {
       setIsComparing(false)
     }
-  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, setIsComparing, setResults, setSummary])
+  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, setIsComparing, setDiffConfig])
 
-  const handleNewComparison = () => {
+  const handleNewComparison = useCallback(async () => {
+    // Cleanup current temp table
+    if (diffTableName) {
+      await cleanupDiffTable(diffTableName)
+    }
+    clearResults()
+    setKeyColumns([])
+  }, [diffTableName, clearResults, setKeyColumns])
+
+  const handleClose = useCallback(async () => {
+    // Cleanup temp table on close
+    if (diffTableName) {
+      await cleanupDiffTable(diffTableName)
+    }
     reset()
-  }
-
-  const handleClose = () => {
     onClose()
-  }
+  }, [diffTableName, reset, onClose])
 
   if (!open) return null
 
-  const hasResults = results.length > 0 && summary
+  const hasResults = diffTableName && summary
 
   return (
     <div
@@ -201,12 +220,14 @@ export function DiffView({ open, onClose }: DiffViewProps) {
 
               {/* Export Menu */}
               <DiffExportMenu
-                results={results}
+                diffTableName={diffTableName}
+                keyOrderBy={keyOrderBy}
                 summary={summary}
-                columns={comparisonColumns}
+                allColumns={allColumns}
                 keyColumns={keyColumns}
-                tableAName={tableAInfo?.name || ''}
-                tableBName={tableBInfo?.name || ''}
+                tableAName={mode === 'compare-preview' ? activeTableInfo?.name || '' : tableAInfo?.name || ''}
+                tableBName={mode === 'compare-preview' ? activeTableInfo?.name || '' : tableBInfo?.name || ''}
+                totalRows={totalDiffRows}
               />
 
               {/* New Comparison Button */}
@@ -266,22 +287,30 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                 <DiffSummaryPills summary={summary} />
               </div>
 
-              {/* Results Grid */}
+              {/* Virtualized Results Grid */}
               <div className="flex-1 min-h-0">
-                <DiffResultsGrid
-                  results={results}
-                  columns={comparisonColumns}
+                <VirtualizedDiffGrid
+                  diffTableName={diffTableName}
+                  totalRows={totalDiffRows}
+                  allColumns={allColumns}
                   keyColumns={keyColumns}
+                  keyOrderBy={keyOrderBy}
                   blindMode={blindMode}
                 />
               </div>
 
-              {/* Warning Footer */}
-              <div className="px-4 py-2 border-t border-border/50 bg-amber-500/5 flex items-center gap-2 text-amber-500">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span className="text-xs">
-                  This is a comparison view. Results cannot be saved as a table.
+              {/* Footer with row count */}
+              <div className="px-4 py-2 border-t border-border/50 bg-card/30 flex items-center justify-between text-xs text-muted-foreground">
+                <span>
+                  {totalDiffRows.toLocaleString()} differences
+                  {summary.unchanged > 0 && ` (${summary.unchanged.toLocaleString()} unchanged rows hidden)`}
                 </span>
+                <div className="flex items-center gap-2 text-amber-500">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>
+                    This is a comparison view. Results cannot be saved as a table.
+                  </span>
+                </div>
               </div>
             </>
           ) : (
