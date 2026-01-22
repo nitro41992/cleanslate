@@ -8,6 +8,7 @@ export interface TableInfo {
   parentTableId?: string        // Source table ID (for checkpoints)
   isCheckpoint?: boolean        // Flag for checkpoint tables
   lineage?: TableLineage        // Full transformation history
+  dataVersion?: number          // Increments on any data change to trigger grid refresh
 }
 
 export interface TableLineage {
@@ -184,4 +185,166 @@ export interface StandardizationMapping {
   fromValue: string
   toValue: string
   rowCount: number
+}
+
+// Timeline types for unified undo/redo and audit history
+
+export type TimelineCommandType =
+  | 'transform'
+  | 'manual_edit'
+  | 'merge'
+  | 'standardize'
+  | 'stack'
+  | 'join'
+  | 'scrub'
+  | 'batch_edit'
+
+/**
+ * A single command in the timeline history
+ */
+export interface TimelineCommand {
+  id: string
+  commandType: TimelineCommandType
+  label: string                      // Human-readable description
+  params: TimelineParams             // Command-specific parameters for replay
+  timestamp: Date
+  isExpensive: boolean               // If true, triggers snapshot creation BEFORE this command
+  auditEntryId?: string              // Link to audit log entry
+  // Affected rows/cells (for highlighting)
+  affectedRowIds?: string[]          // _cs_id values of affected rows
+  affectedColumns?: string[]         // Column names affected
+  // For manual edits
+  cellChanges?: CellChange[]         // Individual cell changes
+  // Metadata
+  rowsAffected?: number
+  hasRowDetails?: boolean
+}
+
+/**
+ * Cell-level change record for manual edits
+ */
+export interface CellChange {
+  csId: string                       // _cs_id of the row
+  columnName: string
+  previousValue: unknown
+  newValue: unknown
+}
+
+/**
+ * Parameters for replaying different command types
+ */
+export type TimelineParams =
+  | TransformParams
+  | ManualEditParams
+  | MergeParams
+  | StandardizeParams
+  | StackParams
+  | JoinParams
+  | ScrubParams
+  | BatchEditParams
+
+export interface TransformParams {
+  type: 'transform'
+  transformationType: TransformationType
+  column?: string
+  params?: Record<string, unknown>
+}
+
+export interface ManualEditParams {
+  type: 'manual_edit'
+  csId: string
+  columnName: string
+  previousValue: unknown
+  newValue: unknown
+}
+
+export interface MergeParams {
+  type: 'merge'
+  matchColumn: string
+  mergedPairs: { keepRowId: string; deleteRowId: string }[]
+}
+
+export interface StandardizeParams {
+  type: 'standardize'
+  columnName: string
+  mappings: StandardizationMapping[]
+}
+
+export interface StackParams {
+  type: 'stack'
+  sourceTableNames: string[]
+}
+
+export interface JoinParams {
+  type: 'join'
+  rightTableName: string
+  keyColumn: string
+  joinType: JoinType
+}
+
+export interface ScrubParams {
+  type: 'scrub'
+  rules: ObfuscationRule[]
+  secret?: string
+}
+
+export interface BatchEditParams {
+  type: 'batch_edit'
+  changes: CellChange[]
+}
+
+/**
+ * Timeline for a single table
+ */
+export interface TableTimeline {
+  id: string
+  tableId: string
+  tableName: string
+  commands: TimelineCommand[]
+  currentPosition: number            // Index in commands (-1 = original state)
+  snapshots: Map<number, string>     // Step index → snapshot table name
+  originalSnapshotName: string       // Original state snapshot table name
+  createdAt: Date
+  updatedAt: Date
+}
+
+/**
+ * Serialized timeline for persistence
+ */
+export interface SerializedTableTimeline {
+  id: string
+  tableId: string
+  tableName: string
+  commands: SerializedTimelineCommand[]
+  currentPosition: number
+  snapshots: [number, string][]      // Array of [index, tableName] pairs
+  originalSnapshotName: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SerializedTimelineCommand {
+  id: string
+  commandType: TimelineCommandType
+  label: string
+  params: TimelineParams
+  timestamp: string                  // ISO string
+  isExpensive: boolean
+  auditEntryId?: string
+  affectedRowIds?: string[]
+  affectedColumns?: string[]
+  cellChanges?: CellChange[]
+  rowsAffected?: number
+  hasRowDetails?: boolean
+}
+
+/**
+ * Highlight state for drill-down view
+ */
+export interface TimelineHighlight {
+  commandId: string | null
+  rowIds: Set<string>                // _cs_id values to highlight
+  cellKeys: Set<string>              // "csId:columnName" keys for cell highlights
+  ghostRows: Record<string, unknown>[] // Deleted rows to show as "ghosts"
+  diffMode: 'cell' | 'row' | 'full'
 }

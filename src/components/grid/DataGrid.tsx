@@ -12,7 +12,10 @@ import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
+import { useTimelineStore } from '@/stores/timelineStore'
 import { updateCell, createOriginalSnapshot } from '@/lib/duckdb'
+import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
+import type { TimelineHighlight, ManualEditParams } from '@/types'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -57,6 +60,12 @@ interface DataGridProps {
   onCellClick?: (col: number, row: number) => void
   editable?: boolean
   tableId?: string
+  // Timeline-based highlighting (uses _cs_id for row identification)
+  timelineHighlight?: TimelineHighlight | null
+  // Ghost rows for showing deleted items
+  ghostRows?: Array<{ csId: string; data: Record<string, unknown> }>
+  // Triggers grid refresh when incremented (for undo/redo)
+  dataVersion?: number
 }
 
 const PAGE_SIZE = 500
@@ -70,13 +79,24 @@ export function DataGrid({
   onCellClick,
   editable = false,
   tableId,
+  timelineHighlight,
+  ghostRows: _ghostRows = [],
+  dataVersion,
 }: DataGridProps) {
-  const { getData } = useDuckDB()
+  const { getData, getDataWithRowIds } = useDuckDB()
   const [data, setData] = useState<Record<string, unknown>[]>([])
+  // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
+  const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
+
+  // Timeline store for highlight state and replay status
+  const storeHighlight = useTimelineStore((s) => s.highlight)
+  const isReplaying = useTimelineStore((s) => s.isReplaying)
+  // Use prop if provided, otherwise fall back to store
+  const activeHighlight = timelineHighlight ?? (storeHighlight.commandId ? storeHighlight : null)
 
   // Edit store for tracking dirty cells and undo/redo
   const recordEdit = useEditStore((s) => s.recordEdit)
@@ -97,37 +117,91 @@ export function DataGrid({
 
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
   useEffect(() => {
-    if (!tableName || columns.length === 0) return
+    console.log('[DATAGRID] useEffect triggered', { tableName, columnCount: columns.length, rowCount, dataVersion, isReplaying })
+    if (!tableName || columns.length === 0) {
+      console.log('[DATAGRID] Early return - no tableName or columns')
+      return
+    }
 
+    // Don't fetch during replay - table might be in inconsistent state
+    if (isReplaying) {
+      console.log('[DATAGRID] Skipping fetch - replay in progress')
+      return
+    }
+
+    console.log('[DATAGRID] Starting data reload...')
     setIsLoading(true)
     setData([]) // Clear stale data immediately
     setLoadedRange({ start: 0, end: 0 }) // Reset loaded range
+    setCsIdToRowIndex(new Map()) // Reset row ID mapping
 
-    getData(tableName, 0, PAGE_SIZE)
-      .then((rows) => {
+    // Load data with row IDs for timeline highlighting
+    getDataWithRowIds(tableName, 0, PAGE_SIZE)
+      .then((rowsWithIds) => {
+        console.log('[DATAGRID] Data fetched, row count:', rowsWithIds.length)
+        // Build _cs_id -> row index map
+        const idMap = new Map<string, number>()
+        const rows = rowsWithIds.map((row, index) => {
+          if (row.csId) {
+            idMap.set(row.csId, index)
+          }
+          return row.data
+        })
+
+        // Log first row for debugging
+        if (rows.length > 0) {
+          console.log('[DATAGRID] First row sample:', rows[0])
+        }
+
         setData(rows)
+        setCsIdToRowIndex(idMap)
         setLoadedRange({ start: 0, end: rows.length })
         setIsLoading(false)
       })
       .catch((err) => {
         console.error('Error loading data:', err)
-        setIsLoading(false)
+        // Fallback to regular getData if getDataWithRowIds fails
+        getData(tableName, 0, PAGE_SIZE)
+          .then((rows) => {
+            setData(rows)
+            setLoadedRange({ start: 0, end: rows.length })
+            setIsLoading(false)
+          })
+          .catch((fallbackErr) => {
+            console.error('Error loading fallback data:', fallbackErr)
+            setIsLoading(false)
+          })
       })
-  }, [tableName, columns, getData, rowCount])
+  }, [tableName, columns, getData, getDataWithRowIds, rowCount, dataVersion, isReplaying])
 
-  // Load more data on scroll
+  // Load more data on scroll (with row ID tracking for timeline highlighting)
   const onVisibleRegionChanged = useCallback(
     async (range: { x: number; y: number; width: number; height: number }) => {
       const needStart = Math.max(0, range.y - PAGE_SIZE)
       const needEnd = Math.min(rowCount, range.y + range.height + PAGE_SIZE)
 
       if (needStart < loadedRange.start || needEnd > loadedRange.end) {
-        const newData = await getData(tableName, needStart, needEnd - needStart)
-        setData(newData)
-        setLoadedRange({ start: needStart, end: needStart + newData.length })
+        try {
+          const rowsWithIds = await getDataWithRowIds(tableName, needStart, needEnd - needStart)
+          const idMap = new Map<string, number>()
+          const rows = rowsWithIds.map((row: { csId: string; data: Record<string, unknown> }, index: number) => {
+            if (row.csId) {
+              idMap.set(row.csId, needStart + index)
+            }
+            return row.data
+          })
+          setData(rows)
+          setCsIdToRowIndex(idMap)
+          setLoadedRange({ start: needStart, end: needStart + rows.length })
+        } catch {
+          // Fallback to regular getData
+          const newData = await getData(tableName, needStart, needEnd - needStart)
+          setData(newData)
+          setLoadedRange({ start: needStart, end: needStart + newData.length })
+        }
       }
     },
-    [getData, tableName, rowCount, loadedRange]
+    [getData, getDataWithRowIds, tableName, rowCount, loadedRange]
   )
 
   const getCellContent = useCallback(
@@ -178,11 +252,19 @@ export function DataGrid({
       if (previousValue === newCellValue) return
 
       try {
+        // IMPORTANT: Initialize timeline BEFORE modifying data
+        // This ensures the original snapshot captures the pre-modification state
+        console.log('[DATAGRID] Initializing timeline before cell edit...')
+        await initializeTimeline(tableId, tableName)
+
         // Create original snapshot before first edit (for "Compare with Preview")
         await createOriginalSnapshot(tableName)
 
-        // Update DuckDB
-        await updateCell(tableName, row, colName, newCellValue)
+        // Update DuckDB and get the row's _cs_id
+        console.log('[DATAGRID] Updating cell in DuckDB...')
+        const result = await updateCell(tableName, row, colName, newCellValue)
+        console.log('[DATAGRID] Cell updated, csId:', result.csId)
+        const csId = result.csId
 
         // Update local data state
         setData((prevData) => {
@@ -196,7 +278,7 @@ export function DataGrid({
           return newData
         })
 
-        // Record the edit for undo/redo
+        // Record the edit for undo/redo (legacy editStore)
         recordEdit({
           tableId,
           tableName,
@@ -216,6 +298,36 @@ export function DataGrid({
           previousValue,
           newValue: newCellValue,
         })
+
+        // Record to timeline for unified undo/redo (if we have a csId)
+        if (csId) {
+          const timelineParams: ManualEditParams = {
+            type: 'manual_edit',
+            csId,
+            columnName: colName,
+            previousValue,
+            newValue: newCellValue,
+          }
+
+          await recordCommand(
+            tableId,
+            tableName,
+            'manual_edit',
+            `Edit cell [${row}, ${colName}]`,
+            timelineParams,
+            {
+              affectedRowIds: [csId],
+              affectedColumns: [colName],
+              cellChanges: [{
+                csId,
+                columnName: colName,
+                previousValue,
+                newValue: newCellValue,
+              }],
+              rowsAffected: 1,
+            }
+          )
+        }
       } catch (error) {
         console.error('Failed to update cell:', error)
       }
@@ -223,19 +335,39 @@ export function DataGrid({
     [editable, tableId, tableName, columns, loadedRange.start, data, recordEdit, addManualEditEntry]
   )
 
-  // Custom cell drawing to show dirty indicator (red triangle)
+  // Compute reverse map: row index -> csId for the loaded range
+  const rowIndexToCsId = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const [csId, rowIndex] of csIdToRowIndex) {
+      map.set(rowIndex, csId)
+    }
+    return map
+  }, [csIdToRowIndex])
+
+  // Custom cell drawing to show dirty indicator and timeline highlights
   const drawCell: DrawCellCallback = useCallback(
     (args, draw) => {
-      // First, draw the default cell
-      draw()
-
-      // Then overlay the dirty indicator if applicable
-      if (!editable || !tableId) return
-
       const { col, row, rect, ctx } = args
       const colName = columns[col]
 
-      if (isDirty(tableId, row, colName)) {
+      // Check for timeline cell highlight (yellow background for highlighted cells)
+      const csId = rowIndexToCsId.get(row)
+      const cellKey = csId ? `${csId}:${colName}` : null
+      const isCellHighlighted = activeHighlight?.cellKeys?.has(cellKey ?? '') ?? false
+
+      if (isCellHighlighted) {
+        // Draw yellow highlight background before the cell content
+        ctx.save()
+        ctx.fillStyle = 'rgba(234, 179, 8, 0.25)' // yellow-500 with opacity
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+        ctx.restore()
+      }
+
+      // Draw the default cell
+      draw()
+
+      // Then overlay the dirty indicator if applicable
+      if (editable && tableId && isDirty(tableId, row, colName)) {
         // Save canvas state before modifying
         ctx.save()
 
@@ -253,25 +385,40 @@ export function DataGrid({
         ctx.restore()
       }
     },
-    [editable, tableId, columns, isDirty]
+    [editable, tableId, columns, isDirty, rowIndexToCsId, activeHighlight]
   )
 
   const getRowThemeOverride: GetRowThemeCallback = useCallback(
     (row: number) => {
-      if (!highlightedRows) return undefined
-      const status = highlightedRows.get(row)
-      if (status === 'added') {
-        return { bgCell: 'rgba(34, 197, 94, 0.15)' }
+      // Check for traditional highlightedRows (diff view)
+      if (highlightedRows) {
+        const status = highlightedRows.get(row)
+        if (status === 'added') {
+          return { bgCell: 'rgba(34, 197, 94, 0.15)' }
+        }
+        if (status === 'removed') {
+          return { bgCell: 'rgba(239, 68, 68, 0.15)' }
+        }
+        if (status === 'modified') {
+          return { bgCell: 'rgba(234, 179, 8, 0.1)' }
+        }
       }
-      if (status === 'removed') {
-        return { bgCell: 'rgba(239, 68, 68, 0.15)' }
+
+      // Check for timeline-based row highlight (uses _cs_id)
+      if (activeHighlight && activeHighlight.rowIds.size > 0) {
+        const csId = rowIndexToCsId.get(row)
+        if (csId && activeHighlight.rowIds.has(csId)) {
+          // Different highlight based on diff mode
+          if (activeHighlight.diffMode === 'row') {
+            return { bgCell: 'rgba(59, 130, 246, 0.15)' } // blue for row highlight
+          }
+          // For cell mode, we rely on drawCell for cell-level highlights
+        }
       }
-      if (status === 'modified') {
-        return { bgCell: 'rgba(234, 179, 8, 0.1)' }
-      }
+
       return undefined
     },
-    [highlightedRows]
+    [highlightedRows, activeHighlight, rowIndexToCsId]
   )
 
   if (isLoading) {

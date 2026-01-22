@@ -6,6 +6,7 @@ import {
   loadParquet,
   loadXLSX,
   getTableData,
+  getTableDataWithRowIds,
   exportToCSV,
   dropTable,
   query,
@@ -128,6 +129,13 @@ export function useDuckDB() {
     []
   )
 
+  const getDataWithRowIds = useCallback(
+    async (tableName: string, offset = 0, limit = 1000) => {
+      return getTableDataWithRowIds(tableName, offset, limit)
+    },
+    []
+  )
+
   const runQuery = useCallback(async (sql: string) => {
     return query(sql)
   }, [])
@@ -182,6 +190,7 @@ export function useDuckDB() {
     isLoading,
     loadFile,
     getData,
+    getDataWithRowIds,
     runQuery,
     runExecute,
     exportTable,

@@ -3,6 +3,27 @@ import duckdb_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
 import duckdb_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
 import type { CSVIngestionSettings } from '@/types'
 
+/**
+ * Internal row ID column name for stable row identity across mutations.
+ * This column is injected on table creation and used for UPDATE/DELETE operations.
+ * It should be hidden from the UI.
+ */
+export const CS_ID_COLUMN = '_cs_id'
+
+/**
+ * Filter out internal columns (like _cs_id) from column lists for UI display
+ */
+export function filterInternalColumns(columns: string[]): string[] {
+  return columns.filter(col => col !== CS_ID_COLUMN)
+}
+
+/**
+ * Check if a column is an internal system column
+ */
+export function isInternalColumn(columnName: string): boolean {
+  return columnName === CS_ID_COLUMN
+}
+
 let db: duckdb.AsyncDuckDB | null = null
 let conn: duckdb.AsyncDuckDBConnection | null = null
 
@@ -95,20 +116,21 @@ export async function loadCSV(
     ? `read_csv('${file.name}'${optionsStr})`
     : `read_csv_auto('${file.name}')`
 
-  // Create table from CSV
+  // Create table from CSV with _cs_id for stable row identity
   await connection.query(`
     CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT * FROM ${readCsvQuery}
+    SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM ${readCsvQuery}
   `)
 
-  // Get column info
+  // Get column info (excluding internal _cs_id column)
   const columnsResult = await connection.query(`
     SELECT column_name
     FROM information_schema.columns
     WHERE table_name = '${tableName}'
     ORDER BY ordinal_position
   `)
-  const columns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+  const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+  const columns = filterInternalColumns(allColumns)
 
   // Get row count
   const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
@@ -126,9 +148,10 @@ export async function loadJSON(
 
   await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
+  // Create table from JSON with _cs_id for stable row identity
   await connection.query(`
     CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT * FROM read_json_auto('${file.name}')
+    SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_json_auto('${file.name}')
   `)
 
   const columnsResult = await connection.query(`
@@ -137,7 +160,8 @@ export async function loadJSON(
     WHERE table_name = '${tableName}'
     ORDER BY ordinal_position
   `)
-  const columns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+  const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+  const columns = filterInternalColumns(allColumns)
 
   const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
   const rowCount = Number(countResult.toArray()[0].toJSON().count)
@@ -154,9 +178,10 @@ export async function loadParquet(
 
   await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
+  // Create table from Parquet with _cs_id for stable row identity
   await connection.query(`
     CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT * FROM read_parquet('${file.name}')
+    SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_parquet('${file.name}')
   `)
 
   const columnsResult = await connection.query(`
@@ -165,7 +190,8 @@ export async function loadParquet(
     WHERE table_name = '${tableName}'
     ORDER BY ordinal_position
   `)
-  const columns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+  const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+  const columns = filterInternalColumns(allColumns)
 
   const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
   const rowCount = Number(countResult.toArray()[0].toJSON().count)
@@ -199,22 +225,25 @@ export async function loadXLSX(
 
   const connection = await getConnection()
 
-  // Create table with proper column definitions
-  const columnDefs = columns.map((col) => `"${col}" VARCHAR`).join(', ')
+  // Create table with _cs_id column for stable row identity + user columns
+  const columnDefs = [`"${CS_ID_COLUMN}" UUID`, ...columns.map((col) => `"${col}" VARCHAR`)].join(', ')
   await connection.query(`CREATE OR REPLACE TABLE "${tableName}" (${columnDefs})`)
 
-  // Insert data in batches
+  // Insert data in batches with generated UUIDs
   const batchSize = 500
   for (let i = 0; i < jsonData.length; i += batchSize) {
     const batch = jsonData.slice(i, i + batchSize)
     const values = batch
       .map((row) => {
-        const vals = columns.map((col) => {
-          const val = row[col]
-          if (val === null || val === undefined || val === '') return 'NULL'
-          const str = String(val).replace(/'/g, "''")
-          return `'${str}'`
-        })
+        const vals = [
+          'gen_random_uuid()', // _cs_id
+          ...columns.map((col) => {
+            const val = row[col]
+            if (val === null || val === undefined || val === '') return 'NULL'
+            const str = String(val).replace(/'/g, "''")
+            return `'${str}'`
+          })
+        ]
         return `(${vals.join(', ')})`
       })
       .join(', ')
@@ -230,17 +259,60 @@ export async function loadXLSX(
 export async function getTableData(
   tableName: string,
   offset = 0,
-  limit = 1000
+  limit = 1000,
+  includeInternal = false
 ): Promise<Record<string, unknown>[]> {
   const connection = await getConnection()
   const result = await connection.query(
     `SELECT * FROM "${tableName}" LIMIT ${limit} OFFSET ${offset}`
   )
-  return result.toArray().map((row) => row.toJSON())
+  const rows = result.toArray().map((row) => row.toJSON())
+
+  if (includeInternal) {
+    return rows
+  }
+
+  // Filter out internal columns from results
+  return rows.map(row => {
+    const filtered: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(row)) {
+      if (!isInternalColumn(key)) {
+        filtered[key] = value
+      }
+    }
+    return filtered
+  })
+}
+
+/**
+ * Get table data with _cs_id values for timeline operations
+ * Returns rows with their stable row IDs
+ */
+export async function getTableDataWithRowIds(
+  tableName: string,
+  offset = 0,
+  limit = 1000
+): Promise<{ csId: string; data: Record<string, unknown> }[]> {
+  const connection = await getConnection()
+  const result = await connection.query(
+    `SELECT * FROM "${tableName}" LIMIT ${limit} OFFSET ${offset}`
+  )
+  return result.toArray().map((row) => {
+    const json = row.toJSON()
+    const csId = json[CS_ID_COLUMN] as string
+    const data: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(json)) {
+      if (!isInternalColumn(key)) {
+        data[key] = value
+      }
+    }
+    return { csId, data }
+  })
 }
 
 export async function getTableColumns(
-  tableName: string
+  tableName: string,
+  includeInternal = false
 ): Promise<{ name: string; type: string }[]> {
   const connection = await getConnection()
   const result = await connection.query(`
@@ -249,20 +321,27 @@ export async function getTableColumns(
     WHERE table_name = '${tableName}'
     ORDER BY ordinal_position
   `)
-  return result.toArray().map((row) => {
+  const allColumns = result.toArray().map((row) => {
     const json = row.toJSON()
     return {
       name: json.column_name as string,
       type: json.data_type as string,
     }
   })
+
+  if (includeInternal) {
+    return allColumns
+  }
+  return allColumns.filter(col => !isInternalColumn(col.name))
 }
 
 export async function exportToCSV(tableName: string): Promise<Blob> {
   const connection = await getConnection()
   const result = await connection.query(`SELECT * FROM "${tableName}"`)
 
-  const columns = result.schema.fields.map(f => f.name)
+  // Filter out internal columns from export
+  const allColumns = result.schema.fields.map(f => f.name)
+  const columns = filterInternalColumns(allColumns)
   const rows = result.toArray().map(row => row.toJSON())
 
   const csvLines = [
@@ -299,37 +378,130 @@ export async function tableExists(tableName: string): Promise<boolean> {
 }
 
 /**
+ * Escape a value for SQL
+ */
+function escapeSqlValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') {
+    return 'NULL'
+  } else if (typeof value === 'number') {
+    return String(value)
+  } else if (typeof value === 'boolean') {
+    return value ? 'TRUE' : 'FALSE'
+  } else {
+    // String value - escape single quotes
+    const escaped = String(value).replace(/'/g, "''")
+    return `'${escaped}'`
+  }
+}
+
+/**
+ * Get the _cs_id value for a row at a given index
+ */
+export async function getRowCsId(
+  tableName: string,
+  rowIndex: number
+): Promise<string | null> {
+  const connection = await getConnection()
+  const result = await connection.query(`
+    SELECT "${CS_ID_COLUMN}" as cs_id
+    FROM "${tableName}"
+    LIMIT 1 OFFSET ${rowIndex}
+  `)
+  const rows = result.toArray()
+  if (rows.length === 0) return null
+  return rows[0].toJSON().cs_id as string
+}
+
+/**
+ * Update a single cell value in a table using _cs_id for stable row targeting
+ */
+export async function updateCellByRowId(
+  tableName: string,
+  csId: string,
+  columnName: string,
+  newValue: unknown
+): Promise<void> {
+  const connection = await getConnection()
+  const sqlValue = escapeSqlValue(newValue)
+
+  await connection.query(`
+    UPDATE "${tableName}"
+    SET "${columnName}" = ${sqlValue}
+    WHERE "${CS_ID_COLUMN}" = '${csId}'
+  `)
+}
+
+/**
  * Update a single cell value in a table
- * Uses rowid for precise row targeting
+ * Uses _cs_id for stable row targeting (falls back to rowid for legacy tables)
  */
 export async function updateCell(
   tableName: string,
   rowIndex: number,
   columnName: string,
   newValue: unknown
-): Promise<void> {
+): Promise<{ csId: string | null }> {
+  const connection = await getConnection()
+  const sqlValue = escapeSqlValue(newValue)
+
+  // First, check if the table has _cs_id column
+  const hasCsId = await tableHasCsId(tableName)
+
+  if (hasCsId) {
+    // Get the _cs_id for this row
+    const csId = await getRowCsId(tableName, rowIndex)
+    if (!csId) {
+      throw new Error(`Row not found at index ${rowIndex}`)
+    }
+
+    await connection.query(`
+      UPDATE "${tableName}"
+      SET "${columnName}" = ${sqlValue}
+      WHERE "${CS_ID_COLUMN}" = '${csId}'
+    `)
+
+    return { csId }
+  } else {
+    // Legacy: use rowid for tables without _cs_id
+    await connection.query(`
+      UPDATE "${tableName}"
+      SET "${columnName}" = ${sqlValue}
+      WHERE rowid = ${rowIndex}
+    `)
+    return { csId: null }
+  }
+}
+
+/**
+ * Check if a table has the _cs_id column
+ */
+export async function tableHasCsId(tableName: string): Promise<boolean> {
+  const connection = await getConnection()
+  const result = await connection.query(`
+    SELECT COUNT(*) as count
+    FROM information_schema.columns
+    WHERE table_name = '${tableName}' AND column_name = '${CS_ID_COLUMN}'
+  `)
+  return Number(result.toArray()[0].toJSON().count) > 0
+}
+
+/**
+ * Add _cs_id column to an existing table (migration for legacy tables)
+ */
+export async function addCsIdToTable(tableName: string): Promise<void> {
+  const hasCsId = await tableHasCsId(tableName)
+  if (hasCsId) return // Already has _cs_id
+
   const connection = await getConnection()
 
-  // Escape the value for SQL
-  let sqlValue: string
-  if (newValue === null || newValue === undefined || newValue === '') {
-    sqlValue = 'NULL'
-  } else if (typeof newValue === 'number') {
-    sqlValue = String(newValue)
-  } else if (typeof newValue === 'boolean') {
-    sqlValue = newValue ? 'TRUE' : 'FALSE'
-  } else {
-    // String value - escape single quotes
-    const escaped = String(newValue).replace(/'/g, "''")
-    sqlValue = `'${escaped}'`
-  }
-
-  // DuckDB uses 0-based rowid
-  // We need to use a subquery to target the specific row
+  // Add the column with generated UUIDs for each row
   await connection.query(`
-    UPDATE "${tableName}"
-    SET "${columnName}" = ${sqlValue}
-    WHERE rowid = ${rowIndex}
+    ALTER TABLE "${tableName}" ADD COLUMN "${CS_ID_COLUMN}" UUID
+  `)
+
+  // Populate with UUIDs
+  await connection.query(`
+    UPDATE "${tableName}" SET "${CS_ID_COLUMN}" = gen_random_uuid()
   `)
 }
 
@@ -355,33 +527,53 @@ export async function getCellValue(
 /**
  * Duplicate a table with a new name
  * Uses CREATE TABLE AS SELECT for efficient copying
+ * @param preserveRowIds - If true, keeps the same _cs_id values (for timeline snapshots)
+ *                        If false, generates new _cs_id values (for user-facing duplicates)
  */
 export async function duplicateTable(
   sourceName: string,
-  targetName: string
+  targetName: string,
+  preserveRowIds = false
 ): Promise<{ columns: { name: string; type: string }[]; rowCount: number }> {
   const connection = await getConnection()
 
-  // Create the duplicate table
-  await connection.query(`
-    CREATE TABLE "${targetName}" AS
-    SELECT * FROM "${sourceName}"
-  `)
+  // Check if source has _cs_id
+  const hasCsId = await tableHasCsId(sourceName)
 
-  // Get column info
+  if (hasCsId && !preserveRowIds) {
+    // Generate new _cs_id values for user-facing duplicates
+    // Get all columns except _cs_id
+    const cols = await getTableColumns(sourceName, true)
+    const userCols = cols.filter(c => c.name !== CS_ID_COLUMN).map(c => `"${c.name}"`)
+
+    await connection.query(`
+      CREATE TABLE "${targetName}" AS
+      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", ${userCols.join(', ')}
+      FROM "${sourceName}"
+    `)
+  } else {
+    // Preserve _cs_id values (for timeline snapshots) or source has no _cs_id
+    await connection.query(`
+      CREATE TABLE "${targetName}" AS
+      SELECT * FROM "${sourceName}"
+    `)
+  }
+
+  // Get column info (excluding internal columns for return value)
   const columnsResult = await connection.query(`
     SELECT column_name, data_type
     FROM information_schema.columns
     WHERE table_name = '${targetName}'
     ORDER BY ordinal_position
   `)
-  const columns = columnsResult.toArray().map((row) => {
+  const allColumns = columnsResult.toArray().map((row) => {
     const json = row.toJSON()
     return {
       name: json.column_name as string,
       type: json.data_type as string,
     }
   })
+  const columns = allColumns.filter(col => !isInternalColumn(col.name))
 
   // Get row count
   const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${targetName}"`)
@@ -408,6 +600,7 @@ export async function hasOriginalSnapshot(tableName: string): Promise<boolean> {
 /**
  * Create an original snapshot of a table (if it doesn't exist)
  * Called before the first transformation is applied
+ * Preserves _cs_id values to enable row-level tracking in diffs
  */
 export async function createOriginalSnapshot(tableName: string): Promise<boolean> {
   const snapshotName = getOriginalSnapshotName(tableName)
@@ -420,7 +613,7 @@ export async function createOriginalSnapshot(tableName: string): Promise<boolean
 
   const connection = await getConnection()
 
-  // Create a copy of the original table
+  // Create a copy preserving _cs_id values for row tracking
   await connection.query(`
     CREATE TABLE "${snapshotName}" AS
     SELECT * FROM "${tableName}"

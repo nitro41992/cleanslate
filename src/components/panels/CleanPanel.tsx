@@ -21,7 +21,8 @@ import {
   TRANSFORMATIONS,
   TransformationDefinition,
 } from '@/lib/transformations'
-import type { TransformationStep } from '@/types'
+import { recordCommand } from '@/lib/timeline-engine'
+import type { TransformationStep, TransformParams } from '@/types'
 import { generateId, cn } from '@/lib/utils'
 
 export function CleanPanel() {
@@ -94,6 +95,7 @@ export function CleanPanel() {
       const result = await applyTransformation(activeTable.name, step)
 
       // 3. Log to audit store
+      const auditEntryId = result.auditEntryId ?? generateId()
       addTransformationEntry({
         tableId: activeTable.id,
         tableName: activeTable.name,
@@ -101,29 +103,51 @@ export function CleanPanel() {
         details: `Applied transformation. Current row count: ${result.rowCount}`,
         rowsAffected: result.affected,
         hasRowDetails: result.hasRowDetails,
-        auditEntryId: result.auditEntryId,
+        auditEntryId,
       })
 
-      // 4. Track in pending operations
+      // 4. Record to timeline for undo/redo
+      const timelineParams: TransformParams = {
+        type: 'transform',
+        transformationType: step.type,
+        column: step.column,
+        params: step.params,
+      }
+
+      await recordCommand(
+        activeTable.id,
+        activeTable.name,
+        'transform',
+        getTransformationLabel(step),
+        timelineParams,
+        {
+          auditEntryId,
+          affectedColumns: step.column ? [step.column] : undefined,
+          rowsAffected: result.affected,
+          hasRowDetails: result.hasRowDetails,
+        }
+      )
+
+      // 5. Track in pending operations
       addPendingOperation({
         type: 'transform',
         label: getTransformationLabel(step),
         config: step,
       })
 
-      // 5. Update table metadata
+      // 6. Update table metadata
       updateTable(activeTable.id, { rowCount: result.rowCount })
 
-      // 6. Update changes summary
+      // 7. Update changes summary
       updateChangesSummary({ transformsApplied: 1 })
 
-      // 7. Show success, mark last applied
+      // 8. Show success, mark last applied
       setLastApplied(selectedTransform.id)
       toast.success('Transformation Applied', {
         description: `${selectedTransform.label} completed. ${result.affected} rows affected.`,
       })
 
-      // 8. Reset form after delay
+      // 9. Reset form after delay
       setTimeout(() => {
         resetForm()
       }, 1500)

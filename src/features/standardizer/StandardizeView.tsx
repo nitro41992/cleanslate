@@ -20,8 +20,10 @@ import { useTableStore } from '@/stores/tableStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useStandardizer } from '@/hooks/useStandardizer'
+import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import { toast } from 'sonner'
 import { useState } from 'react'
+import type { StandardizeParams } from '@/types'
 
 interface StandardizeViewProps {
   open: boolean
@@ -30,6 +32,7 @@ interface StandardizeViewProps {
 
 export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   const tables = useTableStore((s) => s.tables)
+  const updateTable = useTableStore((s) => s.updateTable)
   const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
 
   const {
@@ -119,22 +122,62 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       return
     }
 
+    if (!tableId || !tableName || !columnName) {
+      toast.error('Invalid State', {
+        description: 'No table or column selected.',
+      })
+      return
+    }
+
     try {
+      // IMPORTANT: Initialize timeline BEFORE applying changes
+      // This ensures the original snapshot captures the pre-modification state
+      console.log('[STANDARDIZE] Initializing timeline before changes...')
+      await initializeTimeline(tableId, tableName)
+      console.log('[STANDARDIZE] Timeline initialized, now applying changes...')
+
       const result = await applyChanges()
+      console.log('[STANDARDIZE] applyChanges result:', result)
 
       if (result.success) {
         // Add audit entry
-        if (tableId && tableName) {
-          addTransformationEntry({
-            tableId,
-            tableName,
-            action: 'Standardize Values',
-            details: `Standardized ${mappings.length} value${mappings.length !== 1 ? 's' : ''} in '${columnName}' column using ${algorithm} algorithm`,
+        addTransformationEntry({
+          tableId,
+          tableName,
+          action: 'Standardize Values',
+          details: `Standardized ${mappings.length} value${mappings.length !== 1 ? 's' : ''} in '${columnName}' column using ${algorithm} algorithm`,
+          rowsAffected: result.rowsAffected,
+          hasRowDetails: result.hasRowDetails,
+          auditEntryId: result.auditEntryId || undefined,
+        })
+
+        // Record to timeline for undo/redo support
+        const timelineParams: StandardizeParams = {
+          type: 'standardize',
+          columnName,
+          mappings,
+        }
+
+        console.log('[STANDARDIZE] Recording command to timeline...')
+        await recordCommand(
+          tableId,
+          tableName,
+          'standardize',
+          `Standardize Values (${columnName})`,
+          timelineParams,
+          {
+            auditEntryId: result.auditEntryId || undefined,
+            affectedColumns: [columnName],
             rowsAffected: result.rowsAffected,
             hasRowDetails: result.hasRowDetails,
-            auditEntryId: result.auditEntryId || undefined,
-          })
-        }
+          }
+        )
+        console.log('[STANDARDIZE] Command recorded')
+
+        // Update tableStore to trigger grid refresh (dataVersion auto-increments)
+        console.log('[STANDARDIZE] Updating table to trigger refresh...')
+        updateTable(tableId, {})
+        console.log('[STANDARDIZE] Table updated')
 
         toast.success('Values Standardized', {
           description: `Updated ${result.rowsAffected.toLocaleString()} rows.`,
@@ -161,6 +204,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     columnName,
     algorithm,
     addTransformationEntry,
+    updateTable,
     reset,
     onClose,
   ])

@@ -14,6 +14,7 @@ interface TableActions {
   removeTable: (id: string) => void
   setActiveTable: (id: string | null) => void
   updateTable: (id: string, updates: Partial<TableInfo>) => void
+  incrementDataVersion: (id: string) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   clearTables: () => void
@@ -42,6 +43,7 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
       rowCount,
       createdAt: now,
       updatedAt: now,
+      dataVersion: 0,
     }
     set((state) => ({
       tables: [...state.tables, newTable],
@@ -62,9 +64,30 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
   },
 
   updateTable: (id, updates) => {
+    set((state) => {
+      const table = state.tables.find((t) => t.id === id)
+      const newDataVersion = (table?.dataVersion || 0) + 1
+      console.log('[TABLESTORE] updateTable called', { id, updates, oldDataVersion: table?.dataVersion, newDataVersion })
+      return {
+        tables: state.tables.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                ...updates,
+                updatedAt: new Date(),
+                // Auto-increment: any update triggers grid refresh
+                dataVersion: newDataVersion,
+              }
+            : t
+        ),
+      }
+    })
+  },
+
+  incrementDataVersion: (id) => {
     set((state) => ({
       tables: state.tables.map((t) =>
-        t.id === id ? { ...t, ...updates, updatedAt: new Date() } : t
+        t.id === id ? { ...t, dataVersion: (t.dataVersion || 0) + 1 } : t
       ),
     }))
   },
@@ -104,6 +127,7 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
         transformations,
         checkpointedAt: now,
       },
+      dataVersion: 0,
     }
 
     set((s) => ({

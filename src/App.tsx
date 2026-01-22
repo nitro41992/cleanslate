@@ -32,24 +32,26 @@ import { StandardizeView } from '@/features/standardizer'
 // Stores and hooks
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
-import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
+import { useTimelineStore } from '@/stores/timelineStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
+import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
 import { toast } from 'sonner'
 
 import type { CSVIngestionSettings } from '@/types'
 
 function App() {
-  const { loadFile, isLoading, isReady, updateCell, duplicateTable } = useDuckDB()
+  const { loadFile, isLoading, isReady, duplicateTable } = useDuckDB()
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
   const addTable = useTableStore((s) => s.addTable)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
+  const updateTable = useTableStore((s) => s.updateTable)
 
   const activePanel = usePreviewStore((s) => s.activePanel)
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
@@ -69,9 +71,8 @@ function App() {
   const { autoRestore, loadFromStorage } = usePersistence()
   const [showRestoreDialog, setShowRestoreDialog] = useState(false)
 
-  // Edit store for undo/redo
-  const undo = useEditStore((s) => s.undo)
-  const redo = useEditStore((s) => s.redo)
+  // Timeline store for undo/redo
+  const isReplaying = useTimelineStore((s) => s.isReplaying)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
 
   // Diff view state
@@ -104,34 +105,64 @@ function App() {
     checkForSavedData()
   }, [autoRestore])
 
-  // Keyboard shortcuts for undo/redo
+  // Keyboard shortcuts for undo/redo (using timeline)
   const handleUndo = useCallback(async () => {
-    const edit = undo()
-    if (edit && activeTable) {
-      await updateCell(edit.tableName, edit.rowIndex, edit.columnName, edit.previousValue)
-      addAuditEntry(
-        edit.tableId,
-        edit.tableName,
-        'Undo Edit',
-        `Reverted cell [${edit.rowIndex}, ${edit.columnName}]`,
-        'B'
-      )
+    console.log('[UNDO] handleUndo called', { activeTableId, isReplaying, activeTable: activeTable?.name })
+    if (!activeTableId || isReplaying) {
+      console.log('[UNDO] Early return - no activeTableId or isReplaying')
+      return
     }
-  }, [undo, activeTable, updateCell, addAuditEntry])
+    try {
+      const newRowCount = await undoTimeline(activeTableId)
+      console.log('[UNDO] undoTimeline returned:', newRowCount)
+      if (typeof newRowCount === 'number') {
+        console.log('[UNDO] Calling updateTable with rowCount:', newRowCount)
+        updateTable(activeTableId, { rowCount: newRowCount })
+        if (activeTable) {
+          addAuditEntry(
+            activeTableId,
+            activeTable.name,
+            'Undo',
+            'Reverted to previous state',
+            'A'
+          )
+        }
+      } else {
+        console.log('[UNDO] No rowCount returned, nothing to undo')
+      }
+    } catch (error) {
+      console.error('[UNDO] Error during undo:', error)
+    }
+  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable])
 
   const handleRedo = useCallback(async () => {
-    const edit = redo()
-    if (edit && activeTable) {
-      await updateCell(edit.tableName, edit.rowIndex, edit.columnName, edit.newValue)
-      addAuditEntry(
-        edit.tableId,
-        edit.tableName,
-        'Redo Edit',
-        `Re-applied cell [${edit.rowIndex}, ${edit.columnName}]`,
-        'B'
-      )
+    console.log('[REDO] handleRedo called', { activeTableId, isReplaying })
+    if (!activeTableId || isReplaying) {
+      console.log('[REDO] Early return - no activeTableId or isReplaying')
+      return
     }
-  }, [redo, activeTable, updateCell, addAuditEntry])
+    try {
+      const newRowCount = await redoTimeline(activeTableId)
+      console.log('[REDO] redoTimeline returned:', newRowCount)
+      if (typeof newRowCount === 'number') {
+        console.log('[REDO] Calling updateTable with rowCount:', newRowCount)
+        updateTable(activeTableId, { rowCount: newRowCount })
+        if (activeTable) {
+          addAuditEntry(
+            activeTableId,
+            activeTable.name,
+            'Redo',
+            'Reapplied next state',
+            'A'
+          )
+        }
+      } else {
+        console.log('[REDO] No rowCount returned, nothing to redo')
+      }
+    } catch (error) {
+      console.error('[REDO] Error during redo:', error)
+    }
+  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -335,6 +366,7 @@ function App() {
                     columns={activeTable.columns.map((c) => c.name)}
                     editable={true}
                     tableId={activeTable.id}
+                    dataVersion={activeTable.dataVersion}
                   />
                 </div>
               </CardContent>
