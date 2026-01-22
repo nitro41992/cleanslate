@@ -21,6 +21,14 @@ export class IngestionWizardPage {
 
   async waitForOpen(): Promise<void> {
     await this.dialog.waitFor({ state: 'visible', timeout: 10000 })
+    // Also wait for the Import button to be enabled (indicates file is loaded)
+    await this.page.waitForFunction(
+      () => {
+        const btn = document.querySelector('[data-testid="import-btn"]') as HTMLButtonElement
+        return btn && !btn.disabled
+      },
+      { timeout: 15000 }
+    )
   }
 
   async waitForClose(): Promise<void> {

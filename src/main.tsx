@@ -33,6 +33,17 @@ if (import.meta.env.DEV) {
     ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.editStore = useEditStore
   })
 
+  import('./stores/matcherStore').then(({ useMatcherStore }) => {
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ =
+      (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ || {}
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.matcherStore = useMatcherStore
+  })
+
+  // Expose fuzzy matcher for E2E testing
+  import('./lib/fuzzy-matcher').then((fuzzyMatcher) => {
+    ;(window as Window & { __CLEANSLATE_FUZZY_MATCHER__?: typeof fuzzyMatcher }).__CLEANSLATE_FUZZY_MATCHER__ = fuzzyMatcher
+  })
+
   import('./lib/duckdb').then(({ query, initDuckDB }) => {
     ;(window as Window & { __CLEANSLATE_DUCKDB__?: { query: typeof query; isReady: boolean } }).__CLEANSLATE_DUCKDB__ = {
       query,

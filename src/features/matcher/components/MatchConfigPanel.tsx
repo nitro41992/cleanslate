@@ -162,8 +162,12 @@ export function MatchConfigPanel({
       {!hasPairs && (
         <Button
           className="w-full"
-          onClick={onFindDuplicates}
+          onClick={() => {
+            console.log('[DEBUG] Find Duplicates button clicked!')
+            onFindDuplicates()
+          }}
           disabled={!canSearch}
+          data-testid="find-duplicates-btn"
         >
           {isMatching ? (
             <>
