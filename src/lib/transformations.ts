@@ -21,6 +21,11 @@ export interface RowDetail {
   newValue: string | null
 }
 
+export interface TransformationExample {
+  before: string
+  after: string
+}
+
 export interface TransformationDefinition {
   id: TransformationType
   label: string
@@ -34,6 +39,8 @@ export interface TransformationDefinition {
     options?: { value: string; label: string }[]
     default?: string
   }[]
+  examples?: TransformationExample[]
+  hints?: string[]
 }
 
 /**
@@ -59,6 +66,7 @@ export const EXPENSIVE_TRANSFORMS = new Set([
   'pad_zeros',
   'fill_down',
   'split_column',
+  'combine_columns',
 ])
 
 export const TRANSFORMATIONS: TransformationDefinition[] = [
@@ -68,6 +76,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Remove leading and trailing spaces',
     icon: '✂️',
     requiresColumn: true,
+    examples: [
+      { before: '"  hello  "', after: '"hello"' },
+      { before: '"  data  "', after: '"data"' },
+    ],
+    hints: ['Does not affect spaces between words'],
   },
   {
     id: 'lowercase',
@@ -75,6 +88,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Convert text to lowercase',
     icon: 'a',
     requiresColumn: true,
+    examples: [
+      { before: '"HELLO"', after: '"hello"' },
+      { before: '"John DOE"', after: '"john doe"' },
+    ],
+    hints: ['Useful for case-insensitive matching'],
   },
   {
     id: 'uppercase',
@@ -82,6 +100,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Convert text to UPPERCASE',
     icon: 'A',
     requiresColumn: true,
+    examples: [
+      { before: '"hello"', after: '"HELLO"' },
+      { before: '"John Doe"', after: '"JOHN DOE"' },
+    ],
+    hints: ['Standard for codes like country/state'],
   },
   {
     id: 'remove_duplicates',
@@ -89,6 +112,10 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Remove duplicate rows',
     icon: '🔄',
     requiresColumn: false,
+    examples: [
+      { before: '100 rows', after: '95 rows' },
+    ],
+    hints: ['Compares all columns for uniqueness', 'Keeps first occurrence of each unique row'],
   },
   {
     id: 'replace_empty',
@@ -99,6 +126,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     params: [
       { name: 'replaceWith', type: 'text', label: 'Replace with', default: '' },
     ],
+    examples: [
+      { before: '""', after: '"N/A"' },
+      { before: 'NULL', after: '"Unknown"' },
+    ],
+    hints: ['Also replaces NULL values', 'Useful for required field defaults'],
   },
   {
     id: 'replace',
@@ -130,6 +162,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
         default: 'contains',
       },
     ],
+    examples: [
+      { before: '"foo bar foo"', after: '"baz bar baz"' },
+      { before: '"N/A"', after: '""' },
+    ],
+    hints: ['Case-insensitive option available', 'Exact Match replaces entire cell value'],
   },
   {
     id: 'rename_column',
@@ -138,6 +175,10 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     icon: '📝',
     requiresColumn: true,
     params: [{ name: 'newName', type: 'text', label: 'New column name' }],
+    examples: [
+      { before: 'Column: "old_name"', after: 'Column: "new_name"' },
+    ],
+    hints: ['Does not affect data values', 'Use for clearer naming conventions'],
   },
   {
     id: 'cast_type',
@@ -159,14 +200,28 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
         ],
       },
     ],
+    examples: [
+      { before: '"123" (Text)', after: '123 (Integer)' },
+      { before: '"2024-01-15"', after: '2024-01-15 (Date)' },
+    ],
+    hints: ['Invalid values become NULL', 'Preview shows how many will fail'],
   },
   {
     id: 'custom_sql',
     label: 'Custom SQL',
-    description: 'Run custom SQL transformation',
+    description: 'Run any DuckDB SQL command',
     icon: '💻',
     requiresColumn: false,
     params: [{ name: 'sql', type: 'text', label: 'SQL Query' }],
+    examples: [
+      { before: 'UPDATE "table" SET col = UPPER(col)', after: 'Uppercase all values' },
+      { before: 'ALTER TABLE "table" DROP COLUMN temp', after: 'Remove a column' },
+    ],
+    hints: [
+      'Column names must be double-quoted: "column_name"',
+      'Use DuckDB SQL syntax (not MySQL/PostgreSQL)',
+      'Click column badges below to copy names',
+    ],
   },
   // FR-A3 Text Transformations
   {
@@ -175,6 +230,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Capitalize first letter of each word',
     icon: '🔤',
     requiresColumn: true,
+    examples: [
+      { before: '"john doe"', after: '"John Doe"' },
+      { before: '"HELLO WORLD"', after: '"Hello World"' },
+    ],
+    hints: ['Capitalizes first letter of each word', 'Lowercases remaining letters'],
   },
   {
     id: 'remove_accents',
@@ -182,6 +242,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Remove diacritical marks (café → cafe)',
     icon: 'ê',
     requiresColumn: true,
+    examples: [
+      { before: '"café"', after: '"cafe"' },
+      { before: '"naïve"', after: '"naive"' },
+    ],
+    hints: ['Normalizes international characters', 'Useful for matching/searching'],
   },
   {
     id: 'remove_non_printable',
@@ -189,6 +254,35 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Remove tabs, newlines, control characters',
     icon: '🚫',
     requiresColumn: true,
+    examples: [
+      { before: '"hello\\t\\n"', after: '"hello"' },
+      { before: '"data\\x00"', after: '"data"' },
+    ],
+    hints: ['Removes tabs, newlines, control chars', 'Cleans data from external systems'],
+  },
+  {
+    id: 'collapse_spaces',
+    label: 'Collapse Spaces',
+    description: 'Replace multiple spaces with single space',
+    icon: '⎵',
+    requiresColumn: true,
+    examples: [
+      { before: '"hello    world"', after: '"hello world"' },
+      { before: '"a   b   c"', after: '"a b c"' },
+    ],
+    hints: ['Also collapses tabs and newlines', 'Pair with Trim for complete cleanup'],
+  },
+  {
+    id: 'sentence_case',
+    label: 'Sentence Case',
+    description: 'Capitalize first letter only',
+    icon: 'Aa',
+    requiresColumn: true,
+    examples: [
+      { before: '"HELLO WORLD"', after: '"Hello world"' },
+      { before: '"john doe"', after: '"John doe"' },
+    ],
+    hints: ['Only first character capitalized', 'Rest of text is lowercased'],
   },
   // FR-A3 Finance Transformations
   {
@@ -197,6 +291,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Remove $ , and convert to number',
     icon: '💵',
     requiresColumn: true,
+    examples: [
+      { before: '"$1,234.56"', after: '1234.56' },
+      { before: '"$ 999"', after: '999' },
+    ],
+    hints: ['Removes $, commas, and spaces', 'Converts to numeric type'],
   },
   {
     id: 'fix_negatives',
@@ -204,6 +303,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Convert (500.00) to -500.00',
     icon: '−',
     requiresColumn: true,
+    examples: [
+      { before: '"(500.00)"', after: '-500' },
+      { before: '"$(1,250.50)"', after: '-1250.5' },
+    ],
+    hints: ['Accounting format to standard', 'Also removes $ and commas'],
   },
   {
     id: 'pad_zeros',
@@ -214,6 +318,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     params: [
       { name: 'length', type: 'number', label: 'Target length', default: '5' },
     ],
+    examples: [
+      { before: '"42"', after: '"00042"' },
+      { before: '"123"', after: '"00123"' },
+    ],
+    hints: ['Set target length (default: 5)', 'Good for IDs and codes', 'Longer values are not truncated'],
   },
   // FR-A3 Date/Structure Transformations
   {
@@ -235,6 +344,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
         default: 'YYYY-MM-DD',
       },
     ],
+    examples: [
+      { before: '"01/15/2024"', after: '"2024-01-15"' },
+      { before: '"20240115"', after: '"2024-01-15"' },
+    ],
+    hints: ['Supports 10+ input formats', 'Auto-detects YYYYMMDD, MM/DD/YYYY, etc.'],
   },
   {
     id: 'calculate_age',
@@ -242,6 +356,11 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Create age column from date of birth',
     icon: '🎂',
     requiresColumn: true,
+    examples: [
+      { before: '"1990-05-15"', after: 'age: 34' },
+      { before: '"01/15/2000"', after: 'age: 24' },
+    ],
+    hints: ['Creates new "age" column', 'Supports multiple date formats'],
   },
   {
     id: 'split_column',
@@ -250,8 +369,53 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     icon: '✂️',
     requiresColumn: true,
     params: [
+      {
+        name: 'splitMode',
+        type: 'select',
+        label: 'Split Mode',
+        options: [
+          { value: 'delimiter', label: 'By Delimiter' },
+          { value: 'position', label: 'At Position' },
+          { value: 'length', label: 'Every N Characters' },
+        ],
+        default: 'delimiter',
+      },
       { name: 'delimiter', type: 'text', label: 'Delimiter', default: ' ' },
+      { name: 'position', type: 'number', label: 'Split Position', default: '3' },
+      { name: 'length', type: 'number', label: 'Character Length', default: '2' },
     ],
+    examples: [
+      { before: '"John Doe"', after: '"John", "Doe"' },
+      { before: '"a,b,c"', after: '"a", "b", "c"' },
+    ],
+    hints: ['Creates new columns for each part', 'Original column is preserved', 'Max 10 parts by delimiter'],
+  },
+  {
+    id: 'combine_columns',
+    label: 'Combine Columns',
+    description: 'Merge multiple columns into one',
+    icon: '🔗',
+    requiresColumn: false,
+    params: [
+      { name: 'columns', type: 'text', label: 'Columns (comma-separated)' },
+      { name: 'delimiter', type: 'text', label: 'Separator', default: ' ' },
+      { name: 'newColumnName', type: 'text', label: 'New column name', default: 'combined' },
+      {
+        name: 'ignoreEmpty',
+        type: 'select',
+        label: 'Ignore empty values',
+        options: [
+          { value: 'true', label: 'Yes (skip nulls)' },
+          { value: 'false', label: 'No (include as empty)' },
+        ],
+        default: 'true',
+      },
+    ],
+    examples: [
+      { before: '"John" + "Doe"', after: '"John Doe"' },
+      { before: '"A" + "B" + "C"', after: '"A-B-C"' },
+    ],
+    hints: ['Delimiter is customizable', 'Can skip empty/null values', 'Creates a new column'],
   },
   {
     id: 'fill_down',
@@ -259,8 +423,69 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Fill empty cells with value from above',
     icon: '⬇️',
     requiresColumn: true,
+    examples: [
+      { before: 'NULL', after: '"value from above"' },
+      { before: '""', after: '"previous value"' },
+    ],
+    hints: ['Copies value from row above if null', 'Useful for grouped/hierarchical data'],
   },
 ]
+
+/**
+ * Transformation groups for organized UI display
+ */
+export const TRANSFORMATION_GROUPS = [
+  {
+    id: 'text',
+    label: 'Text Cleaning',
+    icon: '✦',
+    color: 'emerald' as const,
+    transforms: [
+      'trim', 'lowercase', 'uppercase', 'title_case', 'sentence_case',
+      'remove_accents', 'remove_non_printable', 'collapse_spaces',
+    ],
+  },
+  {
+    id: 'replace',
+    label: 'Find & Replace',
+    icon: '⬡',
+    color: 'blue' as const,
+    transforms: ['replace', 'replace_empty'],
+  },
+  {
+    id: 'structure',
+    label: 'Structure',
+    icon: '◫',
+    color: 'violet' as const,
+    transforms: [
+      'rename_column', 'remove_duplicates', 'split_column',
+      'combine_columns', 'cast_type',
+    ],
+  },
+  {
+    id: 'numeric',
+    label: 'Numeric',
+    icon: '▣',
+    color: 'amber' as const,
+    transforms: ['unformat_currency', 'fix_negatives', 'pad_zeros'],
+  },
+  {
+    id: 'dates',
+    label: 'Dates',
+    icon: '◉',
+    color: 'rose' as const,
+    transforms: ['standardize_date', 'calculate_age', 'fill_down'],
+  },
+  {
+    id: 'advanced',
+    label: 'Advanced',
+    icon: '⌘',
+    color: 'slate' as const,
+    transforms: ['custom_sql'],
+  },
+] as const
+
+export type TransformationGroupColor = typeof TRANSFORMATION_GROUPS[number]['color']
 
 /**
  * Ensure _audit_details table exists
@@ -401,6 +626,30 @@ async function countAffectedRows(
       return Number(nonPrintResult[0].count)
     }
 
+    case 'collapse_spaces': {
+      if (!column) return 0
+      const collapseResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[ \\t\\n\\r]+', ' ', 'g')`
+      )
+      return Number(collapseResult[0].count)
+    }
+
+    case 'sentence_case': {
+      if (!column) return 0
+      const sentenceResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND TRIM(${column}) != ''`
+      )
+      return Number(sentenceResult[0].count)
+    }
+
+    case 'combine_columns': {
+      // All rows are affected when combining columns
+      const combineResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${tableName}"`
+      )
+      return Number(combineResult[0].count)
+    }
+
     case 'unformat_currency': {
       if (!column) return 0
       const currencyResult = await query<{ count: number }>(
@@ -445,12 +694,22 @@ async function countAffectedRows(
 
     case 'split_column': {
       if (!column) return 0
-      const delimiter = (step.params?.delimiter as string) || ' '
-      const escapedDelim = delimiter.replace(/'/g, "''")
-      const splitResult = await query<{ count: number }>(
-        `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} LIKE '%${escapedDelim}%'`
-      )
-      return Number(splitResult[0].count)
+      const splitMode = (step.params?.splitMode as string) || 'delimiter'
+
+      if (splitMode === 'delimiter') {
+        const delimiter = (step.params?.delimiter as string) || ' '
+        const escapedDelim = delimiter.replace(/'/g, "''")
+        const splitResult = await query<{ count: number }>(
+          `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} LIKE '%${escapedDelim}%'`
+        )
+        return Number(splitResult[0].count)
+      } else {
+        // For position and length modes, all non-null rows are affected
+        const splitResult = await query<{ count: number }>(
+          `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL`
+        )
+        return Number(splitResult[0].count)
+      }
     }
 
     case 'fill_down': {
@@ -553,6 +812,16 @@ async function captureRowDetails(
     case 'remove_non_printable':
       whereClause = `${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
       newValueExpression = `regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
+      break
+
+    case 'collapse_spaces':
+      whereClause = `${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[ \\t\\n\\r]+', ' ', 'g')`
+      newValueExpression = `regexp_replace(${column}, '[ \\t\\n\\r]+', ' ', 'g')`
+      break
+
+    case 'sentence_case':
+      whereClause = `${column} IS NOT NULL AND TRIM(${column}) != ''`
+      newValueExpression = `concat(upper(substring(${column}, 1, 1)), lower(substring(${column}, 2)))`
       break
 
     case 'unformat_currency':
@@ -919,6 +1188,25 @@ export async function applyTransformation(
       await execute(sql)
       break
 
+    case 'collapse_spaces':
+      sql = `
+        UPDATE "${tableName}"
+        SET "${step.column}" = regexp_replace("${step.column}", '[ \\t\\n\\r]+', ' ', 'g')
+      `
+      await execute(sql)
+      break
+
+    case 'sentence_case':
+      sql = `
+        UPDATE "${tableName}"
+        SET "${step.column}" = CASE
+          WHEN "${step.column}" IS NULL OR TRIM("${step.column}") = '' THEN "${step.column}"
+          ELSE concat(upper(substring("${step.column}", 1, 1)), lower(substring("${step.column}", 2)))
+        END
+      `
+      await execute(sql)
+      break
+
     case 'unformat_currency':
       sql = `
         CREATE OR REPLACE TABLE "${tempTable}" AS
@@ -1034,18 +1322,10 @@ export async function applyTransformation(
     }
 
     case 'split_column': {
-      const delimiter = (step.params?.delimiter as string) || ' '
-      const escapedDelim = delimiter.replace(/'/g, "''")
+      const splitMode = (step.params?.splitMode as string) || 'delimiter'
       const baseColName = step.column!
 
-      // 1. Find max number of parts
-      const maxParts = await query<{ max_parts: number }>(
-        `SELECT MAX(len(string_split("${baseColName}", '${escapedDelim}'))) as max_parts
-         FROM "${tableName}"`
-      )
-      const numParts = Math.min(Number(maxParts[0].max_parts) || 2, 10)
-
-      // 2. Check for name collisions and determine prefix
+      // Check for name collisions and determine prefix
       const existingCols = await getTableColumns(tableName, true)
       const colNames = existingCols.map(c => c.name)
       let prefix = baseColName
@@ -1053,17 +1333,62 @@ export async function applyTransformation(
         prefix = `${baseColName}_split`
       }
 
-      // 3. Build column expressions
-      const partColumns = Array.from({ length: numParts }, (_, i) =>
-        `string_split("${baseColName}", '${escapedDelim}')[${i + 1}] as "${prefix}_${i + 1}"`
-      ).join(', ')
+      if (splitMode === 'position') {
+        // Split at fixed position
+        const position = Number(step.params?.position) || 3
 
-      // 4. Create new table with split columns
-      sql = `
-        CREATE OR REPLACE TABLE "${tempTable}" AS
-        SELECT *, ${partColumns}
-        FROM "${tableName}"
-      `
+        sql = `
+          CREATE OR REPLACE TABLE "${tempTable}" AS
+          SELECT *,
+            substring("${baseColName}", 1, ${position}) as "${prefix}_1",
+            substring("${baseColName}", ${position + 1}) as "${prefix}_2"
+          FROM "${tableName}"
+        `
+      } else if (splitMode === 'length') {
+        // Split every N characters
+        const charLength = Number(step.params?.length) || 2
+
+        // Calculate max parts needed
+        const maxLen = await query<{ max_len: number }>(
+          `SELECT MAX(LENGTH(CAST("${baseColName}" AS VARCHAR))) as max_len FROM "${tableName}"`
+        )
+        const maxLenResult = Number(maxLen[0]?.max_len) || 0
+        const numParts = maxLenResult > 0
+          ? Math.min(Math.ceil(maxLenResult / charLength), 50)  // Cap at 50 columns
+          : 2
+
+        const partColumns = Array.from({ length: numParts }, (_, i) =>
+          `substring(CAST("${baseColName}" AS VARCHAR), ${i * charLength + 1}, ${charLength}) as "${prefix}_${i + 1}"`
+        ).join(', ')
+
+        sql = `
+          CREATE OR REPLACE TABLE "${tempTable}" AS
+          SELECT *, ${partColumns}
+          FROM "${tableName}"
+        `
+      } else {
+        // Default: delimiter mode
+        const delimiter = (step.params?.delimiter as string) || ' '
+        const escapedDelim = delimiter.replace(/'/g, "''")
+
+        // Find max number of parts
+        const maxParts = await query<{ max_parts: number }>(
+          `SELECT MAX(len(string_split("${baseColName}", '${escapedDelim}'))) as max_parts
+           FROM "${tableName}"`
+        )
+        const numParts = Math.min(Number(maxParts[0].max_parts) || 2, 10)
+
+        const partColumns = Array.from({ length: numParts }, (_, i) =>
+          `string_split("${baseColName}", '${escapedDelim}')[${i + 1}] as "${prefix}_${i + 1}"`
+        ).join(', ')
+
+        sql = `
+          CREATE OR REPLACE TABLE "${tempTable}" AS
+          SELECT *, ${partColumns}
+          FROM "${tableName}"
+        `
+      }
+
       await execute(sql)
       await execute(`DROP TABLE "${tableName}"`)
       await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
@@ -1082,6 +1407,40 @@ export async function applyTransformation(
                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
                  )
                ) as "${step.column}"
+        FROM "${tableName}"
+      `
+      await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+      break
+    }
+
+    case 'combine_columns': {
+      const columnList = (step.params?.columns as string || '').split(',').map(c => c.trim()).filter(Boolean)
+      const delimiter = (step.params?.delimiter as string) ?? ' '
+      const newColName = (step.params?.newColumnName as string) || 'combined'
+      const ignoreEmpty = (step.params?.ignoreEmpty as string) !== 'false'
+      const escapedDelim = delimiter.replace(/'/g, "''")
+
+      if (columnList.length < 2) {
+        throw new Error('Combine columns requires at least 2 columns')
+      }
+
+      // Build CONCAT_WS or COALESCE expression based on ignoreEmpty
+      let concatExpr: string
+      if (ignoreEmpty) {
+        // Use CONCAT_WS which automatically skips NULLs
+        const colRefs = columnList.map(c => `NULLIF(TRIM(CAST("${c}" AS VARCHAR)), '')`).join(', ')
+        concatExpr = `CONCAT_WS('${escapedDelim}', ${colRefs})`
+      } else {
+        // Manual concat with COALESCE for empty string fallback
+        const colRefs = columnList.map(c => `COALESCE(CAST("${c}" AS VARCHAR), '')`).join(`, '${escapedDelim}', `)
+        concatExpr = `CONCAT(${colRefs})`
+      }
+
+      sql = `
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT *, ${concatExpr} as "${newColName}"
         FROM "${tableName}"
       `
       await execute(sql)

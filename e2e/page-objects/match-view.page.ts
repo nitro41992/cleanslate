@@ -90,11 +90,11 @@ export class MatchViewPage {
     // Check if matching started by looking for progress indicator or button text change
     const buttonText = await button.textContent().catch(() => '')
     if (buttonText?.includes('Find Duplicates')) {
-      console.log('Button click did not trigger matching - trying direct function call')
+      // console.log('Button click did not trigger matching - trying direct function call')
 
       // Fallback: Directly trigger matching via exposed fuzzy-matcher module
       // This bypasses React event handling issues completely
-      const pairs = await this.page.evaluate(async () => {
+      const _pairs = await this.page.evaluate(async () => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
         const fuzzyMatcher = (window as Window & { __CLEANSLATE_FUZZY_MATCHER__?: { findDuplicates: (tableName: string, matchColumn: string, blockingStrategy: string, definiteThreshold: number, maybeThreshold: number) => Promise<unknown[]> } }).__CLEANSLATE_FUZZY_MATCHER__
 
@@ -119,7 +119,7 @@ export class MatchViewPage {
           throw new Error('Table or column not selected')
         }
 
-        console.log('[E2E] Calling findDuplicates directly:', state.tableName, state.matchColumn, state.blockingStrategy)
+        // console.log('[E2E] Calling findDuplicates directly:', state.tableName, state.matchColumn, state.blockingStrategy)
 
         // Call findDuplicates(tableName, matchColumn, blockingStrategy, definiteThreshold, maybeThreshold)
         const pairs = await fuzzyMatcher.findDuplicates(
@@ -136,7 +136,7 @@ export class MatchViewPage {
         return pairs
       })
 
-      console.log('Direct call returned', Array.isArray(pairs) ? pairs.length : 0, 'pairs')
+      // console.log('Direct call returned', Array.isArray(pairs) ? pairs.length : 0, 'pairs')
       await this.page.waitForTimeout(1000)
     }
   }

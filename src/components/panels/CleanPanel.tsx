@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Loader2, Sparkles, Check, AlertTriangle } from 'lucide-react'
+import { Loader2, Sparkles, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -28,15 +28,15 @@ import { toast } from 'sonner'
 import {
   applyTransformation,
   getTransformationLabel,
-  TRANSFORMATIONS,
   TransformationDefinition,
   validateCastType,
   CastTypeValidation,
 } from '@/lib/transformations'
+import { GroupedTransformationPicker } from '@/components/clean/GroupedTransformationPicker'
 import { getTableColumns } from '@/lib/duckdb'
 import { initializeTimeline, recordCommand } from '@/lib/timeline-engine'
 import type { TransformationStep, TransformParams } from '@/types'
-import { generateId, cn } from '@/lib/utils'
+import { generateId } from '@/lib/utils'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -298,49 +298,127 @@ export function CleanPanel() {
       <div className="flex flex-col h-full">
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-4">
-          {/* Transformation Grid */}
-          <div className="grid grid-cols-2 gap-2">
-            {TRANSFORMATIONS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => handleSelectTransform(t)}
-                disabled={!activeTable || isApplying}
-                className={cn(
-                  'flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all',
-                  'hover:bg-muted/50 hover:border-border',
-                  'disabled:opacity-50 disabled:cursor-not-allowed',
-                  selectedTransform?.id === t.id && 'border-primary bg-primary/5',
-                  lastApplied === t.id && 'border-green-500 bg-green-500/10'
-                )}
-              >
-                <div className="relative">
-                  <span className="text-2xl">{t.icon}</span>
-                  {lastApplied === t.id && (
-                    <div className="absolute -top-1 -right-2 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
-                      <Check className="w-3 h-3 text-white" />
-                    </div>
-                  )}
-                </div>
-                <span className="text-xs font-medium text-center leading-tight">
-                  {t.label}
-                </span>
-              </button>
-            ))}
-          </div>
+          {/* Grouped Transformation Picker */}
+          <GroupedTransformationPicker
+            selectedTransform={selectedTransform}
+            lastApplied={lastApplied}
+            disabled={!activeTable || isApplying}
+            onSelect={handleSelectTransform}
+          />
 
           {/* Configuration Section */}
           {selectedTransform && (
             <div className="space-y-4 pt-4 border-t border-border/50 animate-in slide-in-from-top-2 duration-200">
-              {/* Transform Info */}
-              <div className="bg-muted/30 rounded-lg p-3">
-                <h3 className="font-medium flex items-center gap-2">
-                  <span className="text-lg">{selectedTransform.icon}</span>
-                  {selectedTransform.label}
-                </h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {selectedTransform.description}
-                </p>
+              {/* Enhanced Transform Info */}
+              <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+                {/* Header */}
+                <div>
+                  <h3 className="font-medium flex items-center gap-2">
+                    <span className="text-lg">{selectedTransform.icon}</span>
+                    {selectedTransform.label}
+                  </h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {selectedTransform.description}
+                  </p>
+                </div>
+
+                {/* Examples */}
+                {selectedTransform.examples && selectedTransform.examples.length > 0 && (
+                  <div className="border-t border-border/50 pt-2">
+                    <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
+                    <div className="space-y-1">
+                      {selectedTransform.examples.slice(0, 2).map((ex, i) => (
+                        <div key={i} className="flex items-center gap-2 text-xs font-mono">
+                          <span className="text-red-400/80">{ex.before}</span>
+                          <span className="text-muted-foreground">→</span>
+                          <span className="text-green-400/80">{ex.after}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Hints */}
+                {selectedTransform.hints && selectedTransform.hints.length > 0 && (
+                  <div className="border-t border-border/50 pt-2">
+                    <ul className="text-xs text-muted-foreground space-y-0.5">
+                      {selectedTransform.hints.map((hint, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className="text-blue-400">•</span>
+                          {hint}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
+
+              {/* Custom SQL Context Helper */}
+              {selectedTransform.id === 'custom_sql' && activeTable && (
+                <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 space-y-3">
+                  {/* Table Info */}
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 mb-1">Table</p>
+                    <code className="text-sm text-cyan-400 font-mono">&quot;{activeTable.name}&quot;</code>
+                    <span className="text-xs text-muted-foreground ml-2">
+                      ({activeTable.rowCount?.toLocaleString() || 0} rows)
+                    </span>
+                  </div>
+
+                  {/* Available Columns */}
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 mb-1">
+                      Columns ({columns.length})
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {columns.slice(0, 10).map((col) => (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(`"${col}"`)
+                            toast.success(`Copied "${col}" to clipboard`)
+                          }}
+                          className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800
+                                     text-amber-400 hover:bg-slate-700 transition-colors"
+                        >
+                          &quot;{col}&quot;
+                        </button>
+                      ))}
+                      {columns.length > 10 && (
+                        <span className="text-xs text-muted-foreground self-center">
+                          +{columns.length - 10} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Quick Templates */}
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 mb-1">Quick Templates</p>
+                    <div className="space-y-1">
+                      {[
+                        { label: 'Update column', sql: `UPDATE "${activeTable.name}" SET "column" = value` },
+                        { label: 'Add column', sql: `ALTER TABLE "${activeTable.name}" ADD COLUMN new_col VARCHAR` },
+                        { label: 'Delete rows', sql: `DELETE FROM "${activeTable.name}" WHERE condition` },
+                      ].map((template) => (
+                        <button
+                          key={template.label}
+                          type="button"
+                          onClick={() => setParams({ ...params, sql: template.sql })}
+                          className="w-full text-left text-xs px-2 py-1.5 rounded
+                                     bg-slate-800/50 hover:bg-slate-800 transition-colors"
+                        >
+                          <span className="text-slate-300">{template.label}</span>
+                          <code className="block text-[10px] text-slate-500 font-mono truncate">
+                            {template.sql}
+                          </code>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Column Selector */}
               {selectedTransform.requiresColumn && (
@@ -386,6 +464,26 @@ export function CleanPanel() {
                         ))}
                       </SelectContent>
                     </Select>
+                  ) : selectedTransform.id === 'custom_sql' && param.name === 'sql' ? (
+                    /* Enhanced SQL textarea */
+                    <div className="space-y-1">
+                      <textarea
+                        value={params[param.name] || ''}
+                        onChange={(e) =>
+                          setParams({ ...params, [param.name]: e.target.value })
+                        }
+                        placeholder={`UPDATE "${activeTable?.name || 'table'}" SET "column" = value WHERE condition`}
+                        className="w-full h-24 px-3 py-2 text-sm font-mono rounded-md
+                                   bg-slate-900 border border-slate-700
+                                   text-cyan-300 placeholder:text-slate-600
+                                   focus:outline-none focus:ring-2 focus:ring-primary/50
+                                   resize-y min-h-[80px]"
+                        spellCheck={false}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Use DuckDB SQL syntax. Column names must be double-quoted.
+                      </p>
+                    </div>
                   ) : (
                     <Input
                       value={params[param.name] || ''}

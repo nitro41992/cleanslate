@@ -1178,7 +1178,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
     // If panel didn't open, try again
     if (!await combinePanel.isVisible().catch(() => false)) {
-      console.log('First click on Combine button did not open panel, retrying')
+      // console.log('First click on Combine button did not open panel, retrying')
       await page.keyboard.press('Escape')
       await page.waitForTimeout(300)
       await combineButton.click({ force: true })

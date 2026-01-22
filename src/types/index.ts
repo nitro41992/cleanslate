@@ -100,6 +100,8 @@ export type TransformationType =
   | 'title_case'
   | 'remove_accents'
   | 'remove_non_printable'
+  | 'collapse_spaces'
+  | 'sentence_case'
   // FR-A3 Finance Transformations
   | 'unformat_currency'
   | 'fix_negatives'
@@ -108,6 +110,7 @@ export type TransformationType =
   | 'standardize_date'
   | 'calculate_age'
   | 'split_column'
+  | 'combine_columns'
   | 'fill_down'
 
 export interface DiffResult {
