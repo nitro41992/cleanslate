@@ -17,7 +17,7 @@ import {
   CS_ID_COLUMN,
   getTableColumns,
 } from '@/lib/duckdb'
-import { applyTransformation } from '@/lib/transformations'
+import { applyTransformation, EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
 import { applyStandardization } from '@/lib/standardizer-engine'
 import { useTimelineStore } from '@/stores/timelineStore'
 import type {
@@ -625,10 +625,9 @@ function isExpensiveOperation(
     return true
   }
 
-  // Check for expensive transformations
+  // Check for expensive transformations using the shared constant
   if (commandType === 'transform' && params.type === 'transform') {
-    const expensiveTransforms = new Set(['remove_duplicates'])
-    return expensiveTransforms.has(params.transformationType)
+    return EXPENSIVE_TRANSFORMS.has(params.transformationType)
   }
 
   return false

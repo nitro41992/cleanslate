@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Loader2, Sparkles, Check } from 'lucide-react'
+import { Loader2, Sparkles, Check, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,16 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTableStore } from '@/stores/tableStore'
@@ -20,6 +30,8 @@ import {
   getTransformationLabel,
   TRANSFORMATIONS,
   TransformationDefinition,
+  validateCastType,
+  CastTypeValidation,
 } from '@/lib/transformations'
 import { getTableColumns } from '@/lib/duckdb'
 import { initializeTimeline, recordCommand } from '@/lib/timeline-engine'
@@ -32,6 +44,9 @@ export function CleanPanel() {
   const [selectedColumn, setSelectedColumn] = useState<string>('')
   const [params, setParams] = useState<Record<string, string>>({})
   const [lastApplied, setLastApplied] = useState<string | null>(null)
+  // Cast type validation warning state
+  const [castWarningOpen, setCastWarningOpen] = useState(false)
+  const [castValidation, setCastValidation] = useState<CastTypeValidation | null>(null)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -77,7 +92,8 @@ export function CleanPanel() {
     return true
   }
 
-  const handleApply = async () => {
+  // Separate function to execute the transformation (called directly or after warning confirmation)
+  const executeTransformation = async () => {
     if (!activeTable || !selectedTransform) return
 
     setIsApplying(true)
@@ -170,8 +186,116 @@ export function CleanPanel() {
     }
   }
 
+  const handleApply = async () => {
+    if (!activeTable || !selectedTransform) return
+
+    // Pre-validation for cast_type - warn if ANY values would become NULL
+    if (selectedTransform.id === 'cast_type' && selectedColumn) {
+      const targetType = params.targetType || 'VARCHAR'
+
+      setIsApplying(true)
+      try {
+        const validation = await validateCastType(
+          activeTable.name,
+          selectedColumn,
+          targetType
+        )
+
+        if (validation.failCount > 0) {
+          // Show warning dialog
+          setCastValidation(validation)
+          setCastWarningOpen(true)
+          setIsApplying(false)
+          return
+        }
+      } catch (error) {
+        console.error('Cast type validation failed:', error)
+        // If validation fails, proceed anyway (don't block on validation errors)
+      }
+      setIsApplying(false)
+    }
+
+    // Execute the transformation
+    await executeTransformation()
+  }
+
+  // Handler for confirming cast type despite warnings
+  const handleConfirmCastType = async () => {
+    setCastWarningOpen(false)
+    await executeTransformation()
+  }
+
+  const handleCancelCastType = () => {
+    setCastWarningOpen(false)
+    setCastValidation(null)
+  }
+
+  // Get target type label for display
+  const getTargetTypeLabel = (type: string) => {
+    const typeMap: Record<string, string> = {
+      'VARCHAR': 'Text',
+      'INTEGER': 'Integer',
+      'DOUBLE': 'Decimal',
+      'DATE': 'Date',
+      'BOOLEAN': 'Boolean',
+    }
+    return typeMap[type] || type
+  }
+
   return (
-    <div className="flex flex-col h-full">
+    <>
+      {/* Cast Type Warning Dialog */}
+      <AlertDialog open={castWarningOpen} onOpenChange={setCastWarningOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              Cast Type Warning
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  Converting <strong>&quot;{selectedColumn}&quot;</strong> to{' '}
+                  <strong>{getTargetTypeLabel(params.targetType || 'VARCHAR')}</strong>{' '}
+                  will result in NULL values for{' '}
+                  <strong className="text-destructive">
+                    {castValidation?.failCount.toLocaleString()}
+                  </strong>{' '}
+                  out of {castValidation?.totalRows.toLocaleString()} rows (
+                  {castValidation?.failurePercentage.toFixed(1)}%).
+                </p>
+                {castValidation && castValidation.sampleFailures.length > 0 && (
+                  <div>
+                    <p className="font-medium text-foreground mb-1">
+                      Sample values that cannot be converted:
+                    </p>
+                    <ul className="list-disc list-inside text-sm space-y-0.5">
+                      {castValidation.sampleFailures.map((val, i) => (
+                        <li key={i} className="text-muted-foreground">
+                          &quot;{val}&quot;
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelCastType}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmCastType}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Apply Anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <div className="flex flex-col h-full">
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-4">
           {/* Transformation Grid */}
@@ -325,6 +449,7 @@ export function CleanPanel() {
           )}
         </div>
       </ScrollArea>
-    </div>
+      </div>
+    </>
   )
 }

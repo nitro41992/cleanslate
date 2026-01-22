@@ -35,6 +35,31 @@ export interface TransformationDefinition {
   }[]
 }
 
+/**
+ * Transforms that are expensive to replay (table recreation or full-table updates).
+ * Snapshots are created AFTER these transforms for fast undo.
+ *
+ * Table Recreation (CREATE TABLE AS SELECT):
+ * - calculate_age, standardize_date, cast_type, unformat_currency, fill_down, split_column
+ *
+ * Full-table Updates (UPDATE all rows):
+ * - fix_negatives, pad_zeros
+ *
+ * Full-table Scans/Deduplication:
+ * - remove_duplicates
+ */
+export const EXPENSIVE_TRANSFORMS = new Set([
+  'remove_duplicates',
+  'calculate_age',
+  'standardize_date',
+  'cast_type',
+  'unformat_currency',
+  'fix_negatives',
+  'pad_zeros',
+  'fill_down',
+  'split_column',
+])
+
 export const TRANSFORMATIONS: TransformationDefinition[] = [
   {
     id: 'trim',
@@ -1105,4 +1130,62 @@ export function getTransformationLabel(step: TransformationStep): string {
     }
   }
   return label
+}
+
+export interface CastTypeValidation {
+  totalRows: number
+  successCount: number
+  failCount: number
+  failurePercentage: number
+  sampleFailures: string[]
+}
+
+/**
+ * Validate a cast_type transformation before applying.
+ * Returns statistics on how many values would become NULL after the cast.
+ *
+ * @param tableName - The table to validate
+ * @param column - The column to cast
+ * @param targetType - The target DuckDB type (e.g., 'INTEGER', 'DOUBLE', 'DATE')
+ * @returns Validation result with counts and sample failures
+ */
+export async function validateCastType(
+  tableName: string,
+  column: string,
+  targetType: string
+): Promise<CastTypeValidation> {
+  const quotedCol = `"${column}"`
+
+  // Count total non-null rows and successful casts
+  const result = await query<{
+    total: number
+    success_count: number
+    fail_count: number
+  }>(`
+    SELECT
+      COUNT(*) as total,
+      COUNT(TRY_CAST(${quotedCol} AS ${targetType})) as success_count,
+      COUNT(*) - COUNT(TRY_CAST(${quotedCol} AS ${targetType})) as fail_count
+    FROM "${tableName}"
+    WHERE ${quotedCol} IS NOT NULL
+  `)
+
+  const { total, success_count, fail_count } = result[0]
+
+  // Get sample values that would fail the cast
+  const samples = await query<{ val: string }>(`
+    SELECT CAST(${quotedCol} AS VARCHAR) as val
+    FROM "${tableName}"
+    WHERE ${quotedCol} IS NOT NULL
+      AND TRY_CAST(${quotedCol} AS ${targetType}) IS NULL
+    LIMIT 5
+  `)
+
+  return {
+    totalRows: Number(total),
+    successCount: Number(success_count),
+    failCount: Number(fail_count),
+    failurePercentage: Number(total) > 0 ? (Number(fail_count) / Number(total)) * 100 : 0,
+    sampleFailures: samples.map(s => s.val),
+  }
 }

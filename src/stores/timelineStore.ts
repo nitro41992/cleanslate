@@ -10,26 +10,20 @@ import type {
   SerializedTimelineCommand,
 } from '@/types'
 import { generateId } from '@/lib/utils'
+import { EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
 
 /**
- * Expensive operations that trigger snapshot creation BEFORE the command
- */
-const EXPENSIVE_OPERATIONS: Set<string> = new Set([
-  'remove_duplicates',
-  'join',
-  'stack',
-  'merge',
-])
-
-/**
- * Check if a command type/params combination is expensive
+ * Check if a command type/params combination is expensive.
+ * Uses EXPENSIVE_TRANSFORMS from transformations.ts as single source of truth.
  */
 function isExpensiveCommand(commandType: TimelineCommandType, params: TimelineParams): boolean {
+  // These operations are always expensive
   if (commandType === 'merge' || commandType === 'join' || commandType === 'stack') {
     return true
   }
+  // Check for expensive transformations using the shared constant
   if (commandType === 'transform' && params.type === 'transform') {
-    return EXPENSIVE_OPERATIONS.has(params.transformationType)
+    return EXPENSIVE_TRANSFORMS.has(params.transformationType)
   }
   return false
 }
