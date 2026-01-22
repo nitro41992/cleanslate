@@ -1,180 +1,221 @@
-# Undo/Redo Visual Feedback UI Improvements
+# Snapshot System Consolidation Plan
 
 ## Problem Statement
 
-1. **Audit log doesn't show timeline position** - All entries look the same regardless of whether they've been "undone"
-2. **Dirty cell indicator persists** - Red triangle stays even when edit is undone via timeline (editStore and timelineStore are separate systems)
+Two parallel snapshot systems exist:
+1. **Old system**: `_original_${tableName}` - used by `transformations.ts` and diff
+2. **Timeline system**: `_timeline_original_${timelineId}` - used by standardization, manual edits
+
+This causes:
+- Standardization not recognized in "Compare with Preview" diff
+- Inconsistent undo/redo behavior across operations
+- Potential orphaned snapshots and storage waste
+
+## Goal
+
+Consolidate to the **timeline system exclusively** while maintaining performance for 2M+ row datasets.
 
 ---
 
-## Solution Overview
+## Performance Analysis for Large Datasets
 
-### 1. Audit Sidebar: Show Timeline Position
+### Current Approach (Both Systems)
+- **Snapshot creation**: `CREATE TABLE AS SELECT * FROM` - O(n) full copy
+- **2M rows**: ~2-5 seconds for snapshot creation (acceptable for "before operation" save)
+- **Storage**: Each snapshot = full data copy
 
-**Visual Treatment:**
-- **Future/Undone entries**: 40% opacity + "Undone" badge
-- **Current entry**: Left border accent + subtle background highlight
-- **Past entries**: Normal appearance (100% opacity)
-- **Visual separator**: Line with "Current State" label between current and future entries
+### Timeline System Advantages for Large Data
+1. **Selective snapshots**: Only creates snapshots before "expensive" operations
+2. **Nearest-snapshot replay**: Minimizes commands to replay (O(k) where k = commands since last snapshot)
+3. **Progress callbacks**: UI can show progress during long replays
 
+### Mitigation Strategies
+1. **Keep snapshot limit**: Max snapshots per timeline (configurable, currently based on expensive ops)
+2. **Lazy snapshot creation**: Don't snapshot on every operation, only expensive ones
+3. **Cleanup on branch**: When user undoes and takes new action, delete orphaned future snapshots
+
+---
+
+## Implementation Plan
+
+### Phase 1: Update Diff to Use Timeline Snapshots ✅ DONE
+
+**Files**: `src/components/diff/DiffConfigPanel.tsx`, `src/components/diff/DiffView.tsx`
+
+Already implemented in current session:
+- `hasOriginalSnapshot` check now looks at both old and timeline snapshots
+- `handleRunDiff` now falls back to timeline snapshot if old doesn't exist
+
+**IMPORTANT**: Uses `timeline.originalSnapshotName` (the TRUE original from initialization), NOT step snapshots:
+- `originalSnapshotName` = `_timeline_original_${timelineId}` → Initial state before ANY modifications
+- `snapshots` Map = Step snapshots created before expensive ops (NOT used for diff)
+
+---
+
+### Phase 2: Migrate transformations.ts
+
+**File**: `src/lib/transformations.ts`
+
+**Current** (line 409):
+```typescript
+await createOriginalSnapshot(tableName)
 ```
-┌─────────────────────────────────────┐
-│ Manual Edit [row 5]      [Undone]  │  ← 40% opacity
-│ Edit · 1 row              2m ago   │
-└─────────────────────────────────────┘
-        ─────── Current State ───────
-┌─────────────────────────────────────┐
-│▎Standardize Values                 │  ← Left accent, bg highlight
-│ Transform · 7 rows        3m ago   │
-└─────────────────────────────────────┘
-┌─────────────────────────────────────┐
-│ Trim Whitespace                    │  ← Normal
-│ Transform · 20 rows       5m ago   │
-└─────────────────────────────────────┘
+
+**Change**: Remove this call. Timeline initialization happens via `initializeTimeline()` which is called by `recordCommand()`.
+
+---
+
+### Phase 3: Ensure CleanPanel Initializes Timeline BEFORE Transform
+
+**File**: `src/components/panels/CleanPanel.tsx`
+
+**Current flow**:
+1. `applyTransformation()` called → creates old snapshot internally
+2. `recordCommand()` called → creates timeline snapshot (too late - captures post-transform state)
+
+**New flow**:
+1. `initializeTimeline()` called FIRST → creates timeline snapshot of PRE-transform state
+2. `applyTransformation()` called → no snapshot creation
+3. `recordCommand()` called → records command, timeline already initialized
+
+**Code change** (around line 100, before `applyTransformation`):
+```typescript
+import { initializeTimeline, recordCommand } from '@/lib/timeline-engine'
+
+// In handleApply:
+// 1. Initialize timeline BEFORE transform (captures pre-state)
+await initializeTimeline(activeTable.id, activeTable.name)
+
+// 2. Apply transformation (no snapshot here anymore)
+const result = await applyTransformation(activeTable.name, step)
+
+// 3. Record command (won't duplicate snapshot since timeline exists)
+await recordCommand(...)
 ```
 
-### 2. Dirty Cell Indicator: Timeline-Based Tracking
+---
 
-**Current Problem:** `editStore.dirtyCells` uses row index keys, and timeline undo doesn't sync with it.
+### Phase 4: Remove Old Snapshot from DataGrid
 
-**Solution:** Derive dirty state from timeline commands (single source of truth):
-- A cell is "dirty" if there's a manual_edit command that modified it AND we're at/past that command's position
-- Use `_cs_id:columnName` keys (consistent with timeline's `cellChanges`)
-- When position changes, dirty indicators automatically update
+**File**: `src/components/grid/DataGrid.tsx`
+
+**Current** (line 279):
+```typescript
+await createOriginalSnapshot(tableName)
+```
+
+**Change**: Remove this line. The `initializeTimeline()` call already creates the snapshot.
+
+**CRITICAL ORDERING**: The sequence MUST be:
+```typescript
+// 1. FIRST: Create original snapshot (idempotent - only creates once)
+await initializeTimeline(tableId, tableName)
+
+// 2. THEN: Mutate the data
+await updateCell(tableName, ...)
+
+// 3. THEN: Record the command
+await recordCommand(...)
+```
+
+**Why ordering matters**: If `initializeTimeline` runs after or parallel to `updateCell`, the "original" snapshot will contain the edited value, and diff will show "No Changes".
+
+---
+
+### Phase 5: Remove Old Snapshot from transformations.ts
+
+**File**: `src/lib/transformations.ts`
+
+**Current** (line 409):
+```typescript
+await createOriginalSnapshot(tableName)
+```
+
+**Change**: Delete this line entirely.
+
+---
+
+### Phase 6: Add Snapshot Cleanup on Table Deletion
+
+**File**: `src/stores/tableStore.ts` or `src/hooks/useDuckDB.ts`
+
+When a table is deleted, clean up its timeline snapshots:
+```typescript
+import { cleanupTimelineSnapshots } from '@/lib/timeline-engine'
+
+// In removeTable or deleteTable:
+await cleanupTimelineSnapshots(tableId)
+```
+
+---
+
+### Phase 7: Deprecate Old Snapshot Functions (Optional)
+
+**File**: `src/lib/duckdb/index.ts`
+
+Keep functions but add deprecation comments:
+- `createOriginalSnapshot()` - no longer called, mark deprecated
+- `getOriginalSnapshotName()` - still used by diff fallback
+- `hasOriginalSnapshot()` - still used by diff fallback
+- `deleteOriginalSnapshot()` - keep for cleaning up legacy snapshots
 
 ---
 
 ## Files to Modify
 
-### 1. `src/stores/timelineStore.ts`
-Add helper to compute dirty cells from timeline:
-```typescript
-getDirtyCellsAtPosition: (tableId: string): Set<string> => {
-  const timeline = get().timelines.get(tableId)
-  if (!timeline) return new Set()
-
-  const dirtyCells = new Set<string>()
-  // Only consider commands up to currentPosition
-  for (let i = 0; i <= timeline.currentPosition && i < timeline.commands.length; i++) {
-    const cmd = timeline.commands[i]
-    if (cmd.cellChanges) {
-      for (const change of cmd.cellChanges) {
-        dirtyCells.add(`${change.csId}:${change.columnName}`)
-      }
-    }
-  }
-  return dirtyCells
-}
-```
-
-### 2. `src/components/grid/DataGrid.tsx`
-Replace editStore-based dirty check with timeline-based:
-```typescript
-// Get dirty cells from timeline instead of editStore
-const getDirtyCells = useTimelineStore((s) => s.getDirtyCellsAtPosition)
-const dirtyCells = useMemo(() =>
-  tableId ? getDirtyCells(tableId) : new Set<string>(),
-  [tableId, getDirtyCells, /* trigger on position change */]
-)
-
-// In drawCell:
-const cellKey = csId ? `${csId}:${colName}` : null
-const isCellDirty = cellKey && dirtyCells.has(cellKey)
-```
-
-### 3. `src/components/layout/AuditSidebar.tsx`
-Add timeline position awareness:
-
-```typescript
-// Add imports and hooks
-const timeline = useTimelineStore((s) =>
-  activeTableId ? s.getTimeline(activeTableId) : null
-)
-const currentPosition = timeline?.currentPosition ?? -1
-
-// Create lookup: auditEntryId -> command index
-const auditEntryToCommandIndex = useMemo(() => {
-  const map = new Map<string, number>()
-  timeline?.commands.forEach((cmd, idx) => {
-    if (cmd.auditEntryId) map.set(cmd.auditEntryId, idx)
-  })
-  return map
-}, [timeline?.commands])
-
-// Helper function
-function getEntryState(entry: AuditLogEntry): 'past' | 'current' | 'future' | 'untracked' {
-  const cmdIndex = auditEntryToCommandIndex.get(entry.auditEntryId ?? '')
-  if (cmdIndex === undefined) return 'untracked'
-  if (cmdIndex === currentPosition) return 'current'
-  if (cmdIndex < currentPosition) return 'past'
-  return 'future'
-}
-
-// In render - apply conditional styling:
-const state = getEntryState(entry)
-const isFuture = state === 'future'
-const isCurrent = state === 'current'
-
-<div className={cn(
-  'p-2 rounded-lg transition-colors cursor-pointer',
-  isFuture && 'opacity-40',
-  isCurrent && 'border-l-2 border-primary bg-primary/5',
-  !isFuture && 'hover:bg-muted/50'
-)}>
-  {/* Show "Undone" badge for future entries */}
-  {isFuture && (
-    <Badge variant="outline" className="text-[10px] opacity-80">Undone</Badge>
-  )}
-</div>
-
-// Insert separator after current entry (before future entries)
-```
-
-### 4. `src/components/layout/AuditSidebar.tsx` (Header Enhancement)
-Add position indicator in header:
-```typescript
-{timeline && timeline.commands.length > 0 && (
-  <Badge variant="secondary" className="text-[10px] h-5">
-    {timeline.currentPosition + 1}/{timeline.commands.length}
-  </Badge>
-)}
-```
-
----
-
-## Implementation Sequence
-
-### Phase 1: Audit Sidebar Visual States
-1. Add timeline position hooks to AuditSidebar
-2. Create `getEntryState()` helper with memoized command index lookup
-3. Apply opacity/border styling based on state
-4. Add "Undone" badge for future entries
-5. Add position badge to header
-6. Add "Current State" separator line
-
-### Phase 2: Timeline-Based Dirty Cell Tracking
-1. Add `getDirtyCellsAtPosition()` to timelineStore
-2. Update DataGrid to use timeline-based dirty state
-3. Ensure dirty state recomputes when position changes
-4. Remove/deprecate editStore.isDirty() usage for dirty indicators
+| File | Change | Priority |
+|------|--------|----------|
+| `src/components/panels/CleanPanel.tsx` | Add `initializeTimeline()` before transform | **HIGH** |
+| `src/lib/transformations.ts` | Remove `createOriginalSnapshot` call | **HIGH** |
+| `src/components/grid/DataGrid.tsx` | Remove redundant `createOriginalSnapshot` | **HIGH** |
+| `src/stores/tableStore.ts` | Add snapshot cleanup on table deletion | **MEDIUM** |
+| `src/lib/duckdb/index.ts` | Add deprecation comments | **LOW** |
+| `src/components/diff/DiffConfigPanel.tsx` | ✅ Already updated | DONE |
+| `src/components/diff/DiffView.tsx` | ✅ Already updated | DONE |
 
 ---
 
 ## Verification
 
-1. **Audit Sidebar States:**
-   - Load CSV, apply 2-3 transformations
-   - Press Ctrl+Z → Latest entry should gray out with "Undone" badge
-   - Separator line appears below current entry
-   - Press Ctrl+Y → Entry becomes active again
-   - Position badge in header updates (e.g., "2/3" → "1/3" → "2/3")
+### Test Cases
 
-2. **Dirty Cell Indicator:**
-   - Edit a cell → Red triangle appears
-   - Press Ctrl+Z → Red triangle disappears
-   - Press Ctrl+Y → Red triangle reappears
-   - Verify works with mixed operations (edit → transform → undo both)
+1. **Transform → Diff**:
+   - Load CSV → Apply trim transform → Open Delta Inspector
+   - Expected: "Original snapshot available" shows, diff works correctly
 
-3. **Performance:**
-   - Test with 50+ audit entries - no lag on undo/redo
-   - Verify grid scrolling still smooth with many dirty cells
+2. **Standardize → Diff**:
+   - Load CSV → Apply standardize → Open Delta Inspector
+   - Expected: "Original snapshot available" shows, diff works correctly
+
+3. **Manual Edit → Diff**:
+   - Load CSV → Edit cell → Open Delta Inspector
+   - Expected: "Original snapshot available" shows, diff works correctly
+
+4. **Undo/Redo Chain**:
+   - Load CSV → Trim → Uppercase → Undo → Undo
+   - Expected: Data returns to original state correctly
+
+5. **Large Dataset (2M rows)**:
+   - Load 2M row CSV → Apply transform
+   - Expected: Snapshot creation completes without memory errors
+   - Performance target: < 10 seconds for snapshot
+
+6. **Table Deletion Cleanup**:
+   - Load CSV → Apply transforms → Delete table
+   - Verify: No orphaned `_timeline_*` tables remain
+
+### SQL Verification
+```sql
+-- After testing, check for orphaned snapshots:
+SELECT table_name FROM information_schema.tables
+WHERE table_name LIKE '_timeline%' OR table_name LIKE '_original%'
+```
+
+---
+
+## Rollback Plan
+
+If issues arise:
+1. Old snapshot functions remain (just deprecated, not deleted)
+2. Diff still checks both systems as fallback
+3. Can restore `createOriginalSnapshot` calls if needed
