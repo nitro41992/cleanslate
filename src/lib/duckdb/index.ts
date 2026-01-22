@@ -313,10 +313,10 @@ export async function getTableDataWithRowIds(
 export async function getTableColumns(
   tableName: string,
   includeInternal = false
-): Promise<{ name: string; type: string }[]> {
+): Promise<{ name: string; type: string; nullable: boolean }[]> {
   const connection = await getConnection()
   const result = await connection.query(`
-    SELECT column_name, data_type
+    SELECT column_name, data_type, is_nullable
     FROM information_schema.columns
     WHERE table_name = '${tableName}'
     ORDER BY ordinal_position
@@ -326,6 +326,7 @@ export async function getTableColumns(
     return {
       name: json.column_name as string,
       type: json.data_type as string,
+      nullable: json.is_nullable === 'YES',
     }
   })
 

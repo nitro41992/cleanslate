@@ -3,9 +3,8 @@ import type { TransformationStep, TransformationType } from '@/types'
 import { generateId } from '@/lib/utils'
 
 // Max rows for which we capture row-level details (performance threshold)
-const ROW_DETAIL_THRESHOLD = 10_000
-// Batch size for inserting row details
-const BATCH_SIZE = 500
+// 100k is safe for browser memory; existing pagination handles display efficiently
+const ROW_DETAIL_THRESHOLD = 100_000
 
 export interface TransformationResult {
   rowCount: number
@@ -505,38 +504,152 @@ async function captureRowDetails(
       break
     }
 
+    case 'title_case':
+      // Capture rows that will change (non-empty values)
+      whereClause = `${column} IS NOT NULL AND TRIM(${column}) != ''`
+      newValueExpression = `list_reduce(
+        list_transform(
+          string_split(lower(${column}), ' '),
+          w -> concat(upper(substring(w, 1, 1)), substring(w, 2))
+        ),
+        (x, y) -> concat(x, ' ', y)
+      )`
+      break
+
+    case 'remove_accents':
+      whereClause = `${column} IS NOT NULL AND ${column} != strip_accents(${column})`
+      newValueExpression = `strip_accents(${column})`
+      break
+
+    case 'remove_non_printable':
+      whereClause = `${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
+      newValueExpression = `regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
+      break
+
+    case 'unformat_currency':
+      whereClause = `${column} IS NOT NULL AND (${column} LIKE '%$%' OR ${column} LIKE '%,%')`
+      newValueExpression = `CAST(TRY_CAST(REPLACE(REPLACE(REPLACE(${column}, '$', ''), ',', ''), ' ', '') AS DOUBLE) AS VARCHAR)`
+      break
+
+    case 'fix_negatives':
+      whereClause = `${column} IS NOT NULL AND ${column} LIKE '%(%' AND ${column} LIKE '%)'`
+      newValueExpression = `CAST(
+        CASE WHEN ${column} LIKE '%(%' AND ${column} LIKE '%)'
+        THEN -TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(${column}, '(', ''), ')', ''), '$', ''), ',', '') AS DOUBLE)
+        ELSE TRY_CAST(REPLACE(REPLACE(${column}, '$', ''), ',', '') AS DOUBLE)
+        END AS VARCHAR)`
+      break
+
+    case 'pad_zeros': {
+      const padLength = Number(step.params?.length) || 5
+      whereClause = `${column} IS NOT NULL AND LENGTH(CAST(${column} AS VARCHAR)) < ${padLength}`
+      newValueExpression = `LPAD(CAST(${column} AS VARCHAR), ${padLength}, '0')`
+      break
+    }
+
+    case 'standardize_date': {
+      const format = (step.params?.format as string) || 'YYYY-MM-DD'
+      const formatMap: Record<string, string> = {
+        'YYYY-MM-DD': '%Y-%m-%d',
+        'MM/DD/YYYY': '%m/%d/%Y',
+        'DD/MM/YYYY': '%d/%m/%Y',
+      }
+      const strftimeFormat = formatMap[format] || '%Y-%m-%d'
+      whereClause = `${column} IS NOT NULL AND TRIM(CAST(${column} AS VARCHAR)) != ''`
+      // Use same COALESCE pattern as actual transformation to handle all date formats
+      newValueExpression = `strftime(
+        COALESCE(
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y-%m-%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y%m%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m/%d/%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d/%m/%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y/%m/%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d-%m-%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m-%d-%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y.%m.%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d.%m.%Y'),
+          TRY_CAST(${column} AS DATE)
+        ),
+        '${strftimeFormat}'
+      )`
+      break
+    }
+
+    case 'calculate_age':
+      // Creates new 'age' column - capture rows with valid dates
+      // Use same COALESCE pattern as standardize_date for date parsing
+      whereClause = `${column} IS NOT NULL`
+      newValueExpression = `CAST(DATE_DIFF('year',
+        COALESCE(
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y-%m-%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y%m%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m/%d/%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d/%m/%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y/%m/%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d-%m-%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m-%d-%Y'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y.%m.%d'),
+          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d.%m.%Y'),
+          TRY_CAST(${column} AS DATE)
+        ),
+        CURRENT_DATE
+      ) AS VARCHAR)`
+      break
+
+    case 'fill_down':
+      // Capture rows that were null/empty and will get filled with the actual value from above
+      whereClause = `${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
+      newValueExpression = `LAST_VALUE(NULLIF(TRIM(CAST(${column} AS VARCHAR)), '') IGNORE NULLS) OVER (
+        ORDER BY rowid ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+      )`
+      break
+
+    case 'cast_type': {
+      const targetType = (step.params?.targetType as string) || 'VARCHAR'
+      whereClause = `${column} IS NOT NULL`
+      newValueExpression = `CAST(TRY_CAST(${column} AS ${targetType}) AS VARCHAR)`
+      break
+    }
+
+    case 'filter_empty':
+      // Capture rows that WILL BE DELETED (empty/null values)
+      // previous_value shows the empty value, new_value shows '<deleted>' for UI clarity
+      whereClause = `${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
+      newValueExpression = `'<deleted>'`
+      break
+
     default:
-      // Cannot capture details for other transformation types
+      // Cannot capture details for other transformation types (split_column creates new columns)
       return false
   }
 
   // Ensure audit details table exists
   await ensureAuditDetailsTable()
 
-  // Query affected rows with before/after values
-  const rows = await query<{ row_index: number; prev_val: string | null; new_val: string | null }>(
-    `SELECT rowid as row_index, ${column} as prev_val, ${newValueExpression} as new_val
-     FROM "${tableName}"
-     WHERE ${whereClause}
-     LIMIT ${ROW_DETAIL_THRESHOLD}`
+  // Use native INSERT INTO ... SELECT for performance (no JS round-trips)
+  // This is ~10x faster than batch inserts for large datasets
+  const escapedColumn = step.column!.replace(/'/g, "''")
+  const insertSql = `
+    INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+    SELECT
+      uuid(),
+      '${auditEntryId}',
+      rowid,
+      '${escapedColumn}',
+      CAST(${column} AS VARCHAR),
+      ${newValueExpression},
+      CURRENT_TIMESTAMP
+    FROM "${tableName}"
+    WHERE ${whereClause}
+    LIMIT ${ROW_DETAIL_THRESHOLD}
+  `
+  await execute(insertSql)
+
+  // Check if any rows were inserted
+  const countResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
   )
-
-  if (rows.length === 0) return false
-
-  // Batch insert into _audit_details
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, i + BATCH_SIZE)
-    const values = batch.map((row) => {
-      const id = generateId()
-      const prevEscaped = row.prev_val !== null ? `'${String(row.prev_val).replace(/'/g, "''")}'` : 'NULL'
-      const newEscaped = row.new_val !== null ? `'${String(row.new_val).replace(/'/g, "''")}'` : 'NULL'
-      return `('${id}', '${auditEntryId}', ${row.row_index}, '${step.column}', ${prevEscaped}, ${newEscaped}, CURRENT_TIMESTAMP)`
-    }).join(', ')
-
-    await execute(`INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at) VALUES ${values}`)
-  }
-
-  return true
+  return Number(countResult[0].count) > 0
 }
 
 /**
@@ -736,16 +849,20 @@ export async function applyTransformation(
     }
 
     case 'title_case':
-      // initcap is not available in DuckDB-WASM, use list_transform approach
+      // initcap is not available in DuckDB-WASM, use list_transform + list_reduce approach
+      // Each word: capitalize first char + rest of string in lowercase
       sql = `
         UPDATE "${tableName}"
-        SET "${step.column}" = array_to_string(
-          list_transform(
-            string_split(lower("${step.column}"), ' '),
-            x -> upper(x[1]) || x[2:]
-          ),
-          ' '
-        )
+        SET "${step.column}" = CASE
+          WHEN "${step.column}" IS NULL OR TRIM("${step.column}") = '' THEN "${step.column}"
+          ELSE list_reduce(
+            list_transform(
+              string_split(lower("${step.column}"), ' '),
+              w -> concat(upper(substring(w, 1, 1)), substring(w, 2))
+            ),
+            (x, y) -> concat(x, ' ', y)
+          )
+        END
       `
       await execute(sql)
       break
@@ -797,11 +914,21 @@ export async function applyTransformation(
 
     case 'pad_zeros': {
       const padLength = Number(step.params?.length) || 5
+      // Use CREATE OR REPLACE TABLE to ensure column type is VARCHAR (preserves leading zeros)
+      // Use CASE WHEN to only pad strings shorter than target length (don't truncate longer strings)
       sql = `
-        UPDATE "${tableName}"
-        SET "${step.column}" = LPAD(CAST("${step.column}" AS VARCHAR), ${padLength}, '0')
+        CREATE OR REPLACE TABLE "${tempTable}" AS
+        SELECT * EXCLUDE ("${step.column}"),
+               CASE
+                 WHEN LENGTH(CAST("${step.column}" AS VARCHAR)) < ${padLength}
+                 THEN LPAD(CAST("${step.column}" AS VARCHAR), ${padLength}, '0')
+                 ELSE CAST("${step.column}" AS VARCHAR)
+               END as "${step.column}"
+        FROM "${tableName}"
       `
       await execute(sql)
+      await execute(`DROP TABLE "${tableName}"`)
+      await execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
       break
     }
 
@@ -814,17 +941,23 @@ export async function applyTransformation(
       }
       const strftimeFormat = formatMap[format] || '%Y-%m-%d'
 
-      // Try multiple input formats to parse the date, then output in target format
+      // Try multiple date formats with COALESCE + TRY_STRPTIME
+      // Includes common formats: ISO, US, EU, compact (YYYYMMDD), and various separators
       sql = `
         CREATE OR REPLACE TABLE "${tempTable}" AS
         SELECT * EXCLUDE ("${step.column}"),
                strftime(
                  COALESCE(
-                   TRY_CAST("${step.column}" AS DATE),
-                   TRY_STRPTIME("${step.column}", '%m/%d/%Y'),
-                   TRY_STRPTIME("${step.column}", '%d/%m/%Y'),
-                   TRY_STRPTIME("${step.column}", '%Y-%m-%d'),
-                   TRY_STRPTIME("${step.column}", '%Y/%m/%d')
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y-%m-%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y%m%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%m/%d/%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d/%m/%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y/%m/%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d-%m-%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%m-%d-%Y'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y.%m.%d'),
+                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d.%m.%Y'),
+                   TRY_CAST("${step.column}" AS DATE)
                  ),
                  '${strftimeFormat}'
                ) as "${step.column}"

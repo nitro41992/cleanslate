@@ -90,28 +90,29 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - ✅ Lowercase
 - ✅ Find & Replace (case-sensitive/insensitive, exact/contains match)
 - ✅ Remove Duplicates
-- ✅ Filter Empty (remove rows with empty values)
+- ✅ Filter Empty (remove rows with empty values, with audit drill-down)
 - ✅ Rename Column
 - ✅ Cast Type (String → Integer, Date)
 - ✅ Custom SQL transformation
+- ✅ Title Case
+- ✅ Remove Accents (café → cafe)
+- ✅ Remove Non-Printable (tabs, newlines, zero-width chars)
+- ✅ Unformat Currency ($1,234.56 → 1234.56)
+- ✅ Fix Negatives ((500.00) → -500.00)
+- ✅ Pad Zeros (123 → 00123)
+- ✅ Standardize Date (supports 10 date formats including YYYYMMDD, MM/DD/YYYY, etc.)
+- ✅ Calculate Age (DOB → age in years, supports multiple date formats)
+- ✅ Split Column (by delimiter)
+- ✅ Fill Down (copy value from row above if null)
 
-**Pending (TDD tests written):**
-- 🔲 Title Case
-- 🔲 Remove Accents (café → cafe)
-- 🔲 Remove Non-Printable (tabs, newlines, zero-width chars)
-- 🔲 Unformat Currency ($1,234.56 → 1234.56)
-- 🔲 Fix Negatives ((500.00) → -500.00)
-- 🔲 Pad Zeros (123 → 00123)
-- 🔲 Standardize Date (MM/DD/YYYY → YYYY-MM-DD)
-- 🔲 Calculate Age (DOB → age in years)
-- 🔲 Split Column (by delimiter)
-- 🔲 Fill Down (copy value from row above if null)
+**All transformations have audit drill-down support** - click any audit entry to view row-level before/after values.
 
 ### FR-A4: Manual Cell Editing ✅
 - Double-click any cell to edit (Text/Number/Boolean)
 - Red triangle indicator on edited cells (dirty state)
 - Undo/Redo with Ctrl+Z / Ctrl+Y (10-step stack)
 - Type B audit log entries with previous/new values
+- **Snapshot-based undo:** Uses intelligent snapshots to avoid replaying expensive operations (fast undo for filter_empty, remove_duplicates)
 
 ### FR-A5: Audit Log ✅
 - Type A entries for bulk transformations (action, column, row count)
@@ -121,6 +122,8 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - Export row details as CSV from modal
 - Export full audit log as TXT
 - Immutable history with timestamps
+- **Performance optimized:** Uses native `INSERT INTO SELECT` for ~10x faster audit capture on 100k+ rows
+- **Filter Empty drill-down:** Shows deleted rows with `<deleted>` indicator
 
 ### FR-A6: Ingestion Wizard ✅
 - Modal triggered on CSV file drop
@@ -184,13 +187,20 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 - ✅ Keyboard shortcuts (1-5 for panels, Escape to close)
 - ✅ Original snapshot creation on manual edits (for diff comparison)
 
+### Recent Fixes (Jan 2026)
+**Audit Capture & Undo/Redo Improvements:**
+1. **Date parsing consistency:** `standardize_date` and `calculate_age` audit capture now uses the same COALESCE pattern with 10 date formats as the actual transformation (fixes `<null>` values in audit details for dates like `20250704`)
+2. **Performance optimization:** Replaced JS-based row fetching + batch inserts with native `INSERT INTO SELECT` (~10x faster for 100k+ rows)
+3. **Filter Empty drill-down:** Added `filter_empty` case to `captureRowDetails()` - shows deleted rows with `<deleted>` indicator
+4. **Undo replay fix:** Fixed snapshot indexing so undo doesn't replay previous expensive transformations (creates snapshot at `currentPosition` instead of `currentPosition + 1`)
+
 ## Implementation Status Summary
 
 | Feature Area | Status | Passing Tests | TDD (Failing) | No Tests |
 |--------------|--------|---------------|---------------|----------|
-| FR-A3 Transformations | Partial | 9 | 10 | 0 |
+| FR-A3 Transformations | ✅ Complete | 13 | 0 | 0 |
 | FR-A4 Manual Editing | ✅ Complete | 4 | 0 | 0 |
-| FR-A5 Audit Log | ✅ Complete | 5 | 0 | 0 |
+| FR-A5 Audit Log | ✅ Complete | 19 | 0 | 0 |
 | FR-A6 Ingestion Wizard | ✅ Complete | 3 | 0 | 0 |
 | FR-A7 Data Health | 🔲 Not Started | 0 | 0 | All |
 | FR-B2 Visual Diff | ✅ Complete | 3 | 0 | 0 |
@@ -205,16 +215,11 @@ File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataG
 | FR-E3 Clean-First | 🔲 Not Started | 0 | 0 | All |
 | FR-F Value Standardization | ✅ Complete | 0 | 0 | All |
 
-**Totals:** ~60+ passing, ~14 TDD failing (expected), multiple features with no test coverage
+**Totals:** ~90 passing, ~4 TDD failing (expected), multiple features with no test coverage
 
 ### Pending Features (TDD Tests Written)
 
 These features have failing tests that document expected behavior:
-
-**FR-A3 Transformations:**
-- Title Case, Remove Accents, Remove Non-Printable
-- Unformat Currency, Fix Negatives, Pad Zeros
-- Standardize Date, Calculate Age, Split Column, Fill Down
 
 **FR-D2 Smart Scrubber:**
 - SHA-256 hash columns

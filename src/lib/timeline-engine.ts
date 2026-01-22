@@ -591,8 +591,9 @@ export async function recordCommand(
   // Create snapshot BEFORE expensive operations
   if (isExpensive) {
     const currentPosition = timeline.currentPosition
-    // Snapshot represents the state AT this position (before the expensive op)
-    await createStepSnapshot(tableName, timeline.id, currentPosition + 1)
+    // Snapshot index = currentPosition (state after command at currentPosition, before new command)
+    // This ensures getSnapshotBefore(currentPosition) finds this snapshot for fast undo
+    await createStepSnapshot(tableName, timeline.id, currentPosition)
   }
 
   // Record the command

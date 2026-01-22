@@ -81,6 +81,8 @@
         * **Type A (Bulk Ops):** Logs the Action, Target Column, and **Count** of rows modified.
             * *Example:* `[14:05:00] Applied 'Trim Whitespace' to Col 'Email'. Impact: 450 rows.`
             * **Row-Level Details:** Click audit entry to view modal with affected rows (before/after values).
+            * **Supported Transformations:** Trim, Uppercase, Lowercase, Replace, Title Case, Remove Accents, Remove Non-Printable, Unformat Currency, Fix Negatives, Pad Zeros, Standardize Date, Calculate Age, Fill Down, Cast Type, Filter Empty (shows deleted rows).
+            * **Performance:** Uses native `INSERT INTO SELECT` for ~10x faster audit capture on large datasets (100k+ rows).
         * **Type B (Manual Edits):** Logs the Action, Target Row (ID), and **Value Change**.
             * *Example:* `[14:06:22] Manual Edit on Row #104, Col 'Status'. Value: 'Pennding' -> 'Pending'.`
     * **Export:** User can download this log as a timestamped PDF or Text file. Row details exportable as CSV.

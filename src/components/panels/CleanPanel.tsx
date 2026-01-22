@@ -21,6 +21,7 @@ import {
   TRANSFORMATIONS,
   TransformationDefinition,
 } from '@/lib/transformations'
+import { getTableColumns } from '@/lib/duckdb'
 import { initializeTimeline, recordCommand } from '@/lib/timeline-engine'
 import type { TransformationStep, TransformParams } from '@/types'
 import { generateId, cn } from '@/lib/utils'
@@ -139,8 +140,12 @@ export function CleanPanel() {
         config: step,
       })
 
-      // 7. Update table metadata
-      updateTable(activeTable.id, { rowCount: result.rowCount })
+      // 7. Update table metadata - refresh column list from DuckDB (transforms may reorder columns)
+      const updatedColumns = await getTableColumns(activeTable.name)
+      updateTable(activeTable.id, {
+        rowCount: result.rowCount,
+        columns: updatedColumns,  // Sync with DuckDB column order/types
+      })
 
       // 8. Update changes summary
       updateChangesSummary({ transformsApplied: 1 })
