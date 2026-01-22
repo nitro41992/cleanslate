@@ -18,6 +18,8 @@ interface ClusterListProps {
   onSetMaster: (clusterId: string, valueId: string) => void
   onSelectAll: (clusterId: string) => void
   onDeselectAll: (clusterId: string) => void
+  onSelectAllClusters: () => void
+  onDeselectAllClusters: () => void
 }
 
 export function ClusterList({
@@ -32,6 +34,8 @@ export function ClusterList({
   onSetMaster,
   onSelectAll,
   onDeselectAll,
+  onSelectAllClusters,
+  onDeselectAllClusters,
 }: ClusterListProps) {
   const parentRef = useRef<HTMLDivElement>(null)
 
@@ -101,6 +105,24 @@ export function ClusterList({
             data-testid="filter-actionable"
           >
             Actionable ({actionableCount})
+          </button>
+
+          {/* Bulk Selection */}
+          <div className="flex-1" />
+          <button
+            className="px-3 py-1.5 text-sm text-primary hover:underline"
+            onClick={onSelectAllClusters}
+            data-testid="select-all-clusters"
+          >
+            Select All
+          </button>
+          <span className="text-muted-foreground py-1.5">|</span>
+          <button
+            className="px-3 py-1.5 text-sm text-primary hover:underline"
+            onClick={onDeselectAllClusters}
+            data-testid="deselect-all-clusters"
+          >
+            Deselect All
           </button>
         </div>
 

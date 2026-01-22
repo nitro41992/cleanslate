@@ -61,6 +61,10 @@ interface StandardizerActions {
   deselectAllInCluster: (clusterId: string) => void
   setMasterValue: (clusterId: string, valueId: string) => void
 
+  // Bulk selection across all clusters
+  selectAllClusters: () => void
+  deselectAllClusters: () => void
+
   // Processing state
   setIsAnalyzing: (analyzing: boolean) => void
   setProgress: (progress: number, phase: 'idle' | 'validating' | 'clustering' | 'complete', currentChunk?: number, totalChunks?: number) => void
@@ -282,6 +286,54 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
         values: updatedValues,
         masterValue: newMasterValue.value,
         selectedCount,
+      }
+    })
+
+    set({
+      clusters: updatedClusters,
+      stats: calculateStats(updatedClusters),
+    })
+  },
+
+  // Bulk selection across all clusters
+  selectAllClusters: () => {
+    const { clusters } = get()
+    const updatedClusters = clusters.map((cluster) => {
+      // Only select values in actionable clusters (more than 1 value)
+      if (cluster.values.length <= 1) return cluster
+
+      const updatedValues = cluster.values.map((value) => ({
+        ...value,
+        isSelected: true,
+      }))
+
+      const selectedCount = updatedValues.filter((v) => !v.isMaster).length
+
+      return {
+        ...cluster,
+        values: updatedValues,
+        selectedCount,
+      }
+    })
+
+    set({
+      clusters: updatedClusters,
+      stats: calculateStats(updatedClusters),
+    })
+  },
+
+  deselectAllClusters: () => {
+    const { clusters } = get()
+    const updatedClusters = clusters.map((cluster) => {
+      const updatedValues = cluster.values.map((value) => ({
+        ...value,
+        isSelected: value.isMaster, // Keep only master selected
+      }))
+
+      return {
+        ...cluster,
+        values: updatedValues,
+        selectedCount: 0,
       }
     })
 
