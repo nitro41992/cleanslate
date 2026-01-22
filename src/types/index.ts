@@ -160,3 +160,28 @@ export interface JoinValidation {
   keyColumnMismatch: boolean
   warnings: string[]
 }
+
+// Value Standardization types (FR-F)
+export type ClusteringAlgorithm = 'fingerprint' | 'metaphone'
+
+export interface ValueCluster {
+  id: string
+  clusterKey: string              // Computed key (fingerprint or metaphone)
+  values: ClusterValue[]
+  masterValue: string             // Most frequent (auto-suggested)
+  selectedCount: number           // Number of selected values to standardize
+}
+
+export interface ClusterValue {
+  id: string
+  value: string
+  count: number                   // Frequency in dataset
+  isSelected: boolean
+  isMaster: boolean
+}
+
+export interface StandardizationMapping {
+  fromValue: string
+  toValue: string
+  rowCount: number
+}

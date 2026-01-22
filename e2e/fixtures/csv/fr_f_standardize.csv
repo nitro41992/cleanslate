@@ -1,0 +1,11 @@
+id,name,email,company
+1,John Smith,john@example.com,Acme Inc
+2,JOHN SMITH,john.smith@test.org,Acme Inc
+3,john  smith,jsmith@mail.com,ACME INC
+4,Mike Smith,mik@example.com,Beta Corp
+5,Mik Smith,mike@example.com,Beta Corp
+6,Jane Doe,jane@example.com,Gamma LLC
+7,Jane   Doe,jane.doe@test.org,Gamma LLC
+8,JANE DOE,jdoe@mail.com,gamma llc
+9,Bob Johnson,bob@example.com,Delta Inc
+10,Robert Johnson,robert@example.com,Delta Inc

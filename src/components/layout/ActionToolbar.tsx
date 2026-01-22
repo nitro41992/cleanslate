@@ -1,4 +1,4 @@
-import { Sparkles, Users, Merge, Shield, GitCompare } from 'lucide-react'
+import { Sparkles, Users, Merge, Shield, GitCompare, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -8,9 +8,12 @@ import {
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
+import { useStandardizerStore } from '@/stores/standardizerStore'
 import { cn } from '@/lib/utils'
 
-const actions: { id: PanelType; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
+type ActionId = PanelType | 'standardize'
+
+const actions: { id: ActionId; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
   {
     id: 'clean',
     label: 'Clean',
@@ -19,32 +22,39 @@ const actions: { id: PanelType; label: string; icon: typeof Sparkles; descriptio
     shortcut: '1',
   },
   {
+    id: 'standardize',
+    label: 'Standardize',
+    icon: Link2,
+    description: 'Cluster and standardize values',
+    shortcut: '2',
+  },
+  {
     id: 'match',
     label: 'Match',
     icon: Users,
     description: 'Find duplicate records',
-    shortcut: '2',
+    shortcut: '3',
   },
   {
     id: 'combine',
     label: 'Combine',
     icon: Merge,
     description: 'Stack or join tables',
-    shortcut: '3',
+    shortcut: '4',
   },
   {
     id: 'scrub',
     label: 'Scrub',
     icon: Shield,
     description: 'Obfuscate sensitive data',
-    shortcut: '4',
+    shortcut: '5',
   },
   {
     id: 'diff',
     label: 'Diff',
     icon: GitCompare,
     description: 'Compare tables',
-    shortcut: '5',
+    shortcut: '6',
   },
 ]
 
@@ -59,9 +69,11 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   const isDiffViewOpen = useDiffStore((s) => s.isViewOpen)
   const openMatchView = useMatcherStore((s) => s.openView)
   const isMatchViewOpen = useMatcherStore((s) => s.isViewOpen)
+  const openStandardizeView = useStandardizerStore((s) => s.openView)
+  const isStandardizeViewOpen = useStandardizerStore((s) => s.isViewOpen)
 
-  const handleClick = (panelId: PanelType) => {
-    // Diff and Match open as full-screen overlays instead of side panels
+  const handleClick = (panelId: ActionId) => {
+    // Diff, Match, and Standardize open as full-screen overlays instead of side panels
     if (panelId === 'diff') {
       openDiffView()
       return
@@ -69,6 +81,11 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
 
     if (panelId === 'match') {
       openMatchView()
+      return
+    }
+
+    if (panelId === 'standardize') {
+      openStandardizeView()
       return
     }
 
@@ -83,12 +100,14 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   return (
     <div className="flex items-center gap-1" role="toolbar" aria-label="Data operations">
       {actions.map((action) => {
-        // Diff and Match use overlay state, others use panel state
+        // Diff, Match, and Standardize use overlay state, others use panel state
         let isActive = false
         if (action.id === 'diff') {
           isActive = isDiffViewOpen
         } else if (action.id === 'match') {
           isActive = isMatchViewOpen
+        } else if (action.id === 'standardize') {
+          isActive = isStandardizeViewOpen
         } else {
           isActive = activePanel === action.id
         }

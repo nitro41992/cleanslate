@@ -7,14 +7,16 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Download, Clock, Table2, GitMerge, Edit3 } from 'lucide-react'
+import { Download, Clock, Table2, GitMerge, Edit3, Link2 } from 'lucide-react'
 import { AuditDetailTable } from './AuditDetailTable'
 import { MergeDetailTable } from './MergeDetailTable'
 import { ManualEditDetailView } from './ManualEditDetailView'
+import { StandardizeDetailTable } from './StandardizeDetailTable'
 import type { AuditLogEntry } from '@/types'
 import { formatDate } from '@/lib/utils'
 import { getAuditRowDetails } from '@/lib/transformations'
 import { getMergeAuditDetails } from '@/lib/fuzzy-matcher'
+import { getStandardizeAuditDetails } from '@/lib/standardizer-engine'
 
 interface AuditDetailModalProps {
   entry: AuditLogEntry | null
@@ -28,6 +30,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
   }
 
   const isMergeAction = entry.action === 'Apply Merges'
+  const isStandardizeAction = entry.action === 'Standardize Values'
   const isManualEdit = entry.entryType === 'B'
 
   const handleExportCSV = async () => {
@@ -52,6 +55,29 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         const a = document.createElement('a')
         a.href = url
         a.download = `merge_details_${entry.auditEntryId}_${details.length}pairs.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else if (isStandardizeAction) {
+        // Export standardize details
+        const details = await getStandardizeAuditDetails(entry.auditEntryId!)
+
+        const csvLines = [
+          'Original Value,Standardized To,Rows Changed',
+          ...details.map((detail) => {
+            const fromVal = detail.fromValue.replace(/"/g, '""')
+            const toVal = detail.toValue.replace(/"/g, '""')
+            return `"${fromVal}","${toVal}",${detail.rowCount}`
+          }),
+        ]
+
+        const csvContent = csvLines.join('\n')
+        const blob = new Blob([csvContent], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `standardize_details_${entry.auditEntryId}_${details.length}values.csv`
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
@@ -121,19 +147,29 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
               <DialogTitle className="flex items-center gap-2">
                 {isMergeAction ? (
                   <GitMerge className="h-5 w-5" />
+                ) : isStandardizeAction ? (
+                  <Link2 className="h-5 w-5" />
                 ) : isManualEdit ? (
                   <Edit3 className="h-5 w-5" />
                 ) : (
                   <Table2 className="h-5 w-5" />
                 )}
-                {isMergeAction ? 'Merge Details' : isManualEdit ? 'Manual Edit Details' : 'Row-Level Changes'}
+                {isMergeAction
+                  ? 'Merge Details'
+                  : isStandardizeAction
+                    ? 'Standardization Details'
+                    : isManualEdit
+                      ? 'Manual Edit Details'
+                      : 'Row-Level Changes'}
               </DialogTitle>
               <DialogDescription className="mt-1">
                 {isMergeAction
                   ? 'Detailed view of merged duplicate pairs'
-                  : isManualEdit
-                    ? 'Details of the manual cell edit'
-                    : 'Detailed view of changes made by this transformation'}
+                  : isStandardizeAction
+                    ? 'Detailed view of standardized values'
+                    : isManualEdit
+                      ? 'Details of the manual cell edit'
+                      : 'Detailed view of changes made by this transformation'}
               </DialogDescription>
             </div>
             <Button variant="outline" size="sm" onClick={handleExportCSV} data-testid="audit-detail-export-csv-btn" className="mr-8">
@@ -155,7 +191,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">
-              {isMergeAction ? 'Pairs:' : 'Rows Affected:'}
+              {isMergeAction ? 'Pairs:' : isStandardizeAction ? 'Values:' : 'Rows Affected:'}
             </span>
             <Badge variant="outline">{entry.rowsAffected?.toLocaleString()}</Badge>
           </div>
@@ -169,6 +205,8 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         <div className="flex-1 min-h-0 mt-2 overflow-hidden">
           {isMergeAction ? (
             <MergeDetailTable auditEntryId={entry.auditEntryId} />
+          ) : isStandardizeAction ? (
+            <StandardizeDetailTable auditEntryId={entry.auditEntryId} />
           ) : isManualEdit ? (
             <ManualEditDetailView entry={entry} />
           ) : (

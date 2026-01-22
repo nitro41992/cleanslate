@@ -27,6 +27,7 @@ import { ScrubPanel } from '@/components/panels/ScrubPanel'
 // Full-screen overlay views
 import { DiffView } from '@/components/diff'
 import { MatchView } from '@/features/matcher'
+import { StandardizeView } from '@/features/standardizer'
 
 // Stores and hooks
 import { useTableStore } from '@/stores/tableStore'
@@ -35,6 +36,7 @@ import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
+import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
 import { toast } from 'sonner'
@@ -79,6 +81,10 @@ function App() {
   // Match view state
   const isMatchViewOpen = useMatcherStore((s) => s.isViewOpen)
   const closeMatchView = useMatcherStore((s) => s.closeView)
+
+  // Standardize view state
+  const isStandardizeViewOpen = useStandardizerStore((s) => s.isViewOpen)
+  const closeStandardizeView = useStandardizerStore((s) => s.closeView)
 
   // Sync table selection to preview store
   useEffect(() => {
@@ -420,6 +426,9 @@ function App() {
 
       {/* Match View Full-Screen Overlay */}
       <MatchView open={isMatchViewOpen} onClose={closeMatchView} />
+
+      {/* Standardize View Full-Screen Overlay */}
+      <StandardizeView open={isStandardizeViewOpen} onClose={closeStandardizeView} />
 
       {/* Sonner Toaster */}
       <Toaster />

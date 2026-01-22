@@ -126,11 +126,11 @@ export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
                   </div>
                   <div className="text-amber-400 text-sm">
                     <p>Unable to display row data - parsing failed</p>
-                    {'_rawData' in detail.keptRowData && detail.keptRowData._rawData && (
+                    {'_rawData' in detail.keptRowData && detail.keptRowData._rawData ? (
                       <p className="mt-1 text-xs text-muted-foreground font-mono truncate">
                         Raw: {String(detail.keptRowData._rawData).substring(0, 100)}...
                       </p>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               )
