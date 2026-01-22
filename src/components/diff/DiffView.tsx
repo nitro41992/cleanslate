@@ -15,8 +15,9 @@ import { DiffSummaryPills } from './DiffSummaryPills'
 import { DiffExportMenu } from './DiffExportMenu'
 import { useTableStore } from '@/stores/tableStore'
 import { useDiffStore } from '@/stores/diffStore'
+import { useTimelineStore } from '@/stores/timelineStore'
 import { runDiff, cleanupDiffTable } from '@/lib/diff-engine'
-import { getOriginalSnapshotName } from '@/lib/duckdb'
+import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
 import { toast } from 'sonner'
 
 interface DiffViewProps {
@@ -27,6 +28,7 @@ interface DiffViewProps {
 export function DiffView({ open, onClose }: DiffViewProps) {
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
+  const getTimeline = useTimelineStore((s) => s.getTimeline)
 
   const {
     mode,
@@ -94,7 +96,27 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         if (!activeTableInfo) {
           throw new Error('No active table selected')
         }
-        sourceTableName = getOriginalSnapshotName(activeTableInfo.name)
+
+        // Check for old-style snapshot first
+        const oldSnapshotName = getOriginalSnapshotName(activeTableInfo.name)
+        const hasOldSnapshot = await hasOriginalSnapshot(activeTableInfo.name)
+
+        if (hasOldSnapshot) {
+          sourceTableName = oldSnapshotName
+        } else {
+          // Check for timeline-based snapshot
+          const timeline = getTimeline(activeTableInfo.id)
+          if (timeline?.originalSnapshotName) {
+            const timelineSnapshotExists = await tableExists(timeline.originalSnapshotName)
+            if (timelineSnapshotExists) {
+              sourceTableName = timeline.originalSnapshotName
+            } else {
+              throw new Error('No original snapshot found for comparison')
+            }
+          } else {
+            throw new Error('No original snapshot found for comparison')
+          }
+        }
         targetTableName = activeTableInfo.name
       } else {
         // Compare two selected tables
@@ -130,7 +152,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     } finally {
       setIsComparing(false)
     }
-  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, setIsComparing, setDiffConfig])
+  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, setIsComparing, setDiffConfig, getTimeline])
 
   const handleNewComparison = useCallback(async () => {
     // Cleanup current temp table

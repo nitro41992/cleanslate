@@ -12,7 +12,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { hasOriginalSnapshot } from '@/lib/duckdb'
+import { hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
+import { useTimelineStore } from '@/stores/timelineStore'
 import type { TableInfo } from '@/types'
 import type { DiffMode } from '@/stores/diffStore'
 
@@ -54,15 +55,38 @@ export function DiffConfigPanel({
   const [hasSnapshot, setHasSnapshot] = useState(false)
   const [checkingSnapshot, setCheckingSnapshot] = useState(false)
 
-  // Check if active table has an original snapshot
+  // Get timeline for active table (if exists)
+  const getTimeline = useTimelineStore((s) => s.getTimeline)
+
+  // Check if active table has an original snapshot (either old-style or timeline-based)
   useEffect(() => {
-    if (mode === 'compare-preview' && activeTableName) {
+    if (mode === 'compare-preview' && activeTableId && activeTableName) {
       setCheckingSnapshot(true)
-      hasOriginalSnapshot(activeTableName)
+
+      const checkSnapshots = async () => {
+        // First check old-style snapshot (_original_${tableName})
+        const hasOldSnapshot = await hasOriginalSnapshot(activeTableName)
+        if (hasOldSnapshot) {
+          return true
+        }
+
+        // Then check timeline-based snapshot
+        const timeline = getTimeline(activeTableId)
+        if (timeline?.originalSnapshotName) {
+          const timelineSnapshotExists = await tableExists(timeline.originalSnapshotName)
+          if (timelineSnapshotExists) {
+            return true
+          }
+        }
+
+        return false
+      }
+
+      checkSnapshots()
         .then(setHasSnapshot)
         .finally(() => setCheckingSnapshot(false))
     }
-  }, [mode, activeTableName])
+  }, [mode, activeTableId, activeTableName, getTimeline])
 
   // Get table info for selected tables
   const tableAInfo = tables.find((t) => t.id === tableA)
