@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/tooltip'
 import { useTimelineStore, useTimelineNavigation } from '@/stores/timelineStore'
 import { useTableStore } from '@/stores/tableStore'
+import { useUIStore } from '@/stores/uiStore'
 import { undoTimeline, redoTimeline, replayToPosition } from '@/lib/timeline-engine'
 import { cn } from '@/lib/utils'
 
@@ -40,6 +41,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
   const isReplaying = useTimelineStore((s) => s.isReplaying)
   const replayProgress = useTimelineStore((s) => s.replayProgress)
   const updateTable = useTableStore((s) => s.updateTable)
+  const refreshMemory = useUIStore((s) => s.refreshMemory)
 
   const handleUndo = useCallback(async () => {
     if (!tableId || isReplaying) return
@@ -47,7 +49,8 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
-  }, [tableId, isReplaying, updateTable])
+    refreshMemory()
+  }, [tableId, isReplaying, updateTable, refreshMemory])
 
   const handleRedo = useCallback(async () => {
     if (!tableId || isReplaying) return
@@ -55,7 +58,8 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
-  }, [tableId, isReplaying, updateTable])
+    refreshMemory()
+  }, [tableId, isReplaying, updateTable, refreshMemory])
 
   const handleReset = useCallback(async () => {
     if (!tableId || isReplaying) return
@@ -63,7 +67,8 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
-  }, [tableId, isReplaying, updateTable])
+    refreshMemory()
+  }, [tableId, isReplaying, updateTable, refreshMemory])
 
   const handleStepClick = useCallback(async (stepIndex: number) => {
     if (!tableId || isReplaying) return
@@ -71,7 +76,8 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
-  }, [tableId, isReplaying, updateTable])
+    refreshMemory()
+  }, [tableId, isReplaying, updateTable, refreshMemory])
 
   // Get commands and snapshots for rendering
   const commands = useMemo(() => timeline?.commands ?? [], [timeline])

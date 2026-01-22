@@ -2,30 +2,31 @@ import { useEffect } from 'react'
 import { useUIStore } from '@/stores/uiStore'
 import { formatBytes } from '@/lib/utils'
 import { cn } from '@/lib/utils'
+import { useDuckDB } from '@/hooks/useDuckDB'
 
 interface MemoryIndicatorProps {
   compact?: boolean
 }
 
 export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
-  const { memoryUsage, memoryLimit, setMemoryUsage } = useUIStore()
+  const { memoryUsage, memoryLimit, memoryLevel, refreshMemory } = useUIStore()
+  const { isReady } = useDuckDB()
 
   useEffect(() => {
-    const updateMemory = () => {
-      if ('memory' in performance) {
-        const mem = (performance as Performance & { memory: { usedJSHeapSize: number; jsHeapSizeLimit: number } }).memory
-        setMemoryUsage(mem.usedJSHeapSize, mem.jsHeapSizeLimit)
-      }
-    }
+    // Don't poll until DuckDB is ready
+    if (!isReady) return
 
-    updateMemory()
-    const interval = setInterval(updateMemory, 5000)
+    // Initial refresh
+    refreshMemory()
+
+    // Poll every 5 seconds as a backup for any missed updates
+    const interval = setInterval(refreshMemory, 5000)
     return () => clearInterval(interval)
-  }, [setMemoryUsage])
+  }, [isReady, refreshMemory])
 
   const percentage = memoryLimit > 0 ? (memoryUsage / memoryLimit) * 100 : 0
-  const isWarning = percentage > 60
-  const isCritical = percentage > 80
+  const isWarning = memoryLevel === 'warning'
+  const isCritical = memoryLevel === 'critical'
 
   if (compact) {
     return (

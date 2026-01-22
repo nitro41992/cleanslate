@@ -48,7 +48,13 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   db = new duckdb.AsyncDuckDB(logger, worker)
   await db.instantiate(bundle.mainModule)
 
-  console.log('DuckDB WASM initialized')
+  // Configure memory limit: 3GB (75% of 4GB WASM ceiling)
+  // Leaves 1GB headroom for temp query buffers, sorts, joins, GC pressure
+  const initConn = await db.connect()
+  await initConn.query(`SET memory_limit = '3GB'`)
+  await initConn.close()
+
+  console.log('DuckDB WASM initialized with 3GB memory limit')
   return db
 }
 

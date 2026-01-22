@@ -14,8 +14,10 @@ import {
   updateCell as updateCellDb,
   duplicateTable as duplicateTableDb,
 } from '@/lib/duckdb'
+import { checkMemoryCapacity } from '@/lib/duckdb/memory'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
+import { useUIStore } from '@/stores/uiStore'
 import { toast } from '@/hooks/use-toast'
 import type { ColumnInfo, CSVIngestionSettings } from '@/types'
 
@@ -25,6 +27,7 @@ export function useDuckDB() {
   const addTable = useTableStore((s) => s.addTable)
   const removeTable = useTableStore((s) => s.removeTable)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
+  const refreshMemory = useUIStore((s) => s.refreshMemory)
 
   useEffect(() => {
     initDuckDB()
@@ -46,6 +49,26 @@ export function useDuckDB() {
     async (file: File, csvSettings?: CSVIngestionSettings) => {
       setIsLoading(true)
       try {
+        // Pre-load capacity check: estimate file size impact (files expand ~2x in memory)
+        const estimatedImpact = file.size * 2
+        const memCheck = await checkMemoryCapacity(estimatedImpact)
+
+        if (!memCheck.canLoad) {
+          // Block loading - would exceed safe limits
+          toast({
+            title: 'Insufficient Memory',
+            description: memCheck.warningMessage || 'Loading this file would exceed available memory',
+            variant: 'destructive',
+          })
+          throw new Error('Insufficient memory to load file safely')
+        } else if (memCheck.warningMessage) {
+          // Allow but warn
+          toast({
+            title: 'Memory Warning',
+            description: memCheck.warningMessage,
+          })
+        }
+
         const tableName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
         let result: { columns: string[]; rowCount: number }
 
@@ -106,6 +129,9 @@ export function useDuckDB() {
           description: `${tableName}: ${result.rowCount.toLocaleString()} rows`,
         })
 
+        // Refresh memory indicator after file load
+        refreshMemory()
+
         return { tableId, tableName, ...result }
       } catch (error) {
         console.error('Error loading file:', error)
@@ -119,7 +145,7 @@ export function useDuckDB() {
         setIsLoading(false)
       }
     },
-    [addTable, addAuditEntry]
+    [addTable, addAuditEntry, refreshMemory]
   )
 
   const getData = useCallback(

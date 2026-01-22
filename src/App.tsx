@@ -37,6 +37,7 @@ import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { useUIStore } from '@/stores/uiStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
 import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
@@ -105,6 +106,9 @@ function App() {
     checkForSavedData()
   }, [autoRestore])
 
+  // Memory refresh after data operations
+  const refreshMemory = useUIStore((s) => s.refreshMemory)
+
   // Keyboard shortcuts for undo/redo (using timeline)
   const handleUndo = useCallback(async () => {
     console.log('[UNDO] handleUndo called', { activeTableId, isReplaying, activeTable: activeTable?.name })
@@ -130,10 +134,12 @@ function App() {
       } else {
         console.log('[UNDO] No rowCount returned, nothing to undo')
       }
+      // Refresh memory after timeline operation
+      refreshMemory()
     } catch (error) {
       console.error('[UNDO] Error during undo:', error)
     }
-  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable])
+  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable, refreshMemory])
 
   const handleRedo = useCallback(async () => {
     console.log('[REDO] handleRedo called', { activeTableId, isReplaying })
@@ -159,10 +165,12 @@ function App() {
       } else {
         console.log('[REDO] No rowCount returned, nothing to redo')
       }
+      // Refresh memory after timeline operation
+      refreshMemory()
     } catch (error) {
       console.error('[REDO] Error during redo:', error)
     }
-  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable])
+  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable, refreshMemory])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
