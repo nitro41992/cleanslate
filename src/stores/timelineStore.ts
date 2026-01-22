@@ -94,6 +94,9 @@ interface TimelineActions {
   // Persistence
   getSerializedTimelines: () => SerializedTableTimeline[]
   loadTimelines: (timelines: SerializedTableTimeline[]) => void
+
+  // Dirty cell tracking (derived from timeline)
+  getDirtyCellsAtPosition: (tableId: string) => Set<string>
 }
 
 const initialHighlight: TimelineHighlight = {
@@ -462,6 +465,29 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     }
 
     set({ timelines })
+  },
+
+  getDirtyCellsAtPosition: (tableId) => {
+    const timeline = get().timelines.get(tableId)
+    if (!timeline) return new Set()
+
+    const dirtyCells = new Set<string>()
+    // Only consider commands up to currentPosition (inclusive)
+    // Commands after currentPosition are "undone" and shouldn't show as dirty
+    for (let i = 0; i <= timeline.currentPosition && i < timeline.commands.length; i++) {
+      const cmd = timeline.commands[i]
+      // Track cells modified by manual_edit or batch_edit commands
+      if (cmd.cellChanges) {
+        for (const change of cmd.cellChanges) {
+          dirtyCells.add(`${change.csId}:${change.columnName}`)
+        }
+      }
+      // Also handle single manual_edit without cellChanges array
+      if (cmd.commandType === 'manual_edit' && cmd.params.type === 'manual_edit') {
+        dirtyCells.add(`${cmd.params.csId}:${cmd.params.columnName}`)
+      }
+    }
+    return dirtyCells
   },
 }))
 

@@ -35,7 +35,7 @@ interface AuditActions {
     entryType?: AuditEntryType
   ) => void
   addTransformationEntry: (params: TransformationEntryParams) => void
-  addManualEditEntry: (params: ManualEditParams) => void
+  addManualEditEntry: (params: ManualEditParams) => string // Returns auditEntryId
   loadEntries: (entries: AuditLogEntry[]) => void
   clearEntries: () => void
   getEntriesForTable: (tableId: string) => AuditLogEntry[]
@@ -100,6 +100,7 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
     set((state) => ({
       entries: [entry, ...state.entries],
     }))
+    return entryId // Return the auditEntryId for timeline linkage
   },
 
   loadEntries: (entries) => {

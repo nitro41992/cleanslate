@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { ChevronRight, History, FileText, Eye, Download, X, Crosshair } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -28,6 +28,20 @@ export function AuditSidebar() {
   const setHighlightedCommand = useTimelineStore((s) => s.setHighlightedCommand)
   const highlightedCommandId = useTimelineStore((s) => s.highlight.commandId)
   const clearHighlight = useTimelineStore((s) => s.clearHighlight)
+
+  // Timeline position for undo/redo visual feedback
+  const timeline = activeTableId ? getTimeline(activeTableId) : null
+  const currentPosition = timeline?.currentPosition ?? -1
+  const commandCount = timeline?.commands.length ?? 0
+
+  // Create lookup: auditEntryId -> command index
+  const auditEntryToCommandIndex = useMemo(() => {
+    const map = new Map<string, number>()
+    timeline?.commands.forEach((cmd, idx) => {
+      if (cmd.auditEntryId) map.set(cmd.auditEntryId, idx)
+    })
+    return map
+  }, [timeline?.commands])
 
   const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null)
 
@@ -60,6 +74,44 @@ export function AuditSidebar() {
 
   // Filter entries for active table
   const tableEntries = entries.filter((e) => e.tableId === activeTableId)
+
+  // Find the first untracked entry index (for determining "current" at position -1)
+  const firstUntrackedEntryIndex = useMemo(() => {
+    for (let i = 0; i < tableEntries.length; i++) {
+      const entry = tableEntries[i]
+      const cmdIndex = auditEntryToCommandIndex.get(entry.auditEntryId ?? '')
+      if (cmdIndex === undefined) {
+        return i
+      }
+    }
+    return -1
+  }, [tableEntries, auditEntryToCommandIndex])
+
+  // Helper to determine entry state relative to timeline position
+  type EntryState = 'past' | 'current' | 'future'
+  const getEntryState = useCallback(
+    (entry: AuditLogEntry, entryIndex: number): EntryState => {
+      const cmdIndex = auditEntryToCommandIndex.get(entry.auditEntryId ?? '')
+
+      // Entry is linked to a timeline command
+      if (cmdIndex !== undefined) {
+        if (cmdIndex === currentPosition) return 'current'
+        if (cmdIndex < currentPosition) return 'past'
+        return 'future'
+      }
+
+      // Entry is NOT linked to timeline (e.g., "File loaded")
+      // These are actions that can't be undone, so treat as follows:
+      // - If at position -1 (original state/all undone) and this is the first untracked entry,
+      //   it represents the current state we've returned to
+      // - Otherwise, it's "past" (already happened, can't be undone)
+      if (currentPosition === -1 && entryIndex === firstUntrackedEntryIndex) {
+        return 'current'
+      }
+      return 'past'
+    },
+    [auditEntryToCommandIndex, currentPosition, firstUntrackedEntryIndex]
+  )
 
   const handleExportLog = async () => {
     const content = await exportLog()
@@ -99,6 +151,12 @@ export function AuditSidebar() {
             {tableEntries.length > 0 && (
               <Badge variant="secondary" className="text-[10px] h-5">
                 {tableEntries.length}
+              </Badge>
+            )}
+            {/* Timeline position indicator */}
+            {commandCount > 0 && (
+              <Badge variant="outline" className="text-[10px] h-5 text-muted-foreground">
+                {currentPosition + 1}/{commandCount}
               </Badge>
             )}
           </div>
@@ -159,79 +217,114 @@ export function AuditSidebar() {
             </div>
           ) : (
             <div className="p-2 px-3 space-y-1">
-              {tableEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  role="button"
-                  tabIndex={0}
-                  className={cn(
-                    'w-full text-left p-2 rounded-lg hover:bg-muted/50 transition-colors group cursor-pointer',
-                    'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1'
-                  )}
-                  onClick={() => setSelectedEntry(entry)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      setSelectedEntry(entry)
-                    }
-                  }}
-                  data-testid={entry.hasRowDetails ? 'audit-entry-with-details' : undefined}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">{entry.action}</p>
-                      <p className="text-xs text-muted-foreground line-clamp-2">
-                        {entry.details}
-                      </p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5" />
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <Badge
-                      variant={entry.entryType === 'A' ? 'default' : 'secondary'}
-                      className="text-[10px] h-4 px-1.5"
-                    >
-                      {entry.entryType === 'A' ? 'Transform' : 'Edit'}
-                    </Badge>
-                    {entry.rowsAffected !== undefined && (
-                      <span className="text-[10px] text-muted-foreground">
-                        {entry.rowsAffected.toLocaleString()} rows
-                      </span>
-                    )}
-                    <span className="text-[10px] text-muted-foreground ml-auto">
-                      {formatTime(entry.timestamp)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    {entry.hasRowDetails && (
-                      <div className="flex items-center gap-1 text-[10px] text-primary">
-                        <Eye className="w-3 h-3" />
-                        <span>View details</span>
+              {tableEntries.map((entry, index) => {
+                const entryState = getEntryState(entry, index)
+                const isFuture = entryState === 'future'
+                const isCurrent = entryState === 'current'
+
+                // Check if we need to show separator before this entry
+                // Show separator before current entry if previous entry is future (undone)
+                // This creates a visual divider between undone actions and current state
+                const prevEntry = index > 0 ? tableEntries[index - 1] : null
+                const prevState = prevEntry ? getEntryState(prevEntry, index - 1) : null
+                const showSeparatorBefore = isCurrent && prevState === 'future'
+
+                return (
+                  <div key={entry.id}>
+                    {/* Current State separator */}
+                    {showSeparatorBefore && (
+                      <div className="flex items-center gap-2 py-2 my-1">
+                        <div className="flex-1 border-t border-primary/30" />
+                        <span className="text-[10px] text-primary/70 font-medium px-1">
+                          Current State
+                        </span>
+                        <div className="flex-1 border-t border-primary/30" />
                       </div>
                     )}
-                    {/* Highlight in grid button */}
-                    {findTimelineCommand(entry.auditEntryId) && (
-                      <button
-                        onClick={(e) => toggleHighlight(entry, e)}
-                        className={cn(
-                          'flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition-colors',
-                          highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
-                            ? 'bg-primary/20 text-primary'
-                            : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className={cn(
+                        'w-full text-left p-2 rounded-lg transition-colors group cursor-pointer',
+                        'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1',
+                        isFuture && 'opacity-40',
+                        isCurrent && 'border-l-2 border-primary bg-primary/5',
+                        !isFuture && 'hover:bg-muted/50'
+                      )}
+                      onClick={() => setSelectedEntry(entry)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setSelectedEntry(entry)
+                        }
+                      }}
+                      data-testid={entry.hasRowDetails ? 'audit-entry-with-details' : undefined}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium">{entry.action}</p>
+                            {/* Undone badge for future entries */}
+                            {isFuture && (
+                              <Badge variant="outline" className="text-[10px] h-4 px-1 opacity-80">
+                                Undone
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground line-clamp-2">
+                            {entry.details}
+                          </p>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5" />
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Badge
+                          variant={entry.entryType === 'A' ? 'default' : 'secondary'}
+                          className="text-[10px] h-4 px-1.5"
+                        >
+                          {entry.entryType === 'A' ? 'Transform' : 'Edit'}
+                        </Badge>
+                        {entry.rowsAffected !== undefined && (
+                          <span className="text-[10px] text-muted-foreground">
+                            {entry.rowsAffected.toLocaleString()} rows
+                          </span>
                         )}
-                        title="Highlight affected cells in grid"
-                      >
-                        <Crosshair className="w-3 h-3" />
-                        <span>
-                          {highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
-                            ? 'Clear'
-                            : 'Highlight'}
+                        <span className="text-[10px] text-muted-foreground ml-auto">
+                          {formatTime(entry.timestamp)}
                         </span>
-                      </button>
-                    )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        {entry.hasRowDetails && (
+                          <div className="flex items-center gap-1 text-[10px] text-primary">
+                            <Eye className="w-3 h-3" />
+                            <span>View details</span>
+                          </div>
+                        )}
+                        {/* Highlight in grid button */}
+                        {findTimelineCommand(entry.auditEntryId) && (
+                          <button
+                            onClick={(e) => toggleHighlight(entry, e)}
+                            className={cn(
+                              'flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition-colors',
+                              highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
+                                ? 'bg-primary/20 text-primary'
+                                : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                            )}
+                            title="Highlight affected cells in grid"
+                          >
+                            <Crosshair className="w-3 h-3" />
+                            <span>
+                              {highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
+                                ? 'Clear'
+                                : 'Highlight'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </ScrollArea>

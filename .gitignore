@@ -16,3 +16,6 @@ test-results
 *.bak
 *.tmp
 *.png
+
+# Terminal Paste Image folder
+.cp-images/

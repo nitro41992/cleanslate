@@ -98,9 +98,27 @@ export function DataGrid({
   // Use prop if provided, otherwise fall back to store
   const activeHighlight = timelineHighlight ?? (storeHighlight.commandId ? storeHighlight : null)
 
-  // Edit store for tracking dirty cells and undo/redo
+  // Edit store for tracking edits (legacy)
   const recordEdit = useEditStore((s) => s.recordEdit)
-  const isDirty = useEditStore((s) => s.isDirty)
+
+  // Timeline-based dirty cell tracking (replaces editStore.isDirty)
+  const getDirtyCellsAtPosition = useTimelineStore((s) => s.getDirtyCellsAtPosition)
+  const timelinePosition = useTimelineStore((s) => {
+    if (!tableId) return -1
+    return s.timelines.get(tableId)?.currentPosition ?? -1
+  })
+
+  // Compute dirty cells set based on timeline position
+  // This re-computes when position changes (undo/redo)
+  // Note: timelinePosition is intentionally included to trigger recomputation
+  const dirtyCells = useMemo(
+    () => {
+      if (!tableId) return new Set<string>()
+      return getDirtyCellsAtPosition(tableId)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tableId, getDirtyCellsAtPosition, timelinePosition]
+  )
 
   // Audit store for logging edits
   const addManualEditEntry = useAuditStore((s) => s.addManualEditEntry)
@@ -289,8 +307,8 @@ export function DataGrid({
           timestamp: new Date(),
         })
 
-        // Log to audit
-        addManualEditEntry({
+        // Log to audit and get the auditEntryId for timeline linkage
+        const auditEntryId = addManualEditEntry({
           tableId,
           tableName,
           rowIndex: row,
@@ -316,6 +334,7 @@ export function DataGrid({
             `Edit cell [${row}, ${colName}]`,
             timelineParams,
             {
+              auditEntryId, // Link timeline command to audit entry
               affectedRowIds: [csId],
               affectedColumns: [colName],
               cellChanges: [{
@@ -350,9 +369,11 @@ export function DataGrid({
       const { col, row, rect, ctx } = args
       const colName = columns[col]
 
-      // Check for timeline cell highlight (yellow background for highlighted cells)
+      // Get csId for this row (used for both highlighting and dirty tracking)
       const csId = rowIndexToCsId.get(row)
       const cellKey = csId ? `${csId}:${colName}` : null
+
+      // Check for timeline cell highlight (yellow background for highlighted cells)
       const isCellHighlighted = activeHighlight?.cellKeys?.has(cellKey ?? '') ?? false
 
       if (isCellHighlighted) {
@@ -367,7 +388,10 @@ export function DataGrid({
       draw()
 
       // Then overlay the dirty indicator if applicable
-      if (editable && tableId && isDirty(tableId, row, colName)) {
+      // Uses timeline-based tracking: cell is dirty if there's a manual_edit
+      // command that modified it AND we're at/past that command's position
+      const isCellDirty = cellKey && dirtyCells.has(cellKey)
+      if (editable && isCellDirty) {
         // Save canvas state before modifying
         ctx.save()
 
@@ -385,7 +409,7 @@ export function DataGrid({
         ctx.restore()
       }
     },
-    [editable, tableId, columns, isDirty, rowIndexToCsId, activeHighlight]
+    [editable, columns, dirtyCells, rowIndexToCsId, activeHighlight]
   )
 
   const getRowThemeOverride: GetRowThemeCallback = useCallback(
