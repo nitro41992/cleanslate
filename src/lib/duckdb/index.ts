@@ -1,7 +1,12 @@
 import * as duckdb from '@duckdb/duckdb-wasm'
-import duckdb_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
-import duckdb_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
+// EH bundle (primary - native WASM exceptions, more robust)
+import duckdb_wasm_eh from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'
+import duckdb_worker_eh from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'
+// MVP bundle (fallback for older browsers without WASM exceptions)
+import duckdb_wasm_mvp from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
+import duckdb_worker_mvp from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
 import type { CSVIngestionSettings } from '@/types'
+import { withMutex } from './mutex'
 
 /**
  * Internal row ID column name for stable row identity across mutations.
@@ -29,12 +34,12 @@ let conn: duckdb.AsyncDuckDBConnection | null = null
 
 const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
   mvp: {
-    mainModule: duckdb_wasm,
-    mainWorker: duckdb_worker,
+    mainModule: duckdb_wasm_mvp,
+    mainWorker: duckdb_worker_mvp,
   },
   eh: {
-    mainModule: duckdb_wasm,
-    mainWorker: duckdb_worker,
+    mainModule: duckdb_wasm_eh,
+    mainWorker: duckdb_worker_eh,
   },
 }
 
@@ -42,6 +47,7 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   if (db) return db
 
   const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
+  const bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
   const worker = new Worker(bundle.mainWorker!)
   const logger = new duckdb.ConsoleLogger()
 
@@ -54,7 +60,7 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   await initConn.query(`SET memory_limit = '3GB'`)
   await initConn.close()
 
-  console.log('DuckDB WASM initialized with 3GB memory limit')
+  console.log(`DuckDB WASM: Using ${bundleType} bundle (3GB memory limit)`)
   return db
 }
 
@@ -71,19 +77,25 @@ export async function getConnection(): Promise<duckdb.AsyncDuckDBConnection> {
 export async function query<T = Record<string, unknown>>(
   sql: string
 ): Promise<T[]> {
-  const connection = await getConnection()
-  const result = await connection.query(sql)
-  return result.toArray().map((row) => row.toJSON() as T)
+  return withMutex(async () => {
+    const connection = await getConnection()
+    const result = await connection.query(sql)
+    return result.toArray().map((row) => row.toJSON() as T)
+  })
 }
 
 export async function queryArrow(sql: string) {
-  const connection = await getConnection()
-  return await connection.query(sql)
+  return withMutex(async () => {
+    const connection = await getConnection()
+    return await connection.query(sql)
+  })
 }
 
 export async function execute(sql: string): Promise<void> {
-  const connection = await getConnection()
-  await connection.query(sql)
+  return withMutex(async () => {
+    const connection = await getConnection()
+    await connection.query(sql)
+  })
 }
 
 export async function loadCSV(
@@ -91,125 +103,131 @@ export async function loadCSV(
   file: File,
   settings?: CSVIngestionSettings
 ): Promise<{ columns: string[]; rowCount: number }> {
-  const db = await initDuckDB()
-  const connection = await getConnection()
+  return withMutex(async () => {
+    const db = await initDuckDB()
+    const connection = await getConnection()
 
-  // Register the file with DuckDB
-  await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
+    // Register the file with DuckDB
+    await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
-  // Build read_csv options based on settings
-  const options: string[] = []
+    // Build read_csv options based on settings
+    const options: string[] = []
 
-  if (settings?.headerRow !== undefined) {
-    options.push('header=true')
-    // Skip rows before header (0-indexed skip count)
-    if (settings.headerRow > 1) {
-      options.push(`skip=${settings.headerRow - 1}`)
+    if (settings?.headerRow !== undefined) {
+      options.push('header=true')
+      // Skip rows before header (0-indexed skip count)
+      if (settings.headerRow > 1) {
+        options.push(`skip=${settings.headerRow - 1}`)
+      }
+    } else {
+      options.push('header=true')
     }
-  } else {
-    options.push('header=true')
-  }
 
-  if (settings?.delimiter) {
-    // Escape the delimiter for SQL
-    const delimEscaped = settings.delimiter === '\t' ? '\\t' : settings.delimiter
-    options.push(`delim='${delimEscaped}'`)
-  }
+    if (settings?.delimiter) {
+      // Escape the delimiter for SQL
+      const delimEscaped = settings.delimiter === '\t' ? '\\t' : settings.delimiter
+      options.push(`delim='${delimEscaped}'`)
+    }
 
-  // Build the SQL query
-  const optionsStr = options.length > 0 ? `, ${options.join(', ')}` : ''
-  const readCsvQuery = settings
-    ? `read_csv('${file.name}'${optionsStr})`
-    : `read_csv_auto('${file.name}')`
+    // Build the SQL query
+    const optionsStr = options.length > 0 ? `, ${options.join(', ')}` : ''
+    const readCsvQuery = settings
+      ? `read_csv('${file.name}'${optionsStr})`
+      : `read_csv_auto('${file.name}')`
 
-  // Create table from CSV with _cs_id for stable row identity
-  await connection.query(`
-    CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM ${readCsvQuery}
-  `)
+    // Create table from CSV with _cs_id for stable row identity
+    await connection.query(`
+      CREATE OR REPLACE TABLE "${tableName}" AS
+      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM ${readCsvQuery}
+    `)
 
-  // Get column info (excluding internal _cs_id column)
-  const columnsResult = await connection.query(`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name = '${tableName}'
-    ORDER BY ordinal_position
-  `)
-  const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
-  const columns = filterInternalColumns(allColumns)
+    // Get column info (excluding internal _cs_id column)
+    const columnsResult = await connection.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = '${tableName}'
+      ORDER BY ordinal_position
+    `)
+    const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+    const columns = filterInternalColumns(allColumns)
 
-  // Get row count
-  const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-  const rowCount = Number(countResult.toArray()[0].toJSON().count)
+    // Get row count
+    const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+    const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-  return { columns, rowCount }
+    return { columns, rowCount }
+  })
 }
 
 export async function loadJSON(
   tableName: string,
   file: File
 ): Promise<{ columns: string[]; rowCount: number }> {
-  const db = await initDuckDB()
-  const connection = await getConnection()
+  return withMutex(async () => {
+    const db = await initDuckDB()
+    const connection = await getConnection()
 
-  await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
+    await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
-  // Create table from JSON with _cs_id for stable row identity
-  await connection.query(`
-    CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_json_auto('${file.name}')
-  `)
+    // Create table from JSON with _cs_id for stable row identity
+    await connection.query(`
+      CREATE OR REPLACE TABLE "${tableName}" AS
+      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_json_auto('${file.name}')
+    `)
 
-  const columnsResult = await connection.query(`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name = '${tableName}'
-    ORDER BY ordinal_position
-  `)
-  const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
-  const columns = filterInternalColumns(allColumns)
+    const columnsResult = await connection.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = '${tableName}'
+      ORDER BY ordinal_position
+    `)
+    const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+    const columns = filterInternalColumns(allColumns)
 
-  const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-  const rowCount = Number(countResult.toArray()[0].toJSON().count)
+    const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+    const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-  return { columns, rowCount }
+    return { columns, rowCount }
+  })
 }
 
 export async function loadParquet(
   tableName: string,
   file: File
 ): Promise<{ columns: string[]; rowCount: number }> {
-  const db = await initDuckDB()
-  const connection = await getConnection()
+  return withMutex(async () => {
+    const db = await initDuckDB()
+    const connection = await getConnection()
 
-  await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
+    await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
-  // Create table from Parquet with _cs_id for stable row identity
-  await connection.query(`
-    CREATE OR REPLACE TABLE "${tableName}" AS
-    SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_parquet('${file.name}')
-  `)
+    // Create table from Parquet with _cs_id for stable row identity
+    await connection.query(`
+      CREATE OR REPLACE TABLE "${tableName}" AS
+      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_parquet('${file.name}')
+    `)
 
-  const columnsResult = await connection.query(`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name = '${tableName}'
-    ORDER BY ordinal_position
-  `)
-  const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
-  const columns = filterInternalColumns(allColumns)
+    const columnsResult = await connection.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = '${tableName}'
+      ORDER BY ordinal_position
+    `)
+    const allColumns = columnsResult.toArray().map((row) => row.toJSON().column_name as string)
+    const columns = filterInternalColumns(allColumns)
 
-  const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-  const rowCount = Number(countResult.toArray()[0].toJSON().count)
+    const countResult = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+    const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-  return { columns, rowCount }
+    return { columns, rowCount }
+  })
 }
 
 export async function loadXLSX(
   tableName: string,
   file: File
 ): Promise<{ columns: string[]; rowCount: number }> {
-  // Use SheetJS (xlsx) to parse the Excel file
+  // Use SheetJS (xlsx) to parse the Excel file (outside mutex - CPU-bound)
   const { read, utils } = await import('xlsx')
 
   const arrayBuffer = await file.arrayBuffer()
@@ -229,37 +247,40 @@ export async function loadXLSX(
   // Get column names from the first row
   const columns = Object.keys(jsonData[0])
 
-  const connection = await getConnection()
+  // Database operations inside mutex
+  return withMutex(async () => {
+    const connection = await getConnection()
 
-  // Create table with _cs_id column for stable row identity + user columns
-  const columnDefs = [`"${CS_ID_COLUMN}" UUID`, ...columns.map((col) => `"${col}" VARCHAR`)].join(', ')
-  await connection.query(`CREATE OR REPLACE TABLE "${tableName}" (${columnDefs})`)
+    // Create table with _cs_id column for stable row identity + user columns
+    const columnDefs = [`"${CS_ID_COLUMN}" UUID`, ...columns.map((col) => `"${col}" VARCHAR`)].join(', ')
+    await connection.query(`CREATE OR REPLACE TABLE "${tableName}" (${columnDefs})`)
 
-  // Insert data in batches with generated UUIDs
-  const batchSize = 500
-  for (let i = 0; i < jsonData.length; i += batchSize) {
-    const batch = jsonData.slice(i, i + batchSize)
-    const values = batch
-      .map((row) => {
-        const vals = [
-          'gen_random_uuid()', // _cs_id
-          ...columns.map((col) => {
-            const val = row[col]
-            if (val === null || val === undefined || val === '') return 'NULL'
-            const str = String(val).replace(/'/g, "''")
-            return `'${str}'`
-          })
-        ]
-        return `(${vals.join(', ')})`
-      })
-      .join(', ')
+    // Insert data in batches with generated UUIDs
+    const batchSize = 500
+    for (let i = 0; i < jsonData.length; i += batchSize) {
+      const batch = jsonData.slice(i, i + batchSize)
+      const values = batch
+        .map((row) => {
+          const vals = [
+            'gen_random_uuid()', // _cs_id
+            ...columns.map((col) => {
+              const val = row[col]
+              if (val === null || val === undefined || val === '') return 'NULL'
+              const str = String(val).replace(/'/g, "''")
+              return `'${str}'`
+            })
+          ]
+          return `(${vals.join(', ')})`
+        })
+        .join(', ')
 
-    await connection.query(`INSERT INTO "${tableName}" VALUES ${values}`)
-  }
+      await connection.query(`INSERT INTO "${tableName}" VALUES ${values}`)
+    }
 
-  const rowCount = jsonData.length
+    const rowCount = jsonData.length
 
-  return { columns, rowCount }
+    return { columns, rowCount }
+  })
 }
 
 export async function getTableData(

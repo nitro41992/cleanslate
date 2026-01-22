@@ -11,6 +11,7 @@ interface UIState {
   memoryUsage: number
   memoryLimit: number
   memoryLevel: MemoryLevel
+  busyCount: number  // Reference counter for nested DuckDB locks
 }
 
 interface UIActions {
@@ -22,15 +23,20 @@ interface UIActions {
   setMemoryLevel: (level: MemoryLevel) => void
   /** Refresh memory status from DuckDB - call after operations that change data */
   refreshMemory: () => Promise<void>
+  /** Increment busy counter (pauses memory polling) */
+  incrementBusy: () => void
+  /** Decrement busy counter (resumes memory polling when 0) */
+  decrementBusy: () => void
 }
 
-export const useUIStore = create<UIState & UIActions>((set) => ({
+export const useUIStore = create<UIState & UIActions>((set, get) => ({
   sidebarCollapsed: false,
   persistenceStatus: 'idle',
   lastSavedAt: null,
   memoryUsage: 0,
   memoryLimit: MEMORY_LIMIT_BYTES, // 3GB (75% of 4GB WASM ceiling)
   memoryLevel: 'normal',
+  busyCount: 0,
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
@@ -60,6 +66,8 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
 
   refreshMemory: async () => {
+    // Skip if any DuckDB operation is in progress (prevents race condition)
+    if (get().busyCount > 0) return
     try {
       const status = await getMemoryStatus()
       set({
@@ -71,4 +79,7 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
       console.warn('Failed to refresh memory status:', error)
     }
   },
+
+  incrementBusy: () => set((state) => ({ busyCount: state.busyCount + 1 })),
+  decrementBusy: () => set((state) => ({ busyCount: Math.max(0, state.busyCount - 1) })),
 }))

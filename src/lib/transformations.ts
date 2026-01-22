@@ -1,4 +1,5 @@
 import { execute, query, CS_ID_COLUMN, getTableColumns } from '@/lib/duckdb'
+import { withDuckDBLock } from './duckdb/lock'
 import type { TransformationStep, TransformationType } from '@/types'
 import { generateId } from '@/lib/utils'
 
@@ -720,8 +721,9 @@ export async function applyTransformation(
   tableName: string,
   step: TransformationStep
 ): Promise<TransformationResult> {
-  const tempTable = `${tableName}_temp_${Date.now()}`
-  const auditEntryId = generateId()
+  return withDuckDBLock(async () => {
+    const tempTable = `${tableName}_temp_${Date.now()}`
+    const auditEntryId = generateId()
 
   let sql: string
 
@@ -1105,12 +1107,13 @@ export async function applyTransformation(
     ? preCountAffected
     : Math.abs(countBefore - countAfter)
 
-  return {
-    rowCount: countAfter,
-    affected,
-    hasRowDetails,
-    auditEntryId: hasRowDetails ? auditEntryId : undefined,
-  }
+    return {
+      rowCount: countAfter,
+      affected,
+      hasRowDetails,
+      auditEntryId: hasRowDetails ? auditEntryId : undefined,
+    }
+  })
 }
 
 export function getTransformationLabel(step: TransformationStep): string {

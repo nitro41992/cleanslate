@@ -9,8 +9,9 @@ interface MemoryIndicatorProps {
 }
 
 export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
-  const { memoryUsage, memoryLimit, memoryLevel, refreshMemory } = useUIStore()
+  const { memoryUsage, memoryLimit, memoryLevel, refreshMemory, busyCount } = useUIStore()
   const { isReady } = useDuckDB()
+  const isBusy = busyCount > 0
 
   useEffect(() => {
     // Don't poll until DuckDB is ready
@@ -35,7 +36,8 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
           <div
             className={cn(
               'h-full rounded-full transition-all',
-              isCritical ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-primary'
+              isCritical ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-primary',
+              isBusy && 'animate-pulse opacity-50'
             )}
             style={{ width: `${Math.min(percentage, 100)}%` }}
           />
@@ -56,7 +58,8 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
           className={cn(
             'memory-bar-fill',
             isWarning && !isCritical && 'warning',
-            isCritical && 'critical'
+            isCritical && 'critical',
+            isBusy && 'animate-pulse opacity-50'
           )}
           style={{ width: `${Math.min(percentage, 100)}%` }}
         />

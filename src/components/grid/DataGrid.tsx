@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { useUIStore } from '@/stores/uiStore'
 import { updateCell } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import type { TimelineHighlight, ManualEditParams } from '@/types'
@@ -95,6 +96,8 @@ export function DataGrid({
   // Timeline store for highlight state and replay status
   const storeHighlight = useTimelineStore((s) => s.highlight)
   const isReplaying = useTimelineStore((s) => s.isReplaying)
+  // UI store for busy state (prevents concurrent DuckDB operations)
+  const isBusy = useUIStore((s) => s.busyCount > 0)
   // Use prop if provided, otherwise fall back to store
   const activeHighlight = timelineHighlight ?? (storeHighlight.commandId ? storeHighlight : null)
 
@@ -147,6 +150,12 @@ export function DataGrid({
       return
     }
 
+    // Don't fetch when DuckDB is busy with heavy operations (diff, transforms, etc.)
+    if (isBusy) {
+      console.log('[DATAGRID] Skipping fetch - DuckDB busy with heavy operation')
+      return
+    }
+
     console.log('[DATAGRID] Starting data reload...')
     setIsLoading(true)
     setData([]) // Clear stale data immediately
@@ -190,11 +199,14 @@ export function DataGrid({
             setIsLoading(false)
           })
       })
-  }, [tableName, columns, getData, getDataWithRowIds, rowCount, dataVersion, isReplaying])
+  }, [tableName, columns, getData, getDataWithRowIds, rowCount, dataVersion, isReplaying, isBusy])
 
   // Load more data on scroll (with row ID tracking for timeline highlighting)
   const onVisibleRegionChanged = useCallback(
     async (range: { x: number; y: number; width: number; height: number }) => {
+      // Skip if DuckDB is busy with heavy operations
+      if (useUIStore.getState().busyCount > 0) return
+
       const needStart = Math.max(0, range.y - PAGE_SIZE)
       const needEnd = Math.min(rowCount, range.y + range.height + PAGE_SIZE)
 

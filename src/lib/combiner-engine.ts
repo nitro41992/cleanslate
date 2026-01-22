@@ -1,4 +1,5 @@
 import { query, execute, getTableColumns } from '@/lib/duckdb'
+import { withDuckDBLock } from './duckdb/lock'
 import type { JoinType, StackValidation, JoinValidation } from '@/types'
 
 /**
@@ -55,7 +56,8 @@ export async function stackTables(
   tableB: string,
   resultName: string
 ): Promise<{ rowCount: number }> {
-  const colsA = await getTableColumns(tableA)
+  return withDuckDBLock(async () => {
+    const colsA = await getTableColumns(tableA)
   const colsB = await getTableColumns(tableB)
 
   // Get all unique column names
@@ -84,13 +86,14 @@ export async function stackTables(
     SELECT ${selectB} FROM "${tableB}"
   `)
 
-  // Get row count
-  const countResult = await query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM "${resultName}"`
-  )
-  const rowCount = Number(countResult[0].count)
+    // Get row count
+    const countResult = await query<{ count: number }>(
+      `SELECT COUNT(*) as count FROM "${resultName}"`
+    )
+    const rowCount = Number(countResult[0].count)
 
-  return { rowCount }
+    return { rowCount }
+  })
 }
 
 /**
@@ -200,7 +203,8 @@ export async function joinTables(
   joinType: JoinType,
   resultName: string
 ): Promise<{ rowCount: number }> {
-  const colsL = await getTableColumns(leftTable)
+  return withDuckDBLock(async () => {
+    const colsL = await getTableColumns(leftTable)
   const colsR = await getTableColumns(rightTable)
 
   // Get non-key columns from right table (avoid duplicates)
@@ -231,11 +235,12 @@ export async function joinTables(
     ${sqlJoinType} "${rightTable}" r ON l."${keyColumn}" = r."${keyColumn}"
   `)
 
-  // Get row count
-  const countResult = await query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM "${resultName}"`
-  )
-  const rowCount = Number(countResult[0].count)
+    // Get row count
+    const countResult = await query<{ count: number }>(
+      `SELECT COUNT(*) as count FROM "${resultName}"`
+    )
+    const rowCount = Number(countResult[0].count)
 
-  return { rowCount }
+    return { rowCount }
+  })
 }

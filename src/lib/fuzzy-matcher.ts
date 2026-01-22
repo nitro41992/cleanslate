@@ -1,4 +1,5 @@
 import { query } from '@/lib/duckdb'
+import { withDuckDBLock } from './duckdb/lock'
 import type { MatchPair, BlockingStrategy, FieldSimilarity, FieldSimilarityStatus } from '@/types'
 import { generateId } from '@/lib/utils'
 
@@ -612,7 +613,8 @@ export async function findDuplicatesChunked(
   onProgress: (info: ChunkedProgressInfo) => void,
   shouldCancel: () => boolean
 ): Promise<ChunkedMatchResult> {
-  const columns = await getTableColumns(tableName)
+  return withDuckDBLock(async () => {
+    const columns = await getTableColumns(tableName)
   const blockKeyExpr = getBlockKeyExpr(matchColumn, blockingStrategy)
   const maxDistance = Math.max(10, Math.ceil((100 - maybeThreshold) / 5))
 
@@ -721,16 +723,17 @@ export async function findDuplicatesChunked(
     oversizedBlocks: oversizedCount,
   })
 
-  // Apply stratified sorting: fuzzy matches first (most valuable for human review)
-  const sortedPairs = stratifiedSort(allPairs)
+    // Apply stratified sorting: fuzzy matches first (most valuable for human review)
+    const sortedPairs = stratifiedSort(allPairs)
 
-  return {
-    pairs: sortedPairs,
-    totalFound: allPairs.length,
-    oversizedBlocksCount: oversizedCount,
-    blocksProcessed: blocks.length,
-    totalBlocks: blocks.length,
-  }
+    return {
+      pairs: sortedPairs,
+      totalFound: allPairs.length,
+      oversizedBlocksCount: oversizedCount,
+      blocksProcessed: blocks.length,
+      totalBlocks: blocks.length,
+    }
+  })
 }
 
 /**
@@ -767,7 +770,8 @@ export async function findDuplicates(
   _definiteThreshold: number = 85, // Minimum similarity % for "definite" match (used by UI)
   maybeThreshold: number = 60    // Minimum similarity % for "maybe" match
 ): Promise<MatchPair[]> {
-  const columns = await getTableColumns(tableName)
+  return withDuckDBLock(async () => {
+    const columns = await getTableColumns(tableName)
 
   // Build blocking key SQL expression based on strategy
   // All strategies now use SQL-based blocking for scalability
@@ -859,8 +863,9 @@ export async function findDuplicates(
     })
   }
 
-  // Apply stratified sorting: fuzzy matches first
-  return stratifiedSort(pairs)
+    // Apply stratified sorting: fuzzy matches first
+    return stratifiedSort(pairs)
+  })
 }
 
 export async function mergeDuplicates(

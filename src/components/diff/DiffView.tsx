@@ -16,6 +16,7 @@ import { DiffExportMenu } from './DiffExportMenu'
 import { useTableStore } from '@/stores/tableStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { useUIStore } from '@/stores/uiStore'
 import { runDiff, cleanupDiffTable } from '@/lib/diff-engine'
 import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
 import { toast } from 'sonner'
@@ -40,6 +41,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     allColumns,
     keyOrderBy,
     summary,
+    newColumns,
+    removedColumns,
     isComparing,
     blindMode,
     setMode,
@@ -56,7 +59,12 @@ export function DiffView({ open, onClose }: DiffViewProps) {
   const tableAInfo = tables.find((t) => t.id === tableA)
   const tableBInfo = tables.find((t) => t.id === tableB)
   const activeTableInfo = tables.find((t) => t.id === activeTableId)
+  const decrementBusy = useUIStore((s) => s.decrementBusy)
 
+  // Safety net: decrement busy counter on unmount in case operation was interrupted
+  useEffect(() => {
+    return () => decrementBusy()
+  }, [decrementBusy])
 
   // Handle escape key to close
   useEffect(() => {
@@ -139,6 +147,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         allColumns: config.allColumns,
         keyOrderBy: config.keyOrderBy,
         summary: config.summary,
+        newColumns: config.newColumns,
+        removedColumns: config.removedColumns,
       })
 
       toast.success('Comparison Complete', {
@@ -318,6 +328,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                   keyColumns={keyColumns}
                   keyOrderBy={keyOrderBy}
                   blindMode={blindMode}
+                  newColumns={newColumns}
+                  removedColumns={removedColumns}
                 />
               </div>
 

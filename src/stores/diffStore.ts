@@ -21,6 +21,8 @@ interface DiffState {
   allColumns: string[]           // For grid columns
   keyOrderBy: string             // For consistent ordering
   summary: DiffSummary | null    // Summary counts (small, keep in memory)
+  newColumns: string[]           // Columns added (in A but not B)
+  removedColumns: string[]       // Columns removed (in B but not A)
   // UI state
   isComparing: boolean
   blindMode: boolean
@@ -40,6 +42,8 @@ interface DiffActions {
     allColumns: string[]
     keyOrderBy: string
     summary: DiffSummary
+    newColumns: string[]
+    removedColumns: string[]
   }) => void
   setSummary: (summary: DiffState['summary']) => void
   setIsComparing: (comparing: boolean) => void
@@ -60,6 +64,8 @@ const initialState: DiffState = {
   allColumns: [],
   keyOrderBy: '',
   summary: null,
+  newColumns: [],
+  removedColumns: [],
   isComparing: false,
   blindMode: false,
 }
@@ -77,6 +83,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     allColumns: [],
     keyOrderBy: '',
     summary: null,
+    newColumns: [],
+    removedColumns: [],
     keyColumns: [],
   }),
   setTableA: (tableId) => set({ tableA: tableId }),
@@ -89,6 +97,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     allColumns: config.allColumns,
     keyOrderBy: config.keyOrderBy,
     summary: config.summary,
+    newColumns: config.newColumns,
+    removedColumns: config.removedColumns,
   }),
   setSummary: (summary) => set({ summary }),
   setIsComparing: (comparing) => set({ isComparing: comparing }),
@@ -99,6 +109,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     allColumns: [],
     keyOrderBy: '',
     summary: null,
+    newColumns: [],
+    removedColumns: [],
   }),
   reset: () => set(initialState),
 }))

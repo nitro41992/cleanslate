@@ -49,6 +49,8 @@ interface VirtualizedDiffGridProps {
   keyColumns: string[]
   keyOrderBy: string
   blindMode?: boolean
+  newColumns?: string[]      // Columns added (in current but not original)
+  removedColumns?: string[]  // Columns removed (in original but not current)
 }
 
 const PAGE_SIZE = 500
@@ -60,6 +62,8 @@ export function VirtualizedDiffGrid({
   keyColumns,
   keyOrderBy,
   blindMode = false,
+  newColumns = [],
+  removedColumns = [],
 }: VirtualizedDiffGridProps) {
   const [data, setData] = useState<DiffRow[]>([])
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
@@ -82,15 +86,25 @@ export function VirtualizedDiffGrid({
     // Add columns for the actual data
     // Each column shows A→B for modified, or the value for added/removed
     for (const col of allColumns) {
+      // Build column title with badges for key/new/removed status
+      let title = col
+      const badges: string[] = []
+      if (keyColumns.includes(col)) badges.push('KEY')
+      if (newColumns.includes(col)) badges.push('+NEW')
+      if (removedColumns.includes(col)) badges.push('-DEL')
+      if (badges.length > 0) {
+        title = `${col} (${badges.join(', ')})`
+      }
+
       cols.push({
         id: col,
-        title: keyColumns.includes(col) ? `${col} (KEY)` : col,
+        title,
         width: 180,
       })
     }
 
     return cols
-  }, [allColumns, keyColumns, blindMode])
+  }, [allColumns, keyColumns, newColumns, removedColumns, blindMode])
 
   // Load initial data
   useEffect(() => {
