@@ -8,7 +8,7 @@
 | 1.5 | ✅ Complete | Diff View Foundation |
 | 2 | ✅ Complete | 22 Transform Commands (Tier 1/2/3) |
 | 2.5 | ✅ Complete | UI Integration (CleanPanel.tsx wired to CommandExecutor) |
-| **2.6** | 🔴 **CRITICAL** | **Fix Hybrid State: Wire App.tsx undo/redo to CommandExecutor** |
+| 2.6 | ✅ Complete | Fix Hybrid State: Wire App.tsx undo/redo to CommandExecutor |
 | 3 | 🔲 Pending | Standardizer & Matcher (2 commands) |
 | 4 | 🔲 Pending | Combiner & Scrubber (6 commands) |
 | 5 | 🔲 Pending | Unify Undo/Redo (2 commands + keyboard shortcuts) |
@@ -28,9 +28,9 @@
 
 ---
 
-## 🔴 Phase 2.6: Fix Hybrid State (CRITICAL)
+## ✅ Phase 2.6: Fix Hybrid State (COMPLETE)
 
-### The Problem
+### The Problem (Solved)
 
 **Hybrid State Danger**: CleanPanel.tsx now uses CommandExecutor (write path), but App.tsx still uses legacy `undoTimeline/redoTimeline` functions (undo path):
 
@@ -39,91 +39,33 @@ Write Path: CleanPanel → CommandExecutor.execute() → Column Versioning (Tier
 Undo Path:  App.tsx → undoTimeline() → Expects snapshot-based undo ❌
 ```
 
-Tier 1 commands use Column Versioning (CTAS with `__base` columns), NOT snapshots. The legacy `undoTimeline()` expects snapshots, so **undo will fail silently or produce incorrect results**.
+### Implementation (Jan 2026)
 
-### The Fix
+**Hybrid Fallback Approach**: Instead of fully replacing the legacy system, the implementation uses CommandExecutor with legacy fallback:
 
-**File to modify:** `src/App.tsx`
-
-**Changes:**
-
-1. Replace import:
-```typescript
-// OLD
-import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
-
-// NEW
-import { getCommandExecutor } from '@/lib/commands'
+```
+Ctrl+Z → handleUndo():
+  1. Check if executor.canUndo(tableId) → use CommandExecutor (for transform commands)
+  2. Else fallback to undoTimeline(tableId) → use legacy timeline (for cell edits)
 ```
 
-2. Update `handleUndo` callback:
-```typescript
-const handleUndo = useCallback(async () => {
-  if (!activeTableId || isReplaying) return
+This preserves backward compatibility for:
+- Cell edits (still using editStore + timelineStore until Phase 5)
+- Pre-migration commands recorded in timelineStore
 
-  try {
-    const executor = getCommandExecutor()
-    const result = await executor.undo(activeTableId)
+**Key insight**: CommandExecutor.undo() does NOT handle audit logging internally, so the manual `addAuditEntry()` calls in App.tsx are correct and necessary.
 
-    if (result.success) {
-      // Table store is updated automatically by CommandExecutor
-      if (activeTable) {
-        addAuditEntry(
-          activeTableId,
-          activeTable.name,
-          'Undo',
-          'Reverted to previous state',
-          'A'
-        )
-      }
-    }
-    refreshMemory()
-  } catch (error) {
-    console.error('[UNDO] Error:', error)
-  }
-}, [activeTableId, activeTable, isReplaying, addAuditEntry, refreshMemory])
-```
+### Files Modified
 
-3. Update `handleRedo` callback:
-```typescript
-const handleRedo = useCallback(async () => {
-  if (!activeTableId || isReplaying) return
+- `src/App.tsx`: Updated `handleUndo`/`handleRedo` callbacks to use CommandExecutor with legacy fallback
 
-  try {
-    const executor = getCommandExecutor()
-    const result = await executor.redo(activeTableId)
+### Verification (Passed)
 
-    if (result.success) {
-      // Table store is updated automatically by CommandExecutor
-      if (activeTable) {
-        addAuditEntry(
-          activeTableId,
-          activeTable.name,
-          'Redo',
-          'Reapplied next state',
-          'A'
-        )
-      }
-    }
-    refreshMemory()
-  } catch (error) {
-    console.error('[REDO] Error:', error)
-  }
-}, [activeTableId, activeTable, isReplaying, addAuditEntry, refreshMemory])
-```
-
-4. Remove unused `updateTable` from callback dependencies (CommandExecutor handles store updates).
-
-### Verification
-
-After implementing Phase 2.6:
-
-1. `npm run dev` - Start dev server
-2. Load a CSV file
-3. Apply **Trim Whitespace** (Tier 1 command)
-4. Press **Ctrl+Z** - Column should revert instantly via Column Versioning
-5. Press **Ctrl+Y** - Column should be re-transformed
-6. Run `npm test` - All existing tests should pass
+- ✅ `npm run lint` - No errors
+- ✅ `npm run build` - Builds successfully
+- ✅ `npm test` - FR-A4 undo/redo tests pass
+- ✅ Transform undo works via CommandExecutor
+- ✅ Cell edit undo works via legacy timeline fallback
 
 ---
 

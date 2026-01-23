@@ -40,6 +40,7 @@ import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
+import { getCommandExecutor } from '@/lib/commands'
 import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
 import { toast } from 'sonner'
 
@@ -52,7 +53,6 @@ function App() {
   const activeTable = tables.find((t) => t.id === activeTableId)
   const addTable = useTableStore((s) => s.addTable)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
-  const updateTable = useTableStore((s) => s.updateTable)
 
   const activePanel = usePreviewStore((s) => s.activePanel)
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
@@ -109,32 +109,57 @@ function App() {
   // Memory refresh after data operations
   const refreshMemory = useUIStore((s) => s.refreshMemory)
 
-  // Keyboard shortcuts for undo/redo (using timeline)
+  // Get updateTable for legacy timeline fallback
+  const updateTable = useTableStore((s) => s.updateTable)
+
+  // Keyboard shortcuts for undo/redo (CommandExecutor with legacy fallback)
   const handleUndo = useCallback(async () => {
     console.log('[UNDO] handleUndo called', { activeTableId, isReplaying, activeTable: activeTable?.name })
     if (!activeTableId || isReplaying) {
       console.log('[UNDO] Early return - no activeTableId or isReplaying')
       return
     }
+
     try {
-      const newRowCount = await undoTimeline(activeTableId)
-      console.log('[UNDO] undoTimeline returned:', newRowCount)
-      if (typeof newRowCount === 'number') {
-        console.log('[UNDO] Calling updateTable with rowCount:', newRowCount)
-        updateTable(activeTableId, { rowCount: newRowCount })
-        if (activeTable) {
-          addAuditEntry(
-            activeTableId,
-            activeTable.name,
-            'Undo',
-            'Reverted to previous state',
-            'A'
-          )
+      // Try CommandExecutor first (for transform commands)
+      const executor = getCommandExecutor()
+      if (executor.canUndo(activeTableId)) {
+        const result = await executor.undo(activeTableId)
+        console.log('[UNDO] executor.undo returned:', result)
+
+        if (result.success) {
+          // Table store is updated automatically by CommandExecutor
+          if (activeTable) {
+            addAuditEntry(
+              activeTableId,
+              activeTable.name,
+              'Undo',
+              'Reverted to previous state',
+              'A'
+            )
+          }
         }
       } else {
-        console.log('[UNDO] No rowCount returned, nothing to undo')
+        // Fallback to legacy timeline (for cell edits and pre-migration commands)
+        console.log('[UNDO] CommandExecutor has nothing to undo, trying legacy timeline...')
+        const result = await undoTimeline(activeTableId)
+        if (result) {
+          console.log('[UNDO] Legacy undoTimeline returned:', result)
+          updateTable(activeTableId, { rowCount: result.rowCount })
+          if (activeTable) {
+            addAuditEntry(
+              activeTableId,
+              activeTable.name,
+              'Undo',
+              'Reverted to previous state',
+              'A'
+            )
+          }
+        } else {
+          console.log('[UNDO] Nothing to undo in either system')
+        }
       }
-      // Refresh memory after timeline operation
+      // Refresh memory after undo operation
       refreshMemory()
     } catch (error) {
       console.error('[UNDO] Error during undo:', error)
@@ -147,25 +172,47 @@ function App() {
       console.log('[REDO] Early return - no activeTableId or isReplaying')
       return
     }
+
     try {
-      const newRowCount = await redoTimeline(activeTableId)
-      console.log('[REDO] redoTimeline returned:', newRowCount)
-      if (typeof newRowCount === 'number') {
-        console.log('[REDO] Calling updateTable with rowCount:', newRowCount)
-        updateTable(activeTableId, { rowCount: newRowCount })
-        if (activeTable) {
-          addAuditEntry(
-            activeTableId,
-            activeTable.name,
-            'Redo',
-            'Reapplied next state',
-            'A'
-          )
+      // Try CommandExecutor first (for transform commands)
+      const executor = getCommandExecutor()
+      if (executor.canRedo(activeTableId)) {
+        const result = await executor.redo(activeTableId)
+        console.log('[REDO] executor.redo returned:', result)
+
+        if (result.success) {
+          // Table store is updated automatically by CommandExecutor
+          if (activeTable) {
+            addAuditEntry(
+              activeTableId,
+              activeTable.name,
+              'Redo',
+              'Reapplied next state',
+              'A'
+            )
+          }
         }
       } else {
-        console.log('[REDO] No rowCount returned, nothing to redo')
+        // Fallback to legacy timeline (for cell edits and pre-migration commands)
+        console.log('[REDO] CommandExecutor has nothing to redo, trying legacy timeline...')
+        const result = await redoTimeline(activeTableId)
+        if (result) {
+          console.log('[REDO] Legacy redoTimeline returned:', result)
+          updateTable(activeTableId, { rowCount: result.rowCount })
+          if (activeTable) {
+            addAuditEntry(
+              activeTableId,
+              activeTable.name,
+              'Redo',
+              'Reapplied next state',
+              'A'
+            )
+          }
+        } else {
+          console.log('[REDO] Nothing to redo in either system')
+        }
       }
-      // Refresh memory after timeline operation
+      // Refresh memory after redo operation
       refreshMemory()
     } catch (error) {
       console.error('[REDO] Error during redo:', error)
