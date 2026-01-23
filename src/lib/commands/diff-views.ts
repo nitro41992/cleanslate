@@ -47,11 +47,21 @@ export async function createTier1DiffView(
   const tableName = quoteTable(config.tableName)
   const csId = quoteColumn(CS_ID_COLUMN)
 
+  // For Tier 1, predicates reference the regular column name but we need to use base columns
+  // Replace quoted column references with their base column equivalents
+  let tier1Predicate = config.rowPredicate
+  if (tier1Predicate && config.affectedColumn) {
+    const quotedCol = quoteColumn(config.affectedColumn)
+    const baseCol = quoteColumn(`${config.affectedColumn}__base`)
+    // Replace all occurrences of the quoted column with the base column
+    tier1Predicate = tier1Predicate.replaceAll(quotedCol, baseCol)
+  }
+
   // Build the change type expression
   let changeTypeExpr: string
-  if (config.rowPredicate && config.rowPredicate !== 'TRUE') {
-    changeTypeExpr = `CASE WHEN ${config.rowPredicate} THEN 'modified' ELSE 'unchanged' END`
-  } else if (config.rowPredicate === 'TRUE') {
+  if (tier1Predicate && tier1Predicate !== 'TRUE') {
+    changeTypeExpr = `CASE WHEN ${tier1Predicate} THEN 'modified' ELSE 'unchanged' END`
+  } else if (tier1Predicate === 'TRUE') {
     // All rows affected
     changeTypeExpr = `'modified'`
   } else {

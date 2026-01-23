@@ -241,6 +241,9 @@ export class CommandExecutor implements ICommandExecutor {
         )
       }
 
+      // Extract affected row IDs from diff view for highlighting support
+      const affectedRowIds = await this.extractAffectedRowIds(updatedCtx, diffViewName)
+
       // Step 7: Record timeline for undo/redo
       let highlightInfo: HighlightInfo | undefined
       if (!skipTimeline) {
@@ -262,7 +265,7 @@ export class CommandExecutor implements ICommandExecutor {
         )
 
         // Sync with legacy timelineStore for UI integration (highlight, drill-down)
-        this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo)
+        this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo, affectedRowIds)
       }
 
       // Capture row-level details for Tier 1 only (uses __base columns, must be AFTER execution)
@@ -829,13 +832,47 @@ export class CommandExecutor implements ICommandExecutor {
   }
 
   /**
+   * Extract affected row IDs from diff view for highlighting support.
+   * Non-critical - returns empty array if extraction fails.
+   * Limits to MAX_HIGHLIGHT_ROWS to prevent OOM on large datasets.
+   *
+   * Note: Diff views (created by createTier1DiffView and createTier3DiffView)
+   * explicitly alias _cs_id as _row_id, so this column is guaranteed to exist.
+   */
+  private async extractAffectedRowIds(
+    ctx: CommandContext,
+    diffViewName: string | undefined
+  ): Promise<string[]> {
+    if (!diffViewName) return []
+
+    try {
+      const MAX_HIGHLIGHT_ROWS = 10000
+
+      const sql = `
+        SELECT _row_id
+        FROM "${diffViewName}"
+        WHERE _change_type != 'unchanged'
+        LIMIT ${MAX_HIGHLIGHT_ROWS}
+      `
+
+      const result = await ctx.db.query<{ _row_id: string }>(sql)
+      // Explicit string conversion for type safety (though _cs_id is already VARCHAR/UUID)
+      return result.map(row => String(row._row_id))
+    } catch (err) {
+      console.warn('[EXECUTOR] Failed to extract affected row IDs from diff view:', err)
+      return []
+    }
+  }
+
+  /**
    * Sync command execution to legacy timelineStore for UI integration
    */
   private syncExecuteToTimelineStore(
     tableId: string,
     tableName: string,
     command: Command,
-    auditInfo?: { affectedColumns: string[]; rowsAffected: number; hasRowDetails: boolean; auditEntryId: string }
+    auditInfo?: { affectedColumns: string[]; rowsAffected: number; hasRowDetails: boolean; auditEntryId: string },
+    affectedRowIds?: string[]
   ): void {
     const timelineStoreState = useTimelineStore.getState()
     const legacyTimeline = timelineStoreState.getTimeline(tableId)
@@ -870,6 +907,7 @@ export class CommandExecutor implements ICommandExecutor {
       affectedColumns: auditInfo?.affectedColumns ?? (column ? [column] : []),
       rowsAffected: auditInfo?.rowsAffected,
       hasRowDetails: auditInfo?.hasRowDetails,
+      affectedRowIds,
     })
   }
 }

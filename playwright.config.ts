@@ -5,7 +5,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
-  workers: 1,  // Force single worker to prevent OOM on constrained systems
+  workers: process.env.CI ? 2 : 1,  // Conservative: 2 workers in CI (safe for 2vCPU/7GB), 1 locally
   reporter: [
     ['html', { outputFolder: 'playwright-report' }],
     ['list'],

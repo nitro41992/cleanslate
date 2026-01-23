@@ -34,7 +34,8 @@ test.describe.serial('Audit Row Details', () => {
     await page.close()
   })
 
-  async function loadTestData() {
+  // Helper for case-sensitive data (used by tests 1-6)
+  async function loadCaseSensitiveData() {
     await inspector.runQuery('DROP TABLE IF EXISTS case_sensitive_data')
     await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
     await wizard.waitForOpen()
@@ -42,8 +43,17 @@ test.describe.serial('Audit Row Details', () => {
     await inspector.waitForTableLoaded('case_sensitive_data', 4)
   }
 
+  // Helper for whitespace data (used by tests 7-10)
+  async function loadWhitespaceData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('whitespace_data', 3)
+  }
+
   test('should set hasRowDetails and auditEntryId after transformation', async () => {
-    await loadTestData()
+    await loadCaseSensitiveData()
 
     // Apply a transformation that affects some rows (direct-apply model)
     await laundromat.openCleanPanel()
@@ -204,36 +214,8 @@ test.describe.serial('Audit Row Details', () => {
     expect(result.content).toContain('name')
     expect(result.content).toContain('→') // Arrow between old and new values
   })
-})
 
-test.describe.serial('Audit Row Details - Edge Cases', () => {
-  let page: Page
-  let laundromat: LaundromatPage
-  let wizard: IngestionWizardPage
-  let picker: TransformationPickerPage
-  let inspector: StoreInspector
-
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
-    laundromat = new LaundromatPage(page)
-    wizard = new IngestionWizardPage(page)
-    picker = new TransformationPickerPage(page)
-    await laundromat.goto()
-    inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
-  })
-
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  async function loadWhitespaceData() {
-    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
-    await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('whitespace_data', 3)
-  }
+  // ===== Edge Cases (Whitespace Data) =====
 
   test('should capture row details for trim transformation', async () => {
     await loadWhitespaceData()

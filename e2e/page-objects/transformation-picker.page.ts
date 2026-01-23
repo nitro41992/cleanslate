@@ -26,19 +26,57 @@ export class TransformationPickerPage {
 
   /**
    * Select a transformation tile by its label
+   * Skips category buttons (which have a count badge) and clicks the actual transformation button
    */
   async selectTransformation(name: string): Promise<void> {
-    const button = this.page.locator('button').filter({ hasText: new RegExp(`^${name}$|^.*${name}.*$`, 'i') }).first()
-    await button.click()
+    // First, ensure the category is expanded if needed
+    // Category buttons have format "⬡ Category N" with a number at the end
+    const categoryButton = this.page.locator('button').filter({
+      hasText: new RegExp(`${name}\\s+"?\\d+"?$`, 'i')
+    }).first()
+
+    // Check if category exists and expand it
+    const categoryExists = await categoryButton.count() > 0
+    if (categoryExists) {
+      const isExpanded = await categoryButton.getAttribute('data-state').then(state => state === 'open').catch(() => false)
+      if (!isExpanded) {
+        await categoryButton.click()
+        // Wait for submenu to appear
+        await this.page.waitForTimeout(300)
+      }
+    }
+
+    // Now click the actual transformation button
+    // Key difference: transformation buttons don't have a number badge at the end
+    // Find all buttons with the name, then filter out category buttons (those with numbers at end)
+    const allButtons = this.page.locator('button').filter({
+      hasText: new RegExp(name, 'i')
+    })
+
+    // Get the button that doesn't end with a number (i.e., not a category button)
+    const transformButton = allButtons.filter({
+      hasNotText: /\d+$/  // Exclude buttons ending with digits
+    }).first()
+
+    await transformButton.waitFor({ state: 'visible', timeout: 5000 })
+    await transformButton.click()
+    // Wait for transformation form to render
+    await this.page.waitForTimeout(300)
   }
 
   /**
    * Select a column from the "Target Column" dropdown
    */
   async selectColumn(columnName: string): Promise<void> {
+    // Wait for column selector to be visible (renders after transformation selected)
     const columnSelect = this.page.locator('[role="combobox"]').filter({ hasText: /Select column/ })
+    await columnSelect.waitFor({ state: 'visible', timeout: 10000 })
     await columnSelect.click()
-    await this.page.getByRole('option', { name: columnName }).click()
+
+    // Wait for dropdown to open and option to be available
+    const option = this.page.getByRole('option', { name: columnName })
+    await option.waitFor({ state: 'visible', timeout: 5000 })
+    await option.click()
   }
 
   /**
