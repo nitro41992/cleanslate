@@ -290,7 +290,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               tableId,
               tableName,
               action: result.auditInfo.action,
-              details: `Removed ${deletedCount} duplicate rows from table`,
+              details: result.auditInfo.details, // Use structured details for modal detection
               rowsAffected: result.auditInfo.rowsAffected,
               hasRowDetails: result.auditInfo.hasRowDetails,
               auditEntryId: result.auditInfo.auditEntryId,

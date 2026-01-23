@@ -55,9 +55,14 @@ export class DiffViewPage {
   }
 
   /**
-   * Close the DiffView overlay
+   * Close the DiffView overlay (safe - checks if visible first)
    */
   async close(): Promise<void> {
+    // Check if overlay is already closed
+    const isVisible = await this.overlay.isVisible()
+    if (!isVisible) {
+      return // Already closed, nothing to do
+    }
     await this.closeButton.click()
     await this.waitForClose()
   }

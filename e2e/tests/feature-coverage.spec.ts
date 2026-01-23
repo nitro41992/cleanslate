@@ -682,6 +682,21 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Apply merges
     await matchView.applyMerges()
 
+    // Wait for success toast to appear and dismiss
+    await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
+    await page.waitForTimeout(1000) // Wait for toast to auto-dismiss
+
+    // Ensure we're back at the main view by checking the grid is visible
+    await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
+
+    // Debug: Check if audit entry was created
+    const auditEntries = await inspector.getAuditEntries()
+    console.log('Audit entries:', auditEntries.length)
+    const mergeEntry = auditEntries.find(e => e.action === 'Merge Duplicates')
+    console.log('Merge entry:', mergeEntry)
+    expect(mergeEntry).toBeDefined()
+    expect(mergeEntry?.hasRowDetails).toBe(true)
+
     // Open audit sidebar
     await laundromat.openAuditSidebar()
     await page.waitForTimeout(300)
@@ -1146,6 +1161,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     const data = await inspector.getTableData('join_result')
     const customerIds = [...new Set(data.map((r) => r.customer_id as string))].sort()
     expect(customerIds).toEqual(['C001', 'C002', 'C003'])
+
+    // Close panel to prevent state pollution
+    await laundromat.closePanel()
   })
 
   test('should perform left join preserving unmatched orders', async () => {
@@ -1153,10 +1171,6 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await inspector.runQuery('DROP TABLE IF EXISTS join_result')
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_customers')
-
-    // Close any open panel and go back to main view
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
 
     // Upload orders file
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))

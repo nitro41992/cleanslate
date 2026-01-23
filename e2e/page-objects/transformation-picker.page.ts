@@ -80,10 +80,20 @@ export class TransformationPickerPage {
   }
 
   /**
-   * Fill a text input parameter
+   * Fill a text input parameter (supports both <input> and <textarea>)
    */
   async fillParam(paramName: string, value: string): Promise<void> {
-    const input = this.page.locator(`input[placeholder*="${paramName}" i]`)
+    // Try placeholder-based selector first
+    let input = this.page.locator(`input[placeholder*="${paramName}" i], textarea[placeholder*="${paramName}" i]`)
+
+    // Check if found, otherwise fall back to generic textarea/input
+    // (needed for Custom SQL which has a dynamic placeholder)
+    const count = await input.count()
+    if (count === 0) {
+      // Fallback: look for any visible textarea or input in the transformation form
+      input = this.page.locator('textarea:visible, input[type="text"]:visible').first()
+    }
+
     // Wait for input to be visible before filling (prevents timeout in long test sequences)
     await input.waitFor({ state: 'visible', timeout: 10000 })
     await input.fill(value)
