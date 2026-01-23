@@ -1,30 +1,28 @@
 /**
- * Column Version Manager - Expression Chaining
+ * Column Version Manager - Expression Chaining (Table Recreation Pattern)
  *
  * Manages Tier 1 undo operations using expression chaining on a single base column.
  * Instead of creating multiple backup columns, we chain expressions together.
  *
+ * NOTE: DuckDB WASM doesn't support adding computed columns after table creation,
+ * so we use a CTAS (Create Table As Select) pattern with regular columns instead.
+ *
  * Strategy:
  * 1. First transform on "Email":
- *    - RENAME "Email" TO "Email__base"
- *    - ADD COLUMN "Email" AS (TRIM("Email__base"))
+ *    - CREATE TABLE temp AS SELECT *, "Email" AS "Email__base", TRIM("Email") AS "Email_new" FROM t
+ *    - DROP TABLE t
+ *    - ALTER TABLE temp RENAME TO t
+ *    - DROP COLUMN "Email", RENAME "Email_new" TO "Email"
+ *    (Simplified: use CTAS to rebuild with both base and transformed columns)
  *
- * 2. Second transform (lowercase):
- *    - DROP COLUMN "Email"
- *    - ADD COLUMN "Email" AS (LOWER(TRIM("Email__base")))
+ * 2. Chained transforms use the same pattern, re-computing from base
  *
- * 3. Undo lowercase:
- *    - DROP COLUMN "Email"
- *    - ADD COLUMN "Email" AS (TRIM("Email__base"))
- *
- * 4. Undo trim (full restore):
- *    - DROP COLUMN "Email"
- *    - RENAME "Email__base" TO "Email"
+ * 3. Undo: Recreate table with previous expression (or restore from base for full undo)
  *
  * Key Advantages:
  * - Column name stays the same throughout - no UI changes needed
  * - Single base column regardless of transform count
- * - Zero-copy operation - instant regardless of row count
+ * - Works with DuckDB WASM limitations
  * - Chained transforms work correctly
  */
 
@@ -175,19 +173,41 @@ export function createColumnVersionManager(
     ): Promise<VersionResult> {
       try {
         let versionInfo = versions.get(column)
+        const tempTable = `${tableName}_cv_temp_${Date.now()}`
+        const baseColumn = versionInfo?.baseColumn || getBaseColumnName(column)
+
+        // Get all current columns
+        const colsResult = await db.query<{ column_name: string }>(`
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_name = '${tableName}'
+          ORDER BY ordinal_position
+        `)
+        const allColumns = colsResult.map((c) => c.column_name)
 
         if (!versionInfo) {
-          // First transform on this column: create base column
-          const baseColumn = getBaseColumnName(column)
+          // First transform on this column: create base column and transformed column
+          // Build SELECT list: all columns except target, plus base and transformed
+          const selectParts: string[] = []
+          for (const col of allColumns) {
+            if (col === column) {
+              // Add base column (copy of original)
+              selectParts.push(`${quoteColumn(col)} AS ${quoteColumn(baseColumn)}`)
+              // Add transformed column with original name
+              const transformedExpr = replacePlaceholder(expression, quoteColumn(col))
+              selectParts.push(`${transformedExpr} AS ${quoteColumn(col)}`)
+            } else {
+              selectParts.push(quoteColumn(col))
+            }
+          }
 
-          // Step 1: Rename original to base
-          const renameSQL = `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(column)} TO ${quoteColumn(baseColumn)}`
-          await db.execute(renameSQL)
+          // Create temp table with new structure
+          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+          await db.execute(ctasSQL)
 
-          // Step 2: Create computed column with single expression
-          const nestedExpr = replacePlaceholder(expression, quoteColumn(baseColumn))
-          const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
-          await db.execute(addSQL)
+          // Swap tables
+          await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
+          await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
 
           // Initialize version info
           versionInfo = {
@@ -204,21 +224,34 @@ export function createColumnVersionManager(
             expressionCount: 1,
           }
         } else {
-          // Chained transform: rebuild with nested expressions
+          // Chained transform: rebuild with nested expression applied to base
           const prevStack = [...versionInfo.expressionStack]
 
           // Add new expression to stack
           versionInfo.expressionStack.push({ expression, commandId })
 
           try {
-            // Drop current computed column
-            const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
-            await db.execute(dropSQL)
-
-            // Recreate with new nested expression
+            // Build nested expression from base column
             const nestedExpr = buildNestedExpression(versionInfo.expressionStack, versionInfo.baseColumn)
-            const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
-            await db.execute(addSQL)
+
+            // Build SELECT list: all columns except target, replace target with new expression
+            const selectParts: string[] = []
+            for (const col of allColumns) {
+              if (col === column) {
+                // Replace with new computed value
+                selectParts.push(`${nestedExpr} AS ${quoteColumn(col)}`)
+              } else {
+                selectParts.push(quoteColumn(col))
+              }
+            }
+
+            // Create temp table with updated column
+            const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+            await db.execute(ctasSQL)
+
+            // Swap tables
+            await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
+            await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
 
             return {
               success: true,
@@ -227,16 +260,13 @@ export function createColumnVersionManager(
               expressionCount: versionInfo.expressionStack.length,
             }
           } catch (error) {
-            // Rollback: restore previous state
+            // Rollback: restore previous stack
             versionInfo.expressionStack = prevStack
+            // Clean up temp table if it exists
             try {
-              // Try to restore previous computed column
-              const nestedExpr = buildNestedExpression(prevStack, versionInfo.baseColumn)
-              const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
-              await db.execute(addSQL)
-            } catch (rollbackError) {
-              // Critical failure - column state may be broken
-              console.error('Rollback failed:', rollbackError)
+              await db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
+            } catch {
+              // Ignore cleanup errors
             }
             throw error
           }
@@ -265,18 +295,42 @@ export function createColumnVersionManager(
           }
         }
 
+        const tempTable = `${tableName}_cv_undo_${Date.now()}`
+
+        // Get all current columns
+        const colsResult = await db.query<{ column_name: string }>(`
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_name = '${tableName}'
+          ORDER BY ordinal_position
+        `)
+        const allColumns = colsResult.map((c) => c.column_name)
+
         // Pop the last expression
         versionInfo.expressionStack.pop()
 
         if (versionInfo.expressionStack.length === 0) {
-          // Full restore: drop computed column and rename base back to original
-          // Step 1: Drop the computed column
-          const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
-          await db.execute(dropSQL)
+          // Full restore: replace transformed column with base column, drop base
+          const selectParts: string[] = []
+          for (const col of allColumns) {
+            if (col === column) {
+              // Replace transformed column with base column value
+              selectParts.push(`${quoteColumn(versionInfo.baseColumn)} AS ${quoteColumn(col)}`)
+            } else if (col === versionInfo.baseColumn) {
+              // Skip base column (don't include it)
+              continue
+            } else {
+              selectParts.push(quoteColumn(col))
+            }
+          }
 
-          // Step 2: Rename base back to original
-          const renameSQL = `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(versionInfo.baseColumn)} TO ${quoteColumn(column)}`
-          await db.execute(renameSQL)
+          // Create temp table with restored structure
+          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+          await db.execute(ctasSQL)
+
+          // Swap tables
+          await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
+          await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
 
           // Remove from version store
           versions.delete(column)
@@ -289,14 +343,25 @@ export function createColumnVersionManager(
           }
         } else {
           // Partial undo: rebuild with remaining expressions
-          // Step 1: Drop current computed column
-          const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
-          await db.execute(dropSQL)
-
-          // Step 2: Recreate with remaining expressions
           const nestedExpr = buildNestedExpression(versionInfo.expressionStack, versionInfo.baseColumn)
-          const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
-          await db.execute(addSQL)
+
+          // Build SELECT list with reverted expression
+          const selectParts: string[] = []
+          for (const col of allColumns) {
+            if (col === column) {
+              selectParts.push(`${nestedExpr} AS ${quoteColumn(col)}`)
+            } else {
+              selectParts.push(quoteColumn(col))
+            }
+          }
+
+          // Create temp table with reverted column
+          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+          await db.execute(ctasSQL)
+
+          // Swap tables
+          await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
+          await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
 
           return {
             success: true,
@@ -388,6 +453,7 @@ export async function scanForBaseColumns(
 
 /**
  * Get SQL to undo a Tier 1 operation (for preview/dry-run)
+ * Note: These use CTAS pattern for DuckDB WASM compatibility
  */
 export function getTier1UndoSQL(
   tableName: string,
@@ -395,28 +461,35 @@ export function getTier1UndoSQL(
   versionInfo: ColumnVersionInfo
 ): string[] {
   if (versionInfo.expressionStack.length <= 1) {
-    // Full restore
+    // Full restore - replace transformed with base, drop base
     return [
-      `-- Step 1: Drop the computed column`,
-      `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
-      `-- Step 2: Restore from base`,
-      `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(versionInfo.baseColumn)} TO ${quoteColumn(column)};`,
+      `-- Full undo: Restore original column from base`,
+      `-- (Uses CTAS pattern to recreate table without base column,`,
+      `--  using base column value as the restored column)`,
+      `CREATE TABLE ${quoteTable(tableName + '_temp')} AS`,
+      `  SELECT ...other_cols..., ${quoteColumn(versionInfo.baseColumn)} AS ${quoteColumn(column)}`,
+      `  FROM ${quoteTable(tableName)};`,
+      `DROP TABLE ${quoteTable(tableName)};`,
+      `ALTER TABLE ${quoteTable(tableName + '_temp')} RENAME TO ${quoteTable(tableName)};`,
     ]
   } else {
     // Partial undo - rebuild with N-1 expressions
     const prevStack = versionInfo.expressionStack.slice(0, -1)
     const nestedExpr = buildNestedExpression(prevStack, versionInfo.baseColumn)
     return [
-      `-- Step 1: Drop the computed column`,
-      `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
-      `-- Step 2: Recreate with previous expression`,
-      `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr});`,
+      `-- Partial undo: Revert to previous expression`,
+      `CREATE TABLE ${quoteTable(tableName + '_temp')} AS`,
+      `  SELECT ...other_cols..., ${nestedExpr} AS ${quoteColumn(column)}, ${quoteColumn(versionInfo.baseColumn)}`,
+      `  FROM ${quoteTable(tableName)};`,
+      `DROP TABLE ${quoteTable(tableName)};`,
+      `ALTER TABLE ${quoteTable(tableName + '_temp')} RENAME TO ${quoteTable(tableName)};`,
     ]
   }
 }
 
 /**
  * Get SQL for a Tier 1 transformation (for preview/dry-run)
+ * Note: These use CTAS pattern for DuckDB WASM compatibility
  */
 export function getTier1ExecuteSQL(
   tableName: string,
@@ -425,24 +498,28 @@ export function getTier1ExecuteSQL(
   versionInfo: ColumnVersionInfo | undefined
 ): string[] {
   if (!versionInfo) {
-    // First transform - create base column
+    // First transform - create base column and transformed column
     const baseColumn = getBaseColumnName(column)
-    const nestedExpr = replacePlaceholder(expression, quoteColumn(baseColumn))
+    const transformedExpr = replacePlaceholder(expression, quoteColumn(column))
     return [
-      `-- Step 1: Backup original column`,
-      `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(column)} TO ${quoteColumn(baseColumn)};`,
-      `-- Step 2: Create transformed column with original name`,
-      `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr});`,
+      `-- First transform: Create base column backup and apply transformation`,
+      `CREATE TABLE ${quoteTable(tableName + '_temp')} AS`,
+      `  SELECT ...other_cols..., ${quoteColumn(column)} AS ${quoteColumn(baseColumn)}, ${transformedExpr} AS ${quoteColumn(column)}`,
+      `  FROM ${quoteTable(tableName)};`,
+      `DROP TABLE ${quoteTable(tableName)};`,
+      `ALTER TABLE ${quoteTable(tableName + '_temp')} RENAME TO ${quoteTable(tableName)};`,
     ]
   } else {
     // Chained transform - rebuild with nested expressions
     const newStack = [...versionInfo.expressionStack, { expression, commandId: 'preview' }]
     const nestedExpr = buildNestedExpression(newStack, versionInfo.baseColumn)
     return [
-      `-- Step 1: Drop current computed column`,
-      `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
-      `-- Step 2: Recreate with nested expression`,
-      `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr});`,
+      `-- Chained transform: Apply nested expression`,
+      `CREATE TABLE ${quoteTable(tableName + '_temp')} AS`,
+      `  SELECT ...other_cols..., ${nestedExpr} AS ${quoteColumn(column)}, ${quoteColumn(versionInfo.baseColumn)}`,
+      `  FROM ${quoteTable(tableName)};`,
+      `DROP TABLE ${quoteTable(tableName)};`,
+      `ALTER TABLE ${quoteTable(tableName + '_temp')} RENAME TO ${quoteTable(tableName)};`,
     ]
   }
 }

@@ -21,21 +21,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { useAuditStore } from '@/stores/auditStore'
 import { useTableStore } from '@/stores/tableStore'
 import { toast } from 'sonner'
 import {
-  applyTransformation,
-  getTransformationLabel,
   TransformationDefinition,
   validateCastType,
   CastTypeValidation,
 } from '@/lib/transformations'
 import { GroupedTransformationPicker } from '@/components/clean/GroupedTransformationPicker'
-import { getTableColumns } from '@/lib/duckdb'
-import { initializeTimeline, recordCommand } from '@/lib/timeline-engine'
-import type { TransformationStep, TransformParams } from '@/types'
-import { generateId } from '@/lib/utils'
+import { initializeTimeline } from '@/lib/timeline-engine'
+import {
+  createCommand,
+  getCommandExecutor,
+  getCommandTypeFromTransform,
+  getCommandLabel,
+} from '@/lib/commands'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -49,10 +49,7 @@ export function CleanPanel() {
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
-  const updateTable = useTableStore((s) => s.updateTable)
   const activeTable = tables.find((t) => t.id === activeTableId)
-
-  const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
 
   const columns = activeTable?.columns.map((c) => c.name) || []
 
@@ -95,93 +92,52 @@ export function CleanPanel() {
     setIsApplying(true)
 
     try {
-      // 1. Initialize timeline BEFORE transform (captures pre-state snapshot)
-      // This ensures the original snapshot exists for "Compare with Preview" diff
+      // 1. Initialize timeline BEFORE transform (captures pre-state snapshot for diff comparison)
       await initializeTimeline(activeTable.id, activeTable.name)
 
-      // 2. Build TransformationStep
-      const step: TransformationStep = {
-        id: generateId(),
-        type: selectedTransform.id,
-        label: selectedTransform.label,
-        column: selectedTransform.requiresColumn ? selectedColumn : undefined,
-        params: Object.keys(params).length > 0 ? params : undefined,
+      // 2. Get command type from transformation ID
+      const commandType = getCommandTypeFromTransform(selectedTransform.id)
+      if (!commandType) {
+        throw new Error(`Unknown transformation type: ${selectedTransform.id}`)
       }
 
-      // 3. Execute transformation (no snapshot here - timeline already initialized)
-      const result = await applyTransformation(activeTable.name, step)
-
-      // 4. Log to audit store
-      const auditEntryId = result.auditEntryId ?? generateId()
-      addTransformationEntry({
+      // 3. Build command params
+      const commandParams = {
         tableId: activeTable.id,
-        tableName: activeTable.name,
-        action: getTransformationLabel(step),
-        details: `Applied transformation. Current row count: ${result.rowCount}`,
-        rowsAffected: result.affected,
-        hasRowDetails: result.hasRowDetails,
-        auditEntryId,
-        isCapped: result.isCapped,
+        column: selectedTransform.requiresColumn ? selectedColumn : undefined,
+        ...params, // Spread additional params (find, replace, delimiter, etc.)
+      }
+
+      // 4. Create and execute command through CommandExecutor
+      const command = createCommand(commandType, commandParams)
+      const executor = getCommandExecutor()
+      const result = await executor.execute(command, {
+        onProgress: (progress) => {
+          console.log(`[Command] ${progress.phase}: ${progress.progress}%`)
+        },
       })
 
-      // 5. Update table metadata - refresh column list from DuckDB (transforms may reorder columns)
-      // Do this BEFORE recording command so we can compute affectedColumns for split_column
-      const oldColumnNames = new Set(activeTable.columns.map(c => c.name))
-      const updatedColumns = await getTableColumns(activeTable.name)
-      const newColumnNames = updatedColumns.map(c => c.name)
-
-      updateTable(activeTable.id, {
-        rowCount: result.rowCount,
-        columns: updatedColumns,  // Sync with DuckDB column order/types
-      })
-
-      // 6. Record to timeline for undo/redo
-      const timelineParams: TransformParams = {
-        type: 'transform',
-        transformationType: step.type,
-        column: step.column,
-        params: step.params,
+      // 5. Handle validation errors
+      if (!result.success && result.validationResult) {
+        const errors = result.validationResult.errors.map((e) => e.message).join(', ')
+        toast.error('Validation Failed', { description: errors })
+        return
       }
 
-      // Determine affected columns for highlighting
-      let affectedColumns: string[] | undefined
-      if (step.column) {
-        affectedColumns = [step.column]
+      // 6. Handle execution errors
+      if (!result.success) {
+        throw new Error(result.error || 'Transformation failed')
       }
-      // combine_columns: highlight the new column
-      if (step.type === 'combine_columns' && step.params?.newColumnName) {
-        affectedColumns = [step.params.newColumnName as string]
-      }
-      // split_column: highlight the NEW columns created by the split
-      if (step.type === 'split_column') {
-        // Find columns that were added by the transformation
-        const addedColumns = newColumnNames.filter(name => !oldColumnNames.has(name))
-        if (addedColumns.length > 0) {
-          affectedColumns = addedColumns
-        }
-      }
-
-      await recordCommand(
-        activeTable.id,
-        activeTable.name,
-        'transform',
-        getTransformationLabel(step),
-        timelineParams,
-        {
-          auditEntryId,
-          affectedColumns,
-          rowsAffected: result.affected,
-          hasRowDetails: result.hasRowDetails,
-        }
-      )
 
       // 7. Show success, mark last applied
+      // Executor handles: audit logging, timeline recording, store updates
+      const affected = result.executionResult?.affected ?? 0
       setLastApplied(selectedTransform.id)
       toast.success('Transformation Applied', {
-        description: `${selectedTransform.label} completed. ${result.affected} rows affected.`,
+        description: `${getCommandLabel(commandType)} completed. ${affected} rows affected.`,
       })
 
-      // 10. Reset form after delay
+      // 8. Reset form after delay
       setTimeout(() => {
         resetForm()
       }, 1500)

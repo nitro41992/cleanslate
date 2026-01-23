@@ -111,9 +111,20 @@ src/lib/commands/
 
 ---
 
-## 🚨 Phase 2.5: UI Integration - CRITICAL BLOCKER
+## ✅ Phase 2.5: UI Integration - COMPLETE
 
-**Problem**: The command system is fully built but **completely disconnected from the UI**. The application still uses the legacy `applyTransformation()` function.
+**Status**: Implemented on 2026-01-22
+
+**Changes Made**:
+1. Updated `CleanPanel.tsx` imports to use command system
+2. Replaced `executeTransformation()` logic with `CommandExecutor.execute()`
+3. Fixed column versioning to use CTAS pattern (DuckDB WASM doesn't support computed columns after table creation)
+4. Removed manual audit logging (handled by executor)
+5. Removed manual timeline recording (handled by executor)
+
+**DuckDB WASM Limitation Found**: `ALTER TABLE ADD COLUMN ... AS (expression)` is not supported. Fixed by using Create Table As Select (CTAS) pattern instead.
+
+**Previous Problem**: The command system was fully built but **completely disconnected from the UI**. The application used the legacy `applyTransformation()` function.
 
 ### Implementation Steps
 
@@ -318,26 +329,48 @@ interface TimelineCommandRecord {
 
 ## Design Notes (Reference)
 
-### Expression Chaining (Tier 1)
+### Expression Chaining (Tier 1) - CTAS Pattern
 
-Instead of multiple backup columns, chain expressions on a single base column:
+Instead of multiple backup columns, chain expressions on a single base column.
+
+**Note**: DuckDB WASM doesn't support `ADD COLUMN ... AS (expression)` after table creation.
+We use Create Table As Select (CTAS) pattern instead:
 
 ```sql
--- Step 1: trim
-ALTER TABLE "data" RENAME COLUMN "Email" TO "Email__base";
-ALTER TABLE "data" ADD COLUMN "Email" AS (TRIM("Email__base"));
+-- Step 1: trim (first transform - create base column)
+CREATE TABLE temp AS SELECT
+  col1, col2,
+  "Email" AS "Email__base",  -- backup original
+  TRIM("Email") AS "Email"   -- transformed with original name
+FROM "data";
+DROP TABLE "data";
+ALTER TABLE temp RENAME TO "data";
 
--- Step 2: lowercase (rebuild with nested expression)
-ALTER TABLE "data" DROP COLUMN "Email";
-ALTER TABLE "data" ADD COLUMN "Email" AS (LOWER(TRIM("Email__base")));
+-- Step 2: lowercase (chained transform - rebuild with nested expression)
+CREATE TABLE temp AS SELECT
+  col1, col2,
+  "Email__base",             -- keep base column
+  LOWER(TRIM("Email__base")) AS "Email"  -- nested expression
+FROM "data";
+DROP TABLE "data";
+ALTER TABLE temp RENAME TO "data";
 
--- Undo lowercase
-ALTER TABLE "data" DROP COLUMN "Email";
-ALTER TABLE "data" ADD COLUMN "Email" AS (TRIM("Email__base"));
+-- Undo lowercase (revert to previous expression)
+CREATE TABLE temp AS SELECT
+  col1, col2,
+  "Email__base",
+  TRIM("Email__base") AS "Email"
+FROM "data";
+DROP TABLE "data";
+ALTER TABLE temp RENAME TO "data";
 
--- Undo trim (full restore)
-ALTER TABLE "data" DROP COLUMN "Email";
-ALTER TABLE "data" RENAME COLUMN "Email__base" TO "Email";
+-- Undo trim (full restore - drop base, restore original)
+CREATE TABLE temp AS SELECT
+  col1, col2,
+  "Email__base" AS "Email"   -- restore from base
+FROM "data";
+DROP TABLE "data";
+ALTER TABLE temp RENAME TO "data";
 ```
 
 **ColumnVersionInfo structure:**
@@ -366,16 +399,19 @@ interface ColumnInfo {
 
 ### Error Recovery for Expression Rebuild
 
-Rollback protection if `DROP COLUMN` succeeds but `ADD COLUMN` fails:
+With CTAS pattern, atomic swap is simpler - if CTAS fails, original table is untouched:
 ```typescript
-async rebuildComputedColumn(tableName, column, newExprStack) {
-  const currentExpr = buildNestedExpression(info.expressionStack, info.baseColumn)
+async createVersion(tableName, column, expression, commandId) {
+  const tempTable = `${tableName}_cv_temp_${Date.now()}`
   try {
-    await db.execute(`DROP COLUMN "${column}"`)
-    await db.execute(`ADD COLUMN "${column}" AS (${newExpr})`)
+    // Build and execute CTAS (original table untouched)
+    await db.execute(`CREATE TABLE ${tempTable} AS SELECT ... FROM ${tableName}`)
+    // Only now do we swap (atomic)
+    await db.execute(`DROP TABLE ${tableName}`)
+    await db.execute(`ALTER TABLE ${tempTable} RENAME TO ${tableName}`)
   } catch (error) {
-    // Rollback: restore previous computed column
-    await db.execute(`ADD COLUMN "${column}" AS (${currentExpr})`)
+    // Cleanup temp table if it exists (original table untouched)
+    await db.execute(`DROP TABLE IF EXISTS ${tempTable}`)
     throw error
   }
 }
