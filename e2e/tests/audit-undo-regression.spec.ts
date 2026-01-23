@@ -493,4 +493,62 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     expect(age).toBeGreaterThanOrEqual(0)
     expect(age).toBeLessThanOrEqual(150) // Reasonable age range
   })
+
+  test('FR-REGRESSION-10: New columns should show as modified rows in diff view', async () => {
+    // This test verifies that diff view correctly detects new columns (e.g., from Calculate Age)
+    // Previously, the diff would show "No differences found" because new columns were excluded
+    // from the modification condition.
+
+    await loadDateTestData()
+
+    // Apply Calculate Age (adds new 'age' column)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Calculate Age', { column: 'birth_date' })
+    await laundromat.closePanel()
+    await page.waitForTimeout(500)
+
+    // Verify the 'age' column was created
+    const columns = await inspector.runQuery(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'fr_a3_dates_split' AND column_name = 'age'
+    `)
+    expect(columns.length).toBe(1)
+
+    // Open diff view using toolbar button
+    await page.click('[data-testid="toolbar-diff"]')
+    await page.waitForSelector('[data-testid="diff-view"]', { timeout: 5000 })
+
+    // Select key column (id) - click the checkbox by targeting the label containing "id"
+    // The key column checkboxes have id="key-{column_name}"
+    const keyColumnCheckbox = page.locator('label').filter({ hasText: /^id$/ }).first()
+    await expect(keyColumnCheckbox).toBeVisible({ timeout: 3000 })
+    await keyColumnCheckbox.click()
+
+    // Click "Run Comparison" button
+    await page.click('[data-testid="diff-compare-btn"]')
+    await page.waitForTimeout(1000)
+
+    // With the new approach (following daff/coopy pattern):
+    // - Schema changes (new columns) are shown in a BANNER, not in row counts
+    // - Row counts only reflect actual row-level changes
+    // - So Calculate Age alone shows "1 COLUMN ADDED: age" banner + "0 Changed" in pills
+
+    // Verify the schema changes banner shows "1 column added" (case insensitive)
+    const schemaBanner = page.locator('text=/column.*added/i')
+    await expect(schemaBanner).toBeVisible({ timeout: 5000 })
+
+    // The diff view should show the "No row-level changes" message
+    // since Calculate Age only adds a column, doesn't modify existing row values
+    const noRowChanges = page.locator('text=No row-level changes')
+    await expect(noRowChanges).toBeVisible({ timeout: 5000 })
+
+    // Verify the "Changed" pill shows 0 (not inflated by new column data)
+    const changedPill = page.locator('[data-testid="diff-pill-modified"]')
+    const changedText = await changedPill.textContent()
+    expect(changedText).toContain('0')
+
+    // Close the diff view
+    await page.keyboard.press('Escape')
+  })
 })

@@ -49,8 +49,10 @@ interface VirtualizedDiffGridProps {
   keyColumns: string[]
   keyOrderBy: string
   blindMode?: boolean
-  newColumns?: string[]      // Columns added (in current but not original)
-  removedColumns?: string[]  // Columns removed (in original but not current)
+  /** Columns in A (original) but not B (current) - from diff engine's perspective */
+  newColumns?: string[]
+  /** Columns in B (current) but not A (original) - from diff engine's perspective */
+  removedColumns?: string[]
 }
 
 const PAGE_SIZE = 500
@@ -71,6 +73,15 @@ export function VirtualizedDiffGrid({
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
 
+  // IMPORTANT: Perspective swap for display
+  // The diff engine computes columns from tableA's perspective where A=original, B=current:
+  //   newColumns     = Set(A) - Set(B) = columns in original not current = USER's REMOVED columns
+  //   removedColumns = Set(B) - Set(A) = columns in current not original = USER's NEW columns
+  //
+  // We swap the names here to match user expectations in the UI:
+  const userNewColumns = removedColumns    // columns added to current (e.g., 'age' from Calculate Age)
+  const userRemovedColumns = newColumns    // columns removed from current
+
   // Build grid columns: Status (if not blind mode) + all data columns
   const gridColumns: GridColumn[] = useMemo(() => {
     const cols: GridColumn[] = []
@@ -87,11 +98,12 @@ export function VirtualizedDiffGrid({
     // Each column shows A→B for modified, or the value for added/removed
     for (const col of allColumns) {
       // Build column title with badges for key/new/removed status
+      // Use user perspective for badges (swapped from engine perspective)
       let title = col
       const badges: string[] = []
       if (keyColumns.includes(col)) badges.push('KEY')
-      if (newColumns.includes(col)) badges.push('+NEW')
-      if (removedColumns.includes(col)) badges.push('-DEL')
+      if (userNewColumns.includes(col)) badges.push('+NEW')
+      if (userRemovedColumns.includes(col)) badges.push('-DEL')
       if (badges.length > 0) {
         title = `${col} (${badges.join(', ')})`
       }
@@ -104,7 +116,7 @@ export function VirtualizedDiffGrid({
     }
 
     return cols
-  }, [allColumns, keyColumns, newColumns, removedColumns, blindMode])
+  }, [allColumns, keyColumns, userNewColumns, userRemovedColumns, blindMode])
 
   // Load initial data
   useEffect(() => {
@@ -191,6 +203,7 @@ export function VirtualizedDiffGrid({
       }
 
       const status = rowData.diff_status
+      // A = original/source, B = current/target
       const valA = rowData[`a_${colName}`]
       const valB = rowData[`b_${colName}`]
       const strA = valA === null || valA === undefined ? '' : String(valA)
@@ -198,16 +211,26 @@ export function VirtualizedDiffGrid({
 
       let displayValue: string
       if (status === 'added') {
+        // Row exists in B (current) only - show current value
         displayValue = strB
       } else if (status === 'removed') {
+        // Row exists in A (original) only - show original value
+        displayValue = strA
+      } else if (userNewColumns.includes(colName)) {
+        // New column (in B/current) - show current value (this is added data)
+        displayValue = strB
+      } else if (userRemovedColumns.includes(colName)) {
+        // Removed column (in A/original) - show original value (this is removed data)
         displayValue = strA
       } else {
         // Modified or unchanged - show A→B for modified columns
-        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, newColumns, removedColumns)
+        // Pass engine perspective to getModifiedColumns (it uses those names internally)
+        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, userRemovedColumns, userNewColumns)
         if (modifiedCols.includes(colName)) {
           displayValue = `${strA} → ${strB}`
         } else {
-          displayValue = strA
+          // Show current value for unchanged columns
+          displayValue = strB
         }
       }
 
@@ -219,7 +242,7 @@ export function VirtualizedDiffGrid({
         readonly: true,
       }
     },
-    [data, allColumns, keyColumns, newColumns, removedColumns, loadedRange.start, blindMode]
+    [data, allColumns, keyColumns, userNewColumns, userRemovedColumns, loadedRange.start, blindMode]
   )
 
   // Custom cell drawing for modified cells (show A→B with styling)
@@ -253,12 +276,70 @@ export function VirtualizedDiffGrid({
       const colName = allColumns[colIndex]
       const status = rowData.diff_status
 
-      // Check if this specific column was modified
-      const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, newColumns, removedColumns)
+      // Use user perspective for column classification
+      // userNewColumns = columns added to current (in B)
+      // userRemovedColumns = columns removed from current (in A only)
+      const isUserNewColumn = userNewColumns.includes(colName)
+      const isUserRemovedColumn = userRemovedColumns.includes(colName)
+      // Check if this specific column was modified (pass engine perspective to getModifiedColumns)
+      const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, userRemovedColumns, userNewColumns)
       const isModified = status === 'modified' && modifiedCols.includes(colName)
+
+      // Handle new columns (in B/current) - show with green styling
+      if (isUserNewColumn && status !== 'removed') {
+        // New columns are in B (current), so show strB
+        const valB = rowData[`b_${colName}`]
+        const strB = valB === null || valB === undefined ? '' : String(valB)
+
+        // Clear background with green highlight (added data)
+        ctx.save()
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.15)'
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+
+        // Draw text
+        ctx.font = '13px ui-sans-serif, system-ui, sans-serif'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = '#22c55e'  // Green text for new data
+        ctx.fillText(strB, rect.x + 8, rect.y + rect.height / 2)
+
+        ctx.restore()
+        return
+      }
+
+      // Handle removed columns (in A/original) - show with red styling
+      if (isUserRemovedColumn && status !== 'added') {
+        // Removed columns are in A (original), so show strA
+        const valA = rowData[`a_${colName}`]
+        const strA = valA === null || valA === undefined ? '' : String(valA)
+
+        // Clear background with red highlight (removed data)
+        ctx.save()
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.15)'
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+
+        // Draw text with strikethrough
+        ctx.font = '13px ui-sans-serif, system-ui, sans-serif'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = '#ef4444'  // Red text for removed data
+        const y = rect.y + rect.height / 2
+        ctx.fillText(strA, rect.x + 8, y)
+
+        // Strikethrough line
+        const textWidth = ctx.measureText(strA).width
+        ctx.strokeStyle = '#ef4444'
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(rect.x + 8, y)
+        ctx.lineTo(rect.x + 8 + textWidth, y)
+        ctx.stroke()
+
+        ctx.restore()
+        return
+      }
 
       if (isModified) {
         // Custom draw for modified cells: strikethrough old value + arrow + new value
+        // A = original, B = current
         const valA = rowData[`a_${colName}`]
         const valB = rowData[`b_${colName}`]
         const strA = valA === null || valA === undefined ? '' : String(valA)
@@ -304,7 +385,7 @@ export function VirtualizedDiffGrid({
         draw()
       }
     },
-    [data, allColumns, keyColumns, newColumns, removedColumns, loadedRange.start, blindMode]
+    [data, allColumns, keyColumns, userNewColumns, userRemovedColumns, loadedRange.start, blindMode]
   )
 
   // Row theme based on diff status
@@ -324,11 +405,19 @@ export function VirtualizedDiffGrid({
         return { bgCell: 'rgba(239, 68, 68, 0.12)' }
       }
       if (status === 'modified') {
+        // Check if any SHARED columns were actually modified
+        // If only new/removed columns have changes, don't show yellow row background
+        // Pass engine perspective to getModifiedColumns (swapped from user perspective)
+        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, userRemovedColumns, userNewColumns)
+        if (modifiedCols.length === 0) {
+          // Only new/removed columns changed - no row-level highlight
+          return undefined
+        }
         return { bgCell: 'rgba(234, 179, 8, 0.08)' }
       }
       return undefined
     },
-    [data, loadedRange.start, blindMode]
+    [data, loadedRange.start, blindMode, allColumns, keyColumns, userNewColumns, userRemovedColumns]
   )
 
   if (isLoading) {
@@ -344,13 +433,22 @@ export function VirtualizedDiffGrid({
   }
 
   if (totalRows === 0) {
+    // Check if there are column-level changes (shown in the banner above)
+    const hasColumnChanges = userNewColumns.length > 0 || userRemovedColumns.length > 0
+
     return (
       <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8">
         <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
-          <span className="text-2xl">✓</span>
+          <span className="text-2xl">{hasColumnChanges ? '📊' : '✓'}</span>
         </div>
-        <p className="font-medium">No differences found</p>
-        <p className="text-sm mt-1">The tables are identical</p>
+        <p className="font-medium">
+          {hasColumnChanges ? 'No row-level changes' : 'No differences found'}
+        </p>
+        <p className="text-sm mt-1 text-center max-w-xs">
+          {hasColumnChanges
+            ? 'Column structure changed (see banner above), but no individual row values were modified.'
+            : 'The tables are identical'}
+        </p>
       </div>
     )
   }

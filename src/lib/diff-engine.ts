@@ -64,9 +64,9 @@ export interface DiffConfig {
   allColumns: string[]
   keyColumns: string[]
   keyOrderBy: string
-  /** Columns that exist in table A (current) but not in table B (original) */
+  /** Columns that exist in table A (source/original) but not in table B (target/current) */
   newColumns: string[]
-  /** Columns that exist in table B (original) but not in table A (current) */
+  /** Columns that exist in table B (target/current) but not in table A (source/original) */
   removedColumns: string[]
 }
 
@@ -78,6 +78,7 @@ export interface DiffRow {
   diff_status: 'added' | 'removed' | 'modified' | 'unchanged'
   [key: string]: unknown
 }
+
 
 /**
  * Run diff comparison using a temp table approach for scalability.
@@ -162,9 +163,11 @@ export async function runDiff(
       })
       .join(', ')
 
-    // Columns that exist in A (current) but not in B (original) = new columns
+    // Columns that exist in A (source/original) but not in B (target/current)
+    // From user's perspective: these columns were REMOVED from current
     const newColumns = [...colsASet].filter((c) => !colsBSet.has(c))
-    // Columns that exist in B (original) but not in A (current) = removed columns
+    // Columns that exist in B (target/current) but not in A (source/original)
+    // From user's perspective: these columns were ADDED to current (e.g., 'age' from Calculate Age)
     const removedColumns = [...colsBSet].filter((c) => !colsASet.has(c))
 
     const allColumns = [
@@ -191,8 +194,28 @@ export async function runDiff(
     // Generate unique temp table name
     const diffTableName = `_diff_${Date.now()}`
 
+    // Build modification condition:
+    // A row is "modified" ONLY if shared column values differ.
+    // This prevents misleading counts like "100k modified" when Calculate Age
+    // adds a column - that's a structural change, not a value modification.
+    const sharedColModificationExpr = valueColumns.length > 0
+      ? valueColumns
+          .map((c) => `CAST(a."${c}" AS VARCHAR) IS DISTINCT FROM CAST(b."${c}" AS VARCHAR)`)
+          .join(' OR ')
+      : 'FALSE'
+
     // Phase 1: Create temp table (JOIN executes once)
     // Include all rows (even unchanged) in case we add "Show Unchanged" toggle later
+    //
+    // Status meanings:
+    // - 'added' - row exists only in B (current) = new row
+    // - 'removed' - row exists only in A (original) = deleted row
+    // - 'modified' - shared column values differ (meaningful value changes)
+    // - 'unchanged' - no differences in shared columns
+    //
+    // NOTE: Column-level changes (new/removed columns) are tracked separately
+    // via newColumns/removedColumns arrays and shown in a banner, not in row counts.
+    // This follows the daff/coopy pattern of separating schema changes from row changes.
     const createTempTableQuery = `
       CREATE TEMP TABLE "${diffTableName}" AS
       SELECT
@@ -200,11 +223,7 @@ export async function runDiff(
         CASE
           WHEN ${keyColumns.map((c) => `a."${c}" IS NULL`).join(' AND ')} THEN 'added'
           WHEN ${keyColumns.map((c) => `b."${c}" IS NULL`).join(' AND ')} THEN 'removed'
-          WHEN ${
-            valueColumns.length > 0
-              ? valueColumns.map((c) => `CAST(a."${c}" AS VARCHAR) IS DISTINCT FROM CAST(b."${c}" AS VARCHAR)`).join(' OR ')
-              : 'FALSE'
-          } THEN 'modified'
+          WHEN ${sharedColModificationExpr} THEN 'modified'
           ELSE 'unchanged'
         END as diff_status
       FROM "${tableA}" a
@@ -271,6 +290,7 @@ export async function runDiff(
     }
 
     // Phase 3: Get total non-unchanged count for grid
+    // Note: Column-level changes are shown separately in a banner
     const totalDiffRows = summary.added + summary.removed + summary.modified
 
     return {
@@ -303,7 +323,7 @@ export async function fetchDiffPage(
 ): Promise<DiffRow[]> {
   return query<DiffRow>(`
     SELECT * FROM "${tempTableName}"
-    WHERE diff_status != 'unchanged'
+    WHERE diff_status IN ('added', 'removed', 'modified')
     ORDER BY diff_status, ${keyOrderBy}
     LIMIT ${limit} OFFSET ${offset}
   `)

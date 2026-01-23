@@ -135,9 +135,15 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         targetTableName = tableBInfo.name
       }
 
+      // runDiff(tableA, tableB) where A=source/original, B=target/current
+      // Semantic model:
+      // - a.key IS NULL → 'added' (row in B only = new row in current)
+      // - b.key IS NULL → 'removed' (row in A only = deleted from current)
+      // - newColumns = columns in A but not B = columns REMOVED from current
+      // - removedColumns = columns in B but not A = columns ADDED to current (user's "new columns")
       const config = await runDiff(
-        sourceTableName,
-        targetTableName,
+        sourceTableName,   // original snapshot (A)
+        targetTableName,   // current table (B)
         keyColumns
       )
 
@@ -314,6 +320,34 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         <div className="flex-1 flex flex-col min-w-0">
           {hasResults ? (
             <>
+              {/* Schema Changes Banner - shown when columns were added/removed */}
+              {(removedColumns.length > 0 || newColumns.length > 0) && (
+                <div className="px-4 py-3 border-b border-border/50 bg-emerald-500/10 flex items-center gap-3 flex-wrap">
+                  {/* removedColumns = columns in B (current) not in A (original) = USER's NEW columns */}
+                  {removedColumns.length > 0 && (
+                    <div className="flex items-center gap-2 text-emerald-400">
+                      <span className="text-xs font-medium uppercase tracking-wider">
+                        {removedColumns.length} column{removedColumns.length !== 1 ? 's' : ''} added:
+                      </span>
+                      <span className="font-mono text-sm">
+                        {removedColumns.join(', ')}
+                      </span>
+                    </div>
+                  )}
+                  {/* newColumns = columns in A (original) not in B (current) = USER's REMOVED columns */}
+                  {newColumns.length > 0 && (
+                    <div className="flex items-center gap-2 text-red-400">
+                      <span className="text-xs font-medium uppercase tracking-wider">
+                        {newColumns.length} column{newColumns.length !== 1 ? 's' : ''} removed:
+                      </span>
+                      <span className="font-mono text-sm line-through">
+                        {newColumns.join(', ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Summary Pills */}
               <div className="p-4 border-b border-border/50 bg-card/30">
                 <DiffSummaryPills summary={summary} />
