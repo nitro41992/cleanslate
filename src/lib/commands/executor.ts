@@ -37,6 +37,10 @@ import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { duplicateTable, dropTable, tableExists } from '@/lib/duckdb'
+import {
+  ensureAuditDetailsTable,
+  captureTier23RowDetails,
+} from './audit-capture'
 import { getBaseColumnName } from './column-versions'
 import type { TimelineCommandType } from '@/types'
 
@@ -161,6 +165,18 @@ export class CommandExecutor implements ICommandExecutor {
         await this.pruneOldestSnapshot(getTimeline(tableId))
       }
 
+      // Step 3.5: Pre-capture row details for Tier 2/3 (BEFORE transformation)
+      // Tier 2/3 transforms modify data in-place, so we must capture "before" values now
+      // Tier 1 uses __base columns, so it captures AFTER execution
+      const preGeneratedAuditEntryId = `audit_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+      if (!skipAudit && tier !== 1) {
+        try {
+          await this.capturePreExecutionDetails(ctx, command, preGeneratedAuditEntryId)
+        } catch (err) {
+          console.warn('[EXECUTOR] Failed to capture pre-execution row details:', err)
+        }
+      }
+
       // Step 4: Execute
       progress('executing', 40, 'Executing command...')
       const executionResult = await command.execute(ctx)
@@ -185,6 +201,11 @@ export class CommandExecutor implements ICommandExecutor {
       if (!skipAudit) {
         progress('auditing', 60, 'Recording audit log...')
         auditInfo = command.getAuditInfo(updatedCtx, executionResult)
+        // Use pre-generated auditEntryId for Tier 2/3 (captured before execution)
+        // Tier 1 will generate its own or use this one
+        if (tier !== 1) {
+          auditInfo.auditEntryId = preGeneratedAuditEntryId
+        }
         this.recordAudit(ctx.table.id, ctx.table.name, auditInfo)
       }
 
@@ -227,16 +248,16 @@ export class CommandExecutor implements ICommandExecutor {
         this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo)
       }
 
-      // Capture row-level details for drill-down (after timeline sync)
-      if (!skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId) {
+      // Capture row-level details for Tier 1 only (uses __base columns, must be AFTER execution)
+      // Tier 2/3 already captured BEFORE execution in Step 3.5
+      if (!skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1) {
         try {
-          const column = (command.params as { column?: string }).column
-          if (column && tier === 1) {
-            // Tier 1: Use versioned column__base for before values
-            await this.captureTier1RowDetails(updatedCtx, column, auditInfo.auditEntryId)
-          }
+          await this.captureTier1RowDetails(updatedCtx,
+            (command.params as { column?: string }).column!,
+            auditInfo.auditEntryId
+          )
         } catch (err) {
-          console.warn('[EXECUTOR] Failed to capture row details:', err)
+          console.warn('[EXECUTOR] Failed to capture Tier 1 row details:', err)
           // Non-critical - don't fail the command
         }
       }
@@ -626,6 +647,12 @@ export class CommandExecutor implements ICommandExecutor {
       cellChanges = commandWithCellChanges.getCellChanges()
     }
 
+    // Get affected columns from command params
+    const commandParams = command.params as { column?: string; columns?: string[] }
+    const affectedColumns = commandParams.column
+      ? [commandParams.column]
+      : commandParams.columns ?? []
+
     // Create record
     const record: TimelineCommandRecord = {
       id: command.id,
@@ -638,7 +665,7 @@ export class CommandExecutor implements ICommandExecutor {
       backupColumn,
       inverseSql,
       rowPredicate,
-      affectedColumns: [], // Will be populated from audit info
+      affectedColumns,
       cellChanges,
     }
 
@@ -697,6 +724,41 @@ export class CommandExecutor implements ICommandExecutor {
     if (commandType === 'standardize:apply') return 'standardize'
     if (commandType.startsWith('scrub:')) return 'scrub'
     return 'transform'
+  }
+
+  /**
+   * Capture row-level audit details BEFORE execution for Tier 2/3 commands.
+   * Must be called BEFORE command.execute() to capture original "before" values.
+   *
+   * Tier 2/3 transforms modify data in-place without __base columns,
+   * so we must capture the current values as "previous" before they change.
+   */
+  private async capturePreExecutionDetails(
+    ctx: CommandContext,
+    command: Command,
+    auditEntryId: string
+  ): Promise<void> {
+    const column = (command.params as { column?: string }).column
+
+    await ensureAuditDetailsTable(ctx.db)
+
+    // Extract transform type from command type (e.g., 'transform:standardize_date' -> 'standardize_date')
+    const transformationType = command.type
+      .replace('transform:', '')
+      .replace('scrub:', '')
+      .replace('edit:', '')
+
+    // Only capture if we have a column (most transforms) or it's a structural transform
+    const isStructuralTransform = ['combine_columns', 'split_column'].includes(transformationType)
+    if (column || isStructuralTransform) {
+      await captureTier23RowDetails(ctx.db, {
+        tableName: ctx.table.name,
+        column: column || '',
+        transformationType,
+        auditEntryId,
+        params: command.params as Record<string, unknown>,
+      })
+    }
   }
 
   /**

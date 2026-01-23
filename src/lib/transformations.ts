@@ -2,11 +2,24 @@ import { execute, query, CS_ID_COLUMN, getTableColumns } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { TransformationStep, TransformationType } from '@/types'
 import { generateId } from '@/lib/utils'
+import {
+  ensureAuditDetailsTable,
+  captureTier23RowDetails,
+  ROW_DETAIL_THRESHOLD,
+  type DbConnection,
+} from '@/lib/commands/audit-capture'
 
-// Max rows for which we capture row-level details (performance threshold)
-// 50k is safe for browser memory; existing pagination handles display efficiently
-// We cap instead of skip - users always get sample data, even for massive changes
-const ROW_DETAIL_THRESHOLD = 50_000
+// Adapter to use global DB functions with the new DbConnection interface
+const globalDbConnection: DbConnection = {
+  query: query,
+  execute: execute,
+}
+
+// Re-export for backwards compatibility with existing imports
+// Wrapped to use global DB connection
+export async function ensureAuditDetailsTableCompat(): Promise<void> {
+  return ensureAuditDetailsTable(globalDbConnection)
+}
 
 export interface TransformationResult {
   rowCount: number
@@ -491,27 +504,6 @@ export const TRANSFORMATION_GROUPS = [
 export type TransformationGroupColor = typeof TRANSFORMATION_GROUPS[number]['color']
 
 /**
- * Ensure _audit_details table exists
- */
-export async function ensureAuditDetailsTable(): Promise<void> {
-  await execute(`
-    CREATE TABLE IF NOT EXISTS _audit_details (
-      id VARCHAR PRIMARY KEY,
-      audit_entry_id VARCHAR NOT NULL,
-      row_index INTEGER NOT NULL,
-      column_name VARCHAR NOT NULL,
-      previous_value VARCHAR,
-      new_value VARCHAR,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `)
-  // Create index if not exists
-  await execute(`
-    CREATE INDEX IF NOT EXISTS idx_audit_entry ON _audit_details(audit_entry_id)
-  `)
-}
-
-/**
  * Query count of rows that will be affected by a transformation BEFORE execution
  */
 async function countAffectedRows(
@@ -734,8 +726,10 @@ async function countAffectedRows(
 }
 
 /**
- * Capture row-level details for a transformation
- * Returns the rows that will be changed with their before/after values
+ * Capture row-level details for a transformation.
+ * Delegates to shared audit-capture.ts utility.
+ *
+ * @deprecated Use audit-capture.ts directly for new code
  */
 async function captureRowDetails(
   tableName: string,
@@ -743,319 +737,25 @@ async function captureRowDetails(
   auditEntryId: string,
   affectedCount: number
 ): Promise<boolean> {
-  // "Cap, Don't Skip": Only skip if truly nothing to capture
-  // The INSERT uses LIMIT ${ROW_DETAIL_THRESHOLD} to cap large datasets
-  const isStructuralTransform = step.type === 'combine_columns' || step.type === 'split_column'
+  // Skip if no rows affected
   if (affectedCount <= 0) {
     return false
   }
+
+  // Structural transforms don't require a column
+  const isStructuralTransform = step.type === 'combine_columns' || step.type === 'split_column'
   if (!step.column && !isStructuralTransform) {
     return false
   }
 
-  const column = `"${step.column}"`
-
-  // Build query to get affected rows with their rowid and current value
-  let whereClause: string
-  let newValueExpression: string
-
-  switch (step.type) {
-    case 'trim':
-      whereClause = `${column} IS NOT NULL AND ${column} != TRIM(${column})`
-      newValueExpression = `TRIM(${column})`
-      break
-
-    case 'lowercase':
-      whereClause = `${column} IS NOT NULL AND ${column} != LOWER(${column})`
-      newValueExpression = `LOWER(${column})`
-      break
-
-    case 'uppercase':
-      whereClause = `${column} IS NOT NULL AND ${column} != UPPER(${column})`
-      newValueExpression = `UPPER(${column})`
-      break
-
-    case 'replace': {
-      const find = (step.params?.find as string) || ''
-      const replaceWith = (step.params?.replace as string) || ''
-      const caseSensitive = (step.params?.caseSensitive as string) ?? 'true'
-      const matchType = (step.params?.matchType as string) ?? 'contains'
-      const escapedFind = find.replace(/'/g, "''")
-      const escapedReplace = replaceWith.replace(/'/g, "''")
-
-      if (matchType === 'exact') {
-        if (caseSensitive === 'false') {
-          whereClause = `LOWER(${column}) = LOWER('${escapedFind}')`
-          newValueExpression = `CASE WHEN LOWER(${column}) = LOWER('${escapedFind}') THEN '${escapedReplace}' ELSE ${column} END`
-        } else {
-          whereClause = `${column} = '${escapedFind}'`
-          newValueExpression = `'${escapedReplace}'`
-        }
-      } else {
-        // contains
-        if (caseSensitive === 'false') {
-          const regexEscaped = escapedFind.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-          whereClause = `LOWER(${column}) LIKE LOWER('%${escapedFind}%')`
-          newValueExpression = `REGEXP_REPLACE(${column}, '${regexEscaped}', '${escapedReplace}', 'gi')`
-        } else {
-          whereClause = `${column} LIKE '%${escapedFind}%'`
-          newValueExpression = `REPLACE(${column}, '${escapedFind}', '${escapedReplace}')`
-        }
-      }
-      break
-    }
-
-    case 'title_case':
-      // Capture rows that will change (non-empty values)
-      whereClause = `${column} IS NOT NULL AND TRIM(${column}) != ''`
-      newValueExpression = `list_reduce(
-        list_transform(
-          string_split(lower(${column}), ' '),
-          w -> concat(upper(substring(w, 1, 1)), substring(w, 2))
-        ),
-        (x, y) -> concat(x, ' ', y)
-      )`
-      break
-
-    case 'remove_accents':
-      whereClause = `${column} IS NOT NULL AND ${column} != strip_accents(${column})`
-      newValueExpression = `strip_accents(${column})`
-      break
-
-    case 'remove_non_printable':
-      whereClause = `${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
-      newValueExpression = `regexp_replace(${column}, '[\\x00-\\x1F\\x7F]', '', 'g')`
-      break
-
-    case 'collapse_spaces':
-      whereClause = `${column} IS NOT NULL AND ${column} != regexp_replace(${column}, '[ \\t\\n\\r]+', ' ', 'g')`
-      newValueExpression = `regexp_replace(${column}, '[ \\t\\n\\r]+', ' ', 'g')`
-      break
-
-    case 'sentence_case':
-      whereClause = `${column} IS NOT NULL AND TRIM(${column}) != ''`
-      newValueExpression = `concat(upper(substring(${column}, 1, 1)), lower(substring(${column}, 2)))`
-      break
-
-    case 'unformat_currency':
-      whereClause = `${column} IS NOT NULL AND (${column} LIKE '%$%' OR ${column} LIKE '%,%')`
-      newValueExpression = `CAST(TRY_CAST(REPLACE(REPLACE(REPLACE(${column}, '$', ''), ',', ''), ' ', '') AS DOUBLE) AS VARCHAR)`
-      break
-
-    case 'fix_negatives':
-      whereClause = `${column} IS NOT NULL AND ${column} LIKE '%(%' AND ${column} LIKE '%)'`
-      newValueExpression = `CAST(
-        CASE WHEN ${column} LIKE '%(%' AND ${column} LIKE '%)'
-        THEN -TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(${column}, '(', ''), ')', ''), '$', ''), ',', '') AS DOUBLE)
-        ELSE TRY_CAST(REPLACE(REPLACE(${column}, '$', ''), ',', '') AS DOUBLE)
-        END AS VARCHAR)`
-      break
-
-    case 'pad_zeros': {
-      const padLength = Number(step.params?.length) || 5
-      whereClause = `${column} IS NOT NULL AND LENGTH(CAST(${column} AS VARCHAR)) < ${padLength}`
-      newValueExpression = `LPAD(CAST(${column} AS VARCHAR), ${padLength}, '0')`
-      break
-    }
-
-    case 'standardize_date': {
-      const format = (step.params?.format as string) || 'YYYY-MM-DD'
-      const formatMap: Record<string, string> = {
-        'YYYY-MM-DD': '%Y-%m-%d',
-        'MM/DD/YYYY': '%m/%d/%Y',
-        'DD/MM/YYYY': '%d/%m/%Y',
-      }
-      const strftimeFormat = formatMap[format] || '%Y-%m-%d'
-      whereClause = `${column} IS NOT NULL AND TRIM(CAST(${column} AS VARCHAR)) != ''`
-      // Use same COALESCE pattern as actual transformation to handle all date formats
-      newValueExpression = `strftime(
-        COALESCE(
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y-%m-%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y%m%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m/%d/%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d/%m/%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y/%m/%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d-%m-%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m-%d-%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y.%m.%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d.%m.%Y'),
-          TRY_CAST(${column} AS DATE)
-        ),
-        '${strftimeFormat}'
-      )`
-      break
-    }
-
-    case 'calculate_age':
-      // Creates new 'age' column - capture rows with valid dates
-      // Use same COALESCE pattern as standardize_date for date parsing
-      whereClause = `${column} IS NOT NULL`
-      newValueExpression = `CAST(DATE_DIFF('year',
-        COALESCE(
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y-%m-%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y%m%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m/%d/%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d/%m/%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y/%m/%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d-%m-%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%m-%d-%Y'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%Y.%m.%d'),
-          TRY_STRPTIME(CAST(${column} AS VARCHAR), '%d.%m.%Y'),
-          TRY_CAST(${column} AS DATE)
-        ),
-        CURRENT_DATE
-      ) AS VARCHAR)`
-      break
-
-    case 'fill_down':
-      // Capture rows that were null/empty and will get filled with the actual value from above
-      whereClause = `${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
-      newValueExpression = `LAST_VALUE(NULLIF(TRIM(CAST(${column} AS VARCHAR)), '') IGNORE NULLS) OVER (
-        ORDER BY rowid ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-      )`
-      break
-
-    case 'cast_type': {
-      const targetType = (step.params?.targetType as string) || 'VARCHAR'
-      whereClause = `${column} IS NOT NULL`
-      newValueExpression = `CAST(TRY_CAST(${column} AS ${targetType}) AS VARCHAR)`
-      break
-    }
-
-    case 'replace_empty': {
-      // Capture rows where empty/null values will be replaced
-      const replaceWith = (step.params?.replaceWith as string) ?? ''
-      const escapedReplacement = replaceWith.replace(/'/g, "''")
-      whereClause = `${column} IS NULL OR TRIM(CAST(${column} AS VARCHAR)) = ''`
-      newValueExpression = `'${escapedReplacement}'`
-      break
-    }
-
-    case 'combine_columns': {
-      const columnList = (step.params?.columns as string || '').split(',').map(c => c.trim()).filter(Boolean)
-      // If delimiter contains non-whitespace chars, trim it (fixes " |" issue when user types "|")
-      let delimiter = (step.params?.delimiter as string) ?? ' '
-      if (delimiter.trim().length > 0) {
-        delimiter = delimiter.trim()
-      }
-      const newColName = (step.params?.newColumnName as string) || 'combined'
-      const ignoreEmpty = (step.params?.ignoreEmpty as string) !== 'false'
-      const escapedDelim = delimiter.replace(/'/g, "''")
-
-      if (columnList.length < 2) return false
-
-      // Previous value: show source columns joined with ' + ' for readability
-      const prevExpr = columnList.map(c => `COALESCE(TRIM(CAST("${c}" AS VARCHAR)), '<empty>')`).join(` || ' + ' || `)
-
-      // New value: the combined result
-      let combineNewExpr: string
-      if (ignoreEmpty) {
-        const colRefs = columnList.map(c => `NULLIF(TRIM(CAST("${c}" AS VARCHAR)), '')`).join(', ')
-        combineNewExpr = `CONCAT_WS('${escapedDelim}', ${colRefs})`
-      } else {
-        const colRefs = columnList.map(c => `COALESCE(TRIM(CAST("${c}" AS VARCHAR)), '')`).join(`, '${escapedDelim}', `)
-        combineNewExpr = `CONCAT(${colRefs})`
-      }
-
-      await ensureAuditDetailsTable()
-      const escapedNewCol = newColName.replace(/'/g, "''")
-      const combineInsertSql = `
-        INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
-        SELECT uuid(), '${auditEntryId}', rowid, '${escapedNewCol}', ${prevExpr}, ${combineNewExpr}, CURRENT_TIMESTAMP
-        FROM "${tableName}"
-        LIMIT ${ROW_DETAIL_THRESHOLD}
-      `
-      await execute(combineInsertSql)
-
-      const combineCountResult = await query<{ count: number }>(
-        `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
-      )
-      return Number(combineCountResult[0].count) > 0
-    }
-
-    case 'split_column': {
-      const col = step.column!
-      const splitMode = (step.params?.splitMode as string) || 'delimiter'
-
-      // Previous value: the original column value
-      const splitPrevExpr = `CAST("${col}" AS VARCHAR)`
-
-      // New value: shows actual split result for better audit fidelity
-      let splitNewExpr: string
-      if (splitMode === 'delimiter') {
-        const delimiter = (step.params?.delimiter as string) || ' '
-        const escapedDelim = delimiter.replace(/'/g, "''")
-        // Use DuckDB LIST output for readable "[a, b, c]" format
-        splitNewExpr = `'Split by "' || '${escapedDelim}' || '": ' || CAST(string_split(CAST("${col}" AS VARCHAR), '${escapedDelim}') AS VARCHAR)`
-      } else if (splitMode === 'position') {
-        const pos = Number(step.params?.position) || 3
-        // Show actual split values with CAST for numeric column safety
-        splitNewExpr = `'Split at ${pos}: "' || substring(CAST("${col}" AS VARCHAR), 1, ${pos}) || '", "' || substring(CAST("${col}" AS VARCHAR), ${pos + 1}) || '"'`
-      } else {
-        const len = Number(step.params?.length) || 2
-        splitNewExpr = `'Split every ${len} chars'`
-      }
-
-      whereClause = `"${col}" IS NOT NULL AND TRIM(CAST("${col}" AS VARCHAR)) != ''`
-      newValueExpression = splitNewExpr
-
-      // Override previous value expression for split_column
-      await ensureAuditDetailsTable()
-      const escapedCol = col.replace(/'/g, "''")
-      const splitInsertSql = `
-        INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
-        SELECT
-          uuid(),
-          '${auditEntryId}',
-          rowid,
-          '${escapedCol}',
-          ${splitPrevExpr},
-          ${splitNewExpr},
-          CURRENT_TIMESTAMP
-        FROM "${tableName}"
-        WHERE "${col}" IS NOT NULL AND TRIM(CAST("${col}" AS VARCHAR)) != ''
-        LIMIT ${ROW_DETAIL_THRESHOLD}
-      `
-      await execute(splitInsertSql)
-
-      const splitCountResult = await query<{ count: number }>(
-        `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
-      )
-      return Number(splitCountResult[0].count) > 0
-    }
-
-    default:
-      // Cannot capture details for other transformation types
-      return false
-  }
-
-  // Ensure audit details table exists
-  await ensureAuditDetailsTable()
-
-  // Use native INSERT INTO ... SELECT for performance (no JS round-trips)
-  // This is ~10x faster than batch inserts for large datasets
-  const escapedColumn = step.column!.replace(/'/g, "''")
-  const insertSql = `
-    INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
-    SELECT
-      uuid(),
-      '${auditEntryId}',
-      rowid,
-      '${escapedColumn}',
-      CAST(${column} AS VARCHAR),
-      ${newValueExpression},
-      CURRENT_TIMESTAMP
-    FROM "${tableName}"
-    WHERE ${whereClause}
-    LIMIT ${ROW_DETAIL_THRESHOLD}
-  `
-  await execute(insertSql)
-
-  // Check if any rows were inserted
-  const countResult = await query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`
-  )
-  return Number(countResult[0].count) > 0
+  // Delegate to shared utility for Tier 2/3 transforms
+  return await captureTier23RowDetails(globalDbConnection, {
+    tableName,
+    column: step.column || '',
+    transformationType: step.type,
+    auditEntryId,
+    params: step.params as Record<string, unknown>,
+  })
 }
 
 /**
@@ -1090,7 +790,7 @@ async function captureCustomSqlDetails(
   }
 
   // Ensure audit details table exists
-  await ensureAuditDetailsTable()
+  await ensureAuditDetailsTable(globalDbConnection)
 
   // Get user columns (exclude _cs_id)
   const userCols = diffConfig.allColumns.filter(c => c !== CS_ID_COLUMN)
@@ -1168,6 +868,9 @@ export async function getAuditRowDetails(
   limit: number = 500,
   offset: number = 0
 ): Promise<{ rows: RowDetail[]; total: number }> {
+  // Ensure table exists before querying
+  await ensureAuditDetailsTable(globalDbConnection)
+
   // Get total count
   const countResult = await query<{ count: number }>(
     `SELECT COUNT(*) as count FROM _audit_details WHERE audit_entry_id = '${auditEntryId}'`

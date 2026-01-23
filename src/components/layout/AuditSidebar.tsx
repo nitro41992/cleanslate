@@ -142,7 +142,7 @@ export function AuditSidebar() {
 
   return (
     <>
-      <aside className="w-80 border-l border-border/50 bg-card/30 flex flex-col shrink-0" data-testid="audit-sidebar">
+      <aside className="w-96 border-l border-border/50 bg-card/30 flex flex-col shrink-0" data-testid="audit-sidebar">
         {/* Header */}
         <div className="h-12 flex items-center justify-between px-3 border-b border-border/50 shrink-0">
           <div className="flex items-center gap-2">
@@ -260,18 +260,18 @@ export function AuditSidebar() {
                       }}
                       data-testid={entry.hasRowDetails ? 'audit-entry-with-details' : undefined}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2 overflow-hidden">
+                        <div className="min-w-0 flex-1 overflow-hidden">
                           <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium">{entry.action}</p>
+                            <p className="text-sm font-medium truncate">{entry.action}</p>
                             {/* Undone badge for future entries */}
                             {isFuture && (
-                              <Badge variant="outline" className="text-[10px] h-4 px-1 opacity-80">
+                              <Badge variant="outline" className="text-[10px] h-4 px-1 opacity-80 shrink-0">
                                 Undone
                               </Badge>
                             )}
                           </div>
-                          <p className="text-xs text-muted-foreground line-clamp-2">
+                          <p className="text-xs text-muted-foreground line-clamp-3 break-all overflow-hidden">
                             {entry.details}
                           </p>
                         </div>
