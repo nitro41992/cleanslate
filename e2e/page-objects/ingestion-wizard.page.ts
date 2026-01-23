@@ -51,7 +51,7 @@ export class IngestionWizardPage {
     await this.page.getByRole('option', { name: `Row ${row}`, exact: true }).click()
   }
 
-  async selectEncoding(encoding: 'utf-8' | 'latin-1'): Promise<void> {
+  async selectEncoding(encoding: 'utf-8' | 'iso-8859-1'): Promise<void> {
     await this.encodingSelect.click()
     const encodingLabel = encoding === 'utf-8' ? 'UTF-8' : 'Latin-1'
     await this.page.locator(`[role="option"]`).filter({ hasText: encodingLabel }).click()

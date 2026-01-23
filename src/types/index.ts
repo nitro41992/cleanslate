@@ -74,7 +74,7 @@ export interface SerializedAuditLogEntry {
 
 export interface CSVIngestionSettings {
   headerRow?: number    // 1-based row number for headers
-  encoding?: 'utf-8' | 'latin-1'
+  encoding?: 'utf-8' | 'iso-8859-1'
   delimiter?: ',' | '\t' | '|' | ';'
 }
 

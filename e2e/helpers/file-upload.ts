@@ -8,7 +8,7 @@ const FIXTURES_PATH = path.resolve(__dirname, '../fixtures/csv')
 
 export interface CSVUploadOptions {
   headerRow?: number
-  encoding?: 'auto' | 'utf-8' | 'latin-1'
+  encoding?: 'auto' | 'utf-8' | 'iso-8859-1'
   delimiter?: 'auto' | ',' | '\t' | '|' | ';'
 }
 

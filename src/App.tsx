@@ -59,7 +59,10 @@ function App() {
   const clearPendingOperations = usePreviewStore((s) => s.clearPendingOperations)
 
   // Ingestion wizard state
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [pendingFile, setPendingFile] = useState<{
+    file: File
+    buffer: ArrayBuffer
+  } | null>(null)
   const [showWizard, setShowWizard] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -246,7 +249,9 @@ function App() {
     const ext = file.name.split('.').pop()?.toLowerCase()
 
     if (ext === 'csv') {
-      setPendingFile(file)
+      // Read buffer immediately to avoid race condition (Mac Chrome issue)
+      const buffer = await file.arrayBuffer()
+      setPendingFile({ file, buffer })
       setShowWizard(true)
       return
     }
@@ -256,7 +261,7 @@ function App() {
 
   const handleWizardConfirm = async (settings: CSVIngestionSettings) => {
     if (pendingFile) {
-      await loadFile(pendingFile, settings)
+      await loadFile(pendingFile.file, settings)
       setPendingFile(null)
     }
   }
@@ -447,7 +452,8 @@ function App() {
           setShowWizard(open)
           if (!open) handleWizardCancel()
         }}
-        file={pendingFile}
+        file={pendingFile?.file ?? null}
+        preloadedBuffer={pendingFile?.buffer}
         onConfirm={handleWizardConfirm}
       />
 

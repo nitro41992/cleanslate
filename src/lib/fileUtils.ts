@@ -7,7 +7,7 @@ export type Delimiter = (typeof DELIMITERS)[number]
 
 export interface FilePreviewResult {
   lines: string[]
-  encoding: 'utf-8' | 'latin-1'
+  encoding: 'utf-8' | 'iso-8859-1'
   detectedDelimiter: Delimiter
 }
 
@@ -19,6 +19,45 @@ export async function readFilePreview(
   maxLines: number = 50
 ): Promise<FilePreviewResult> {
   const buffer = await file.slice(0, 1024 * 100).arrayBuffer() // Read first 100KB
+
+  // Defensive check for empty buffer (race condition indicator)
+  if (buffer.byteLength === 0) {
+    throw new Error(
+      'Failed to read file - file may be inaccessible. Try again or use a different browser.'
+    )
+  }
+
+  const uint8Array = new Uint8Array(buffer)
+
+  // Detect encoding
+  const encoding = detectEncoding(uint8Array)
+
+  // Decode the content
+  const decoder = new TextDecoder(encoding)
+  const text = decoder.decode(uint8Array)
+
+  // Split into lines and limit
+  const allLines = text.split(/\r?\n/)
+  const lines = allLines.slice(0, maxLines)
+
+  // Detect delimiter
+  const detectedDelimiter = detectDelimiter(lines)
+
+  return {
+    lines,
+    encoding,
+    detectedDelimiter,
+  }
+}
+
+/**
+ * Read file preview from a pre-loaded ArrayBuffer
+ * Used to avoid File object race conditions (Mac Chrome issue)
+ */
+export async function readFilePreviewFromBuffer(
+  buffer: ArrayBuffer,
+  maxLines: number = 50
+): Promise<FilePreviewResult> {
   const uint8Array = new Uint8Array(buffer)
 
   // Detect encoding
@@ -44,9 +83,9 @@ export async function readFilePreview(
 
 /**
  * Detect text encoding by checking for UTF-8 validity
- * Falls back to Latin-1 if UTF-8 decode fails
+ * Falls back to ISO-8859-1 if UTF-8 decode fails
  */
-export function detectEncoding(buffer: Uint8Array): 'utf-8' | 'latin-1' {
+export function detectEncoding(buffer: Uint8Array): 'utf-8' | 'iso-8859-1' {
   // Try to decode as UTF-8 and check for replacement characters
   const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
   const utf8Text = utf8Decoder.decode(buffer)
@@ -54,7 +93,7 @@ export function detectEncoding(buffer: Uint8Array): 'utf-8' | 'latin-1' {
   // Check for common UTF-8 decoding issues
   // If we see the replacement character (U+FFFD), it's likely not valid UTF-8
   if (utf8Text.includes('\uFFFD')) {
-    return 'latin-1'
+    return 'iso-8859-1'
   }
 
   // Check for common Latin-1 specific byte sequences that would be invalid UTF-8
@@ -72,7 +111,7 @@ export function detectEncoding(buffer: Uint8Array): 'utf-8' | 'latin-1' {
   }
 
   if (hasInvalidUtf8Sequence) {
-    return 'latin-1'
+    return 'iso-8859-1'
   }
 
   return 'utf-8'

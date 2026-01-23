@@ -20,6 +20,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   readFilePreview,
+  readFilePreviewFromBuffer,
   parseLine,
   getDelimiterLabel,
   type Delimiter,
@@ -31,6 +32,7 @@ interface IngestionWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   file: File | null
+  preloadedBuffer?: ArrayBuffer
   onConfirm: (settings: CSVIngestionSettings) => void
 }
 
@@ -38,6 +40,7 @@ export function IngestionWizard({
   open,
   onOpenChange,
   file,
+  preloadedBuffer,
   onConfirm,
 }: IngestionWizardProps) {
   const [preview, setPreview] = useState<FilePreviewResult | null>(null)
@@ -45,7 +48,7 @@ export function IngestionWizard({
 
   // Settings state
   const [headerRow, setHeaderRow] = useState(1)
-  const [encoding, setEncoding] = useState<'auto' | 'utf-8' | 'latin-1'>('auto')
+  const [encoding, setEncoding] = useState<'auto' | 'utf-8' | 'iso-8859-1'>('auto')
   const [delimiter, setDelimiter] = useState<'auto' | Delimiter>('auto')
 
   // Load file preview when file changes
@@ -56,7 +59,13 @@ export function IngestionWizard({
     }
 
     setIsLoading(true)
-    readFilePreview(file, 50)
+
+    // Use preloaded buffer if available (avoids Mac Chrome race condition)
+    const previewPromise = preloadedBuffer
+      ? readFilePreviewFromBuffer(preloadedBuffer, 50)
+      : readFilePreview(file, 50)
+
+    previewPromise
       .then((result) => {
         setPreview(result)
         // Reset settings to detected values
@@ -70,7 +79,7 @@ export function IngestionWizard({
       .finally(() => {
         setIsLoading(false)
       })
-  }, [file, open])
+  }, [file, open, preloadedBuffer])
 
   // Compute effective delimiter (auto resolves to detected)
   const effectiveDelimiter = useMemo(() => {
@@ -153,7 +162,7 @@ export function IngestionWizard({
                 </Label>
                 <Select
                   value={encoding}
-                  onValueChange={(v) => setEncoding(v as 'auto' | 'utf-8' | 'latin-1')}
+                  onValueChange={(v) => setEncoding(v as 'auto' | 'utf-8' | 'iso-8859-1')}
                 >
                   <SelectTrigger id="encoding" className="mt-1">
                     <SelectValue />
@@ -163,7 +172,7 @@ export function IngestionWizard({
                       Auto ({preview?.encoding || 'detecting...'})
                     </SelectItem>
                     <SelectItem value="utf-8">UTF-8</SelectItem>
-                    <SelectItem value="latin-1">Latin-1 (ISO-8859-1)</SelectItem>
+                    <SelectItem value="iso-8859-1">Latin-1 (ISO-8859-1)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
