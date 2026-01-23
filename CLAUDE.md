@@ -135,6 +135,89 @@ if (executor.canRedo(tableId)) await executor.redo(tableId)
 - Column materialization: After 10 Tier 1 transforms, materialize expression stack
 - `__base` columns filtered from UI/export via `filterInternalColumns()`
 
+## Engineering Directive: Architecture Standards
+
+> "We are building a professional-grade data engine. Complexity belongs in the Command layer, not the React components. Our goal is that in 3 months, transformations.ts will be empty and deleted. Every line of code you write should move us closer to that goal."
+
+### 1. The Golden Rule: "If it Mutates, It's a Command"
+
+**Principle:** We have moved away from ad-hoc data manipulation in UI handlers or service files.
+
+**Guideline:** Any action that changes the state of the data (Clean, Scrub, Combine, Match) must be encapsulated in a Command class implementing the Command interface.
+
+**Why:** This guarantees we get Undo/Redo, Audit Logging, and Reproducibility "for free" via the CommandExecutor.
+
+**Violation:** Calling `duckDB.conn.query(...)` directly from a React component or a Zustand store action.
+
+### 2. The "Strangler Fig" Strategy for Legacy Code
+
+**Context:** `src/lib/transformations.ts` is our "God Object." It is technical debt.
+
+**Principle:** Do not feed the beast. Starve it.
+
+**Rule A (New Features):** Absolutely NO new code goes into `transformations.ts`. New logic goes into `src/lib/commands/` or specific utility libraries (e.g., `src/lib/audit-utils.ts`).
+
+**Rule B (The Boy Scout Rule):** If you are fixing a bug in `transformations.ts`:
+1. Extract the specific function you are fixing into a separate file.
+2. Refactor it to be pure (independent of the massive class).
+3. Import that new function back into `transformations.ts` (as a temporary bridge) or better yet, update the Command to use the new file directly.
+
+### 3. The Dependency Hierarchy
+
+Strictly enforce the direction of dependencies to prevent circular references and spaghetti code.
+
+| Level | Layer | Description |
+|-------|-------|-------------|
+| **1 (Core)** | `src/lib/duckdb` | The Database Engine - Knows nothing about UI or Commands |
+| **2 (Business Logic)** | `src/lib/commands` | Depends on Level 1. Contains the "How" |
+| **3 (Orchestration)** | `src/lib/commands/executor.ts` & `registry.ts` | Connects Commands to the Application |
+| **4 (UI State)** | `src/stores` | Manages UI state, delegates data heavy-lifting to Level 3 |
+| **5 (Components)** | `src/components` | Visuals only. Triggers actions in Level 4 |
+
+**Critical Check:** A file in Level 2 should NEVER import from Level 4 or 5.
+
+### 4. State Management Hygiene
+
+**Principle:** Distinguish between Data State and UI State.
+
+**Data State (DuckDB):**
+- Where it lives: Inside DuckDB WASM
+- Access: Async queries via Commands
+- **Anti-Pattern:** Loading 100k rows into a Zustand store array
+
+**UI State (Zustand):**
+- Where it lives: `src/stores/*`
+- What it holds: `isLoading`, `currentView`, `selectedColumn`, `previewRows` (small subset)
+
+### 5. The Command Anatomy Checklist
+
+When reviewing a new Command, ensure it follows this structure:
+
+- [ ] **Metadata:** Does it have a unique `id` and descriptive metadata?
+- [ ] **Schema Validation:** Are the params strongly typed and validated?
+- [ ] **Audit Strategy:** Does it explicitly return `rowsAffected` and `auditEntryId`?
+- [ ] **Tier 1 (SQL-only):** Use `column__base` versioning
+- [ ] **Tier 2/3 (Complex):** Ensure snapshotting logic is decoupled from the execute method
+- [ ] **Inversion of Control:** The Command receives dependencies via `execute(ctx)`, not global singletons
+
+### 6. Testing Strategy: "Regression-First"
+
+Since we are refactoring, we are prone to breaking existing functionality.
+
+**Requirement:** Every new feature or bug fix must include an E2E Test (Playwright) in `e2e/tests/`.
+
+**Focus:** Test the outcome (Data changed, Audit log appeared), not the implementation details.
+
+**Legacy Tests:** If `transformations.ts` has unit tests, they must be migrated to the new Command structure when logic is extracted.
+
+### Code Review Checklist
+
+- [ ] No new logic in `transformations.ts`?
+- [ ] Is it a Command? (If it writes data)
+- [ ] Are dependencies correct? (No UI imports in backend logic)
+- [ ] Are UI stores free of massive data arrays?
+- [ ] Is there a regression test?
+
 ## TypeScript Configuration
 
 - Strict mode enabled
