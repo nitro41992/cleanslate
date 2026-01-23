@@ -33,7 +33,8 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
     const col = COLUMN_PLACEHOLDER
     const find = escapeSqlString(this.params.find)
     const replace = escapeSqlString(this.params.replace ?? '')
-    const caseSensitive = this.params.caseSensitive ?? true
+    // Handle boolean or string values from UI (UI passes 'true'/'false' strings)
+    const caseSensitive = this.params.caseSensitive === false || this.params.caseSensitive === 'false' ? false : true
     const matchType = this.params.matchType ?? 'contains'
 
     if (matchType === 'exact') {
@@ -47,8 +48,16 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
       if (caseSensitive) {
         return `REPLACE(${col}, '${find}', '${replace}')`
       } else {
-        const regexEscaped = escapeRegexPattern(find)
-        return `REGEXP_REPLACE(${col}, '${regexEscaped}', '${replace}', 'gi')`
+        // Workaround for DuckDB-WASM 1.32.0: inline (?i) flag doesn't work reliably
+        // Convert each letter to a character class [Aa] for case-insensitive matching
+        // e.g., "hello" becomes "[Hh][Ee][Ll][Ll][Oo]"
+        let pattern = escapeRegexPattern(find)
+        pattern = pattern.replace(/[a-z]/gi, (letter) => {
+          const lower = letter.toLowerCase()
+          const upper = letter.toUpperCase()
+          return lower !== upper ? `[${lower}${upper}]` : letter
+        })
+        return `REGEXP_REPLACE(${col}, '${pattern}', '${replace}', 'g')`
       }
     }
   }
@@ -56,7 +65,8 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
     const find = escapeSqlString(this.params.find)
-    const caseSensitive = this.params.caseSensitive ?? true
+    // Handle boolean or string values from UI (UI passes 'true'/'false' strings)
+    const caseSensitive = this.params.caseSensitive === false || this.params.caseSensitive === 'false' ? false : true
     const matchType = this.params.matchType ?? 'contains'
 
     if (matchType === 'exact') {

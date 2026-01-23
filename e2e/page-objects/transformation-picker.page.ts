@@ -83,7 +83,10 @@ export class TransformationPickerPage {
    * Fill a text input parameter
    */
   async fillParam(paramName: string, value: string): Promise<void> {
-    await this.page.locator(`input[placeholder*="${paramName}" i]`).fill(value)
+    const input = this.page.locator(`input[placeholder*="${paramName}" i]`)
+    // Wait for input to be visible before filling (prevents timeout in long test sequences)
+    await input.waitFor({ state: 'visible', timeout: 10000 })
+    await input.fill(value)
   }
 
   /**

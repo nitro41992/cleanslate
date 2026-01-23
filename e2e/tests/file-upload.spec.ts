@@ -73,9 +73,10 @@ test.describe.serial('File Upload', () => {
     const basicDataTable = tables.find((t) => t.name === 'basic_data')
     expect(basicDataTable).toBeDefined()
     expect(basicDataTable?.rowCount).toBe(5)
-    // Verify specific row data
+    // Verify specific row data (Rule 1: Assert identity, not just cardinality)
     const data = await inspector.getTableData('basic_data')
-    expect(data[0]).toMatchObject({ id: '1', name: 'John Doe' })
+    // DuckDB returns integers as BigInt
+    expect(data[0]).toMatchObject({ id: 1n, name: 'John Doe' })
   })
 
   // Uses loaded data from previous test

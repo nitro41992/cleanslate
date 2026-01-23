@@ -35,12 +35,11 @@ export class FillDownCommand extends Tier3TransformCommand<FillDownParams> {
       // Fill down expression:
       // If current value is null/empty, use LAST_VALUE from previous non-empty rows
       // Otherwise keep current value
+      // Note: IGNORE NULLS must be inside the LAST_VALUE function call
       const fillExpr = `
         COALESCE(
           NULLIF(TRIM(CAST(${col} AS VARCHAR)), ''),
-          LAST_VALUE(
-            NULLIF(TRIM(CAST(${col} AS VARCHAR)), '')
-          ) IGNORE NULLS OVER (
+          LAST_VALUE(NULLIF(TRIM(CAST(${col} AS VARCHAR)), '') IGNORE NULLS) OVER (
             ORDER BY ${orderCol}
             ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
           )

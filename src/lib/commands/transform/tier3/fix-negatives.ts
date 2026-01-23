@@ -24,13 +24,13 @@ export class FixNegativesCommand extends Tier3TransformCommand<FixNegativesParam
 
     try {
       // Build the expression to convert (xxx) to -xxx
-      // Pattern: starts with ( and ends with )
+      // Pattern: contains ( and ends with ), e.g., "(500)" or "$(750.00)"
       // Also handles values that may have whitespace
       const fixNegExpr = `
         CASE
-          WHEN TRIM(CAST(${col} AS VARCHAR)) LIKE '(%)'
+          WHEN TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'
           THEN TRY_CAST(
-            '-' || REPLACE(REPLACE(REPLACE(TRIM(CAST(${col} AS VARCHAR)), '(', ''), ')', ''), ',', '')
+            '-' || REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(${col} AS VARCHAR)), '$', ''), '(', ''), ')', ''), ',', '')
             AS DOUBLE
           )
           ELSE TRY_CAST(REPLACE(CAST(${col} AS VARCHAR), ',', '') AS DOUBLE)
@@ -87,7 +87,7 @@ export class FixNegativesCommand extends Tier3TransformCommand<FixNegativesParam
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
     const col = quoteColumn(this.params.column)
-    // Rows that have accounting-style negatives
-    return `${col} IS NOT NULL AND TRIM(CAST(${col} AS VARCHAR)) LIKE '(%)'`
+    // Rows that have accounting-style negatives: (500) or $(750.00)
+    return `${col} IS NOT NULL AND TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'`
   }
 }

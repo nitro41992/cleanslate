@@ -19,3 +19,4 @@ test-results
 
 # Terminal Paste Image folder
 .cp-images/
+test-output.txt
