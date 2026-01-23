@@ -35,7 +35,10 @@ import {
 } from './diff-views'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
+import { useTimelineStore } from '@/stores/timelineStore'
 import { duplicateTable, dropTable, tableExists } from '@/lib/duckdb'
+import { getBaseColumnName } from './column-versions'
+import type { TimelineCommandType } from '@/types'
 
 // ===== TIMELINE STORAGE =====
 
@@ -219,6 +222,23 @@ export class CommandExecutor implements ICommandExecutor {
           executionResult.versionedColumn?.backup,
           highlightInfo.rowPredicate
         )
+
+        // Sync with legacy timelineStore for UI integration (highlight, drill-down)
+        this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo)
+      }
+
+      // Capture row-level details for drill-down (after timeline sync)
+      if (!skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId) {
+        try {
+          const column = (command.params as { column?: string }).column
+          if (column && tier === 1) {
+            // Tier 1: Use versioned column__base for before values
+            await this.captureTier1RowDetails(updatedCtx, column, auditInfo.auditEntryId)
+          }
+        } catch (err) {
+          console.warn('[EXECUTOR] Failed to capture row details:', err)
+          // Non-critical - don't fail the command
+        }
       }
 
       // Step 8: Update stores
@@ -313,6 +333,13 @@ export class CommandExecutor implements ICommandExecutor {
       // Decrement position
       timeline.position--
 
+      // Sync with legacy timelineStore
+      const timelineStoreState = useTimelineStore.getState()
+      const legacyTimeline = timelineStoreState.getTimeline(tableId)
+      if (legacyTimeline && legacyTimeline.currentPosition >= 0) {
+        timelineStoreState.setPosition(tableId, legacyTimeline.currentPosition - 1)
+      }
+
       // Update table store
       const updatedCtx = await refreshTableContext(ctx)
       this.updateTableStore(tableId, {
@@ -373,6 +400,13 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Advance position
       timeline.position = nextPosition
+
+      // Sync with legacy timelineStore
+      const timelineStoreState = useTimelineStore.getState()
+      const legacyTimeline = timelineStoreState.getTimeline(tableId)
+      if (legacyTimeline && legacyTimeline.currentPosition < legacyTimeline.commands.length - 1) {
+        timelineStoreState.setPosition(tableId, legacyTimeline.currentPosition + 1)
+      }
 
       // Update table store
       const updatedCtx = await refreshTableContext(ctx)
@@ -638,12 +672,108 @@ export class CommandExecutor implements ICommandExecutor {
 
   private updateTableStore(
     tableId: string,
-    result: { rowCount: number; columns: { name: string; type: string; nullable: boolean }[]; newColumnNames?: string[]; droppedColumnNames?: string[] }
+    result: { rowCount?: number; columns?: { name: string; type: string; nullable: boolean }[]; newColumnNames?: string[]; droppedColumnNames?: string[] }
   ): void {
     const tableStore = useTableStore.getState()
+    const currentTable = tableStore.tables.find(t => t.id === tableId)
+
     tableStore.updateTable(tableId, {
-      rowCount: result.rowCount,
-      columns: result.columns,
+      rowCount: result.rowCount ?? currentTable?.rowCount,
+      columns: result.columns ?? currentTable?.columns,
+      dataVersion: (currentTable?.dataVersion ?? 0) + 1, // CRITICAL: Trigger re-render
+    })
+  }
+
+  /**
+   * Map command type to legacy TimelineCommandType for timelineStore sync
+   */
+  private mapToLegacyCommandType(commandType: string): TimelineCommandType {
+    if (commandType.startsWith('transform:')) return 'transform'
+    if (commandType === 'edit:cell') return 'manual_edit'
+    if (commandType === 'edit:batch') return 'batch_edit'
+    if (commandType === 'combine:stack') return 'stack'
+    if (commandType === 'combine:join') return 'join'
+    if (commandType === 'match:merge') return 'merge'
+    if (commandType === 'standardize:apply') return 'standardize'
+    if (commandType.startsWith('scrub:')) return 'scrub'
+    return 'transform'
+  }
+
+  /**
+   * Capture row details for Tier 1 commands using versioned columns.
+   * After a Tier 1 transform:
+   *   - column = transformed value (new)
+   *   - column__base = original value (before)
+   */
+  private async captureTier1RowDetails(
+    ctx: CommandContext,
+    column: string,
+    auditEntryId: string
+  ): Promise<void> {
+    const baseColumn = getBaseColumnName(column)
+    const quotedCol = `"${column}"`
+    const quotedBase = `"${baseColumn}"`
+    const escapedColumn = column.replace(/'/g, "''")
+
+    // Check if base column exists (it should for Tier 1)
+    const colsResult = await ctx.db.query<{ column_name: string }>(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = '${ctx.table.name}' AND column_name = '${baseColumn}'
+    `)
+
+    if (colsResult.length === 0) {
+      console.warn(`[EXECUTOR] Base column ${baseColumn} not found, skipping audit capture`)
+      return
+    }
+
+    // Insert row details: previous = base column, new = transformed column
+    // Only include rows where values actually differ
+    const sql = `
+      INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+      SELECT
+        uuid(),
+        '${auditEntryId}',
+        rowid,
+        '${escapedColumn}',
+        CAST(${quotedBase} AS VARCHAR),
+        CAST(${quotedCol} AS VARCHAR),
+        CURRENT_TIMESTAMP
+      FROM "${ctx.table.name}"
+      WHERE ${quotedBase} IS DISTINCT FROM ${quotedCol}
+      LIMIT 50000
+    `
+
+    await ctx.db.execute(sql)
+  }
+
+  /**
+   * Sync command execution to legacy timelineStore for UI integration
+   */
+  private syncExecuteToTimelineStore(
+    tableId: string,
+    tableName: string,
+    command: Command,
+    auditInfo?: { affectedColumns: string[]; rowsAffected: number; hasRowDetails: boolean; auditEntryId: string }
+  ): void {
+    const timelineStoreState = useTimelineStore.getState()
+    const legacyTimeline = timelineStoreState.getTimeline(tableId)
+
+    if (!legacyTimeline) {
+      timelineStoreState.createTimeline(tableId, tableName, '')
+    }
+
+    const legacyCommandType = this.mapToLegacyCommandType(command.type)
+    const column = (command.params as { column?: string }).column
+
+    timelineStoreState.appendCommand(tableId, legacyCommandType, command.label, {
+      type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
+      transformationType: command.type.replace('transform:', '').replace('scrub:', '').replace('edit:', ''),
+      column,
+    } as import('@/types').TimelineParams, {
+      auditEntryId: auditInfo?.auditEntryId ?? command.id,
+      affectedColumns: auditInfo?.affectedColumns ?? (column ? [column] : []),
+      rowsAffected: auditInfo?.rowsAffected,
+      hasRowDetails: auditInfo?.hasRowDetails,
     })
   }
 }

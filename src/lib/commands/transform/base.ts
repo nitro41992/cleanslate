@@ -127,12 +127,24 @@ export abstract class BaseTransformCommand<TParams extends BaseTransformParams =
       params: this.params as unknown as Record<string, unknown>,
     }
 
+    const transformType = this.type.replace('transform:', '')
+
+    // Transforms that support row-level drill-down via Tier 1 column versioning
+    // or Tier 2/3 with explicit audit capture
+    const drillDownSupported = new Set([
+      'trim', 'lowercase', 'uppercase', 'title_case', 'replace',
+      'remove_accents', 'remove_non_printable', 'collapse_spaces',
+      'sentence_case', 'unformat_currency', 'fix_negatives', 'pad_zeros',
+      'standardize_date', 'calculate_age', 'fill_down', 'cast_type',
+      'replace_empty', 'remove_duplicates', 'filter_empty',
+    ])
+
     return {
       action: this.label,
       details,
       affectedColumns: this.params.column ? [this.params.column] : [],
       rowsAffected: result.affected,
-      hasRowDetails: false, // Subclass can override
+      hasRowDetails: drillDownSupported.has(transformType),
       auditEntryId: this.id,
       isCapped: false,
     }
