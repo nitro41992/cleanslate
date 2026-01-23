@@ -80,6 +80,12 @@ export async function getDuckDBMemoryUsage(): Promise<DuckDBMemoryInfo> {
 
 /**
  * Get estimated sizes for all user tables (excluding internal/system tables)
+ *
+ * IMPORTANT: Internal CleanSlate tables (_timeline_*, _diff_*, _original_*)
+ * are now INCLUDED in memory tracking to show accurate usage. With large datasets,
+ * these tables can consume 3-5x the user table size (snapshots + diff views).
+ *
+ * Audit tables (_audit_*) remain excluded as they're typically small.
  */
 export async function getEstimatedTableSizes(): Promise<TableSizeInfo[]> {
   try {
@@ -91,10 +97,7 @@ export async function getEstimatedTableSizes(): Promise<TableSizeInfo[]> {
       SELECT table_name, estimated_size, column_count
       FROM duckdb_tables()
       WHERE NOT internal
-        AND table_name NOT LIKE '_timeline_%'
         AND table_name NOT LIKE '_audit_%'
-        AND table_name NOT LIKE '_diff_%'
-        AND table_name NOT LIKE '_original_%'
     `)
 
     return result.map((row) => ({

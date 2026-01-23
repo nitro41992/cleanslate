@@ -43,6 +43,8 @@ import {
 } from './audit-capture'
 import { getBaseColumnName } from './column-versions'
 import type { TimelineCommandType } from '@/types'
+import { toast } from '@/hooks/use-toast'
+import { getMemoryStatus } from '@/lib/duckdb/memory'
 
 // ===== TIMELINE STORAGE =====
 
@@ -250,6 +252,19 @@ export class CommandExecutor implements ICommandExecutor {
       // Extract affected row IDs from diff view for highlighting support
       const affectedRowIds = await this.extractAffectedRowIds(updatedCtx, diffViewName)
 
+      // Drop diff view immediately after extracting row IDs
+      // Diff views are ephemeral - only needed for highlighting extraction
+      // Prevents accumulation of large views (1M rows each) in memory
+      if (diffViewName) {
+        try {
+          await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
+          console.log(`[Memory] Dropped diff view: ${diffViewName}`)
+        } catch (err) {
+          // Non-fatal - don't fail the command if view cleanup fails
+          console.warn(`[Memory] Failed to drop diff view ${diffViewName}:`, err)
+        }
+      }
+
       // Step 7: Record timeline for undo/redo
       let highlightInfo: HighlightInfo | undefined
       if (!skipTimeline) {
@@ -291,6 +306,9 @@ export class CommandExecutor implements ICommandExecutor {
       // Step 8: Update stores
       progress('complete', 100, 'Complete')
       this.updateTableStore(ctx.table.id, executionResult)
+
+      // Proactive memory management: prune snapshots if memory > 80%
+      await this.pruneSnapshotsIfHighMemory()
 
       // Auto-persist to OPFS (debounced, non-blocking)
       // Waits 1 second of idle time before flushing to prevent stuttering on bulk edits
@@ -412,6 +430,18 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Decrement position
       timeline.position--
+
+      // Drop diff view for the undone command (cleanup orphaned views)
+      // Diff views are created during execute() with stepIndex = position + 1
+      const stepIndex = timeline.position + 1 // Position before decrement
+      const diffViewName = `v_diff_step_${tableId}_${stepIndex}`
+      try {
+        await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
+        console.log(`[Undo] Dropped diff view: ${diffViewName}`)
+      } catch (err) {
+        // Non-fatal - diff view may not exist or already dropped
+        console.warn(`[Undo] Failed to drop diff view ${diffViewName}:`, err)
+      }
 
       // Sync with legacy timelineStore
       const timelineStoreState = useTimelineStore.getState()
@@ -580,7 +610,7 @@ export class CommandExecutor implements ICommandExecutor {
    * Marks the corresponding command as undoDisabled.
    */
   private async pruneOldestSnapshot(timeline: TableCommandTimeline): Promise<void> {
-    if (timeline.snapshots.size <= MAX_SNAPSHOTS_PER_TABLE) return
+    if (timeline.snapshots.size < MAX_SNAPSHOTS_PER_TABLE) return
 
     // Find oldest by timestamp
     let oldestPosition = -1
@@ -607,6 +637,40 @@ export class CommandExecutor implements ICommandExecutor {
           command.undoDisabled = true
         }
       }
+    }
+  }
+
+  /**
+   * Aggressively prune snapshots across all tables if memory usage > 80%.
+   * Called after command execution to prevent OOM on large datasets.
+   * Shows toast notification to inform user that old undo history was cleared.
+   */
+  private async pruneSnapshotsIfHighMemory(): Promise<void> {
+    const memStatus = await getMemoryStatus()
+
+    if (memStatus.percentage < 80) return // Not critical yet
+
+    console.warn('[Memory] High memory usage detected, pruning snapshots...')
+
+    let prunedCount = 0
+
+    for (const [_tableId, timeline] of tableTimelines.entries()) {
+      // Prune down to MAX_SNAPSHOTS_PER_TABLE
+      while (timeline.snapshots.size > MAX_SNAPSHOTS_PER_TABLE) {
+        await this.pruneOldestSnapshot(timeline)
+        prunedCount++
+      }
+    }
+
+    if (prunedCount > 0) {
+      console.log(`[Memory] Pruned ${prunedCount} snapshots due to high memory`)
+
+      // Notify user that undo history was cleared
+      toast({
+        title: 'Memory Optimization',
+        description: `Old undo history cleared to free memory (${prunedCount} snapshot${prunedCount > 1 ? 's' : ''} removed)`,
+        variant: 'default',
+      })
     }
   }
 
