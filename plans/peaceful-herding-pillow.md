@@ -898,6 +898,31 @@ All core files implemented:
 - All Tier 1 commands use `{{COL}}` placeholder for composable transforms
 - All 7 missing Tier 3 commands implemented
 
+### 🚨 Phase 2.5: UI Integration - CRITICAL BLOCKER (NOT STARTED)
+
+**Problem**: The command system is fully built but **completely disconnected from the UI**. The application still uses the legacy `applyTransformation()` function. All new commands are inert until this phase is complete.
+
+**Required Changes:**
+
+| Priority | File | Change |
+|----------|------|--------|
+| P0 | `CleanPanel.tsx` | Replace `applyTransformation()` → `getCommandExecutor().execute(command)` |
+| P0 | `registry.ts` | Export `getCommandTypeFromTransform()` for UI |
+| P1 | `App.tsx` | Route `Ctrl+Z`/`Ctrl+Y` → `CommandExecutor.undo()/redo()` |
+| P1 | `executor.ts` | Ensure `updateTableStore()` is called/accessible |
+| P2 | `timeline-engine.ts` | Resolve duplicate snapshots (`_timeline_original_*` vs `_cmd_snapshot_*`) |
+
+**Current vs Required Flow:**
+```
+CURRENT (Legacy - still active):
+  CleanPanel → applyTransformation() → DuckDB → Manual store updates
+
+REQUIRED (Command Pattern - not wired):
+  CleanPanel → CommandExecutor.execute(command) → Full lifecycle
+               ↓
+               Validation → Snapshot → Execute → Audit → Diff → Undo Stack
+```
+
 ### 🔲 Phase 3: Standardizer & Matcher - NOT STARTED
 Commands needed:
 - `standardize:apply` - Cluster-based value standardization
@@ -937,6 +962,28 @@ Expression chaining implemented:
 
 All 7 Tier 3 commands implemented:
 - combine_columns, standardize_date, calculate_age
+
+### 🚨 Priority 2: UI Integration (Phase 2.5) - NEXT ACTION REQUIRED
+
+**This is the critical blocker.** Without this, the entire command system is inert.
+
+**Minimum viable integration:**
+1. Update `CleanPanel.tsx` to call `CommandExecutor.execute()` instead of `applyTransformation()`
+2. Export `getCommandTypeFromTransform()` from registry
+3. Handle `ExecutorResult` to update UI (toast, table refresh)
+
+**Files to modify:**
+```
+src/components/panels/CleanPanel.tsx    # Main integration point
+src/lib/commands/registry.ts            # Export utility function
+src/lib/commands/index.ts               # Re-export utility
+```
+
+**After this phase:** All 22 transform commands will work through the new system with:
+- Automatic validation
+- Tier 1/2/3 undo strategies
+- Structured audit logging
+- Diff view creation
 - unformat_currency, fix_negatives, pad_zeros, fill_down
 
 **Previous ColumnVersionInfo Changes (for reference):**
