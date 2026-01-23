@@ -225,7 +225,8 @@ test.describe.serial('FR-F: Value Standardization', () => {
 
     // Check audit log for standardization entry
     const auditEntries = await inspector.getAuditEntries()
-    const standardizeEntry = auditEntries.find((e) => e.action === 'Standardize Values')
+    // Action is now 'Standardize Values in {column}' so use startsWith
+    const standardizeEntry = auditEntries.find((e) => e.action.startsWith('Standardize Values'))
     expect(standardizeEntry).toBeDefined()
     expect(standardizeEntry?.hasRowDetails).toBe(true)
   })

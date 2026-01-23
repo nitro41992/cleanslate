@@ -218,6 +218,45 @@ Since we are refactoring, we are prone to breaking existing functionality.
 - [ ] Are UI stores free of massive data arrays?
 - [ ] Is there a regression test?
 
+## Engineering Standard: High-Fidelity Testing
+
+**Effective Date:** Immediate
+
+We are moving away from "Smoke Tests" (checking if things crash) to "Integrity Tests" (checking if logic is correct). Moving forward, Playwright tests must abide by these three rules.
+
+### Rule 1: Assert Identity, Not Just Cardinality
+
+Do not rely on counts (`rowCount`, `clusters.length`) as your primary success metric. A count can be correct even if the data is wrong.
+
+**Bad (Lazy):** "There are now 3 rows."
+
+**Good (High-Fidelity):** "The remaining rows are IDs 1, 3, and 5."
+
+### Rule 2: Assert Exact States, Avoid `not.toEqual`
+
+Negative assertions (`not.toBe`, `not.toEqual`) are loopholes. They pass on accidents (e.g., data becoming `null` or `undefined`).
+
+**Bad (Lazy):** `expect(valueAfterUndo).not.toBe(valueBeforeUndo)`
+
+**Good (High-Fidelity):** `expect(valueAfterUndo).toBe('Original Value')`
+
+### Rule 3: Visual Validation Requires CSS/DOM Checks
+
+If a feature is visual (like Highlighting or Diffing), checking that a button exists is insufficient. You must assert the visual state change in the DOM.
+
+**Bad (Lazy):** Clicking "Highlight" shows the "Clear" button.
+
+**Good (High-Fidelity):** Clicking "Highlight" adds the `.bg-yellow-500` class to the specific cells in the Grid DOM.
+
+### Implementation Checklist for PRs
+
+Before submitting a PR, ask:
+
+1. If I replaced the transformation logic with `return []` (empty array), would this test fail?
+2. If I replaced the UI highlight logic with `console.log("highlighting")`, would this test fail?
+
+**If the answer is NO, the test is lazy. Fix it.**
+
 ## TypeScript Configuration
 
 - Strict mode enabled
