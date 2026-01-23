@@ -52,6 +52,12 @@ import type { TimelineCommandType } from '@/types'
  */
 const MAX_SNAPSHOTS_PER_TABLE = 5
 
+/**
+ * Timeout ID for auto-resetting persistence status from 'saved' to 'idle'
+ * Cleared if a new operation starts during the countdown
+ */
+let persistenceAutoResetTimer: NodeJS.Timeout | null = null
+
 // Per-table timeline of executed commands for undo/redo
 // Key: tableId, Value: { commands, position, snapshots }
 interface TableCommandTimeline {
@@ -289,7 +295,35 @@ export class CommandExecutor implements ICommandExecutor {
       // Auto-persist to OPFS (debounced, non-blocking)
       // Waits 1 second of idle time before flushing to prevent stuttering on bulk edits
       const { flushDuckDB } = await import('@/lib/duckdb')
-      flushDuckDB() // Returns immediately, schedules flush for 1s later
+      const { useUIStore } = await import('@/stores/uiStore')
+
+      flushDuckDB(false, {
+        onStart: () => {
+          // Clear any pending auto-reset timeout to prevent race condition
+          if (persistenceAutoResetTimer) {
+            clearTimeout(persistenceAutoResetTimer)
+            persistenceAutoResetTimer = null
+          }
+          useUIStore.getState().setPersistenceStatus('saving')
+        },
+        onComplete: () => {
+          const store = useUIStore.getState()
+          store.setPersistenceStatus('saved')
+
+          // Auto-reset to idle after 3 seconds
+          persistenceAutoResetTimer = setTimeout(() => {
+            // Only reset if still 'saved' (avoid race with new operations)
+            if (useUIStore.getState().persistenceStatus === 'saved') {
+              useUIStore.getState().setPersistenceStatus('idle')
+            }
+            persistenceAutoResetTimer = null
+          }, 3000)
+        },
+        onError: (error) => {
+          useUIStore.getState().setPersistenceStatus('error')
+          console.error('[EXECUTOR] Flush error:', error)
+        }
+      })
 
       return {
         success: true,

@@ -11,6 +11,8 @@ import { detectBrowserCapabilities } from './browser-detection'
 import { migrateFromCSVStorage } from './opfs-migration'
 import { pruneAuditLog } from '../audit-pruning'
 import { toast } from '@/hooks/use-toast'
+import { getStorageInfo, formatBytes } from './storage-info'
+import { toast as sonnerToast } from 'sonner'
 
 /**
  * Internal row ID column name for stable row identity across mutations.
@@ -41,6 +43,7 @@ let conn: duckdb.AsyncDuckDBConnection | null = null
 let isPersistent = false
 let isReadOnly = false
 let flushTimer: NodeJS.Timeout | null = null
+let hasShownStorageWarning = false // Reset on page reload
 
 const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
   mvp: {
@@ -823,12 +826,64 @@ export function isDuckDBReadOnly(): boolean {
 }
 
 /**
+ * Check storage quota and warn user if approaching limit (>80%)
+ * Shows one-time toast per session to avoid spam
+ */
+async function checkStorageQuota(): Promise<void> {
+  // Skip if already warned this session
+  if (hasShownStorageWarning) return
+
+  // Skip if read-only (user can't fix quota issues)
+  if (isReadOnly) return
+
+  try {
+    const info = await getStorageInfo(isPersistent, isReadOnly)
+
+    // No quota info available (Firefox, or API not supported)
+    if (!info.quota) return
+
+    if (info.quota.isNearLimit) {
+      const { usedBytes, quotaBytes, usagePercent } = info.quota
+
+      sonnerToast.error('Storage Almost Full', {
+        description: `You're using ${formatBytes(usedBytes)} of ${formatBytes(quotaBytes)} (${Math.round(usagePercent)}%). Export or delete old tables to free up space.`,
+        duration: 10000, // 10 seconds
+        action: {
+          label: 'View Tables',
+          onClick: () => {
+            // Trigger sidebar open (if collapsed)
+            window.dispatchEvent(new CustomEvent('open-table-sidebar'))
+          }
+        }
+      })
+
+      hasShownStorageWarning = true
+      console.warn('[Storage Quota] Near limit:', { usedBytes, quotaBytes, usagePercent })
+    }
+  } catch (err) {
+    // Silently fail - don't interrupt user workflow
+    console.warn('[Storage Quota] Check failed:', err)
+  }
+}
+
+/**
  * Flush DuckDB WAL to OPFS
  * Debounced (1 second idle time) to prevent UI stuttering on bulk edits
  * @param immediate - If true, flush immediately (bypasses debounce)
+ * @param callbacks - Optional callbacks for flush lifecycle events
  */
-export async function flushDuckDB(immediate = false): Promise<void> {
+export async function flushDuckDB(
+  immediate = false,
+  callbacks?: {
+    onStart?: () => void
+    onComplete?: () => void
+    onError?: (error: Error) => void
+  }
+): Promise<void> {
   if (!isPersistent || isReadOnly) return // In-memory or read-only - nothing to flush
+
+  // Notify start of flush
+  callbacks?.onStart?.()
 
   // Clear existing timer
   if (flushTimer) {
@@ -844,8 +899,13 @@ export async function flushDuckDB(immediate = false): Promise<void> {
         await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
       })
       console.log('[OPFS] Immediate flush completed')
+      callbacks?.onComplete?.()
+
+      // Check storage quota after successful flush
+      await checkStorageQuota()
     } catch (err) {
       console.warn('[OPFS] Immediate flush failed:', err)
+      callbacks?.onError?.(err instanceof Error ? err : new Error(String(err)))
     }
   } else {
     // Debounced flush (1 second idle time)
@@ -856,8 +916,13 @@ export async function flushDuckDB(immediate = false): Promise<void> {
           await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
         })
         console.log('[OPFS] Auto-flush completed')
+        callbacks?.onComplete?.()
+
+        // Check storage quota after successful flush
+        await checkStorageQuota()
       } catch (err) {
         console.warn('[OPFS] Auto-flush failed:', err)
+        callbacks?.onError?.(err instanceof Error ? err : new Error(String(err)))
       }
       flushTimer = null
     }, 1000)
