@@ -137,6 +137,8 @@ export const TIER_2_COMMANDS: Set<CommandType> = new Set([
   'transform:rename_column',
   'edit:cell',
   'edit:batch',
+  'combine:stack',
+  'combine:join',
 ])
 
 /**
@@ -156,8 +158,6 @@ export const TIER_3_COMMANDS: Set<CommandType> = new Set([
   'transform:custom_sql',
   'standardize:apply',
   'match:merge',
-  'combine:stack',
-  'combine:join',
   'scrub:redact',
   'scrub:year_only',
 ])

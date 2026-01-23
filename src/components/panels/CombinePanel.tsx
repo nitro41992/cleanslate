@@ -19,8 +19,10 @@ import { ValidationWarnings } from '@/features/combiner/components/ValidationWar
 import { useTableStore } from '@/stores/tableStore'
 import { useCombinerStore } from '@/stores/combinerStore'
 import { usePreviewStore } from '@/stores/previewStore'
-import { validateStack, stackTables, validateJoin, joinTables, autoCleanKeys } from '@/lib/combiner-engine'
+import { useAuditStore } from '@/stores/auditStore'
+import { validateStack, validateJoin, autoCleanKeys } from '@/lib/combiner-engine'
 import { getTableColumns } from '@/lib/duckdb'
+import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { toast } from 'sonner'
 import type { JoinType } from '@/types'
 
@@ -31,6 +33,8 @@ export function CombinePanel() {
 
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
   const closePanel = usePreviewStore((s) => s.closePanel)
+
+  const addAuditEntry = useAuditStore((s) => s.addTransformationEntry)
 
   const {
     mode,
@@ -96,13 +100,41 @@ export function CombinePanel() {
 
     setIsProcessing(true)
     try {
-      const { rowCount } = await stackTables(tableA.name, tableB.name, resultTableName.trim())
+      // Create and execute command via CommandExecutor
+      const command = createCommand('combine:stack', {
+        tableId: tableA.id,
+        sourceTableA: tableA.name,
+        sourceTableB: tableB.name,
+        resultTableName: resultTableName.trim(),
+      })
+
+      const executor = getCommandExecutor()
+      const result = await executor.execute(command, {
+        skipAudit: true, // We'll log audit to result table manually
+      })
+
+      if (!result.success) {
+        throw new Error(result.error || 'Stack operation failed')
+      }
+
+      const rowCount = result.executionResult?.rowCount || 0
       const columns = await getTableColumns(resultTableName.trim())
       const newTableId = addTable(
         resultTableName.trim(),
         columns.map((c) => ({ ...c, nullable: true })),
         rowCount
       )
+
+      // Add audit entry to the result table
+      addAuditEntry({
+        tableId: newTableId,
+        tableName: resultTableName.trim(),
+        action: 'Stack Tables',
+        details: `Stacked "${tableA.name}" + "${tableB.name}" → ${rowCount} rows`,
+        rowsAffected: rowCount,
+        hasRowDetails: false,
+        auditEntryId: command.id,
+      })
 
       toast.success('Tables Stacked', {
         description: `Created "${resultTableName}" with ${rowCount} rows`,
@@ -166,7 +198,26 @@ export function CombinePanel() {
 
     setIsProcessing(true)
     try {
-      const { rowCount } = await joinTables(leftTable.name, rightTable.name, keyColumn, joinType, resultTableName.trim())
+      // Create and execute command via CommandExecutor
+      const command = createCommand('combine:join', {
+        tableId: leftTable.id,
+        leftTableName: leftTable.name,
+        rightTableName: rightTable.name,
+        keyColumn,
+        joinType,
+        resultTableName: resultTableName.trim(),
+      })
+
+      const executor = getCommandExecutor()
+      const result = await executor.execute(command, {
+        skipAudit: true, // We'll log audit to result table manually
+      })
+
+      if (!result.success) {
+        throw new Error(result.error || 'Join operation failed')
+      }
+
+      const rowCount = result.executionResult?.rowCount || 0
       const columns = await getTableColumns(resultTableName.trim())
       const newTableId = addTable(
         resultTableName.trim(),
@@ -175,6 +226,18 @@ export function CombinePanel() {
       )
 
       const joinTypeLabel = joinType === 'inner' ? 'Inner' : joinType === 'left' ? 'Left' : 'Full Outer'
+
+      // Add audit entry to the result table
+      addAuditEntry({
+        tableId: newTableId,
+        tableName: resultTableName.trim(),
+        action: `${joinTypeLabel} Join Tables`,
+        details: `Joined "${leftTable.name}" + "${rightTable.name}" on "${keyColumn}" → ${rowCount} rows`,
+        rowsAffected: rowCount,
+        hasRowDetails: false,
+        auditEntryId: command.id,
+      })
+
       toast.success('Tables Joined', {
         description: `Created "${resultTableName}" with ${rowCount} rows (${joinTypeLabel} Join)`,
       })

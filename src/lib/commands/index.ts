@@ -164,6 +164,12 @@ export * from './standardize'
 // Match Commands
 export * from './match'
 
+// Combine Commands
+export * from './combine'
+
+// Scrub Commands
+export * from './scrub'
+
 // ===== COMMAND REGISTRATION =====
 
 import { registerCommand } from './registry'
@@ -195,6 +201,8 @@ import {
 } from './transform/tier3'
 import { StandardizeApplyCommand } from './standardize'
 import { MatchMergeCommand } from './match'
+import { CombineStackCommand, CombineJoinCommand } from './combine'
+import { ScrubHashCommand, ScrubMaskCommand, ScrubRedactCommand, ScrubYearOnlyCommand } from './scrub'
 
 // Register all commands
 registerCommand('transform:trim', TrimCommand)
@@ -225,3 +233,13 @@ registerCommand('standardize:apply', StandardizeApplyCommand)
 
 // Match commands
 registerCommand('match:merge', MatchMergeCommand)
+
+// Combine commands
+registerCommand('combine:stack', CombineStackCommand)
+registerCommand('combine:join', CombineJoinCommand)
+
+// Scrub commands
+registerCommand('scrub:hash', ScrubHashCommand)
+registerCommand('scrub:mask', ScrubMaskCommand)
+registerCommand('scrub:redact', ScrubRedactCommand)
+registerCommand('scrub:year_only', ScrubYearOnlyCommand)

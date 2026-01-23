@@ -853,19 +853,16 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Enter project secret
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
 
-    // Apply scrubbing
-    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+    // Apply scrubbing (now modifies in-place via command pattern)
+    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for scrubbed table to be created
-    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
+    // Wait for operation to complete
+    await page.waitForTimeout(1000)
 
-    // Additional wait for data to be fully committed
-    await page.waitForTimeout(500)
-
-    // Verify hash format (16-char hex)
-    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    // Verify hash format (32-char hex from MD5)
+    const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].ssn).toMatch(/^[a-f0-9]{16}$/)
+    expect(data[0].ssn).toMatch(/^[a-f0-9]{32}$/)
 
     // Verify hash is consistent (same input = same output)
     // Row 0 and Row 1 have different SSNs so hashes should be different
@@ -892,20 +889,17 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('option', { name: /Redact/i }).first().click()
     await page.waitForTimeout(200)
 
-    // Enter project secret
+    // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
 
-    // Apply scrubbing
-    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+    // Apply scrubbing (now modifies in-place via command pattern)
+    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for scrubbed table to be created
-    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
+    // Wait for operation to complete
+    await page.waitForTimeout(1000)
 
-    // Additional wait for data to be fully committed
-    await page.waitForTimeout(500)
-
-    // Verify redaction
-    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    // Verify redaction (same table, modified in-place)
+    const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
     expect(data[0].email).toBe('[REDACTED]')
     expect(data[1].email).toBe('[REDACTED]')
@@ -931,22 +925,19 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('option', { name: /Mask/i }).first().click()
     await page.waitForTimeout(200)
 
-    // Enter project secret
+    // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
 
-    // Apply scrubbing
-    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+    // Apply scrubbing (now modifies in-place via command pattern)
+    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for scrubbed table to be created
-    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
-
-    // Additional wait for data to be fully committed
-    await page.waitForTimeout(500)
+    // Wait for operation to complete
+    await page.waitForTimeout(1000)
 
     // Verify masking (shows first and last char with asterisks in between)
-    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    // "John Smith" should become something like "J*****h"
+    // "John Smith" should become something like "J*******h"
     expect(data[0].full_name).toMatch(/^J\*+h$/)
   })
 
@@ -970,20 +961,17 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('option', { name: /Year Only/i }).first().click()
     await page.waitForTimeout(200)
 
-    // Enter project secret
+    // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
 
-    // Apply scrubbing
-    await page.getByRole('button', { name: /Apply & Create Scrubbed Table/i }).click()
+    // Apply scrubbing (now modifies in-place via command pattern)
+    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for scrubbed table to be created
-    await inspector.waitForTableLoaded('fr_d2_pii_scrubbed', 5)
-
-    // Additional wait for data to be fully committed
-    await page.waitForTimeout(500)
+    // Wait for operation to complete
+    await page.waitForTimeout(1000)
 
     // Verify year_only: 1985-03-15 -> 1985-01-01
-    const data = await inspector.getTableData('fr_d2_pii_scrubbed')
+    const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
     expect(data[0].birth_date).toBe('1985-01-01') // Original: 1985-03-15
     expect(data[1].birth_date).toBe('1990-01-01') // Original: 1990-07-22
