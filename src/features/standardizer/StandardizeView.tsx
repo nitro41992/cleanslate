@@ -20,10 +20,9 @@ import { useTableStore } from '@/stores/tableStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useStandardizer } from '@/hooks/useStandardizer'
-import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
+import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { toast } from 'sonner'
 import { useState } from 'react'
-import type { StandardizeParams } from '@/types'
 
 interface StandardizeViewProps {
   open: boolean
@@ -69,7 +68,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     reset,
   } = useStandardizerStore()
 
-  const { startClustering, cancelClustering, applyChanges } = useStandardizer()
+  const { startClustering, cancelClustering } = useStandardizer()
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
@@ -130,58 +129,40 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     }
 
     try {
-      // IMPORTANT: Initialize timeline BEFORE applying changes
-      // This ensures the original snapshot captures the pre-modification state
-      console.log('[STANDARDIZE] Initializing timeline before changes...')
-      await initializeTimeline(tableId, tableName)
-      console.log('[STANDARDIZE] Timeline initialized, now applying changes...')
+      // Create the standardize command
+      const command = createCommand('standardize:apply', {
+        tableId,
+        column: columnName,
+        algorithm,
+        mappings,
+      })
 
-      const result = await applyChanges()
-      console.log('[STANDARDIZE] applyChanges result:', result)
+      // Execute via CommandExecutor
+      // Executor handles: snapshot creation, execution, audit logging, timeline recording
+      const executor = getCommandExecutor()
+      const result = await executor.execute(command)
 
       if (result.success) {
-        // Add audit entry
-        addTransformationEntry({
-          tableId,
-          tableName,
-          action: 'Standardize Values',
-          details: `Standardized ${mappings.length} value${mappings.length !== 1 ? 's' : ''} in '${columnName}' column using ${algorithm} algorithm`,
-          rowsAffected: result.rowsAffected,
-          hasRowDetails: result.hasRowDetails,
-          auditEntryId: result.auditEntryId || undefined,
-        })
+        const rowsAffected = result.executionResult?.affected || 0
 
-        // Record to timeline for undo/redo support
-        const timelineParams: StandardizeParams = {
-          type: 'standardize',
-          columnName,
-          mappings,
+        // Add audit entry (executor creates audit info, but we still need to add to store)
+        if (result.auditInfo) {
+          addTransformationEntry({
+            tableId,
+            tableName,
+            action: result.auditInfo.action,
+            details: `Standardized ${mappings.length} value${mappings.length !== 1 ? 's' : ''} in '${columnName}' column using ${algorithm} algorithm`,
+            rowsAffected: result.auditInfo.rowsAffected,
+            hasRowDetails: result.auditInfo.hasRowDetails,
+            auditEntryId: result.auditInfo.auditEntryId,
+          })
         }
 
-        console.log('[STANDARDIZE] Recording command to timeline...')
-        await recordCommand(
-          tableId,
-          tableName,
-          'standardize',
-          `Standardize Values (${columnName})`,
-          timelineParams,
-          {
-            auditEntryId: result.auditEntryId || undefined,
-            affectedRowIds: result.affectedRowIds,
-            affectedColumns: [columnName],
-            rowsAffected: result.rowsAffected,
-            hasRowDetails: result.hasRowDetails,
-          }
-        )
-        console.log('[STANDARDIZE] Command recorded')
-
         // Update tableStore to trigger grid refresh (dataVersion auto-increments)
-        console.log('[STANDARDIZE] Updating table to trigger refresh...')
         updateTable(tableId, {})
-        console.log('[STANDARDIZE] Table updated')
 
         toast.success('Values Standardized', {
-          description: `Updated ${result.rowsAffected.toLocaleString()} rows.`,
+          description: `Updated ${rowsAffected.toLocaleString()} rows.`,
         })
 
         reset()
@@ -199,7 +180,6 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     }
   }, [
     getSelectedMappings,
-    applyChanges,
     tableId,
     tableName,
     columnName,

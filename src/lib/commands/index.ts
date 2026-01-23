@@ -158,6 +158,12 @@ export {
 // Transform Commands
 export * from './transform'
 
+// Standardize Commands
+export * from './standardize'
+
+// Match Commands
+export * from './match'
+
 // ===== COMMAND REGISTRATION =====
 
 import { registerCommand } from './registry'
@@ -187,6 +193,8 @@ import {
   PadZerosCommand,
   FillDownCommand,
 } from './transform/tier3'
+import { StandardizeApplyCommand } from './standardize'
+import { MatchMergeCommand } from './match'
 
 // Register all commands
 registerCommand('transform:trim', TrimCommand)
@@ -211,3 +219,9 @@ registerCommand('transform:unformat_currency', UnformatCurrencyCommand)
 registerCommand('transform:fix_negatives', FixNegativesCommand)
 registerCommand('transform:pad_zeros', PadZerosCommand)
 registerCommand('transform:fill_down', FillDownCommand)
+
+// Standardize commands
+registerCommand('standardize:apply', StandardizeApplyCommand)
+
+// Match commands
+registerCommand('match:merge', MatchMergeCommand)

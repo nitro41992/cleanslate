@@ -24,8 +24,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useFuzzyMatcher } from '@/hooks/useFuzzyMatcher'
-import { mergeDuplicates } from '@/lib/fuzzy-matcher'
-import { generateId } from '@/lib/utils'
+import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { toast } from 'sonner'
 
 interface MatchViewProps {
@@ -263,35 +262,53 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   }, [setIsMatching, resetProgress])
 
   const handleApplyMerges = useCallback(async () => {
-    if (!tableName || !matchColumn) return
+    if (!tableName || !matchColumn || !tableId) return
 
     try {
-      // Generate audit entry ID before merge to link details
-      const auditEntryId = generateId()
-      const deletedCount = await mergeDuplicates(tableName, pairs, matchColumn, auditEntryId)
-
-      if (deletedCount > 0 && tableId) {
-        const newRowCount = (selectedTable?.rowCount || 0) - deletedCount
-        updateTable(tableId, { rowCount: newRowCount })
-
-        // Add audit entry with row details flag
-        addTransformationEntry({
-          tableId,
-          tableName,
-          action: 'Apply Merges',
-          details: `Removed ${deletedCount} duplicate rows from table`,
-          rowsAffected: deletedCount,
-          hasRowDetails: true,
-          auditEntryId,
-        })
-      }
-
-      toast.success('Merges Applied', {
-        description: `Removed ${deletedCount} duplicate rows.`,
+      // Create the merge command
+      const command = createCommand('match:merge', {
+        tableId,
+        matchColumn,
+        pairs,
       })
 
-      reset()
-      onClose()
+      // Execute via CommandExecutor
+      // Executor handles: snapshot creation, execution, audit logging, timeline recording
+      const executor = getCommandExecutor()
+      const result = await executor.execute(command)
+
+      if (result.success) {
+        const deletedCount = result.executionResult?.affected || 0
+
+        if (deletedCount > 0) {
+          const newRowCount = (selectedTable?.rowCount || 0) - deletedCount
+          updateTable(tableId, { rowCount: newRowCount })
+
+          // Add audit entry (executor creates audit info, but we still need to add to store)
+          if (result.auditInfo) {
+            addTransformationEntry({
+              tableId,
+              tableName,
+              action: result.auditInfo.action,
+              details: `Removed ${deletedCount} duplicate rows from table`,
+              rowsAffected: result.auditInfo.rowsAffected,
+              hasRowDetails: result.auditInfo.hasRowDetails,
+              auditEntryId: result.auditInfo.auditEntryId,
+            })
+          }
+        }
+
+        toast.success('Merges Applied', {
+          description: `Removed ${deletedCount} duplicate rows.`,
+        })
+
+        reset()
+        onClose()
+      } else {
+        toast.error('Apply Failed', {
+          description: result.error || 'An error occurred',
+        })
+      }
     } catch (error) {
       console.error('Apply merges failed:', error)
       toast.error('Apply Failed', {

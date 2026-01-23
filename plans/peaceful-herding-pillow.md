@@ -9,7 +9,7 @@
 | 2 | ✅ Complete | 22 Transform Commands (Tier 1/2/3) |
 | 2.5 | ✅ Complete | UI Integration (CleanPanel.tsx wired to CommandExecutor) |
 | 2.6 | ✅ Complete | Fix Hybrid State: Wire App.tsx undo/redo to CommandExecutor |
-| 3 | 🔲 Pending | Standardizer & Matcher (2 commands) |
+| 3 | ✅ Complete | Standardizer & Matcher (2 commands) |
 | 4 | 🔲 Pending | Combiner & Scrubber (6 commands) |
 | 5 | 🔲 Pending | Unify Undo/Redo (2 commands + keyboard shortcuts) |
 | 6 | 🔲 Pending | Performance Optimization |
@@ -69,24 +69,274 @@ This preserves backward compatibility for:
 
 ---
 
-## 🔲 Phase 3: Standardizer & Matcher
+## ✅ Phase 3: Standardizer & Matcher (COMPLETE)
 
-**Commands to implement:**
+### Overview
 
 | Command | Tier | Description |
 |---------|------|-------------|
 | `standardize:apply` | 3 | Apply cluster-based value standardization |
 | `match:merge` | 3 | Merge duplicate rows based on fuzzy matching |
 
-**Files to create:**
-```
-src/lib/commands/standardize/apply.ts
-src/lib/commands/match/merge.ts
-```
+Both are Tier 3 commands (require snapshot for undo) because they destructively modify data:
+- Standardize: overwrites original values with standardized values
+- Merge: deletes rows from the table
+
+### Implementation (Jan 2026)
+
+**Created Commands:**
+- `StandardizeApplyCommand` - Wraps `applyStandardization()` from standardizer-engine
+- `MatchMergeCommand` - Wraps `mergeDuplicates()` from fuzzy-matcher
 
 **UI Integration:**
-- Wire `StandardizerPage.tsx` to use CommandExecutor
-- Wire `MatcherPage.tsx` to use CommandExecutor
+- `StandardizeView.tsx` - Now uses `createCommand('standardize:apply', ...)` + `executor.execute()`
+- `MatchView.tsx` - Now uses `createCommand('match:merge', ...)` + `executor.execute()`
+
+**Key Implementation Notes:**
+- Commands are registered in `src/lib/commands/index.ts`
+- Audit logging still requires manual `addTransformationEntry()` call after execution (to add description text)
+- Executor handles: snapshot creation, execution, timeline recording
+
+### Files Changed
+
+| Action | File |
+|--------|------|
+| CREATE | `src/lib/commands/standardize/apply.ts` |
+| CREATE | `src/lib/commands/standardize/index.ts` |
+| CREATE | `src/lib/commands/match/merge.ts` |
+| CREATE | `src/lib/commands/match/index.ts` |
+| MODIFY | `src/lib/commands/index.ts` (register commands) |
+| MODIFY | `src/features/standardizer/StandardizeView.tsx` (use executor) |
+| MODIFY | `src/features/matcher/MatchView.tsx` (use executor) |
+
+### Verification (Passed)
+
+- ✅ `npm run lint` - No errors
+- ✅ `npm run build` - Builds successfully
+- ✅ `npm test -- --grep "standardize|matcher"` - All 6 tests pass
+- ✅ Undo/Redo tests pass
+
+---
+
+### Reference: Original Plan
+
+**Key Insight**: Command types `'standardize:apply'` and `'match:merge'` already exist in `types.ts` and `TIER_3_COMMANDS`. We just need to implement the command classes.
+
+---
+
+### Step 1: Create StandardizeApplyCommand
+
+**File:** `src/lib/commands/standardize/apply.ts`
+
+```typescript
+export interface StandardizeApplyParams {
+  tableId: string
+  column: string
+  algorithm: 'fingerprint' | 'metaphone' | 'token_phonetic'
+  mappings: StandardizationMapping[]  // from standardizer-engine.ts
+}
+```
+
+**Implementation:**
+- Wraps existing `applyStandardization()` from `@/lib/standardizer-engine`
+- `validate()`: Check column exists, mappings non-empty
+- `execute()`: Call `applyStandardization(tableName, column, mappings, auditEntryId)`
+- `getAuditInfo()`: Return `StandardizeAuditDetails` (already defined in types.ts)
+- `getAffectedRowsPredicate()`: Build WHERE clause from affected row IDs
+
+**⚠️ CRITICAL - Audit Fidelity:**
+Don't just log "Standardized Column X" — this destroys the record of how data changed.
+
+In `getAuditInfo()`, serialize the **full mappings array** into the `details` JSON:
+```typescript
+getAuditInfo(ctx: CommandContext, result: ExecutionResult): AuditInfo {
+  return {
+    action: `Standardize Values in ${this.params.column}`,
+    details: {
+      column: this.params.column,
+      algorithm: this.params.algorithm,
+      mappings: this.params.mappings,  // ← CRITICAL: Full cluster→value mappings
+      clusterCount: new Set(this.params.mappings.map(m => m.toValue)).size,
+      valuesStandardized: this.params.mappings.length,
+    },
+    rowsAffected: result.affected,
+    affectedColumns: [this.params.column],
+    hasRowDetails: true,
+    auditEntryId: this.auditEntryId,
+    isCapped: false,
+  }
+}
+```
+This allows the Audit Detail View to reconstruct the cluster visualization later.
+
+**File:** `src/lib/commands/standardize/index.ts` - Export the command
+
+---
+
+### Step 2: Create MatchMergeCommand
+
+**File:** `src/lib/commands/match/merge.ts`
+
+```typescript
+export interface MatchMergeParams {
+  tableId: string
+  matchColumn: string
+  pairs: MatchPair[]  // from fuzzy-matcher.ts (only merged pairs processed)
+}
+```
+
+**Implementation:**
+- Wraps existing `mergeDuplicates()` from `@/lib/fuzzy-matcher`
+- `validate()`: Check table exists, has merged pairs
+- `execute()`: Call `mergeDuplicates(tableName, pairs, matchColumn, auditEntryId)`
+- `getAuditInfo()`: Return `MergeAuditDetails` (already defined in types.ts)
+- `getAffectedRowsPredicate()`: Return `null` (deleted rows can't be highlighted)
+
+**⚠️ CRITICAL - The "Invisible Row" Problem:**
+Unlike trim or standardize, merge **deletes rows**. This creates unique challenges:
+
+1. **Highlighting Limitation:** `getAffectedRowsPredicate()` returns `null` because you cannot highlight rows that no longer exist in the grid.
+
+2. **Diff View Requirement:** For the Diff View (Phase 1.5) to show "Red" deleted rows, it cannot just query the current table. The Executor must track the **snapshot table name** in metadata.
+
+3. **Diff View SQL Pattern:**
+```sql
+-- Show deleted rows (exist in snapshot but not in current)
+SELECT s.*
+FROM _cmd_snapshot_XXX s
+LEFT JOIN current_table c ON s._cs_id = c._cs_id
+WHERE c._cs_id IS NULL
+```
+
+**Implementation Hint:** Ensure `MatchMergeCommand` stores the snapshot table name in its `TimelineCommandRecord` (the executor already does this for Tier 3 commands via `snapshotTable` field).
+
+**File:** `src/lib/commands/match/index.ts` - Export the command
+
+---
+
+### Step 3: Register Commands
+
+**File:** `src/lib/commands/index.ts`
+
+```typescript
+// Add imports
+import { StandardizeApplyCommand } from './standardize'
+import { MatchMergeCommand } from './match'
+
+// Add registrations (after existing registerCommand calls)
+registerCommand('standardize:apply', StandardizeApplyCommand)
+registerCommand('match:merge', MatchMergeCommand)
+```
+
+---
+
+### Step 4: Wire StandardizeView.tsx to CommandExecutor
+
+**File:** `src/features/standardizer/StandardizeView.tsx`
+
+**Changes to `handleApply()`:**
+```typescript
+// BEFORE: Direct engine calls + manual timeline/audit
+await initializeTimeline(tableId, tableName)
+const result = await applyChanges()
+addTransformationEntry(...)
+await recordCommand(...)
+
+// AFTER: CommandExecutor handles everything
+import { createCommand, getCommandExecutor } from '@/lib/commands'
+
+const command = createCommand('standardize:apply', {
+  tableId,
+  column: columnName,
+  algorithm,
+  mappings: getSelectedMappings(),
+})
+
+const executor = getCommandExecutor()
+const result = await executor.execute(command)
+
+if (result.success) {
+  updateTable(tableId, {})  // Trigger UI refresh
+  toast.success(`Standardized ${result.executionResult?.affected || 0} values`)
+}
+```
+
+**Remove:**
+- Calls to `initializeTimeline()`, `recordCommand()` (executor handles timeline)
+- Calls to `addTransformationEntry()` (executor handles audit via `getAuditInfo()`)
+
+---
+
+### Step 5: Wire MatchView.tsx to CommandExecutor
+
+**File:** `src/features/matcher/MatchView.tsx`
+
+**Changes to `handleApplyMerges()`:**
+```typescript
+// BEFORE: Direct merge call + manual audit
+const deletedCount = await mergeDuplicates(tableName, pairs, matchColumn, auditEntryId)
+addTransformationEntry(...)
+
+// AFTER: CommandExecutor handles everything
+import { createCommand, getCommandExecutor } from '@/lib/commands'
+
+const command = createCommand('match:merge', {
+  tableId,
+  matchColumn,
+  pairs: pairs.filter(p => p.status === 'merged'),
+})
+
+const executor = getCommandExecutor()
+const result = await executor.execute(command)
+
+if (result.success) {
+  const deletedCount = result.executionResult?.affected || 0
+  updateTable(tableId, { rowCount: (selectedTable?.rowCount || 0) - deletedCount })
+  toast.success(`Merged ${deletedCount} duplicate rows`)
+}
+```
+
+---
+
+### Files Summary
+
+| Action | File |
+|--------|------|
+| CREATE | `src/lib/commands/standardize/apply.ts` |
+| CREATE | `src/lib/commands/standardize/index.ts` |
+| CREATE | `src/lib/commands/match/merge.ts` |
+| CREATE | `src/lib/commands/match/index.ts` |
+| MODIFY | `src/lib/commands/index.ts` (register commands) |
+| MODIFY | `src/features/standardizer/StandardizeView.tsx` (use executor) |
+| MODIFY | `src/features/matcher/MatchView.tsx` (use executor) |
+
+---
+
+### Verification
+
+1. **Build & Lint:**
+   ```bash
+   npm run lint && npm run build
+   ```
+
+2. **Manual Test - Standardize:**
+   - Load CSV with inconsistent values (e.g., "USA", "U.S.A.", "United States")
+   - Open Standardize view, cluster by fingerprint
+   - Select values to standardize, apply
+   - Verify audit log entry with drill-down
+   - Press Ctrl+Z → values should revert (Tier 3 snapshot restore)
+
+3. **Manual Test - Merge:**
+   - Load CSV with duplicates
+   - Open Match view, find duplicates
+   - Mark pairs as merged, apply
+   - Verify rows deleted, audit log entry
+   - Press Ctrl+Z → deleted rows should reappear (Tier 3 snapshot restore)
+
+4. **Run E2E tests:**
+   ```bash
+   npm test -- --grep "standardize|matcher"
+   ```
 
 ---
 
@@ -160,6 +410,33 @@ src/lib/commands/scrub/
 - Key Map export/import test
 
 ### Scrub Command Details
+
+**⚠️ CRITICAL - Secrets Management for scrub:hash:**
+
+Commands must be **stateless and replayable**. Do NOT read the "Project Secret" from a global store inside `hash.ts`.
+
+**The Rule:** Pass the secret as a **parameter** to the Command constructor.
+- The UI (`ScrubPanel.tsx`) is responsible for reading the secret from the store/OPFS
+- The UI passes it to the command factory when creating the command
+- This ensures that if you Redo the command later, the secret is embedded in the command payload
+
+```typescript
+// WRONG: Reading secret inside command
+getTransformExpression(ctx: CommandContext): string {
+  const secret = useScrubberStore.getState().projectSecret  // ❌ Non-deterministic
+  return `MD5(CONCAT(${col}, '${secret}'))`
+}
+
+// RIGHT: Secret passed as parameter
+export interface ScrubHashParams extends BaseTransformParams {
+  column: string
+  secret: string  // ← Passed from UI, embedded in command
+}
+
+getTransformExpression(ctx: CommandContext): string {
+  return `MD5(CONCAT(${col}, '${this.params.secret}'))`  // ✅ Replayable
+}
+```
 
 **Tier 1 Commands (Reversible via expression chaining):**
 ```typescript
