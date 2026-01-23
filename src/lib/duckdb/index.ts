@@ -7,6 +7,10 @@ import duckdb_wasm_mvp from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
 import duckdb_worker_mvp from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
 import type { CSVIngestionSettings } from '@/types'
 import { withMutex } from './mutex'
+import { detectBrowserCapabilities } from './browser-detection'
+import { migrateFromCSVStorage } from './opfs-migration'
+import { pruneAuditLog } from '../audit-pruning'
+import { toast } from '@/hooks/use-toast'
 
 /**
  * Internal row ID column name for stable row identity across mutations.
@@ -34,6 +38,9 @@ export function isInternalColumn(columnName: string): boolean {
 
 let db: duckdb.AsyncDuckDB | null = null
 let conn: duckdb.AsyncDuckDBConnection | null = null
+let isPersistent = false
+let isReadOnly = false
+let flushTimer: NodeJS.Timeout | null = null
 
 const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
   mvp: {
@@ -49,6 +56,10 @@ const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
 export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   if (db) return db
 
+  // 1. Detect browser capabilities
+  const caps = await detectBrowserCapabilities()
+
+  // 2. Initialize DuckDB-WASM
   const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
   const bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
   const worker = new Worker(bundle.mainWorker!)
@@ -57,19 +68,97 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   db = new duckdb.AsyncDuckDB(logger, worker)
   await db.instantiate(bundle.mainModule)
 
-  // Configure memory limit based on environment
-  // Detect test environment via userAgent (set by Playwright config)
-  // Tests use small CSVs - 256MB is sufficient and prevents OOM on constrained systems
-  // Production uses 3GB (75% of 4GB WASM ceiling)
+  // 3. Open with OPFS or in-memory based on browser capabilities
+  try {
+    if (caps.hasOPFS && caps.supportsAccessHandle) {
+      // Chrome/Edge/Safari: OPFS-backed persistent storage
+      try {
+        await db.open({
+          path: 'opfs://cleanslate.db',
+          query: {
+            access_mode: 'READ_WRITE',
+          },
+        })
+        isPersistent = true
+        console.log(`[DuckDB] OPFS persistence enabled (${caps.browser})`)
+      } catch (openError) {
+        // Check if error is due to database already open in another tab
+        const errorMsg = openError instanceof Error ? openError.message : String(openError)
+        if (errorMsg.includes('locked') || errorMsg.includes('busy')) {
+          // Database locked by another tab - open in read-only mode
+          console.warn('[DuckDB] Database locked by another tab, opening read-only')
+          await db.open({
+            path: 'opfs://cleanslate.db',
+            query: {
+              access_mode: 'READ_ONLY',
+            },
+          })
+          isPersistent = true
+          isReadOnly = true
+
+          toast({
+            title: 'Read-Only Mode',
+            description: 'CleanSlate is open in another tab. This tab is read-only.',
+            variant: 'default',
+          })
+        } else {
+          throw openError  // Re-throw if not a locking issue
+        }
+      }
+    } else {
+      // Firefox: In-memory fallback
+      await db.open({
+        path: ':memory:',
+        query: {
+          access_mode: 'READ_WRITE',
+        },
+      })
+      isPersistent = false
+      console.log(`[DuckDB] In-memory mode (${caps.browser} - no OPFS support)`)
+    }
+  } catch (error) {
+    console.error('[DuckDB] OPFS init failed, falling back to memory:', error)
+    await db.open({ path: ':memory:' })
+    isPersistent = false
+  }
+
+  // 4. Configure memory limit, compression, and run migration/pruning
+  // All done in a single connection to avoid "Missing DB manager" errors
   const isTestEnv = typeof navigator !== 'undefined' &&
-                    navigator.userAgent.includes('Playwright');
-  const memoryLimit = isTestEnv ? '256MB' : '3GB';
+                    navigator.userAgent.includes('Playwright')
+  const memoryLimit = isTestEnv ? '256MB' : '3GB'
 
   const initConn = await db.connect()
+
+  // Set memory limit
   await initConn.query(`SET memory_limit = '${memoryLimit}'`)
+
+  // Enable compression (both OPFS and in-memory benefit)
+  await initConn.query(`PRAGMA enable_object_cache=true`)
+  await initConn.query(`PRAGMA force_compression='zstd'`)
+
+  // Run one-time migration if needed (only for OPFS mode)
+  if (isPersistent && !isReadOnly) {
+    const migrationResult = await migrateFromCSVStorage(db, initConn)
+    if (migrationResult.migrated) {
+      console.log(
+        `[Migration] Migrated ${migrationResult.tablesImported} tables from CSV storage`
+      )
+      if (migrationResult.error) {
+        console.warn(`[Migration] ${migrationResult.error}`)
+      }
+    }
+
+    // Prune old audit entries (keep last 100)
+    await pruneAuditLog(initConn)
+  }
+
   await initConn.close()
 
-  console.log(`DuckDB WASM: Using ${bundleType} bundle (${memoryLimit} memory limit)`)
+  console.log(
+    `[DuckDB] ${bundleType} bundle, ${memoryLimit} limit, compression enabled, ` +
+    `backend: ${isPersistent ? 'OPFS' : 'memory'}${isReadOnly ? ' (read-only)' : ''}`
+  )
   return db
 }
 
@@ -715,6 +804,64 @@ export async function restoreFromOriginalSnapshot(tableName: string): Promise<bo
   `)
 
   return true
+}
+
+/**
+ * Check if DuckDB is using persistent OPFS storage
+ * Returns true for Chrome/Edge/Safari, false for Firefox (in-memory)
+ */
+export function isDuckDBPersistent(): boolean {
+  return isPersistent
+}
+
+/**
+ * Check if DuckDB is in read-only mode
+ * Returns true if opened read-only due to database lock (double-tab scenario)
+ */
+export function isDuckDBReadOnly(): boolean {
+  return isReadOnly
+}
+
+/**
+ * Flush DuckDB WAL to OPFS
+ * Debounced (1 second idle time) to prevent UI stuttering on bulk edits
+ * @param immediate - If true, flush immediately (bypasses debounce)
+ */
+export async function flushDuckDB(immediate = false): Promise<void> {
+  if (!isPersistent || isReadOnly) return // In-memory or read-only - nothing to flush
+
+  // Clear existing timer
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+
+  if (immediate) {
+    // Immediate flush (called on app unload)
+    try {
+      const conn = await getConnection()
+      await withMutex(async () => {
+        await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+      })
+      console.log('[OPFS] Immediate flush completed')
+    } catch (err) {
+      console.warn('[OPFS] Immediate flush failed:', err)
+    }
+  } else {
+    // Debounced flush (1 second idle time)
+    flushTimer = setTimeout(async () => {
+      try {
+        const conn = await getConnection()
+        await withMutex(async () => {
+          await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+        })
+        console.log('[OPFS] Auto-flush completed')
+      } catch (err) {
+        console.warn('[OPFS] Auto-flush failed:', err)
+      }
+      flushTimer = null
+    }, 1000)
+  }
 }
 
 export { db, conn }

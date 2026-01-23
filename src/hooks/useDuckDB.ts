@@ -13,6 +13,8 @@ import {
   execute,
   updateCell as updateCellDb,
   duplicateTable as duplicateTableDb,
+  isDuckDBPersistent,
+  isDuckDBReadOnly,
 } from '@/lib/duckdb'
 import { checkMemoryCapacity } from '@/lib/duckdb/memory'
 import { useTableStore } from '@/stores/tableStore'
@@ -31,9 +33,26 @@ export function useDuckDB() {
 
   useEffect(() => {
     initDuckDB()
-      .then(() => {
+      .then(async () => {
         setIsReady(true)
-        console.log('DuckDB ready')
+
+        // Show persistence status
+        const isPersistent = isDuckDBPersistent()
+        const isReadOnly = isDuckDBReadOnly()
+
+        if (isPersistent && !isReadOnly) {
+          console.log('[DuckDB] Ready with persistent storage (auto-save enabled)')
+        } else if (isPersistent && isReadOnly) {
+          console.log('[DuckDB] Ready with persistent storage (read-only mode)')
+          // Read-only toast already shown in initDuckDB()
+        } else {
+          console.log('[DuckDB] Ready (in-memory - data will not persist)')
+          toast({
+            title: 'In-Memory Mode',
+            description: 'Your browser does not support persistent storage. Data will be lost on refresh.',
+            variant: 'default',
+          })
+        }
       })
       .catch((err) => {
         console.error('Failed to initialize DuckDB:', err)

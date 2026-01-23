@@ -1,222 +1,82 @@
+/**
+ * @deprecated Auto-persistence is now enabled for OPFS-capable browsers.
+ * Manual save is no longer needed. This hook remains for backward compatibility.
+ *
+ * Migration: DuckDB now uses native OPFS storage with automatic persistence.
+ * All data operations auto-save after 1 second of idle time.
+ */
+
 import { useState, useCallback, useEffect } from 'react'
 import {
-  isOPFSAvailable,
-  saveMetadata,
-  loadMetadata,
-  saveTableToOPFS,
-  loadTableFromOPFS,
-  removeTableFromOPFS,
   clearAllOPFS,
-  saveAuditDetailsToOPFS,
-  loadAuditDetailsFromOPFS,
 } from '@/lib/opfs/storage'
-import { useTableStore } from '@/stores/tableStore'
-import { useUIStore } from '@/stores/uiStore'
-import { useAuditStore } from '@/stores/auditStore'
+import { isDuckDBPersistent } from '@/lib/duckdb'
 import { toast } from '@/hooks/use-toast'
-import type { AuditLogEntry } from '@/types'
 
 export function usePersistence() {
-  const [isAvailable, setIsAvailable] = useState(false)
+  const [hasShownNotice, setHasShownNotice] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [hasRestoredData, setHasRestoredData] = useState(false)
 
-  const tables = useTableStore((s) => s.tables)
-  const addTable = useTableStore((s) => s.addTable)
-  const clearTables = useTableStore((s) => s.clearTables)
-  const setPersistenceStatus = useUIStore((s) => s.setPersistenceStatus)
-  const addAuditEntry = useAuditStore((s) => s.addEntry)
-  const getSerializedEntries = useAuditStore((s) => s.getSerializedEntries)
-  const loadAuditEntries = useAuditStore((s) => s.loadEntries)
-
-  // Check OPFS availability on mount
+  // Show auto-save migration notice once
   useEffect(() => {
-    isOPFSAvailable().then(setIsAvailable)
+    if (!hasShownNotice && isDuckDBPersistent()) {
+      toast({
+        title: 'Auto-Save Enabled',
+        description: 'Your data now saves automatically. No manual save needed!',
+      })
+      setHasShownNotice(true)
+    }
+  }, [hasShownNotice])
+
+  // Deprecated: Manual save no longer needed (auto-save enabled)
+  const saveToStorage = useCallback(async () => {
+    // No-op - auto-save handles persistence
+    return true
   }, [])
 
-  // Save all tables to OPFS
-  const saveToStorage = useCallback(async () => {
-    if (!isAvailable) {
-      toast({
-        title: 'Storage Unavailable',
-        description: 'Your browser does not support persistent storage',
-        variant: 'destructive',
-      })
-      return false
-    }
-
-    if (tables.length === 0) {
-      toast({
-        title: 'Nothing to Save',
-        description: 'Load some tables first before saving',
-      })
-      return false
-    }
-
-    setIsLoading(true)
-    setPersistenceStatus('saving')
-
-    try {
-      // Save each table
-      for (const table of tables) {
-        await saveTableToOPFS(table.id, table.name)
-      }
-
-      // Save audit details table
-      await saveAuditDetailsToOPFS()
-
-      // Save metadata (including audit entries)
-      const auditEntries = getSerializedEntries()
-      await saveMetadata(
-        tables.map((t) => ({
-          id: t.id,
-          name: t.name,
-          columns: t.columns.map((c) => ({ name: c.name, type: c.type })),
-          rowCount: t.rowCount,
-          createdAt: t.createdAt.toISOString(),
-          updatedAt: t.updatedAt.toISOString(),
-        })),
-        auditEntries
-      )
-
-      setPersistenceStatus('saved')
-      toast({
-        title: 'Data Saved',
-        description: `Saved ${tables.length} table(s) and ${auditEntries.length} audit entries to local storage`,
-      })
-
-      return true
-    } catch (error) {
-      console.error('Failed to save to OPFS:', error)
-      setPersistenceStatus('error')
-      toast({
-        title: 'Save Failed',
-        description: error instanceof Error ? error.message : 'An error occurred',
-        variant: 'destructive',
-      })
-      return false
-    } finally {
-      setIsLoading(false)
-    }
-  }, [isAvailable, tables, getSerializedEntries, setPersistenceStatus])
-
-  // Load all tables from OPFS
+  // Deprecated: Manual load no longer needed (auto-restore on init)
   const loadFromStorage = useCallback(async () => {
-    if (!isAvailable) {
-      toast({
-        title: 'Storage Unavailable',
-        description: 'Your browser does not support persistent storage',
-        variant: 'destructive',
-      })
-      return false
-    }
+    // No-op - data loads automatically from OPFS
+    return true
+  }, [])
 
+  // Deprecated: Table removal handled by DuckDB
+  const removeFromStorage = useCallback(async (_tableId: string) => {
+    // No-op - DuckDB handles table lifecycle
+    return true
+  }, [])
+
+  // Keep clearStorage() for manual data clearing
+  // This is still useful for users who want to reset their workspace
+  const clearStorage = useCallback(async () => {
     setIsLoading(true)
-    setPersistenceStatus('saving')
-
     try {
-      const metadata = await loadMetadata()
+      // Clear legacy OPFS storage
+      await clearAllOPFS()
 
-      if (!metadata || metadata.tables.length === 0) {
-        toast({
-          title: 'No Saved Data',
-          description: 'No previously saved tables found',
-        })
-        setPersistenceStatus('idle')
-        return false
-      }
-
-      // Clear current tables
-      clearTables()
-
-      // Load each table
-      let loadedCount = 0
-      for (const tableMeta of metadata.tables) {
-        const success = await loadTableFromOPFS(tableMeta.id, tableMeta.name)
-        if (success) {
-          addTable(
-            tableMeta.name,
-            tableMeta.columns.map((c) => ({ name: c.name, type: c.type, nullable: true })),
-            tableMeta.rowCount,
-            tableMeta.id
-          )
-          loadedCount++
+      // For OPFS-backed DuckDB, need to delete the database file and reload
+      if (isDuckDBPersistent()) {
+        try {
+          const opfsRoot = await navigator.storage.getDirectory()
+          await opfsRoot.removeEntry('cleanslate.db')
+        } catch (err) {
+          console.warn('[Clear Storage] Could not delete cleanslate.db:', err)
         }
       }
 
-      // Load audit entries from metadata
-      let auditCount = 0
-      if (metadata.auditEntries && metadata.auditEntries.length > 0) {
-        const restoredEntries: AuditLogEntry[] = metadata.auditEntries.map((e) => ({
-          ...e,
-          timestamp: new Date(e.timestamp),
-        }))
-        loadAuditEntries(restoredEntries)
-        auditCount = restoredEntries.length
-      }
-
-      // Load audit details table
-      await loadAuditDetailsFromOPFS()
-
-      if (loadedCount > 0) {
-        addAuditEntry(
-          'system',
-          'System',
-          'Data Restored',
-          `Loaded ${loadedCount} table(s) and ${auditCount} audit entries from local storage`
-        )
-      }
-
-      setPersistenceStatus('saved')
-      setHasRestoredData(true)
-      toast({
-        title: 'Data Restored',
-        description: `Loaded ${loadedCount} table(s) and ${auditCount} audit entries from local storage`,
-      })
-
-      return true
-    } catch (error) {
-      console.error('Failed to load from OPFS:', error)
-      setPersistenceStatus('error')
-      toast({
-        title: 'Restore Failed',
-        description: error instanceof Error ? error.message : 'An error occurred',
-        variant: 'destructive',
-      })
-      return false
-    } finally {
-      setIsLoading(false)
-    }
-  }, [isAvailable, clearTables, addTable, addAuditEntry, loadAuditEntries, setPersistenceStatus])
-
-  // Remove a specific table from OPFS
-  const removeFromStorage = useCallback(async (tableId: string) => {
-    if (!isAvailable) return false
-
-    try {
-      await removeTableFromOPFS(tableId)
-      return true
-    } catch (error) {
-      console.error('Failed to remove from OPFS:', error)
-      return false
-    }
-  }, [isAvailable])
-
-  // Clear all stored data
-  const clearStorage = useCallback(async () => {
-    if (!isAvailable) return false
-
-    setIsLoading(true)
-    try {
-      await clearAllOPFS()
-      setPersistenceStatus('idle')
       toast({
         title: 'Storage Cleared',
-        description: 'All saved data has been removed',
+        description: 'All saved data has been removed. Reloading...',
       })
+
+      // Reload page to reinitialize DuckDB
+      setTimeout(() => {
+        window.location.reload()
+      }, 1000)
+
       return true
     } catch (error) {
-      console.error('Failed to clear OPFS:', error)
+      console.error('Failed to clear storage:', error)
       toast({
         title: 'Clear Failed',
         description: error instanceof Error ? error.message : 'An error occurred',
@@ -226,28 +86,21 @@ export function usePersistence() {
     } finally {
       setIsLoading(false)
     }
-  }, [isAvailable, setPersistenceStatus])
+  }, [])
 
-  // Auto-restore on initial load (optional)
+  // Deprecated: Auto-restore handled by initDuckDB()
   const autoRestore = useCallback(async () => {
-    if (!isAvailable || hasRestoredData) return
-
-    const metadata = await loadMetadata()
-    if (metadata && metadata.tables.length > 0 && tables.length === 0) {
-      // There's saved data and no current tables - offer to restore
-      return true
-    }
     return false
-  }, [isAvailable, hasRestoredData, tables.length])
+  }, [])
 
   return {
-    isAvailable,
+    isAvailable: false, // Deprecated - OPFS handled by DuckDB now
     isLoading,
-    hasRestoredData,
-    saveToStorage,
-    loadFromStorage,
-    removeFromStorage,
-    clearStorage,
-    autoRestore,
+    hasRestoredData: false, // Deprecated
+    saveToStorage, // No-op
+    loadFromStorage, // No-op
+    removeFromStorage, // No-op
+    clearStorage, // Still functional - clears OPFS and reloads
+    autoRestore, // No-op
   }
 }
