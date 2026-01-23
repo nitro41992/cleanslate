@@ -1,195 +1,129 @@
 # Command Pattern Architecture Migration Plan
 
-## Problem Statement
+## Progress Summary
 
-CleanSlate Pro has architectural fragmentation where **Audit Logging, Undo/Redo, Highlighting, and Diffing** are implemented separately across 5 feature engines. This plan migrates to a **Command Pattern Architecture** that centralizes cross-cutting concerns while maintaining performance for 2M+ row datasets.
+| Phase | Status | Description |
+|-------|--------|-------------|
+| 1 | ✅ Complete | Core Infrastructure (types, registry, executor, context) |
+| 1.5 | ✅ Complete | Diff View Foundation |
+| 2 | ✅ Complete | 22 Transform Commands (Tier 1/2/3) |
+| 2.5 | ✅ Complete | UI Integration (CleanPanel.tsx wired to CommandExecutor) |
+| **2.6** | 🔴 **CRITICAL** | **Fix Hybrid State: Wire App.tsx undo/redo to CommandExecutor** |
+| 3 | 🔲 Pending | Standardizer & Matcher (2 commands) |
+| 4 | 🔲 Pending | Combiner & Scrubber (6 commands) |
+| 5 | 🔲 Pending | Unify Undo/Redo (2 commands + keyboard shortcuts) |
+| 6 | 🔲 Pending | Performance Optimization |
 
----
-
-## Design Principles
-
-| Principle | Rationale |
-|-----------|-----------|
-| **Command Pattern over Memento** | No full-state snapshots for every action; commands are lightweight |
-| **Zero-Copy SQL** | All logic in SQL, no JS row iteration |
-| **Column Versioning** | For Tier 1 ops, ADD COLUMN v2 instead of UPDATE; undo = DROP v2 |
-| **SQL-Based Highlighting** | WHERE clause predicates for dynamic row/cell highlighting |
-| **CQRS-lite** | Separate command execution from read projections (diff views) |
-
----
-
-## Three-Tier Undo Strategy
-
-| Tier | Strategy | Operations | Undo Mechanism |
-|------|----------|------------|----------------|
-| **Tier 1** | Expression chaining | `trim`, `lowercase`, `uppercase`, `replace`, `title_case`, `remove_accents`, `scrub:hash`, `scrub:mask` | Single `__base` column + nested expressions. Undo = pop expression, rebuild. **Instant.** |
-| **Tier 2** | Invertible SQL | `rename_column`, `edit:cell`, `edit:batch` | Execute inverse SQL directly. No snapshot needed. |
-| **Tier 3** | Full Snapshot | `remove_duplicates`, `cast_type`, `split_column`, `combine_columns`, `standardize_date`, `calculate_age`, `custom_sql`, `match:merge`, `combine:*`, `scrub:redact` | Create snapshot before execution. Undo = restore from snapshot. |
+**Key Insight from Phase 2.5**: DuckDB WASM doesn't support `ALTER TABLE ADD COLUMN ... AS (expression)`. All Tier 1 commands use CTAS pattern instead.
 
 ---
 
-## Architecture Overview
+## Three-Tier Undo Strategy (Reference)
+
+| Tier | Strategy | Undo Mechanism |
+|------|----------|----------------|
+| **Tier 1** | Expression chaining (CTAS) | Single `__base` column + nested expressions |
+| **Tier 2** | Invertible SQL | Execute inverse SQL directly |
+| **Tier 3** | Full Snapshot | Restore from pre-execution snapshot |
+
+---
+
+## 🔴 Phase 2.6: Fix Hybrid State (CRITICAL)
+
+### The Problem
+
+**Hybrid State Danger**: CleanPanel.tsx now uses CommandExecutor (write path), but App.tsx still uses legacy `undoTimeline/redoTimeline` functions (undo path):
 
 ```
-User Action (UI)
-      │
-      ▼
-┌─────────────────┐
-│ Command Factory │  Creates typed Command from UI params
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     CommandExecutor                          │
-│  1. validate()           → ValidationResult (with fixAction) │
-│  2. checkUndoStrategy()  → Tier 1/2/3 decision              │
-│  3. pre-snapshot         → if Tier 3                        │
-│  4. execute()            → ExecutionResult                   │
-│  5. createDiffView()     → v_diff_step_X for highlighting   │
-│  6. recordTimeline()     → TimelineCommand with predicate   │
-│  7. updateStores()       → tableStore, auditStore, diffStore│
-└─────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│  DuckDB Layer   │  SQL via mutex (src/lib/duckdb/)
-└─────────────────┘
+Write Path: CleanPanel → CommandExecutor.execute() → Column Versioning (Tier 1)
+Undo Path:  App.tsx → undoTimeline() → Expects snapshot-based undo ❌
 ```
 
----
+Tier 1 commands use Column Versioning (CTAS with `__base` columns), NOT snapshots. The legacy `undoTimeline()` expects snapshots, so **undo will fail silently or produce incorrect results**.
 
-## File Structure
+### The Fix
 
-```
-src/lib/commands/
-├── types.ts              # All interfaces
-├── registry.ts           # CommandRegistry.create(type, params)
-├── executor.ts           # CommandExecutor class (3-tier undo logic)
-├── context.ts            # buildCommandContext(tableId)
-├── column-versions.ts    # ColumnVersionManager for Tier 1 undo
-├── diff-views.ts         # DiffViewManager for v_diff_step_X views
-├── utils/
-│   ├── sql.ts            # escapeSqlString(), quoteColumn(), quoteTable()
-│   └── date.ts           # DATE_FORMATS[], buildDateParseExpression()
-├── transform/
-│   ├── base.ts           # BaseTransformCommand (abstract)
-│   ├── tier1/            # 10 commands (trim, lowercase, etc.)
-│   ├── tier2/            # rename-column.ts
-│   └── tier3/            # 11 commands (remove-duplicates, split-column, etc.)
-├── standardize/          # TODO: apply.ts
-├── match/                # TODO: merge.ts
-├── combine/              # TODO: stack.ts, join.ts
-├── scrub/                # TODO: hash.ts, mask.ts, redact.ts
-└── edit/                 # TODO: cell.ts, batch.ts
-```
+**File to modify:** `src/App.tsx`
 
----
+**Changes:**
 
-## Performance Guardrails (2M Rows)
-
-| Constraint | Implementation |
-|------------|----------------|
-| **Zero JS row loops** | All commands use SQL only |
-| **Tier 1 Undo** | Metadata-only, instant regardless of row count |
-| **Tier 3 Snapshots** | Limited to 5 per timeline, pruned LRU |
-| **Lazy Highlighting** | SQL predicate injected into virtualized queries |
-| **Diff Views** | DuckDB views, not materialized tables |
-
----
-
-## Implementation Status
-
-### ✅ Phase 1: Core Infrastructure - COMPLETE
-### ✅ Phase 1.5: Diff View Foundation - COMPLETE
-### ✅ Phase 2: Transform Commands - COMPLETE (22/22)
-
-| Tier | Commands |
-|------|----------|
-| Tier 1 | trim, lowercase, uppercase, title_case, remove_accents, sentence_case, collapse_spaces, remove_non_printable, replace, replace_empty |
-| Tier 2 | rename_column |
-| Tier 3 | remove_duplicates, cast_type, custom_sql, split_column, combine_columns, standardize_date, calculate_age, unformat_currency, fix_negatives, pad_zeros, fill_down |
-
----
-
-## ✅ Phase 2.5: UI Integration - COMPLETE
-
-**Status**: Implemented on 2026-01-22
-
-**Changes Made**:
-1. Updated `CleanPanel.tsx` imports to use command system
-2. Replaced `executeTransformation()` logic with `CommandExecutor.execute()`
-3. Fixed column versioning to use CTAS pattern (DuckDB WASM doesn't support computed columns after table creation)
-4. Removed manual audit logging (handled by executor)
-5. Removed manual timeline recording (handled by executor)
-
-**DuckDB WASM Limitation Found**: `ALTER TABLE ADD COLUMN ... AS (expression)` is not supported. Fixed by using Create Table As Select (CTAS) pattern instead.
-
-**Previous Problem**: The command system was fully built but **completely disconnected from the UI**. The application used the legacy `applyTransformation()` function.
-
-### Implementation Steps
-
-**Step 1: Update CleanPanel.tsx imports**
+1. Replace import:
 ```typescript
-import {
-  createCommand,
-  getCommandExecutor,
-  getCommandTypeFromTransform
-} from '@/lib/commands'
+// OLD
+import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
+
+// NEW
+import { getCommandExecutor } from '@/lib/commands'
 ```
 
-**Step 2: Replace executeTransformation() logic** (lines ~103-176)
-
+2. Update `handleUndo` callback:
 ```typescript
-// 1. Get command type
-const commandType = getCommandTypeFromTransform(selectedTransform.id)
-if (!commandType) {
-  throw new Error(`Unknown transformation type: ${selectedTransform.id}`)
-}
+const handleUndo = useCallback(async () => {
+  if (!activeTableId || isReplaying) return
 
-// 2. Build command with params
-const command = createCommand(commandType, {
-  tableId: activeTable.id,
-  column: selectedTransform.requiresColumn ? selectedColumn : undefined,
-  ...params,
-})
+  try {
+    const executor = getCommandExecutor()
+    const result = await executor.undo(activeTableId)
 
-// 3. Execute through CommandExecutor
-const executor = getCommandExecutor()
-const result = await executor.execute(command, {
-  onProgress: (progress) => {
-    console.log(`${progress.phase}: ${progress.progress}%`)
+    if (result.success) {
+      // Table store is updated automatically by CommandExecutor
+      if (activeTable) {
+        addAuditEntry(
+          activeTableId,
+          activeTable.name,
+          'Undo',
+          'Reverted to previous state',
+          'A'
+        )
+      }
+    }
+    refreshMemory()
+  } catch (error) {
+    console.error('[UNDO] Error:', error)
   }
-})
-
-// 4. Handle result
-if (!result.success) {
-  throw new Error(result.error || 'Transformation failed')
-}
-
-// 5. Update table store (executor handles audit + timeline)
-if (result.executionResult) {
-  updateTable(activeTable.id, {
-    rowCount: result.executionResult.rowCount,
-    columns: result.executionResult.columns,
-  })
-}
+}, [activeTableId, activeTable, isReplaying, addAuditEntry, refreshMemory])
 ```
 
-**Step 3: Remove manual audit/timeline code** (handled by CommandExecutor)
-
-**Step 4: Handle validation errors**
+3. Update `handleRedo` callback:
 ```typescript
-if (!result.success && result.validationResult) {
-  const errors = result.validationResult.errors.map(e => e.message).join(', ')
-  toast.error('Validation Failed', { description: errors })
-  return
-}
+const handleRedo = useCallback(async () => {
+  if (!activeTableId || isReplaying) return
+
+  try {
+    const executor = getCommandExecutor()
+    const result = await executor.redo(activeTableId)
+
+    if (result.success) {
+      // Table store is updated automatically by CommandExecutor
+      if (activeTable) {
+        addAuditEntry(
+          activeTableId,
+          activeTable.name,
+          'Redo',
+          'Reapplied next state',
+          'A'
+        )
+      }
+    }
+    refreshMemory()
+  } catch (error) {
+    console.error('[REDO] Error:', error)
+  }
+}, [activeTableId, activeTable, isReplaying, addAuditEntry, refreshMemory])
 ```
+
+4. Remove unused `updateTable` from callback dependencies (CommandExecutor handles store updates).
 
 ### Verification
-1. Load a CSV file
-2. Apply `Trim Whitespace` → verify audit log entry
-3. Apply `Lowercase` on same column → verify expression chaining works
+
+After implementing Phase 2.6:
+
+1. `npm run dev` - Start dev server
+2. Load a CSV file
+3. Apply **Trim Whitespace** (Tier 1 command)
+4. Press **Ctrl+Z** - Column should revert instantly via Column Versioning
+5. Press **Ctrl+Y** - Column should be re-transformed
+6. Run `npm test` - All existing tests should pass
 
 ---
 
@@ -202,60 +136,130 @@ if (!result.success && result.validationResult) {
 | `standardize:apply` | 3 | Apply cluster-based value standardization |
 | `match:merge` | 3 | Merge duplicate rows based on fuzzy matching |
 
-**Key considerations:**
-- Both require Tier 3 snapshots (destructive operations)
-- `standardize:apply` needs to capture cluster mappings in `StandardizeAuditDetails`
-- `match:merge` needs to track survivor strategy and deleted row IDs
-
 **Files to create:**
 ```
 src/lib/commands/standardize/apply.ts
 src/lib/commands/match/merge.ts
 ```
 
-**StandardizeAuditDetails structure:**
-```typescript
-interface StandardizeAuditDetails {
-  type: 'standardize'
-  column: string
-  algorithm: 'fingerprint' | 'metaphone'
-  clusterCount: number
-  clusters: Record<string, { master: string; members: string[] }>
-}
-```
+**UI Integration:**
+- Wire `StandardizerPage.tsx` to use CommandExecutor
+- Wire `MatcherPage.tsx` to use CommandExecutor
 
 ---
 
-## 🔲 Phase 4: Combiner & Scrubber
+## 🔲 Phase 4: Combiner & Scrubber (FEATURE COMPLETE)
 
-**Commands to implement:**
+### Current State Analysis
 
-| Command | Tier | Description |
-|---------|------|-------------|
-| `combine:stack` | 3 | UNION ALL tables with column alignment |
-| `combine:join` | 3 | JOIN tables (inner/left/right/full) |
-| `scrub:hash` | 1 | SHA-256 with project secret |
-| `scrub:mask` | 1 | Partial value masking (e.g., `***-**-1234`) |
-| `scrub:redact` | 3 | Full PII redaction (snapshot required - data destroyed) |
-| `scrub:year_only` | 3 | Date → year only |
+**Combiner (`src/lib/combiner-engine.ts`):**
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Stack (UNION ALL) | ✅ Working | E2E tested, validation works |
+| Inner Join | ✅ Working | E2E tested |
+| Left Join | ✅ Working | E2E tested |
+| Full Outer Join | 🔶 Code exists | No E2E test |
+| Right Join | ❌ Missing | Not implemented |
+| Clean-First Guardrail | 🔶 Code exists | `autoCleanKeys()` works, no test |
+| Audit Trail | ❌ Missing | Not integrated |
+| Undo/Redo | ❌ Missing | Not integrated |
 
-**Files to create:**
+**Scrubber (`src/lib/obfuscation.ts`):**
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Hash (SHA-256) | ✅ Working | E2E tested, uses Web Crypto API |
+| Redact | ✅ Working | E2E tested |
+| Mask | ✅ Working | E2E tested, first/last char preserved |
+| Year Only | ✅ Working | E2E tested |
+| FR-D1: Project Secret | ⚠️ Partial | Works in session, NO persistence |
+| FR-D3: Key Map Export | 🔶 Partial | Works for hash only, no import |
+| Faker | ✅ Working | Hardcoded fake data |
+| Scramble/Last4/ZeroOut | ✅ Working | Numeric methods |
+| Jitter | ✅ Working | ±30 days fixed |
+| Audit Trail | ❌ Missing | Not integrated with commands |
+| Undo/Redo | ❌ Missing | Not integrated |
+
+### Implementation Plan
+
+**Step 1: Create Combine Commands** (wrap existing engine)
 ```
-src/lib/commands/combine/stack.ts
-src/lib/commands/combine/join.ts
-src/lib/commands/scrub/hash.ts
-src/lib/commands/scrub/mask.ts
-src/lib/commands/scrub/redact.ts
-src/lib/commands/scrub/year-only.ts
+src/lib/commands/combine/
+├── stack.ts    # Tier 3 - wraps combiner-engine.stackTables()
+├── join.ts     # Tier 3 - wraps combiner-engine.joinTables()
+└── index.ts
 ```
 
-**Scrub hash expression (Tier 1):**
+**Step 2: Create Scrub Commands** (wrap existing obfuscation)
+```
+src/lib/commands/scrub/
+├── hash.ts       # Tier 1 - expression chaining with secret
+├── mask.ts       # Tier 1 - expression chaining
+├── redact.ts     # Tier 3 - snapshot (data destroyed)
+├── year-only.ts  # Tier 3 - snapshot (precision lost)
+└── index.ts
+```
+
+**Step 3: Complete Missing Features**
+| Feature | Implementation |
+|---------|----------------|
+| Right Join | Add to `joinTables()` and UI dropdown |
+| FR-D1 Secret Persistence | Save to OPFS/localStorage, recall on panel open |
+| FR-D3 Key Map Import | Add import button, apply saved mappings |
+
+**Step 4: Wire UI to Command System**
+- `CombinePanel.tsx` → use `CommandExecutor` instead of direct engine calls
+- `ScrubPanel.tsx` → use `CommandExecutor` instead of direct obfuscation calls
+
+**Step 5: Add E2E Tests**
+- Full Outer Join test
+- Right Join test
+- Clean-First guardrail test
+- Secret persistence test
+- Key Map export/import test
+
+### Scrub Command Details
+
+**Tier 1 Commands (Reversible via expression chaining):**
 ```typescript
-// Uses project secret for consistent hashing
+// scrub:hash - SHA256 with project secret
 getTransformExpression(ctx: CommandContext): string {
   const secret = ctx.project?.secret ?? ''
-  return `SHA256(CONCAT(${COLUMN_PLACEHOLDER}, '${escapeSqlString(secret)}'))`
+  // DuckDB has MD5 but not SHA256 - need to use JS-based approach
+  // or store key map for reversibility
+  return `MD5(CONCAT(${COLUMN_PLACEHOLDER}, '${escapeSqlString(secret)}'))`
 }
+
+// scrub:mask - First/last char with asterisks
+getTransformExpression(ctx: CommandContext): string {
+  return `CONCAT(LEFT(${COLUMN_PLACEHOLDER}, 1), '****', RIGHT(${COLUMN_PLACEHOLDER}, 1))`
+}
+```
+
+**Tier 3 Commands (Require snapshot):**
+- `scrub:redact` - Replaces with `[REDACTED]`, original destroyed
+- `scrub:year_only` - Extracts year, day/month precision lost
+
+### Key Files to Modify
+
+```
+# Combine Commands
+src/lib/commands/combine/stack.ts       # NEW
+src/lib/commands/combine/join.ts        # NEW
+src/lib/combiner-engine.ts              # Add Right Join support
+src/components/panels/CombinePanel.tsx  # Wire to CommandExecutor
+
+# Scrub Commands
+src/lib/commands/scrub/hash.ts          # NEW
+src/lib/commands/scrub/mask.ts          # NEW
+src/lib/commands/scrub/redact.ts        # NEW
+src/lib/commands/scrub/year-only.ts     # NEW
+src/lib/obfuscation.ts                  # Refactor to support commands
+src/stores/scrubberStore.ts             # Add secret persistence
+src/components/panels/ScrubPanel.tsx    # Wire to CommandExecutor
+
+# Registry Updates
+src/lib/commands/registry.ts            # Register new command types
+src/lib/commands/index.ts               # Export new commands
 ```
 
 ---
@@ -270,163 +274,59 @@ getTransformExpression(ctx: CommandContext): string {
 | `edit:batch` | 2 | Multiple cell edits |
 
 **Key changes:**
-- DataGrid.tsx calls `CommandExecutor.undo()` for all operations
-- Undo automatically uses correct tier strategy
+- `DataGrid.tsx` Ctrl+Z/Y → `CommandExecutor.undo()/redo()`
+- All operations share single undo stack
 - Deprecate `editStore.ts`
 
-**Files to modify:**
+**Files:**
 ```
-src/components/grid/DataGrid.tsx  - Wire Ctrl+Z/Y to CommandExecutor
-src/stores/editStore.ts           - Deprecate
-src/lib/commands/edit/cell.ts     - NEW
-src/lib/commands/edit/batch.ts    - NEW
-```
-
-**Edit command structure:**
-```typescript
-interface EditCellParams {
-  tableId: string
-  rowId: string      // _cs_id value
-  column: string
-  newValue: unknown
-  previousValue: unknown  // For inverse SQL
-}
-
-// Tier 2 - inverseSql is just the reverse UPDATE
-getInvertibility(): InvertibilityInfo {
-  return {
-    tier: 2,
-    inverseSql: `UPDATE "${table}" SET "${col}" = ${escape(prevValue)} WHERE "_cs_id" = '${rowId}'`,
-    undoStrategy: 'Execute inverse UPDATE'
-  }
-}
+src/lib/commands/edit/cell.ts     # NEW - Tier 2 with inverse SQL
+src/lib/commands/edit/batch.ts    # NEW - Tier 2 with inverse SQL
+src/components/grid/DataGrid.tsx  # Wire keyboard shortcuts
+src/stores/editStore.ts           # DEPRECATE
 ```
 
 ---
 
 ## 🔲 Phase 6: Performance Optimization
 
-- **Snapshot pruning**: Max 5 Tier 3 snapshots per table, LRU eviction
-- **Column version cleanup**: Prune `__base` columns after 10 steps
-- **Diff view materialization**: For complex predicates on 2M+ rows
-- **Intermediate diff views**: Generate Expression[N-1] from `expressionStack.slice(0, -1)`
+| Optimization | Implementation |
+|--------------|----------------|
+| Snapshot pruning | Max 5 Tier 3 snapshots per table, LRU eviction |
+| Column cleanup | Prune `__base` columns after 10 steps |
+| Diff materialization | For complex predicates on 2M+ rows |
+| Hidden columns | Filter `__base` columns from export/UI |
 
-**Snapshot pruning policy:**
-```typescript
-interface TimelineCommandRecord {
-  // ... existing fields
-  undoDisabled?: boolean  // True if snapshot was pruned
-  undoDisabledReason?: string
-}
+---
 
-// When 6th Tier 3 operation executes:
-// 1. Delete oldest snapshot
-// 2. Mark corresponding command as undoDisabled: true
-// 3. UI shows "Undo unavailable - snapshot pruned"
-```
+## Verification Plan
+
+After each phase, verify:
+
+1. **Run E2E tests**: `npm test`
+2. **Manual smoke test**:
+   - Load CSV → Apply transformations → Verify audit log
+   - Ctrl+Z/Y → Verify undo/redo works
+   - Export CSV → Verify `__base` columns hidden
+3. **Performance check**: Load 100k row CSV, apply transforms, verify < 2s
 
 ---
 
 ## Design Notes (Reference)
 
-### Expression Chaining (Tier 1) - CTAS Pattern
+### CTAS Pattern (DuckDB WASM Limitation)
 
-Instead of multiple backup columns, chain expressions on a single base column.
-
-**Note**: DuckDB WASM doesn't support `ADD COLUMN ... AS (expression)` after table creation.
-We use Create Table As Select (CTAS) pattern instead:
+DuckDB WASM doesn't support `ALTER TABLE ADD COLUMN ... AS (expression)`.
+All Tier 1 commands use Create Table As Select pattern:
 
 ```sql
--- Step 1: trim (first transform - create base column)
-CREATE TABLE temp AS SELECT
-  col1, col2,
-  "Email" AS "Email__base",  -- backup original
-  TRIM("Email") AS "Email"   -- transformed with original name
-FROM "data";
-DROP TABLE "data";
-ALTER TABLE temp RENAME TO "data";
-
--- Step 2: lowercase (chained transform - rebuild with nested expression)
-CREATE TABLE temp AS SELECT
-  col1, col2,
-  "Email__base",             -- keep base column
-  LOWER(TRIM("Email__base")) AS "Email"  -- nested expression
-FROM "data";
-DROP TABLE "data";
-ALTER TABLE temp RENAME TO "data";
-
--- Undo lowercase (revert to previous expression)
-CREATE TABLE temp AS SELECT
-  col1, col2,
-  "Email__base",
-  TRIM("Email__base") AS "Email"
-FROM "data";
-DROP TABLE "data";
-ALTER TABLE temp RENAME TO "data";
-
--- Undo trim (full restore - drop base, restore original)
-CREATE TABLE temp AS SELECT
-  col1, col2,
-  "Email__base" AS "Email"   -- restore from base
-FROM "data";
-DROP TABLE "data";
-ALTER TABLE temp RENAME TO "data";
+-- Transform: CREATE temp with transformed column, DROP original, RENAME temp
+-- Undo: Recreate with previous expression or restore from __base column
 ```
 
-**ColumnVersionInfo structure:**
-```typescript
-interface ColumnVersionInfo {
-  originalColumn: string
-  baseColumn: string           // Single backup: Email__base
-  expressionStack: {
-    expression: string         // e.g., "TRIM({{COL}})"
-    commandId: string
-  }[]
-}
-```
+### Key Architecture Decisions
 
-### Export Handling for Backup Columns
-
-Use metadata flag to hide `__base` columns from export/UI:
-```typescript
-interface ColumnInfo {
-  name: string
-  type: string
-  nullable: boolean
-  isHidden?: boolean  // True for backup columns
-}
-```
-
-### Error Recovery for Expression Rebuild
-
-With CTAS pattern, atomic swap is simpler - if CTAS fails, original table is untouched:
-```typescript
-async createVersion(tableName, column, expression, commandId) {
-  const tempTable = `${tableName}_cv_temp_${Date.now()}`
-  try {
-    // Build and execute CTAS (original table untouched)
-    await db.execute(`CREATE TABLE ${tempTable} AS SELECT ... FROM ${tableName}`)
-    // Only now do we swap (atomic)
-    await db.execute(`DROP TABLE ${tableName}`)
-    await db.execute(`ALTER TABLE ${tempTable} RENAME TO ${tableName}`)
-  } catch (error) {
-    // Cleanup temp table if it exists (original table untouched)
-    await db.execute(`DROP TABLE IF EXISTS ${tempTable}`)
-    throw error
-  }
-}
-```
-
-### Tier 3 Diff Views
-
-For deletion operations, LEFT JOIN snapshot to show removed rows:
-```sql
-CREATE VIEW v_diff_step_2 AS
-SELECT
-  COALESCE(c."_cs_id", s."_cs_id") as _row_id,
-  CASE WHEN c."_cs_id" IS NULL THEN 'removed' ELSE 'unchanged' END as _change_type,
-  NULL as _affected_column,
-  COALESCE(c.*, s.*)
-FROM "_snapshot_before_step_2" s
-LEFT JOIN "my_table" c ON s."_cs_id" = c."_cs_id"
-```
+1. **Expression chaining**: Single `__base` column, nested SQL expressions
+2. **Tier classification**: Based on reversibility, not complexity
+3. **Audit logging**: Handled by CommandExecutor, not individual commands
+4. **Timeline**: Per-table command history with snapshot references
