@@ -89,6 +89,11 @@ export interface CommandContext {
  *   Step 2 (lower):    Email = LOWER(TRIM("Email__base"))
  *   Undo lowercase:    Email = TRIM("Email__base")
  *   Undo trim:         Email__base renamed back to Email
+ *
+ * Materialization:
+ *   After COLUMN_MATERIALIZATION_THRESHOLD transforms, the current value is
+ *   copied back to base, resetting the expression stack. A snapshot is kept
+ *   to support undo past the materialization point.
  */
 export interface ColumnVersionInfo {
   /** The original column name (e.g., "Email") */
@@ -97,6 +102,10 @@ export interface ColumnVersionInfo {
   baseColumn: string
   /** Stack of transform expressions, applied in order */
   expressionStack: ExpressionEntry[]
+  /** Snapshot table name for undo past materialization (Phase 6.3) */
+  materializationSnapshot?: string
+  /** Position in expression stack when materialization occurred */
+  materializationPosition?: number
 }
 
 export interface ExpressionEntry {
@@ -372,4 +381,6 @@ export interface TimelineCommandRecord {
   rowsAffected?: number
   /** For edit:cell commands - tracks cell changes for dirty indicators */
   cellChanges?: CellChange[]
+  /** Set to true when snapshot was pruned - undo no longer possible for Tier 3 commands */
+  undoDisabled?: boolean
 }

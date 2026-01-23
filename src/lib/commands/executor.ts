@@ -39,12 +39,19 @@ import { duplicateTable, dropTable, tableExists } from '@/lib/duckdb'
 
 // ===== TIMELINE STORAGE =====
 
+/**
+ * Maximum number of Tier 3 snapshots per table.
+ * LRU eviction removes oldest when limit exceeded.
+ */
+const MAX_SNAPSHOTS_PER_TABLE = 5
+
 // Per-table timeline of executed commands for undo/redo
 // Key: tableId, Value: { commands, position, snapshots }
 interface TableCommandTimeline {
   commands: TimelineCommandRecord[]
   position: number // -1 = before first command, 0+ = after command at that index
   snapshots: Map<number, string> // position -> snapshot table name
+  snapshotTimestamps: Map<number, number> // position -> timestamp for LRU tracking
   originalSnapshot?: string // Initial state snapshot
 }
 
@@ -60,6 +67,7 @@ function getTimeline(tableId: string): TableCommandTimeline {
       commands: [],
       position: -1,
       snapshots: new Map(),
+      snapshotTimestamps: new Map(),
     }
     tableTimelines.set(tableId, timeline)
   }
@@ -146,6 +154,8 @@ export class CommandExecutor implements ICommandExecutor {
       if (needsSnapshot && !skipTimeline) {
         progress('snapshotting', 20, 'Creating backup snapshot...')
         snapshotTableName = await this.createSnapshot(ctx)
+        // Prune oldest snapshot if over limit
+        await this.pruneOldestSnapshot(getTimeline(tableId))
       }
 
       // Step 4: Execute
@@ -247,6 +257,14 @@ export class CommandExecutor implements ICommandExecutor {
       return {
         success: false,
         error: 'No command at current position',
+      }
+    }
+
+    // Check if undo is disabled (snapshot was pruned)
+    if (commandRecord.undoDisabled) {
+      return {
+        success: false,
+        error: 'Undo unavailable: History limit reached',
       }
     }
 
@@ -377,7 +395,10 @@ export class CommandExecutor implements ICommandExecutor {
 
   canUndo(tableId: string): boolean {
     const timeline = tableTimelines.get(tableId)
-    return !!timeline && timeline.position >= 0
+    if (!timeline || timeline.position < 0) return false
+
+    const cmd = timeline.commands[timeline.position]
+    return !!cmd && !cmd.undoDisabled
   }
 
   canRedo(tableId: string): boolean {
@@ -438,6 +459,41 @@ export class CommandExecutor implements ICommandExecutor {
     const snapshotName = `_cmd_snapshot_${ctx.table.id}_${Date.now()}`
     await duplicateTable(ctx.table.name, snapshotName, true)
     return snapshotName
+  }
+
+  /**
+   * Prune oldest snapshot if over limit (LRU eviction).
+   * Marks the corresponding command as undoDisabled.
+   */
+  private async pruneOldestSnapshot(timeline: TableCommandTimeline): Promise<void> {
+    if (timeline.snapshots.size <= MAX_SNAPSHOTS_PER_TABLE) return
+
+    // Find oldest by timestamp
+    let oldestPosition = -1
+    let oldestTimestamp = Infinity
+
+    for (const [pos, ts] of timeline.snapshotTimestamps) {
+      if (ts < oldestTimestamp) {
+        oldestTimestamp = ts
+        oldestPosition = pos
+      }
+    }
+
+    if (oldestPosition >= 0) {
+      const snapshotName = timeline.snapshots.get(oldestPosition)
+      if (snapshotName) {
+        // Drop the snapshot table
+        await dropTable(snapshotName).catch(() => {})
+        timeline.snapshots.delete(oldestPosition)
+        timeline.snapshotTimestamps.delete(oldestPosition)
+
+        // Mark the command as undoDisabled
+        const command = timeline.commands[oldestPosition]
+        if (command) {
+          command.undoDisabled = true
+        }
+      }
+    }
   }
 
   private async restoreFromSnapshot(
@@ -513,11 +569,12 @@ export class CommandExecutor implements ICommandExecutor {
     // Truncate any commands after current position (for redo)
     if (timeline.position < timeline.commands.length - 1) {
       timeline.commands = timeline.commands.slice(0, timeline.position + 1)
-      // Clean up orphaned snapshots
+      // Clean up orphaned snapshots and timestamps
       for (const [pos, name] of timeline.snapshots.entries()) {
         if (pos > timeline.position) {
           dropTable(name).catch(() => {})
           timeline.snapshots.delete(pos)
+          timeline.snapshotTimestamps.delete(pos)
         }
       }
     }
@@ -554,9 +611,10 @@ export class CommandExecutor implements ICommandExecutor {
     timeline.commands.push(record)
     timeline.position = timeline.commands.length - 1
 
-    // Store snapshot reference if provided
+    // Store snapshot reference and timestamp if provided
     if (snapshotTable) {
       timeline.snapshots.set(timeline.position, snapshotTable)
+      timeline.snapshotTimestamps.set(timeline.position, Date.now())
     }
   }
 

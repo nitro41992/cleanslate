@@ -28,9 +28,16 @@
 
 import type { ColumnVersionInfo, ExpressionEntry } from './types'
 import { quoteColumn, quoteTable } from './utils/sql'
+import { duplicateTable, dropTable } from '@/lib/duckdb'
 
 /** Placeholder token for column reference in expressions */
 export const COLUMN_PLACEHOLDER = '{{COL}}'
+
+/**
+ * After this many transforms on a single column, materialize the result.
+ * This prevents expression stacks from growing too large.
+ */
+export const COLUMN_MATERIALIZATION_THRESHOLD = 10
 
 /** Pre-compiled regex for replacing the placeholder */
 const PLACEHOLDER_REGEX = /\{\{COL\}\}/g
@@ -145,6 +152,66 @@ export function getOriginalFromBase(baseColumnName: string): string | null {
 }
 
 /**
+ * Materialize a column by copying the current computed value back to base.
+ * Creates a snapshot for undo safety and resets the expression stack.
+ *
+ * This is called when expression stack reaches COLUMN_MATERIALIZATION_THRESHOLD
+ * to prevent expressions from growing too large and impacting performance.
+ */
+async function materializeColumn(
+  db: {
+    execute: (sql: string) => Promise<void>
+    query: <T>(sql: string) => Promise<T[]>
+  },
+  tableName: string,
+  column: string,
+  versionInfo: ColumnVersionInfo
+): Promise<void> {
+  // Create snapshot for undo safety (in case user wants to undo past materialization)
+  const snapshotName = `_mat_${tableName}_${column}_${Date.now()}`
+  await duplicateTable(tableName, snapshotName, true)
+
+  // Store materialization info for potential undo
+  versionInfo.materializationSnapshot = snapshotName
+  versionInfo.materializationPosition = versionInfo.expressionStack.length
+
+  // Materialize: copy current computed value to base column
+  // This uses CTAS pattern for DuckDB WASM compatibility
+  const tempTable = `${tableName}_mat_temp_${Date.now()}`
+
+  // Get all columns
+  const colsResult = await db.query<{ column_name: string }>(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = '${tableName}'
+    ORDER BY ordinal_position
+  `)
+  const allColumns = colsResult.map((c) => c.column_name)
+
+  // Build SELECT: update base column with current value, keep everything else
+  const selectParts: string[] = []
+  for (const col of allColumns) {
+    if (col === versionInfo.baseColumn) {
+      // Copy current computed value to base
+      selectParts.push(`${quoteColumn(column)} AS ${quoteColumn(versionInfo.baseColumn)}`)
+    } else {
+      selectParts.push(quoteColumn(col))
+    }
+  }
+
+  // Create temp table with materialized base
+  const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+  await db.execute(ctasSQL)
+
+  // Swap tables
+  await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
+  await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
+
+  // Reset stack to identity (base column now holds the materialized value)
+  versionInfo.expressionStack = [{ expression: '{{COL}}', commandId: 'materialized' }]
+}
+
+/**
  * Create a column version manager for a specific table
  */
 export function createColumnVersionManager(
@@ -253,6 +320,11 @@ export function createColumnVersionManager(
             await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
             await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
 
+            // Check if we need to materialize (expression stack too large)
+            if (versionInfo.expressionStack.length >= COLUMN_MATERIALIZATION_THRESHOLD) {
+              await materializeColumn(db, tableName, column, versionInfo)
+            }
+
             return {
               success: true,
               originalColumn: column,
@@ -306,6 +378,25 @@ export function createColumnVersionManager(
         `)
         const allColumns = colsResult.map((c) => c.column_name)
 
+        // Check if we're trying to undo past a materialization point
+        const lastExpr = versionInfo.expressionStack[versionInfo.expressionStack.length - 1]
+        if (lastExpr && lastExpr.commandId === 'materialized' && versionInfo.expressionStack.length === 1) {
+          // At materialization boundary - cannot undo past this point
+          // Clean up the materialization snapshot since we're at the limit
+          if (versionInfo.materializationSnapshot) {
+            await dropTable(versionInfo.materializationSnapshot).catch(() => {})
+            versionInfo.materializationSnapshot = undefined
+            versionInfo.materializationPosition = undefined
+          }
+          return {
+            success: false,
+            restoredColumn: column,
+            expressionsRemaining: 1,
+            fullyRestored: false,
+            error: 'Undo unavailable: Column was materialized for performance',
+          }
+        }
+
         // Pop the last expression
         versionInfo.expressionStack.pop()
 
@@ -331,6 +422,11 @@ export function createColumnVersionManager(
           // Swap tables
           await db.execute(`DROP TABLE ${quoteTable(tableName)}`)
           await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
+
+          // Clean up materialization snapshot if it exists
+          if (versionInfo.materializationSnapshot) {
+            await dropTable(versionInfo.materializationSnapshot).catch(() => {})
+          }
 
           // Remove from version store
           versions.delete(column)

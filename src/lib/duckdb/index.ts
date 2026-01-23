@@ -16,17 +16,20 @@ import { withMutex } from './mutex'
 export const CS_ID_COLUMN = '_cs_id'
 
 /**
- * Filter out internal columns (like _cs_id) from column lists for UI display
+ * Filter out internal columns (like _cs_id, __base backup columns) from column lists for UI display
  */
 export function filterInternalColumns(columns: string[]): string[] {
-  return columns.filter(col => col !== CS_ID_COLUMN)
+  return columns.filter(col =>
+    col !== CS_ID_COLUMN && !col.endsWith('__base')
+  )
 }
 
 /**
  * Check if a column is an internal system column
+ * Includes _cs_id and __base backup columns created by Tier 1 transforms
  */
 export function isInternalColumn(columnName: string): boolean {
-  return columnName === CS_ID_COLUMN
+  return columnName === CS_ID_COLUMN || columnName.endsWith('__base')
 }
 
 let db: duckdb.AsyncDuckDB | null = null

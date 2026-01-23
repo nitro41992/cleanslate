@@ -46,9 +46,10 @@ src/
 ├── components/          # Reusable UI (common/, grid/, layout/, ui/)
 ├── features/            # Feature modules (laundromat/, matcher/, combiner/, scrubber/, diff/)
 ├── lib/                 # Core business logic
+│   ├── commands/        # Command Pattern (executor, registry, transform/, edit/, etc.)
 │   ├── duckdb/          # DuckDB initialization & queries
 │   ├── opfs/            # OPFS storage utilities
-│   ├── transformations.ts
+│   ├── transformations.ts  # Legacy (being migrated to commands/)
 │   ├── diff-engine.ts
 │   ├── combiner-engine.ts  # Stack/join table operations
 │   ├── fuzzy-matcher.ts
@@ -61,19 +62,78 @@ src/
 
 ### Data Flow
 ```
-File Upload → useDuckDB hook → DuckDB-WASM (Worker) → tableStore → DataGrid
-                                    ↓
-                            Transform/Diff/Match/Scrub
-                                    ↓
-                            auditStore (log changes) → Export CSV/OPFS persistence
+File Upload → DuckDB-WASM → tableStore → DataGrid
+                  ↓
+            CommandExecutor
+            (validate → execute → audit → timeline)
+                  ↓
+            auditStore → Export CSV/OPFS persistence
 ```
 
 ### Key Patterns
 - **Local-first**: All data processing happens in-browser via DuckDB SQL
 - **Store-driven UI**: Zustand stores are single source of truth
-- **Composable transforms**: Recipe builder chains SQL operations
+- **Command pattern**: Unified `CommandExecutor` for all data operations with automatic undo/audit
 - **Immutable audit trail**: Every action logged with timestamp and impact metrics
 - **Web Crypto API**: SHA-256 hashing for obfuscation (no third-party crypto)
+
+### Command Pattern Architecture
+
+CleanSlate Pro uses a unified Command Pattern for all data operations:
+
+**Core Concepts:**
+- **Declarative commands** via typed `Command<TParams>` interface
+- **Automatic audit logging** with row-level drill-down
+- **Three-tier undo strategy** (Tier 1: instant, Tier 2: inverse SQL, Tier 3: snapshot)
+- **Diff views** for highlighting affected rows in the grid
+
+**Command Directory Structure:**
+```
+src/lib/commands/
+├── index.ts              # Public API + command registration
+├── executor.ts           # CommandExecutor singleton (8-step lifecycle)
+├── registry.ts           # Factory pattern, tier classification
+├── types.ts              # Core types (Command, CommandContext, etc.)
+├── context.ts            # Context builder, column version state
+├── column-versions.ts    # Tier 1 expression chaining manager
+├── diff-views.ts         # Diff view creation (v_diff_step_X)
+├── transform/            # 22 transform commands (tier1/, tier2/, tier3/)
+├── edit/                 # EditCellCommand (Tier 2)
+├── match/                # MatchMergeCommand (Tier 3)
+├── combine/              # Stack/Join commands (Tier 2)
+├── standardize/          # StandardizeApplyCommand (Tier 3)
+├── scrub/                # Hash/Mask/Redact/YearOnly (Tier 1-3)
+└── utils/                # SQL helpers, date parsing
+```
+
+**Three-Tier Undo Strategy:**
+| Tier | Mechanism | Speed | Commands |
+|------|-----------|-------|----------|
+| **1** | Expression chaining | Instant | trim, lowercase, uppercase, replace, hash, mask (12 total) |
+| **2** | Inverse SQL | Fast | rename_column, edit:cell, combine:stack/join (5 total) |
+| **3** | Snapshot restore | Slower | remove_duplicates, cast_type, split_column, standardize:apply, match:merge (15 total) |
+
+**Usage Pattern:**
+```typescript
+import { createCommand, getCommandExecutor } from '@/lib/commands'
+
+const command = createCommand('transform:trim', { tableId, column: 'email' })
+const result = await getCommandExecutor().execute(command)
+
+// Undo/Redo
+if (executor.canUndo(tableId)) await executor.undo(tableId)
+if (executor.canRedo(tableId)) await executor.redo(tableId)
+```
+
+**Key Files:**
+- `executor.ts` - Central orchestrator (validate → snapshot → execute → diff → audit → timeline)
+- `column-versions.ts` - Tier 1 expression chaining with `__base` backup columns
+- `registry.ts` - Maps command types to tier classification
+
+**Performance Optimizations (Phase 6):**
+- Snapshot pruning: Max 5 Tier 3 snapshots per table (LRU eviction)
+- Column materialization: After 10 Tier 1 transforms, materialize expression stack
+- `__base` columns filtered from UI/export via `filterInternalColumns()`
 
 ## TypeScript Configuration
 
