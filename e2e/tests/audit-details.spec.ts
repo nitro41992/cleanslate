@@ -93,6 +93,11 @@ test.describe.serial('Audit Row Details', () => {
     // "Hello" -> "hi", "hello" -> "hi", "HELLO" -> "hi", "say hello" -> "say hi"
     const nameChanges = details.filter((d) => d.column_name === 'name')
     expect(nameChanges.length).toBe(4) // All 4 rows had "hello" in some form
+    // Rule 1: Verify specific before/after values
+    const previousValues = nameChanges.map((c) => c.previous_value as string)
+    const newValues = nameChanges.map((c) => c.new_value as string)
+    expect(previousValues).toEqual(expect.arrayContaining(['Hello', 'hello', 'HELLO', 'say hello']))
+    expect(newValues).toEqual(['hi', 'hi', 'hi', 'say hi'])
   })
 
   test('should open audit detail modal when clicking entry with details', async () => {
@@ -174,9 +179,9 @@ test.describe.serial('Audit Row Details', () => {
     const lines = content.trim().split('\n')
     expect(lines.length).toBeGreaterThan(1) // Header + at least one data row
 
-    // Close the modal
+    // Close the modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
-    await expect(modal).not.toBeVisible()
+    await expect(modal).toBeHidden()
   })
 
   test('should include row details in full audit log export', async () => {
@@ -353,9 +358,9 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     await expect(page.getByTestId('manual-edit-detail-table')).toBeVisible()
     await expect(page.getByTestId('manual-edit-detail-row')).toBeVisible()
 
-    // Close the modal
+    // Close the modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
-    await expect(modal).not.toBeVisible()
+    await expect(modal).toBeHidden()
   })
 
   test('should export manual edit details as CSV', async () => {
@@ -416,8 +421,8 @@ test.describe.serial('Audit Row Details - Edge Cases', () => {
     const lines = content.trim().split('\n')
     expect(lines.length).toBe(2)
 
-    // Close the modal
+    // Close the modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
-    await expect(modal).not.toBeVisible()
+    await expect(modal).toBeHidden()
   })
 })

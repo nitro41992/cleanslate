@@ -196,6 +196,10 @@ test.describe.serial('Transformations: Duplicates Data', () => {
     // Verify reduced count - query DuckDB directly as store may not sync immediately
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM with_duplicates')
     expect(Number(result[0].cnt)).toBe(3) // 3 unique rows
+    // Rule 1: Verify specific unique rows after dedup
+    const data = await inspector.getTableData('with_duplicates')
+    const ids = data.map((r) => String(r.id)).sort()
+    expect(ids).toEqual(['1', '2', '3'])
   })
 })
 

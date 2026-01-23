@@ -132,7 +132,9 @@ test.describe.serial('Export', () => {
 
     const result = await downloadAndVerifyCSV(page)
 
-    // Header + 3 unique rows
+    // Header + 3 unique rows - Rule 1: Verify WHICH rows remain after dedup
     expect(result.rows.length).toBe(4)
+    const names = result.rows.slice(1).map((r) => r[1]) // Skip header
+    expect(names.sort()).toEqual(['Bob Johnson', 'Jane Smith', 'John Doe'])
   })
 })

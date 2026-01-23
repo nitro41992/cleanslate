@@ -67,12 +67,15 @@ test.describe.serial('File Upload', () => {
     // Wait for table to be loaded in the store
     await inspector.waitForTableLoaded('basic_data', 5)
 
-    // Verify via store
+    // Verify via store - Rule 1: Assert identity, not just cardinality
     const tables = await inspector.getTables()
-    expect(tables.length).toBeGreaterThanOrEqual(1)
+    expect(tables.some((t) => t.name === 'basic_data')).toBe(true)
     const basicDataTable = tables.find((t) => t.name === 'basic_data')
     expect(basicDataTable).toBeDefined()
     expect(basicDataTable?.rowCount).toBe(5)
+    // Verify specific row data
+    const data = await inspector.getTableData('basic_data')
+    expect(data[0]).toMatchObject({ id: '1', name: 'John Doe' })
   })
 
   // Uses loaded data from previous test

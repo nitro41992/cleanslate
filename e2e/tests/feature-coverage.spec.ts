@@ -488,6 +488,12 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     // Modified should have some rows
     const modifiedText = await modifiedPill.locator('span').first().textContent()
     expect(parseInt(modifiedText || '0')).toBeGreaterThan(0)
+
+    // Rule 3: Verify diff state in store
+    const diffState = await inspector.getDiffState()
+    expect(diffState.summary).toBeDefined()
+    expect(diffState.summary?.added).toBe(1)
+    expect(diffState.summary?.removed).toBe(1)
   })
 })
 
@@ -555,11 +561,14 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await matchView.waitForPairs()
 
     // Verify pairs are displayed with similarity percentages
+    // Rule 1: Verify expected pairs and names
     const pairCount = await matchView.getPairCount()
-    expect(pairCount).toBeGreaterThan(0)
+    expect(pairCount).toBeGreaterThanOrEqual(2) // Expect specific count
 
     // Verify "% Similar" format is displayed
     await expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible()
+    // Verify pair contains expected matches
+    await expect(page.locator('text=/John/').first()).toBeVisible()
   })
 
   test('should mark pairs as merged and display apply bar', async () => {
@@ -864,9 +873,13 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     expect(data.length).toBeGreaterThan(0)
     expect(data[0].ssn).toMatch(/^[a-f0-9]{32}$/)
 
-    // Verify hash is consistent (same input = same output)
+    // Rule 2: Assert specific hash format for both and explicit uniqueness check
+    const hash0 = data[0].ssn as string
+    const hash1 = data[1].ssn as string
+    expect(hash0).toMatch(/^[a-f0-9]{32}$/)
+    expect(hash1).toMatch(/^[a-f0-9]{32}$/)
     // Row 0 and Row 1 have different SSNs so hashes should be different
-    expect(data[0].ssn).not.toBe(data[1].ssn)
+    expect(hash0 !== hash1).toBe(true)
   })
 
   test('should redact PII patterns', async () => {
@@ -1046,10 +1059,13 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
     expect(Number(result[0].cnt)).toBe(9)
 
     // Verify data integrity - check sale_ids from both files (J=Jan, F=Feb)
+    // Rule 1: Verify exact sale_id values
     const data = await inspector.getTableData('stacked_result', 9)
     const saleIds = data.map((r) => r.sale_id as string)
-    expect(saleIds.filter((id) => id.startsWith('J'))).toHaveLength(4)
-    expect(saleIds.filter((id) => id.startsWith('F'))).toHaveLength(5)
+    const janIds = saleIds.filter((id) => id.startsWith('J')).sort()
+    const febIds = saleIds.filter((id) => id.startsWith('F')).sort()
+    expect(janIds).toEqual(['J001', 'J002', 'J003', 'J004'])
+    expect(febIds).toEqual(['F001', 'F002', 'F003', 'F004', 'F005'])
   })
 })
 
@@ -1126,6 +1142,10 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM join_result')
     // Inner join: only rows where customer_id matches (C001, C002, C003 have orders)
     expect(Number(result[0].cnt)).toBe(5)
+    // Rule 1: Verify specific customer IDs in join
+    const data = await inspector.getTableData('join_result')
+    const customerIds = [...new Set(data.map((r) => r.customer_id as string))].sort()
+    expect(customerIds).toEqual(['C001', 'C002', 'C003'])
   })
 
   test('should perform left join preserving unmatched orders', async () => {
@@ -1256,6 +1276,15 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     // Verify undo/redo buttons exist (basic UI check)
     await expect(laundromat.undoButton).toBeVisible()
     await expect(laundromat.redoButton).toBeVisible()
+
+    // Rule 3: Actually perform a cell edit and verify dirty state in store
+    await laundromat.editCell(0, 1, 'EDITED_VALUE')
+    await page.waitForTimeout(300)
+
+    // Verify dirty state via store inspection (canvas grid has no DOM dirty indicators)
+    const dirtyState = await inspector.getEditDirtyState()
+    expect(dirtyState.hasDirtyEdits).toBe(true)
+    expect(dirtyState.dirtyCount).toBeGreaterThan(0)
   })
 
   test('should commit cell edit and record in audit log', async () => {
@@ -1449,6 +1478,11 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     expect(summary.modified).toBe(5) // All 5 rows have uppercase names
     expect(summary.added).toBe(0)
     expect(summary.removed).toBe(0)
+
+    // Rule 3: Verify diff state via store
+    const diffState = await inspector.getDiffState()
+    expect(diffState.mode).toBe('compare-preview')
+    expect(diffState.summary?.modified).toBe(5)
   })
 
   test('should support Compare Two Tables mode', async () => {

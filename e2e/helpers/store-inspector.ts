@@ -24,6 +24,29 @@ export interface AuditEntry {
   rowsAffected?: number
 }
 
+export interface TimelineHighlightState {
+  commandId: string | null
+  rowCount: number
+  columnCount: number
+  diffMode: string
+}
+
+export interface TimelinePositionState {
+  current: number
+  total: number
+}
+
+export interface DiffStoreState {
+  isComparing: boolean
+  summary: { added: number; removed: number; modified: number; unchanged: number } | null
+  mode: string
+}
+
+export interface EditDirtyState {
+  hasDirtyEdits: boolean
+  dirtyCount: number
+}
+
 export interface StoreInspector {
   getTables: () => Promise<TableInfo[]>
   getActiveTableId: () => Promise<string | null>
@@ -38,6 +61,22 @@ export interface StoreInspector {
    * @returns Query result rows
    */
   runQuery: (sql: string) => Promise<Record<string, unknown>[]>
+  /**
+   * Get diff highlighting state from diffStore
+   */
+  getDiffState: () => Promise<DiffStoreState>
+  /**
+   * Get edit store dirty state
+   */
+  getEditDirtyState: () => Promise<EditDirtyState>
+  /**
+   * Get timeline position for undo/redo verification
+   */
+  getTimelinePosition: (tableId?: string) => Promise<TimelinePositionState>
+  /**
+   * Get timeline highlight state (for visual highlighting verification)
+   */
+  getTimelineHighlight: () => Promise<TimelineHighlightState>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -130,6 +169,75 @@ export function createStoreInspector(page: Page): StoreInspector {
         if (!duckdb?.query) throw new Error('DuckDB not available')
         return duckdb.query(sql)
       }, sql)
+    },
+
+    async getDiffState(): Promise<DiffStoreState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.diffStore) {
+          return { isComparing: false, summary: null, mode: 'compare-preview' }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.diffStore as any).getState()
+        return {
+          isComparing: state?.isComparing || false,
+          summary: state?.summary || null,
+          mode: state?.mode || 'compare-preview',
+        }
+      })
+    },
+
+    async getEditDirtyState(): Promise<EditDirtyState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.editStore) {
+          return { hasDirtyEdits: false, dirtyCount: 0 }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.editStore as any).getState()
+        const dirtyPositions = state?.dirtyPositions
+        return {
+          hasDirtyEdits: dirtyPositions?.size > 0,
+          dirtyCount: dirtyPositions?.size || 0,
+        }
+      })
+    },
+
+    async getTimelinePosition(tableId?: string): Promise<TimelinePositionState> {
+      return page.evaluate(({ tableId }) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore || !stores?.tableStore) {
+          return { current: -1, total: 0 }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tableState = (stores.tableStore as any).getState()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const timelineState = (stores.timelineStore as any).getState()
+        const activeTableId = tableId || tableState?.activeTableId
+        const timeline = timelineState?.timelines?.get?.(activeTableId)
+        return {
+          current: timeline?.currentPosition ?? -1,
+          total: timeline?.commands?.length ?? 0,
+        }
+      }, { tableId })
+    },
+
+    async getTimelineHighlight(): Promise<TimelineHighlightState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) {
+          return { commandId: null, rowCount: 0, columnCount: 0, diffMode: 'none' }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        const highlight = state?.highlight
+        return {
+          commandId: highlight?.commandId || null,
+          rowCount: highlight?.rowIds?.size || 0,
+          columnCount: highlight?.highlightedColumns?.size || 0,
+          diffMode: highlight?.diffMode || 'none',
+        }
+      })
     },
   }
 }

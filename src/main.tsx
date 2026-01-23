@@ -39,6 +39,18 @@ if (import.meta.env.DEV) {
     ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.matcherStore = useMatcherStore
   })
 
+  import('./stores/timelineStore').then(({ useTimelineStore }) => {
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ =
+      (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ || {}
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.timelineStore = useTimelineStore
+  })
+
+  import('./stores/diffStore').then(({ useDiffStore }) => {
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ =
+      (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ || {}
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.diffStore = useDiffStore
+  })
+
   // Expose fuzzy matcher for E2E testing
   import('./lib/fuzzy-matcher').then((fuzzyMatcher) => {
     ;(window as Window & { __CLEANSLATE_FUZZY_MATCHER__?: typeof fuzzyMatcher }).__CLEANSLATE_FUZZY_MATCHER__ = fuzzyMatcher

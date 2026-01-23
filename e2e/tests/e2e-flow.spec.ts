@@ -133,6 +133,9 @@ test.describe('Full E2E Flow', () => {
     // Verify reduced count - query DuckDB directly as store may not sync immediately
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM with_duplicates')
     expect(Number(result[0].cnt)).toBe(3)
+    // Rule 1: Verify which rows remain
+    const data = await inspector.getTableData('with_duplicates')
+    expect(data.map((r) => r.name).sort()).toEqual(['Bob Johnson', 'Jane Smith', 'John Doe'])
 
     // Export deduplicated data
     const downloadResult = await downloadAndVerifyCSV(page)

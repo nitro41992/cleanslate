@@ -85,12 +85,22 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
       .filter({ hasText: 'Clear' })
     await expect(clearBtn.first()).toBeVisible()
 
+    // Rule 3: Verify visual state via timelineStore
+    // NOTE: Canvas-based grid (Glide Data Grid) - no DOM classes to check
+    const highlightState = await inspector.getTimelineHighlight()
+    expect(highlightState.commandId).toBeDefined()
+    expect(highlightState.rowCount).toBeGreaterThan(0)
+
     // Click Clear to remove highlighting
     await clearBtn.first().click()
     await page.waitForTimeout(300)
 
     // Button should be back to "Highlight"
     await expect(highlightBtn.first()).toBeVisible()
+
+    // Verify highlight is cleared in store
+    const clearedState = await inspector.getTimelineHighlight()
+    expect(clearedState.commandId).toBeNull()
   })
 
   test('FR-REGRESSION-3: Audit drill-down shows row details', async () => {
@@ -120,9 +130,9 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     }
     // If no table, the modal should at least be showing content (even if error)
 
-    // Close modal
+    // Close modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
-    await expect(modal).not.toBeVisible()
+    await expect(modal).toBeHidden()
   })
 
   test('FR-REGRESSION-4: Undo reverts transform and updates grid', async () => {
@@ -133,7 +143,8 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     const originalData = await inspector.getTableData('whitespace_data')
     const originalValue = originalData[0]?.name as string
     // Original should have whitespace: "  John Doe  "
-    expect(originalValue.trim()).not.toEqual(originalValue)
+    // Rule 2: Assert exact whitespace value
+    expect(originalValue).toBe('  John Doe  ')
 
     // Apply Trim transform
     await laundromat.openCleanPanel()
@@ -146,8 +157,8 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     const afterTransform = await inspector.getTableData('whitespace_data')
     const transformedValue = afterTransform[0]?.name as string
     // After trim: "John Doe" (no whitespace)
-    expect(transformedValue).toEqual(transformedValue.trim())
-    expect(transformedValue).not.toEqual(originalValue)
+    // Rule 2: Assert exact transformed value
+    expect(transformedValue).toBe('John Doe')
 
     // Click somewhere to ensure focus isn't on an input
     await page.locator('body').click()
@@ -183,14 +194,13 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     const afterRedo = await inspector.getTableData('whitespace_data')
     const afterValue = afterRedo[0]?.name as string
 
-    // If we had whitespace before, values should differ
+    // Rule 2: Assert exact before/after states
     if (hasWhitespace) {
-      expect(afterValue).not.toEqual(beforeValue)
-      // After redo (trim), value should be shorter
-      expect(afterValue.length).toBeLessThan(beforeValue.length)
+      expect(beforeValue).toBe('  John Doe  ')
+      expect(afterValue).toBe('John Doe')
     }
     // Verify it's actually trimmed
-    expect(afterValue).toEqual(afterValue.trim())
+    expect(afterValue).toBe(afterValue.trim())
   })
 
   test('FR-REGRESSION-6: Audit sidebar reflects undo state with Undone badge', async () => {
@@ -208,12 +218,20 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     const undoneBadge = page.locator('[data-testid="audit-sidebar"]').locator('text=Undone')
     await expect(undoneBadge).toBeVisible({ timeout: 5000 })
 
+    // Rule 3: Verify timeline position changed via store
+    const positionAfterUndo = await inspector.getTimelinePosition()
+    expect(positionAfterUndo.current).toBeLessThan(positionAfterUndo.total - 1)
+
     // Redo to restore for subsequent tests
     await page.keyboard.press('Control+y')
     await page.waitForTimeout(500)
 
-    // The "Undone" badge should no longer be visible
-    await expect(undoneBadge).not.toBeVisible({ timeout: 3000 })
+    // The "Undone" badge should no longer be visible - Rule 2: Use positive hidden assertion
+    await expect(undoneBadge).toBeHidden({ timeout: 3000 })
+
+    // Verify position is back at end
+    const positionAfterRedo = await inspector.getTimelinePosition()
+    expect(positionAfterRedo.current).toBe(positionAfterRedo.total - 1)
   })
 })
 
@@ -348,8 +366,9 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await page.waitForTimeout(500)
 
     const newPositionText = await positionBadge.first().textContent()
-    // Position should be different after undo
-    expect(newPositionText).not.toEqual(positionText)
+    // Rule 2: Assert exact timeline positions
+    expect(positionText).toMatch(/2\/2/)
+    expect(newPositionText).toMatch(/1\/2/)
 
     // Redo to restore
     await page.keyboard.press('Control+y')
@@ -410,16 +429,17 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await expect(modal).toBeVisible({ timeout: 5000 })
 
     // Verify modal shows row details (NOT "No row details available")
+    // Rule 2: Use positive hidden assertion
     const noDetailsMsg = modal.locator('text=No row details available')
-    await expect(noDetailsMsg).not.toBeVisible({ timeout: 3000 })
+    await expect(noDetailsMsg).toBeHidden({ timeout: 3000 })
 
     // Verify row details table exists
     const detailTable = page.getByTestId('audit-detail-table')
     await expect(detailTable).toBeVisible({ timeout: 3000 })
 
-    // Close modal
+    // Close modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
-    await expect(modal).not.toBeVisible()
+    await expect(modal).toBeHidden()
   })
 
   test('FR-REGRESSION-8: Audit sidebar does not cut off content', async () => {

@@ -203,6 +203,9 @@ test.describe.serial('FR-F: Value Standardization', () => {
     const uniqueInitial = new Set(initialNames).size
     const uniqueUpdated = new Set(updatedNames).size
     expect(uniqueUpdated).toBeLessThan(uniqueInitial)
+    // Rule 1: Verify standardization happened to expected master values
+    const johnVariants = updatedData.filter((r) => r.name === 'John Smith')
+    expect(johnVariants.length).toBeGreaterThanOrEqual(2)
   })
 
   test('FR-F3: should create audit entry with drill-down', async () => {
@@ -442,9 +445,9 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     const rowCount = await rows.count()
     expect(rowCount).toBeGreaterThan(0)
 
-    // Close modal
+    // Close modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
-    await expect(modal).not.toBeVisible({ timeout: 3000 })
+    await expect(modal).toBeHidden({ timeout: 3000 })
 
     // Close audit sidebar
     await laundromat.closeAuditSidebar()
@@ -513,8 +516,8 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     await page.keyboard.press('Control+y')
     await page.waitForTimeout(500)
 
-    // Badge should no longer be visible
-    await expect(undoneBadge).not.toBeVisible({ timeout: 3000 })
+    // Badge should no longer be visible - Rule 2: Use positive hidden assertion
+    await expect(undoneBadge).toBeHidden({ timeout: 3000 })
 
     await laundromat.closeAuditSidebar()
   })
