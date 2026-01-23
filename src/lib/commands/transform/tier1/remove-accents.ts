@@ -1,0 +1,28 @@
+/**
+ * Remove Accents Command
+ *
+ * Removes diacritical marks (café → cafe).
+ * Tier 1 - Column versioning for instant undo.
+ */
+
+import type { CommandContext, CommandType } from '../../types'
+import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+
+export interface RemoveAccentsParams extends BaseTransformParams {
+  column: string
+}
+
+export class RemoveAccentsCommand extends Tier1TransformCommand<RemoveAccentsParams> {
+  readonly type: CommandType = 'transform:remove_accents'
+  readonly label = 'Remove Accents'
+
+  getTransformExpression(_ctx: CommandContext): string {
+    return `strip_accents(${this.getQuotedColumn()})`
+  }
+
+  async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
+    const col = this.getQuotedColumn()
+    // Rows where stripped value differs from original
+    return `${col} IS NOT NULL AND ${col} != strip_accents(${col})`
+  }
+}

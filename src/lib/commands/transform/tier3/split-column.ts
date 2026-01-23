@@ -1,0 +1,153 @@
+/**
+ * Split Column Command
+ *
+ * Splits a column into multiple columns by delimiter, position, or length.
+ * Tier 3 - Requires snapshot for undo (adds multiple columns).
+ */
+
+import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
+import { Tier3TransformCommand, type BaseTransformParams } from '../base'
+import { quoteColumn, quoteTable, escapeSqlString } from '../../utils/sql'
+
+export type SplitMode = 'delimiter' | 'position' | 'length'
+
+export interface SplitColumnParams extends BaseTransformParams {
+  column: string
+  splitMode: SplitMode
+  delimiter?: string
+  position?: number
+  length?: number
+}
+
+export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams> {
+  readonly type: CommandType = 'transform:split_column'
+  readonly label = 'Split Column'
+
+  protected async validateParams(_ctx: CommandContext): Promise<ValidationResult> {
+    const mode = this.params.splitMode || 'delimiter'
+
+    if (mode === 'delimiter' && !this.params.delimiter) {
+      return this.errorResult('DELIMITER_REQUIRED', 'Delimiter is required for delimiter mode', 'delimiter')
+    }
+
+    if (mode === 'position' && (this.params.position === undefined || this.params.position < 1)) {
+      return this.errorResult('POSITION_REQUIRED', 'Valid position is required for position mode', 'position')
+    }
+
+    if (mode === 'length' && (this.params.length === undefined || this.params.length < 1)) {
+      return this.errorResult('LENGTH_REQUIRED', 'Valid length is required for length mode', 'length')
+    }
+
+    return this.validResult()
+  }
+
+  async execute(ctx: CommandContext): Promise<ExecutionResult> {
+    const tableName = ctx.table.name
+    const tempTable = `${tableName}_temp_${Date.now()}`
+    const col = this.params.column
+    const mode = this.params.splitMode || 'delimiter'
+
+    try {
+      // Determine prefix for new columns
+      const existingCols = ctx.table.columns.map((c) => c.name)
+      let prefix = col
+      if (existingCols.some((c) => c.startsWith(`${col}_1`))) {
+        prefix = `${col}_split`
+      }
+
+      let partColumns: string
+
+      if (mode === 'position') {
+        const pos = this.params.position || 3
+        partColumns = `
+          substring(CAST(${quoteColumn(col)} AS VARCHAR), 1, ${pos}) as ${quoteColumn(`${prefix}_1`)},
+          substring(CAST(${quoteColumn(col)} AS VARCHAR), ${pos + 1}) as ${quoteColumn(`${prefix}_2`)}
+        `
+      } else if (mode === 'length') {
+        const len = this.params.length || 2
+        // Get max length to determine number of parts
+        const maxLenResult = await ctx.db.query<{ max_len: number }>(
+          `SELECT MAX(LENGTH(CAST(${quoteColumn(col)} AS VARCHAR))) as max_len FROM ${quoteTable(tableName)}`
+        )
+        const maxLen = Number(maxLenResult[0]?.max_len) || 0
+        const numParts = Math.min(Math.ceil(maxLen / len), 50) // Cap at 50
+
+        partColumns = Array.from({ length: numParts }, (_, i) =>
+          `substring(CAST(${quoteColumn(col)} AS VARCHAR), ${i * len + 1}, ${len}) as ${quoteColumn(`${prefix}_${i + 1}`)}`
+        ).join(', ')
+      } else {
+        // Delimiter mode
+        let delimiter = this.params.delimiter || ' '
+        if (delimiter.trim().length > 0) {
+          delimiter = delimiter.trim()
+        }
+        const escapedDelim = escapeSqlString(delimiter)
+
+        // Get max parts
+        const maxPartsResult = await ctx.db.query<{ max_parts: number }>(
+          `SELECT MAX(len(string_split(CAST(${quoteColumn(col)} AS VARCHAR), '${escapedDelim}'))) as max_parts FROM ${quoteTable(tableName)}`
+        )
+        const numParts = Math.min(Number(maxPartsResult[0]?.max_parts) || 2, 10)
+
+        partColumns = Array.from({ length: numParts }, (_, i) =>
+          `string_split(CAST(${quoteColumn(col)} AS VARCHAR), '${escapedDelim}')[${i + 1}] as ${quoteColumn(`${prefix}_${i + 1}`)}`
+        ).join(', ')
+      }
+
+      // Create temp table with split columns
+      const sql = `
+        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
+        SELECT *, ${partColumns}
+        FROM ${quoteTable(tableName)}
+      `
+      await ctx.db.execute(sql)
+
+      // Swap tables
+      await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
+      await ctx.db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
+
+      // Get updated info
+      const columns = await ctx.db.getTableColumns(tableName)
+      const newColumnNames = columns
+        .filter((c) => c.name.startsWith(`${prefix}_`))
+        .map((c) => c.name)
+
+      const countResult = await ctx.db.query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM ${quoteTable(tableName)}`
+      )
+      const rowCount = Number(countResult[0]?.count ?? 0)
+
+      return {
+        success: true,
+        rowCount,
+        columns,
+        affected: rowCount,
+        newColumnNames,
+        droppedColumnNames: [],
+      }
+    } catch (error) {
+      // Cleanup
+      try {
+        await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
+      } catch {
+        // Ignore
+      }
+
+      return {
+        success: false,
+        rowCount: ctx.table.rowCount,
+        columns: ctx.table.columns,
+        affected: 0,
+        newColumnNames: [],
+        droppedColumnNames: [],
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
+    const col = quoteColumn(this.params.column)
+    // All non-null rows are affected
+    return `${col} IS NOT NULL AND TRIM(CAST(${col} AS VARCHAR)) != ''`
+  }
+}
