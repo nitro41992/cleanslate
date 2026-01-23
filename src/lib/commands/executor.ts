@@ -286,6 +286,11 @@ export class CommandExecutor implements ICommandExecutor {
       progress('complete', 100, 'Complete')
       this.updateTableStore(ctx.table.id, executionResult)
 
+      // Auto-persist to OPFS (debounced, non-blocking)
+      // Waits 1 second of idle time before flushing to prevent stuttering on bulk edits
+      const { flushDuckDB } = await import('@/lib/duckdb')
+      flushDuckDB() // Returns immediately, schedules flush for 1s later
+
       return {
         success: true,
         executionResult,

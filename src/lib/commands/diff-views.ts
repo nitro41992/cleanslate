@@ -54,7 +54,8 @@ export async function createTier1DiffView(
     const quotedCol = quoteColumn(config.affectedColumn)
     const baseCol = quoteColumn(`${config.affectedColumn}__base`)
     // Replace all occurrences of the quoted column with the base column
-    tier1Predicate = tier1Predicate.replaceAll(quotedCol, baseCol)
+    // Use regex with global flag for compatibility with ES2020 target
+    tier1Predicate = tier1Predicate.replace(new RegExp(quotedCol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), baseCol)
   }
 
   // Build the change type expression

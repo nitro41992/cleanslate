@@ -195,10 +195,11 @@ export function createStoreInspector(page: Page): StoreInspector {
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const state = (stores.editStore as any).getState()
-        const dirtyPositions = state?.dirtyPositions
+        // editStore uses dirtyCells (Map), not dirtyPositions
+        const dirtyCells = state?.dirtyCells
         return {
-          hasDirtyEdits: dirtyPositions?.size > 0,
-          dirtyCount: dirtyPositions?.size || 0,
+          hasDirtyEdits: dirtyCells?.size > 0,
+          dirtyCount: dirtyCells?.size || 0,
         }
       })
     },

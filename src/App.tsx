@@ -40,6 +40,7 @@ import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
+import { useBeforeUnload } from '@/hooks/useBeforeUnload'
 import { getCommandExecutor } from '@/lib/commands'
 import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
 import { toast } from 'sonner'
@@ -48,6 +49,7 @@ import type { CSVIngestionSettings } from '@/types'
 
 function App() {
   const { loadFile, isLoading, isReady, duplicateTable } = useDuckDB()
+  useBeforeUnload() // Ensure pending debounced flush completes before tab closes
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
