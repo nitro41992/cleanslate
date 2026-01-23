@@ -1,4 +1,4 @@
-import { query, execute, tableExists } from '@/lib/duckdb'
+import { query, execute, tableExists, isInternalColumn } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 
 /**
@@ -117,6 +117,15 @@ export async function runDiff(
     const colsASet = new Set(typeMapA.keys())
     const colsBSet = new Set(typeMapB.keys())
 
+    // Prevent internal columns from being used as key columns
+    const internalKeyColumns = keyColumns.filter(c => isInternalColumn(c))
+    if (internalKeyColumns.length > 0) {
+      throw new Error(
+        `Internal system columns cannot be used as key columns: ${internalKeyColumns.join(', ')}. ` +
+        `Please select different key columns.`
+      )
+    }
+
     // Validate key columns exist in BOTH tables (fail fast with helpful error)
     const missingInA = keyColumns.filter((c) => !colsASet.has(c))
     const missingInB = keyColumns.filter((c) => !colsBSet.has(c))
@@ -179,7 +188,9 @@ export async function runDiff(
     // For modification detection, only compare columns that exist in BOTH tables
     // Columns unique to one table are tracked as newColumns/removedColumns
     const sharedColumns = allColumns.filter((c) => colsASet.has(c) && colsBSet.has(c))
-    const valueColumns = sharedColumns.filter((c) => !keyColumns.includes(c))
+    const valueColumns = sharedColumns.filter((c) =>
+      !keyColumns.includes(c) && !isInternalColumn(c)
+    )
 
     // Build select columns: a_col and b_col for each column
     // Use NULL for columns that don't exist in one of the tables

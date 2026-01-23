@@ -1523,4 +1523,66 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     expect(summary.removed).toBe(1) // Charlie removed
     expect(summary.modified).toBeGreaterThanOrEqual(3) // At least Alice, Diana, Eve modified
   })
+
+  test('should not flag rows as modified when only _cs_id differs (regression test)', async () => {
+    // Regression test for: Internal columns causing false "MODIFIED" flags
+    // Issue: Duplicating a table regenerates _cs_id, which should NOT cause modifications
+
+    // 1. Clean up tables (use unique names to avoid regex collision)
+    await inspector.runQuery('DROP TABLE IF EXISTS test_original')
+    await inspector.runQuery('DROP TABLE IF EXISTS test_duplicate')
+
+    // 2. Close diff view (same pattern as test #2)
+    await diffView.close()
+
+    // 3. Upload test data
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    // 4. Create tables with distinct names
+    await inspector.runQuery(`
+      CREATE TABLE test_original AS
+      SELECT * FROM basic_data
+    `)
+
+    await inspector.runQuery(`
+      CREATE TABLE test_duplicate AS
+      SELECT gen_random_uuid() as _cs_id, id, name, email
+      FROM test_original
+    `)
+
+    // 5. Verify _cs_id actually differs between tables
+    const row1A = await inspector.runQuery('SELECT _cs_id FROM test_original WHERE id = 1')
+    const row1B = await inspector.runQuery('SELECT _cs_id FROM test_duplicate WHERE id = 1')
+    expect(row1A[0]._cs_id).not.toBe(row1B[0]._cs_id)
+
+    // 6. Open Diff view
+    await laundromat.openDiffView()
+    await diffView.waitForOpen()
+
+    // 7. Select Compare Two Tables mode
+    await diffView.selectCompareTablesMode()
+
+    // 8. Select tables
+    await diffView.selectTableA('test_original')
+    await diffView.selectTableB('test_duplicate')
+
+    // 9. Select key column and run comparison
+    await diffView.toggleKeyColumn('id')
+    await diffView.runComparison()
+
+    // 10. Verify: ZERO modifications (core fix validation)
+    // Even though _cs_id differs, user data is identical
+    const summary = await diffView.getSummary()
+    expect(summary.modified).toBe(0) // ✅ Core fix: _cs_id excluded from value comparison
+    expect(summary.unchanged).toBe(5)
+    expect(summary.added).toBe(0)
+    expect(summary.removed).toBe(0)
+
+    // 11. Verify diff state in store
+    const diffState = await inspector.getDiffState()
+    expect(diffState.summary?.modified).toBe(0)
+  })
 })
