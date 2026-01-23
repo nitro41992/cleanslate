@@ -29,8 +29,17 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
     return null
   }
 
-  const isMergeAction = entry.action === 'Apply Merges'
-  const isStandardizeAction = entry.action === 'Standardize Values'
+  // Parse details JSON to check the structured type field for reliable action detection
+  const parsedDetails = (() => {
+    try {
+      return typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details
+    } catch {
+      return null
+    }
+  })()
+
+  const isMergeAction = parsedDetails?.type === 'merge' || entry.action === 'Apply Merges'
+  const isStandardizeAction = parsedDetails?.type === 'standardize'
   const isManualEdit = entry.entryType === 'B'
 
   const handleExportCSV = async () => {

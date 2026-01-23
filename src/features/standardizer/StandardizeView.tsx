@@ -18,7 +18,6 @@ import { ClusterList } from './components/ClusterList'
 import { ClusterProgress } from './components/ClusterProgress'
 import { useTableStore } from '@/stores/tableStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
-import { useAuditStore } from '@/stores/auditStore'
 import { useStandardizer } from '@/hooks/useStandardizer'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { toast } from 'sonner'
@@ -32,7 +31,6 @@ interface StandardizeViewProps {
 export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   const tables = useTableStore((s) => s.tables)
   const updateTable = useTableStore((s) => s.updateTable)
-  const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
 
   const {
     tableId,
@@ -145,18 +143,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       if (result.success) {
         const rowsAffected = result.executionResult?.affected || 0
 
-        // Add audit entry (executor creates audit info, but we still need to add to store)
-        if (result.auditInfo) {
-          addTransformationEntry({
-            tableId,
-            tableName,
-            action: result.auditInfo.action,
-            details: `Standardized ${mappings.length} value${mappings.length !== 1 ? 's' : ''} in '${columnName}' column using ${algorithm} algorithm`,
-            rowsAffected: result.auditInfo.rowsAffected,
-            hasRowDetails: result.auditInfo.hasRowDetails,
-            auditEntryId: result.auditInfo.auditEntryId,
-          })
-        }
+        // Note: Audit entry is created by CommandExecutor.recordAudit() - no need to add manually
 
         // Update tableStore to trigger grid refresh (dataVersion auto-increments)
         updateTable(tableId, {})
@@ -184,7 +171,6 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     tableName,
     columnName,
     algorithm,
-    addTransformationEntry,
     updateTable,
     reset,
     onClose,

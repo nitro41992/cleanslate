@@ -57,13 +57,19 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   db = new duckdb.AsyncDuckDB(logger, worker)
   await db.instantiate(bundle.mainModule)
 
-  // Configure memory limit: 3GB (75% of 4GB WASM ceiling)
-  // Leaves 1GB headroom for temp query buffers, sorts, joins, GC pressure
+  // Configure memory limit based on environment
+  // Detect test environment via userAgent (set by Playwright config)
+  // Tests use small CSVs - 256MB is sufficient and prevents OOM on constrained systems
+  // Production uses 3GB (75% of 4GB WASM ceiling)
+  const isTestEnv = typeof navigator !== 'undefined' &&
+                    navigator.userAgent.includes('Playwright');
+  const memoryLimit = isTestEnv ? '256MB' : '3GB';
+
   const initConn = await db.connect()
-  await initConn.query(`SET memory_limit = '3GB'`)
+  await initConn.query(`SET memory_limit = '${memoryLimit}'`)
   await initConn.close()
 
-  console.log(`DuckDB WASM: Using ${bundleType} bundle (3GB memory limit)`)
+  console.log(`DuckDB WASM: Using ${bundleType} bundle (${memoryLimit} memory limit)`)
   return db
 }
 

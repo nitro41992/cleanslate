@@ -5,7 +5,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
-  workers: process.env.CI ? 4 : 2,
+  workers: 1,  // Force single worker to prevent OOM on constrained systems
   reporter: [
     ['html', { outputFolder: 'playwright-report' }],
     ['list'],
@@ -19,6 +19,8 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
+    // Custom userAgent for test detection - allows DuckDB to use lower memory limit
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Playwright/Test',
   },
   projects: [
     {

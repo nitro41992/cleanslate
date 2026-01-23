@@ -161,6 +161,21 @@ export class CommandExecutor implements ICommandExecutor {
       if (needsSnapshot && !skipTimeline) {
         progress('snapshotting', 20, 'Creating backup snapshot...')
         snapshotTableName = await this.createSnapshot(ctx)
+
+        // If this is the first snapshot for this table, set it as originalSnapshotName
+        // so the Diff View can compare against original state
+        const timelineStoreState = useTimelineStore.getState()
+        let existingTimeline = timelineStoreState.getTimeline(tableId)
+
+        // Create timeline if it doesn't exist yet
+        if (!existingTimeline) {
+          timelineStoreState.createTimeline(tableId, ctx.table.name, snapshotTableName)
+          existingTimeline = timelineStoreState.getTimeline(tableId)
+        } else if (!existingTimeline.originalSnapshotName) {
+          // Timeline exists but no original snapshot set yet
+          timelineStoreState.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
+        }
+
         // Prune oldest snapshot if over limit
         await this.pruneOldestSnapshot(getTimeline(tableId))
       }
@@ -202,8 +217,10 @@ export class CommandExecutor implements ICommandExecutor {
         progress('auditing', 60, 'Recording audit log...')
         auditInfo = command.getAuditInfo(updatedCtx, executionResult)
         // Use pre-generated auditEntryId for Tier 2/3 (captured before execution)
-        // Tier 1 will generate its own or use this one
-        if (tier !== 1) {
+        // EXCEPT for commands that store their own audit details (standardize, merge)
+        // These commands use their own ID in execute() and we must keep it consistent
+        const commandStoresOwnAuditDetails = command.type === 'standardize:apply' || command.type === 'match:merge'
+        if (tier !== 1 && !commandStoresOwnAuditDetails) {
           auditInfo.auditEntryId = preGeneratedAuditEntryId
         }
         this.recordAudit(ctx.table.id, ctx.table.name, auditInfo)
@@ -772,6 +789,9 @@ export class CommandExecutor implements ICommandExecutor {
     column: string,
     auditEntryId: string
   ): Promise<void> {
+    // Ensure audit details table exists before inserting
+    await ensureAuditDetailsTable(ctx.db)
+
     const baseColumn = getBaseColumnName(column)
     const quotedCol = `"${column}"`
     const quotedBase = `"${baseColumn}"`
@@ -827,11 +847,25 @@ export class CommandExecutor implements ICommandExecutor {
     const legacyCommandType = this.mapToLegacyCommandType(command.type)
     const column = (command.params as { column?: string }).column
 
-    timelineStoreState.appendCommand(tableId, legacyCommandType, command.label, {
-      type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
-      transformationType: command.type.replace('transform:', '').replace('scrub:', '').replace('edit:', ''),
-      column,
-    } as import('@/types').TimelineParams, {
+    // Build params based on command type
+    // Standardize commands need full params for replay (mappings array)
+    let timelineParams: import('@/types').TimelineParams
+    if (command.type === 'standardize:apply') {
+      const standardizeParams = command.params as { column: string; mappings: unknown[] }
+      timelineParams = {
+        type: 'standardize',
+        columnName: standardizeParams.column,
+        mappings: standardizeParams.mappings,
+      } as import('@/types').StandardizeParams
+    } else {
+      timelineParams = {
+        type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
+        transformationType: command.type.replace('transform:', '').replace('scrub:', '').replace('edit:', ''),
+        column,
+      } as import('@/types').TimelineParams
+    }
+
+    timelineStoreState.appendCommand(tableId, legacyCommandType, command.label, timelineParams, {
       auditEntryId: auditInfo?.auditEntryId ?? command.id,
       affectedColumns: auditInfo?.affectedColumns ?? (column ? [column] : []),
       rowsAffected: auditInfo?.rowsAffected,
