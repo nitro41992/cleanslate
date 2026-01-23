@@ -447,4 +447,50 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
       expect(rightEdge).toBeLessThanOrEqual(sidebarRightEdge + 16)
     }
   })
+
+  test('FR-REGRESSION-9: Calculate Age audit shows new column name and <new column> as previous value', async () => {
+    // This test verifies the fix for calculate_age audit capture:
+    // - column_name should be the NEW column (e.g., 'age'), not the source column
+    // - previous_value should be '<new column>' (column didn't exist before)
+    // - new_value should be the calculated age
+
+    await loadDateTestData()
+
+    // Apply Calculate Age transform on birth_date column
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Calculate Age', { column: 'birth_date' })
+    await laundromat.closePanel()
+    await page.waitForTimeout(500)
+
+    // Get the audit entry from the auditStore to find the audit_entry_id
+    const auditEntries = await inspector.getAuditEntries()
+    const calcAgeEntry = auditEntries.find((e) => e.action === 'Calculate Age')
+    expect(calcAgeEntry).toBeDefined()
+    expect(calcAgeEntry!.auditEntryId).toBeDefined()
+
+    // Verify audit details via direct SQL query
+    const auditDetails = await inspector.runQuery(`
+      SELECT column_name, previous_value, new_value
+      FROM _audit_details
+      WHERE audit_entry_id = '${calcAgeEntry!.auditEntryId}'
+      LIMIT 1
+    `)
+
+    // Verify we have audit details
+    expect(auditDetails.length).toBeGreaterThan(0)
+
+    const row = auditDetails[0] as { column_name: string; previous_value: string; new_value: string }
+
+    // Column name should be the NEW column 'age', not 'birth_date'
+    expect(row.column_name).toBe('age')
+
+    // Previous value should indicate this is a new column
+    expect(row.previous_value).toBe('<new column>')
+
+    // New value should be a valid age (numeric string)
+    const age = Number(row.new_value)
+    expect(age).toBeGreaterThanOrEqual(0)
+    expect(age).toBeLessThanOrEqual(150) // Reasonable age range
+  })
 })

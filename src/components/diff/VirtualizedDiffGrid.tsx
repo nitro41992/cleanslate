@@ -203,7 +203,7 @@ export function VirtualizedDiffGrid({
         displayValue = strA
       } else {
         // Modified or unchanged - show A→B for modified columns
-        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns)
+        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, newColumns, removedColumns)
         if (modifiedCols.includes(colName)) {
           displayValue = `${strA} → ${strB}`
         } else {
@@ -219,7 +219,7 @@ export function VirtualizedDiffGrid({
         readonly: true,
       }
     },
-    [data, allColumns, keyColumns, loadedRange.start, blindMode]
+    [data, allColumns, keyColumns, newColumns, removedColumns, loadedRange.start, blindMode]
   )
 
   // Custom cell drawing for modified cells (show A→B with styling)
@@ -254,7 +254,7 @@ export function VirtualizedDiffGrid({
       const status = rowData.diff_status
 
       // Check if this specific column was modified
-      const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns)
+      const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, newColumns, removedColumns)
       const isModified = status === 'modified' && modifiedCols.includes(colName)
 
       if (isModified) {
@@ -304,7 +304,7 @@ export function VirtualizedDiffGrid({
         draw()
       }
     },
-    [data, allColumns, keyColumns, loadedRange.start, blindMode]
+    [data, allColumns, keyColumns, newColumns, removedColumns, loadedRange.start, blindMode]
   )
 
   // Row theme based on diff status

@@ -341,14 +341,31 @@ export async function* streamDiffResults(
 }
 
 /**
- * Get the columns that were modified for a diff row
+ * Get the columns that were modified for a diff row.
+ *
+ * Excludes:
+ * - Key columns (used for joining, not value comparison)
+ * - New columns (exist in current but not original - should show green, not yellow)
+ * - Removed columns (exist in original but not current - should show red, not yellow)
  */
-export function getModifiedColumns(row: DiffRow, allColumns: string[], keyColumns: string[]): string[] {
+export function getModifiedColumns(
+  row: DiffRow,
+  allColumns: string[],
+  keyColumns: string[],
+  newColumns: string[] = [],
+  removedColumns: string[] = []
+): string[] {
   if (row.diff_status !== 'modified') return []
 
   const modified: string[] = []
   for (const col of allColumns) {
     if (keyColumns.includes(col)) continue
+    // Skip columns that are structural additions/deletions
+    // New columns should show as "added" (green), not "modified" (yellow)
+    if (newColumns.includes(col)) continue
+    // Removed columns should show as "removed" (red), not "modified" (yellow)
+    if (removedColumns.includes(col)) continue
+
     const valA = row[`a_${col}`]
     const valB = row[`b_${col}`]
     // Use string comparison to handle BigInt and other types

@@ -72,7 +72,7 @@ export async function captureTier23RowDetails(
       return await captureStandardizeDateDetails(db, tableName, column, auditEntryId, transformParams)
 
     case 'calculate_age':
-      return await captureCalculateAgeDetails(db, tableName, column, auditEntryId)
+      return await captureCalculateAgeDetails(db, tableName, column, auditEntryId, transformParams)
 
     case 'fill_down':
       return await captureFillDownDetails(db, tableName, column, auditEntryId)
@@ -167,15 +167,23 @@ async function captureStandardizeDateDetails(
 /**
  * Capture details for calculate_age transformation.
  * Creates age column from DOB, uses same date parsing as standardize_date.
+ *
+ * NOTE: Calculate Age CREATES a new column (like Combine Columns), so:
+ * - column_name = the NEW column name (e.g., 'age')
+ * - previous_value = '<new column>' (column didn't exist before)
+ * - new_value = the calculated age
  */
 async function captureCalculateAgeDetails(
   db: DbConnection,
   tableName: string,
   column: string,
-  auditEntryId: string
+  auditEntryId: string,
+  params?: Record<string, unknown>
 ): Promise<boolean> {
+  // Use new column name with robust fallback (matches backend default)
+  const newColName = (params?.newColumnName as string) || 'age'
+  const escapedNewCol = newColName.replace(/'/g, "''")
   const quotedCol = `"${column}"`
-  const escapedColumn = column.replace(/'/g, "''")
 
   const whereClause = `${quotedCol} IS NOT NULL`
 
@@ -202,8 +210,8 @@ async function captureCalculateAgeDetails(
       uuid(),
       '${auditEntryId}',
       rowid,
-      '${escapedColumn}',
-      CAST(${quotedCol} AS VARCHAR),
+      '${escapedNewCol}',
+      '<new column>',
       ${newValueExpression},
       CURRENT_TIMESTAMP
     FROM "${tableName}"
