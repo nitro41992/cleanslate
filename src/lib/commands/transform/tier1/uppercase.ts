@@ -7,6 +7,7 @@
 
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface UppercaseParams extends BaseTransformParams {
   column: string
@@ -17,7 +18,7 @@ export class UppercaseCommand extends Tier1TransformCommand<UppercaseParams> {
   readonly label = 'Uppercase'
 
   getTransformExpression(_ctx: CommandContext): string {
-    return `UPPER(${this.getQuotedColumn()})`
+    return `UPPER(${COLUMN_PLACEHOLDER})`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {

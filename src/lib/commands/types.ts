@@ -78,14 +78,32 @@ export interface CommandContext {
   timelineId?: string
 }
 
+/**
+ * Column version info for expression chaining (Tier 1 undo)
+ *
+ * Instead of creating multiple backup columns, we chain expressions on a single base column.
+ * This allows chained transforms (trim → lowercase) on the same column.
+ *
+ * Example:
+ *   Step 1 (trim):     Email__base created, Email = TRIM("Email__base")
+ *   Step 2 (lower):    Email = LOWER(TRIM("Email__base"))
+ *   Undo lowercase:    Email = TRIM("Email__base")
+ *   Undo trim:         Email__base renamed back to Email
+ */
 export interface ColumnVersionInfo {
+  /** The original column name (e.g., "Email") */
   originalColumn: string
-  currentVersion: number
-  versionHistory: {
-    version: number
-    columnName: string
-    commandId: string
-  }[]
+  /** Single backup column (e.g., "Email__base") */
+  baseColumn: string
+  /** Stack of transform expressions, applied in order */
+  expressionStack: ExpressionEntry[]
+}
+
+export interface ExpressionEntry {
+  /** SQL expression with {{COL}} placeholder (e.g., "TRIM({{COL}})") */
+  expression: string
+  /** ID of the command that added this expression */
+  commandId: string
 }
 
 // ===== VALIDATION =====

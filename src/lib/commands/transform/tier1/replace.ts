@@ -8,6 +8,7 @@
 import type { CommandContext, CommandType, ValidationResult } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { escapeSqlString, escapeRegexPattern } from '../../utils/sql'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface ReplaceParams extends BaseTransformParams {
   column: string
@@ -29,7 +30,7 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
   }
 
   getTransformExpression(_ctx: CommandContext): string {
-    const col = this.getQuotedColumn()
+    const col = COLUMN_PLACEHOLDER
     const find = escapeSqlString(this.params.find)
     const replace = escapeSqlString(this.params.replace ?? '')
     const caseSensitive = this.params.caseSensitive ?? true

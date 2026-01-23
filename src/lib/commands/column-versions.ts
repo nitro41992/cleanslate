@@ -1,36 +1,63 @@
 /**
- * Column Version Manager
+ * Column Version Manager - Expression Chaining
  *
- * Manages Tier 1 undo operations using column versioning.
- * Instead of snapshots, we use ADD COLUMN + RENAME to preserve original data.
+ * Manages Tier 1 undo operations using expression chaining on a single base column.
+ * Instead of creating multiple backup columns, we chain expressions together.
  *
  * Strategy:
- * 1. Execute (e.g., trim on "Email"):
- *    - RENAME "Email" TO "Email__backup_v1"
- *    - ADD COLUMN "Email" AS (TRIM("Email__backup_v1"))
+ * 1. First transform on "Email":
+ *    - RENAME "Email" TO "Email__base"
+ *    - ADD COLUMN "Email" AS (TRIM("Email__base"))
  *
- * 2. Undo:
+ * 2. Second transform (lowercase):
  *    - DROP COLUMN "Email"
- *    - RENAME "Email__backup_v1" TO "Email"
+ *    - ADD COLUMN "Email" AS (LOWER(TRIM("Email__base")))
  *
- * Key Advantage: Column name stays the same. No UI changes needed.
- * Zero-copy operation - instant regardless of row count.
+ * 3. Undo lowercase:
+ *    - DROP COLUMN "Email"
+ *    - ADD COLUMN "Email" AS (TRIM("Email__base"))
+ *
+ * 4. Undo trim (full restore):
+ *    - DROP COLUMN "Email"
+ *    - RENAME "Email__base" TO "Email"
+ *
+ * Key Advantages:
+ * - Column name stays the same throughout - no UI changes needed
+ * - Single base column regardless of transform count
+ * - Zero-copy operation - instant regardless of row count
+ * - Chained transforms work correctly
  */
 
-import type { ColumnVersionInfo } from './types'
-import {
-  quoteColumn,
-  quoteTable,
-  getBackupColumnName,
-  isBackupColumn,
-  getOriginalFromBackup,
-} from './utils/sql'
+import type { ColumnVersionInfo, ExpressionEntry } from './types'
+import { quoteColumn, quoteTable } from './utils/sql'
+
+/** Placeholder token for column reference in expressions */
+export const COLUMN_PLACEHOLDER = '{{COL}}'
+
+/** Pre-compiled regex for replacing the placeholder */
+const PLACEHOLDER_REGEX = /\{\{COL\}\}/g
+
+/**
+ * Replace {{COL}} placeholder with a value
+ */
+function replacePlaceholder(expression: string, value: string): string {
+  return expression.replace(PLACEHOLDER_REGEX, value)
+}
 
 export interface ColumnVersionManager {
   /** Get version info for a column */
   getVersion(column: string): ColumnVersionInfo | undefined
 
-  /** Create a new version of a column (for execute) */
+  /** Check if a column has any versioning active */
+  hasVersion(column: string): boolean
+
+  /**
+   * Create or extend versioning for a column (for execute)
+   * @param tableName - Name of the table
+   * @param column - Column to transform
+   * @param expression - SQL expression with {{COL}} placeholder
+   * @param commandId - ID of the command
+   */
   createVersion(
     tableName: string,
     column: string,
@@ -38,33 +65,85 @@ export interface ColumnVersionManager {
     commandId: string
   ): Promise<VersionResult>
 
-  /** Undo to previous version (drop current, restore backup) */
+  /** Undo the last transform on a column (pop expression stack) */
   undoVersion(tableName: string, column: string): Promise<UndoResult>
 
   /** Get all columns that have version history */
   getVersionedColumns(): string[]
 
-  /** Clean up old versions (prune history) */
-  pruneOldVersions(tableName: string, maxVersions?: number): Promise<number>
+  /** Clean up old versions (drop base column after full restore) */
+  cleanup(tableName: string, column: string): Promise<void>
 }
 
 export interface VersionResult {
   success: boolean
   originalColumn: string
-  backupColumn: string
-  version: number
+  baseColumn: string
+  expressionCount: number
   error?: string
 }
 
 export interface UndoResult {
   success: boolean
   restoredColumn: string
-  droppedBackup: string
+  expressionsRemaining: number
+  fullyRestored: boolean
   error?: string
 }
 
 export interface ColumnVersionStore {
   versions: Map<string, ColumnVersionInfo>
+}
+
+/**
+ * Build a nested SQL expression from expression stack
+ * @param stack - Array of expressions with {{COL}} placeholder
+ * @param baseColumn - The base column name (already quoted)
+ * @returns Final nested SQL expression
+ *
+ * Example:
+ *   stack: [{expr: 'TRIM({{COL}})'}, {expr: 'LOWER({{COL}})'}]
+ *   baseColumn: "Email__base"
+ *   Result: LOWER(TRIM("Email__base"))
+ */
+export function buildNestedExpression(
+  stack: ExpressionEntry[],
+  baseColumn: string
+): string {
+  if (stack.length === 0) {
+    return quoteColumn(baseColumn)
+  }
+
+  let result = quoteColumn(baseColumn)
+  for (const { expression } of stack) {
+    // Replace {{COL}} placeholder with current result
+    result = replacePlaceholder(expression, result)
+  }
+  return result
+}
+
+/**
+ * Get the base column name for a given column
+ */
+export function getBaseColumnName(originalColumn: string): string {
+  return `${originalColumn}__base`
+}
+
+/**
+ * Check if a column name is a base column
+ */
+export function isBaseColumn(columnName: string): boolean {
+  return columnName.endsWith('__base')
+}
+
+/**
+ * Extract original column name from base column name
+ */
+export function getOriginalFromBase(baseColumnName: string): string | null {
+  if (!isBaseColumn(baseColumnName)) {
+    return null
+  }
+  return baseColumnName.slice(0, -7) // Remove '__base' suffix
 }
 
 /**
@@ -84,6 +163,10 @@ export function createColumnVersionManager(
       return versions.get(column)
     },
 
+    hasVersion(column: string): boolean {
+      return versions.has(column)
+    },
+
     async createVersion(
       tableName: string,
       column: string,
@@ -91,107 +174,143 @@ export function createColumnVersionManager(
       commandId: string
     ): Promise<VersionResult> {
       try {
-        // Get or create version info for this column
         let versionInfo = versions.get(column)
-        const newVersion = versionInfo ? versionInfo.currentVersion + 1 : 1
 
-        // Generate backup column name
-        const backupColumn = getBackupColumnName(column, newVersion)
-
-        // Step 1: Rename original to backup
-        const renameSQL = `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(column)} TO ${quoteColumn(backupColumn)}`
-        await db.execute(renameSQL)
-
-        // Step 2: Add new column with transformed data (using the original name)
-        // Replace column reference in expression with backup column
-        const transformedExpression = expression.replace(
-          new RegExp(`"${column}"`, 'g'),
-          quoteColumn(backupColumn)
-        )
-        const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${transformedExpression})`
-        await db.execute(addSQL)
-
-        // Update version store
         if (!versionInfo) {
+          // First transform on this column: create base column
+          const baseColumn = getBaseColumnName(column)
+
+          // Step 1: Rename original to base
+          const renameSQL = `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(column)} TO ${quoteColumn(baseColumn)}`
+          await db.execute(renameSQL)
+
+          // Step 2: Create computed column with single expression
+          const nestedExpr = replacePlaceholder(expression, quoteColumn(baseColumn))
+          const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
+          await db.execute(addSQL)
+
+          // Initialize version info
           versionInfo = {
             originalColumn: column,
-            currentVersion: newVersion,
-            versionHistory: [],
+            baseColumn,
+            expressionStack: [{ expression, commandId }],
           }
           versions.set(column, versionInfo)
+
+          return {
+            success: true,
+            originalColumn: column,
+            baseColumn,
+            expressionCount: 1,
+          }
         } else {
-          versionInfo.currentVersion = newVersion
-        }
+          // Chained transform: rebuild with nested expressions
+          const prevStack = [...versionInfo.expressionStack]
 
-        versionInfo.versionHistory.push({
-          version: newVersion,
-          columnName: backupColumn,
-          commandId,
-        })
+          // Add new expression to stack
+          versionInfo.expressionStack.push({ expression, commandId })
 
-        return {
-          success: true,
-          originalColumn: column,
-          backupColumn,
-          version: newVersion,
+          try {
+            // Drop current computed column
+            const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
+            await db.execute(dropSQL)
+
+            // Recreate with new nested expression
+            const nestedExpr = buildNestedExpression(versionInfo.expressionStack, versionInfo.baseColumn)
+            const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
+            await db.execute(addSQL)
+
+            return {
+              success: true,
+              originalColumn: column,
+              baseColumn: versionInfo.baseColumn,
+              expressionCount: versionInfo.expressionStack.length,
+            }
+          } catch (error) {
+            // Rollback: restore previous state
+            versionInfo.expressionStack = prevStack
+            try {
+              // Try to restore previous computed column
+              const nestedExpr = buildNestedExpression(prevStack, versionInfo.baseColumn)
+              const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
+              await db.execute(addSQL)
+            } catch (rollbackError) {
+              // Critical failure - column state may be broken
+              console.error('Rollback failed:', rollbackError)
+            }
+            throw error
+          }
         }
       } catch (error) {
         return {
           success: false,
           originalColumn: column,
-          backupColumn: '',
-          version: 0,
+          baseColumn: '',
+          expressionCount: 0,
           error: error instanceof Error ? error.message : String(error),
         }
       }
     },
 
-    async undoVersion(
-      tableName: string,
-      column: string
-    ): Promise<UndoResult> {
+    async undoVersion(tableName: string, column: string): Promise<UndoResult> {
       try {
         const versionInfo = versions.get(column)
-        if (!versionInfo || versionInfo.versionHistory.length === 0) {
+        if (!versionInfo || versionInfo.expressionStack.length === 0) {
           return {
             success: false,
             restoredColumn: column,
-            droppedBackup: '',
+            expressionsRemaining: 0,
+            fullyRestored: false,
             error: `No version history for column ${column}`,
           }
         }
 
-        // Get the most recent version
-        const lastVersion = versionInfo.versionHistory.pop()!
-        const backupColumn = lastVersion.columnName
+        // Pop the last expression
+        versionInfo.expressionStack.pop()
 
-        // Step 1: Drop the computed column (current "original" name)
-        const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
-        await db.execute(dropSQL)
+        if (versionInfo.expressionStack.length === 0) {
+          // Full restore: drop computed column and rename base back to original
+          // Step 1: Drop the computed column
+          const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
+          await db.execute(dropSQL)
 
-        // Step 2: Rename backup back to original name
-        const renameSQL = `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(backupColumn)} TO ${quoteColumn(column)}`
-        await db.execute(renameSQL)
+          // Step 2: Rename base back to original
+          const renameSQL = `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(versionInfo.baseColumn)} TO ${quoteColumn(column)}`
+          await db.execute(renameSQL)
 
-        // Update version info
-        if (versionInfo.versionHistory.length === 0) {
-          // No more versions, remove from store
+          // Remove from version store
           versions.delete(column)
-        } else {
-          versionInfo.currentVersion =
-            versionInfo.versionHistory[versionInfo.versionHistory.length - 1].version
-        }
 
-        return {
-          success: true,
-          restoredColumn: column,
-          droppedBackup: backupColumn,
+          return {
+            success: true,
+            restoredColumn: column,
+            expressionsRemaining: 0,
+            fullyRestored: true,
+          }
+        } else {
+          // Partial undo: rebuild with remaining expressions
+          // Step 1: Drop current computed column
+          const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)}`
+          await db.execute(dropSQL)
+
+          // Step 2: Recreate with remaining expressions
+          const nestedExpr = buildNestedExpression(versionInfo.expressionStack, versionInfo.baseColumn)
+          const addSQL = `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr})`
+          await db.execute(addSQL)
+
+          return {
+            success: true,
+            restoredColumn: column,
+            expressionsRemaining: versionInfo.expressionStack.length,
+            fullyRestored: false,
+          }
         }
       } catch (error) {
         return {
           success: false,
           restoredColumn: column,
-          droppedBackup: '',
+          expressionsRemaining: versions.get(column)?.expressionStack.length ?? 0,
+          fullyRestored: false,
           error: error instanceof Error ? error.message : String(error),
         }
       }
@@ -201,44 +320,32 @@ export function createColumnVersionManager(
       return Array.from(versions.keys())
     },
 
-    async pruneOldVersions(
-      tableName: string,
-      maxVersions: number = 10
-    ): Promise<number> {
-      let pruned = 0
+    async cleanup(tableName: string, column: string): Promise<void> {
+      const versionInfo = versions.get(column)
+      if (!versionInfo) return
 
-      for (const [column, versionInfo] of versions.entries()) {
-        while (versionInfo.versionHistory.length > maxVersions) {
-          // Remove oldest version
-          const oldest = versionInfo.versionHistory.shift()
-          if (oldest) {
-            try {
-              // Drop the old backup column
-              const dropSQL = `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN IF EXISTS ${quoteColumn(oldest.columnName)}`
-              await db.execute(dropSQL)
-              pruned++
-            } catch {
-              // Column might already be gone, ignore
-            }
-          }
-        }
+      // If there are still expressions, we can't clean up
+      if (versionInfo.expressionStack.length > 0) return
 
-        // Remove from store if no versions left
-        if (versionInfo.versionHistory.length === 0) {
-          versions.delete(column)
-        }
+      // Try to drop base column if it exists (shouldn't after full undo)
+      try {
+        await db.execute(
+          `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN IF EXISTS ${quoteColumn(versionInfo.baseColumn)}`
+        )
+      } catch {
+        // Ignore - column might not exist
       }
 
-      return pruned
+      versions.delete(column)
     },
   }
 }
 
 /**
- * Scan a table for existing backup columns and rebuild version store
+ * Scan a table for existing base columns and rebuild version store
  * Useful for recovery or migration scenarios
  */
-export async function scanForBackupColumns(
+export async function scanForBaseColumns(
   db: { query: <T>(sql: string) => Promise<T[]> },
   tableName: string
 ): Promise<Map<string, ColumnVersionInfo>> {
@@ -252,47 +359,28 @@ export async function scanForBackupColumns(
     ORDER BY ordinal_position
   `)
 
-  // Find backup columns and group by original column
-  const backupColumns: { original: string; backup: string; version: number }[] = []
-
+  // Find base columns
   for (const col of columns) {
-    if (isBackupColumn(col.column_name)) {
-      const original = getOriginalFromBackup(col.column_name)
-      const versionMatch = col.column_name.match(/__backup_v(\d+)$/)
-      if (original && versionMatch) {
-        backupColumns.push({
-          original,
-          backup: col.column_name,
-          version: parseInt(versionMatch[1], 10),
-        })
+    if (isBaseColumn(col.column_name)) {
+      const original = getOriginalFromBase(col.column_name)
+      if (original) {
+        // Check if the original column also exists (computed column)
+        const hasOriginal = columns.some((c) => c.column_name === original)
+        if (hasOriginal) {
+          // Found a versioned column pair
+          result.set(original, {
+            originalColumn: original,
+            baseColumn: col.column_name,
+            expressionStack: [
+              {
+                expression: `${COLUMN_PLACEHOLDER}`, // Unknown - would need to parse column definition
+                commandId: 'recovered',
+              },
+            ],
+          })
+        }
       }
     }
-  }
-
-  // Group by original column
-  const grouped = new Map<string, typeof backupColumns>()
-  for (const bc of backupColumns) {
-    const list = grouped.get(bc.original) || []
-    list.push(bc)
-    grouped.set(bc.original, list)
-  }
-
-  // Build version info
-  for (const [original, backups] of grouped) {
-    // Sort by version ascending
-    backups.sort((a, b) => a.version - b.version)
-
-    const versionInfo: ColumnVersionInfo = {
-      originalColumn: original,
-      currentVersion: backups[backups.length - 1].version,
-      versionHistory: backups.map((b) => ({
-        version: b.version,
-        columnName: b.backup,
-        commandId: 'recovered', // Unknown command ID during recovery
-      })),
-    }
-
-    result.set(original, versionInfo)
   }
 
   return result
@@ -304,14 +392,27 @@ export async function scanForBackupColumns(
 export function getTier1UndoSQL(
   tableName: string,
   column: string,
-  backupColumn: string
+  versionInfo: ColumnVersionInfo
 ): string[] {
-  return [
-    `-- Step 1: Drop the computed column`,
-    `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
-    `-- Step 2: Restore from backup`,
-    `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(backupColumn)} TO ${quoteColumn(column)};`,
-  ]
+  if (versionInfo.expressionStack.length <= 1) {
+    // Full restore
+    return [
+      `-- Step 1: Drop the computed column`,
+      `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
+      `-- Step 2: Restore from base`,
+      `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(versionInfo.baseColumn)} TO ${quoteColumn(column)};`,
+    ]
+  } else {
+    // Partial undo - rebuild with N-1 expressions
+    const prevStack = versionInfo.expressionStack.slice(0, -1)
+    const nestedExpr = buildNestedExpression(prevStack, versionInfo.baseColumn)
+    return [
+      `-- Step 1: Drop the computed column`,
+      `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
+      `-- Step 2: Recreate with previous expression`,
+      `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr});`,
+    ]
+  }
 }
 
 /**
@@ -321,18 +422,61 @@ export function getTier1ExecuteSQL(
   tableName: string,
   column: string,
   expression: string,
-  version: number
+  versionInfo: ColumnVersionInfo | undefined
 ): string[] {
-  const backupColumn = getBackupColumnName(column, version)
-  const transformedExpr = expression.replace(
-    new RegExp(`"${column}"`, 'g'),
-    quoteColumn(backupColumn)
-  )
-
-  return [
-    `-- Step 1: Backup original column`,
-    `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(column)} TO ${quoteColumn(backupColumn)};`,
-    `-- Step 2: Create transformed column with original name`,
-    `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${transformedExpr});`,
-  ]
+  if (!versionInfo) {
+    // First transform - create base column
+    const baseColumn = getBaseColumnName(column)
+    const nestedExpr = replacePlaceholder(expression, quoteColumn(baseColumn))
+    return [
+      `-- Step 1: Backup original column`,
+      `ALTER TABLE ${quoteTable(tableName)} RENAME COLUMN ${quoteColumn(column)} TO ${quoteColumn(baseColumn)};`,
+      `-- Step 2: Create transformed column with original name`,
+      `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr});`,
+    ]
+  } else {
+    // Chained transform - rebuild with nested expressions
+    const newStack = [...versionInfo.expressionStack, { expression, commandId: 'preview' }]
+    const nestedExpr = buildNestedExpression(newStack, versionInfo.baseColumn)
+    return [
+      `-- Step 1: Drop current computed column`,
+      `ALTER TABLE ${quoteTable(tableName)} DROP COLUMN ${quoteColumn(column)};`,
+      `-- Step 2: Recreate with nested expression`,
+      `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(column)} AS (${nestedExpr});`,
+    ]
+  }
 }
+
+// ===== BACKWARD COMPATIBILITY =====
+// Keep old functions for any code that might still use them
+
+/**
+ * @deprecated Use getBaseColumnName instead
+ */
+export function getBackupColumnName(originalColumn: string, _version: number): string {
+  return getBaseColumnName(originalColumn)
+}
+
+/**
+ * @deprecated Use isBaseColumn instead
+ */
+export function isBackupColumn(columnName: string): boolean {
+  // Support both old backup_v# pattern and new __base pattern
+  return /__backup_v\d+$/.test(columnName) || isBaseColumn(columnName)
+}
+
+/**
+ * @deprecated Use getOriginalFromBase instead
+ */
+export function getOriginalFromBackup(backupColumnName: string): string | null {
+  // Support old pattern
+  const oldMatch = backupColumnName.match(/^(.+)__backup_v\d+$/)
+  if (oldMatch) return oldMatch[1]
+  // Support new pattern
+  return getOriginalFromBase(backupColumnName)
+}
+
+/**
+ * @deprecated Use scanForBaseColumns instead
+ */
+export const scanForBackupColumns = scanForBaseColumns

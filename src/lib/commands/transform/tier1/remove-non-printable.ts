@@ -7,6 +7,7 @@
 
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface RemoveNonPrintableParams extends BaseTransformParams {
   column: string
@@ -17,7 +18,7 @@ export class RemoveNonPrintableCommand extends Tier1TransformCommand<RemoveNonPr
   readonly label = 'Remove Non-Printable'
 
   getTransformExpression(_ctx: CommandContext): string {
-    return `regexp_replace(${this.getQuotedColumn()}, '[\\x00-\\x1F\\x7F]', '', 'g')`
+    return `regexp_replace(${COLUMN_PLACEHOLDER}, '[\\x00-\\x1F\\x7F]', '', 'g')`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {

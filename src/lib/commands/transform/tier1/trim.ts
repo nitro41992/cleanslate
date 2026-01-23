@@ -7,6 +7,7 @@
 
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface TrimParams extends BaseTransformParams {
   column: string
@@ -17,7 +18,7 @@ export class TrimCommand extends Tier1TransformCommand<TrimParams> {
   readonly label = 'Trim Whitespace'
 
   getTransformExpression(_ctx: CommandContext): string {
-    return `TRIM(${this.getQuotedColumn()})`
+    return `TRIM(${COLUMN_PLACEHOLDER})`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {

@@ -148,6 +148,7 @@ export type CommandType =
   | 'transform:trim' | 'transform:lowercase' | 'transform:uppercase'
   | 'transform:title_case' | 'transform:remove_accents' | 'transform:replace'
   | 'transform:replace_empty' | 'transform:sentence_case' | 'transform:collapse_spaces'
+  | 'transform:remove_non_printable'
   // Transform (Tier 2 - Invertible SQL)
   | 'transform:rename_column'
   // Transform (Tier 3 - Snapshot Required)
@@ -178,10 +179,14 @@ export interface CommandContext {
   columnVersions: Map<string, ColumnVersionInfo>
 }
 
+// Updated for expression chaining - see "Critical Issues" section for details
 export interface ColumnVersionInfo {
   originalColumn: string
-  currentVersion: number
-  versionHistory: { version: number; columnName: string; commandId: string }[]
+  baseColumn: string           // Single backup column (e.g., "Email__base")
+  expressionStack: {
+    expression: string         // e.g., "TRIM(col)" where col is placeholder
+    commandId: string
+  }[]
 }
 
 // ===== VALIDATION (with auto-fix capability) =====
@@ -518,6 +523,11 @@ FROM "_snapshot_before_step_2" s
 LEFT JOIN "my_table" c ON s."_cs_id" = c."_cs_id"
 ```
 
+**Performance Note**: For 2M rows, LEFT JOINing snapshot against live table can stutter without indexing. Ensure `_cs_id` is indexed immediately after snapshot creation:
+```sql
+CREATE INDEX idx_snapshot_cs_id ON "_snapshot_before_step_2"("_cs_id");
+```
+
 **Recommendation**: Get Tier 1 (Modifications) working first. Tier 3 diffs require access to the "Before" state and can be implemented after the core pattern is proven.
 
 ### Phase 2: Migrate Clean Transformations (Tier 1 First)
@@ -560,12 +570,16 @@ LEFT JOIN "my_table" c ON s."_cs_id" = c."_cs_id"
 
 | Command | Tier | Undo Mechanism |
 |---------|------|----------------|
-| `trim` | 1 | DROP versioned column, restore original visibility |
-| `lowercase` | 1 | DROP versioned column |
-| `uppercase` | 1 | DROP versioned column |
-| `replace` | 1 | DROP versioned column |
-| `title_case` | 1 | DROP versioned column |
-| `remove_accents` | 1 | DROP versioned column |
+| `trim` | 1 | Pop expression from stack, rebuild computed column |
+| `lowercase` | 1 | Pop expression from stack, rebuild computed column |
+| `uppercase` | 1 | Pop expression from stack, rebuild computed column |
+| `replace` | 1 | Pop expression from stack, rebuild computed column |
+| `replace_empty` | 1 | Pop expression from stack, rebuild computed column |
+| `title_case` | 1 | Pop expression from stack, rebuild computed column |
+| `remove_accents` | 1 | Pop expression from stack, rebuild computed column |
+| `sentence_case` | 1 | Pop expression from stack, rebuild computed column |
+| `collapse_spaces` | 1 | Pop expression from stack, rebuild computed column |
+| `remove_non_printable` | 1 | Pop expression from stack, rebuild computed column |
 | `rename_column` | 2 | `ALTER TABLE RENAME COLUMN new TO old` |
 | `edit:cell` | 2 | `UPDATE ... SET col = prevValue WHERE _cs_id = ?` |
 | `edit:batch` | 2 | Batch UPDATE with stored previous values |
@@ -575,14 +589,19 @@ LEFT JOIN "my_table" c ON s."_cs_id" = c."_cs_id"
 | `combine_columns` | 3 | Restore from pre-snapshot |
 | `standardize_date` | 3 | Restore from pre-snapshot |
 | `calculate_age` | 3 | Restore from pre-snapshot |
+| `unformat_currency` | 3 | Restore from pre-snapshot |
+| `fix_negatives` | 3 | Restore from pre-snapshot |
+| `pad_zeros` | 3 | Restore from pre-snapshot |
+| `fill_down` | 3 | Restore from pre-snapshot |
 | `custom_sql` | 3 | Restore from pre-snapshot |
 | `standardize:apply` | 3 | Restore from pre-snapshot |
 | `match:merge` | 3 | Restore from pre-snapshot |
 | `combine:stack` | 3 | Restore from pre-snapshot |
 | `combine:join` | 3 | Restore from pre-snapshot |
-| `scrub:hash` | 1 | DROP versioned column |
-| `scrub:mask` | 1 | DROP versioned column |
+| `scrub:hash` | 1 | Pop expression from stack, rebuild computed column |
+| `scrub:mask` | 1 | Pop expression from stack, rebuild computed column |
 | `scrub:redact` | 3 | Restore from pre-snapshot (PII destroyed) |
+| `scrub:year_only` | 3 | Restore from pre-snapshot |
 
 ---
 
@@ -651,3 +670,359 @@ npm test -- --grep "Command"
 | Diff views slow on complex predicates | Add predicate complexity limit, fall back to column highlighting |
 | Breaking existing transforms | Keep `applyTransformation()` facade during migration |
 | Structured audit breaks existing UI | Add backward-compat `toString()` for AuditDetails |
+
+---
+
+---
+
+## Critical Issues to Address
+
+### Issue 1: Column Versioning - Chained Transformations
+
+**Problem**: Current implementation creates computed columns:
+```sql
+ALTER TABLE "data" ADD COLUMN "Email" AS TRIM("Email__backup_v1");
+```
+
+If user applies `trim → lowercase` on same column, second operation tries to rename a computed column. DuckDB computed columns have limitations with chaining.
+
+**Solution - Expression Chaining**:
+Instead of creating multiple backup columns, chain expressions on a single base column:
+
+```sql
+-- Step 1: trim
+ALTER TABLE "data" RENAME COLUMN "Email" TO "Email__base";
+ALTER TABLE "data" ADD COLUMN "Email" AS (TRIM("Email__base"));
+
+-- Step 2: lowercase (update expression, don't rename computed column)
+-- DROP the computed column and recreate with nested expression
+ALTER TABLE "data" DROP COLUMN "Email";
+ALTER TABLE "data" ADD COLUMN "Email" AS (LOWER(TRIM("Email__base")));
+
+-- Undo lowercase (restore to just trim)
+ALTER TABLE "data" DROP COLUMN "Email";
+ALTER TABLE "data" ADD COLUMN "Email" AS (TRIM("Email__base"));
+
+-- Undo trim (restore original)
+ALTER TABLE "data" DROP COLUMN "Email";
+ALTER TABLE "data" RENAME COLUMN "Email__base" TO "Email";
+```
+
+**Implementation Changes**:
+1. Track `baseColumn` (single backup) and `expressionStack` (array of transform expressions)
+2. On new transform: push expression, rebuild computed column with nested expressions
+3. On undo: pop expression, rebuild computed column
+4. On full undo: drop computed column, rename base back to original
+
+**ColumnVersionInfo Update**:
+```typescript
+interface ColumnVersionInfo {
+  originalColumn: string
+  baseColumn: string           // Single backup: Email__base
+  expressionStack: {
+    expression: string         // e.g., "TRIM(col)"
+    commandId: string
+  }[]
+}
+```
+
+### Issue 2: Export Handling for Backup Columns
+
+**Problem**: When exporting to CSV, backup columns (`*__base`) should be excluded.
+
+**Solution**: Use metadata flag instead of hardcoded string matching:
+
+1. **Extend ColumnInfo** with visibility flag:
+```typescript
+interface ColumnInfo {
+  name: string
+  type: string
+  nullable: boolean
+  isHidden?: boolean  // True for backup columns
+}
+```
+
+2. **Set flag when creating backup column**:
+```typescript
+// In column-versions.ts createVersion()
+// After creating backup column, update column metadata
+ctx.db.execute(`COMMENT ON COLUMN "${tableName}"."${baseColumn}" IS 'hidden:true'`)
+```
+
+3. **Filter at source** (in `getTableColumns`):
+```typescript
+// In useDuckDB or context
+const visibleColumns = columns.filter(col => !col.isHidden)
+```
+
+**Benefits**:
+- Hidden from Data Grid column picker
+- Hidden from Charts
+- Hidden from CSV export
+- Single source of truth
+
+### Issue 3: Tier 3 Snapshot Pruning Policy
+
+**Problem**: "Limited to 5 per timeline, pruned LRU" but what happens to undo availability?
+
+**Solution - Explicit Policy**:
+- Keep max 5 Tier 3 snapshots per table
+- When 6th Tier 3 operation executes:
+  1. Delete oldest snapshot
+  2. Mark corresponding timeline command as `undoDisabled: true`
+  3. `canUndo()` checks this flag and skips disabled commands
+  4. UI shows "Undo unavailable - snapshot pruned" for affected commands
+
+**TimelineCommandRecord Update**:
+```typescript
+interface TimelineCommandRecord {
+  // ... existing fields
+  undoDisabled?: boolean  // True if snapshot was pruned
+  undoDisabledReason?: string
+}
+```
+
+### Issue 4: Missing Commands in Types
+
+**Status**: ✅ FIXED - `transform:remove_non_printable` was missing from the plan document's example but is present in actual `src/lib/commands/types.ts`. Plan document updated to include it.
+
+All 28 command types verified in `types.ts` lines 15-55.
+
+### Issue 5: Undo Strategy Table - Missing Commands
+
+**Status**: ✅ FIXED - Added missing Tier 1 commands to the Undo Strategy table (lines 563-577):
+- `sentence_case`, `collapse_spaces`, `remove_non_printable`, `replace_empty`
+
+### Issue 6: Phase 1.5 Completion Status
+
+**Clarification**: Phase 1.5 infrastructure is complete (diff-views.ts implemented). The "validation gate" for commands is a per-command requirement, not a phase blocker. Update status to:
+
+> Phase 1.5: Diff View Foundation - INFRASTRUCTURE COMPLETE
+> (Individual commands validated as they're implemented)
+
+### Issue 7: Diff Views for Intermediate Steps
+
+**Problem**: With chained transforms (trim → lowercase → replace), diff view currently shows:
+- Base column: Original value
+- Computed column: Final value after all transforms
+
+**Solution (Phase 6 Enhancement)**: With expression chaining architecture, intermediate diffs ARE possible without storage cost!
+
+Since `expressionStack` is available, we can generate diff views comparing Expression[N] vs Expression[N-1]:
+```sql
+-- Diff view for step 2 (lowercase) showing what changed from step 1 (trim)
+SELECT *,
+  CASE WHEN LOWER(TRIM("Email__base")) != TRIM("Email__base") THEN 'modified' ELSE 'unchanged' END as _change_type
+FROM "my_table"
+```
+
+**Current Scope**: For now, diff views show original → current.
+**Phase 6**: Enable intermediate diff views by generating Expression[N-1] from `expressionStack.slice(0, -1)`.
+
+### Issue 8: Error Recovery for Expression Rebuild
+
+**Problem**: If `DROP COLUMN` succeeds but `ADD COLUMN` fails during expression rebuild, column is broken.
+
+**Solution**: Add rollback protection in `column-versions.ts`:
+
+```typescript
+async rebuildComputedColumn(tableName: string, column: string, newExprStack: ExpressionEntry[]): Promise<void> {
+  const info = this.versions.get(column)
+  if (!info) throw new Error(`No version info for ${column}`)
+
+  // Capture current state for rollback
+  const currentExpr = this.buildNestedExpression(info.expressionStack, info.baseColumn)
+
+  try {
+    // Drop and recreate with new expression
+    await this.db.execute(`ALTER TABLE "${tableName}" DROP COLUMN "${column}"`)
+    const newExpr = this.buildNestedExpression(newExprStack, info.baseColumn)
+    await this.db.execute(`ALTER TABLE "${tableName}" ADD COLUMN "${column}" AS (${newExpr})`)
+    info.expressionStack = newExprStack
+  } catch (error) {
+    // Rollback: restore previous computed column
+    try {
+      await this.db.execute(`ALTER TABLE "${tableName}" ADD COLUMN "${column}" AS (${currentExpr})`)
+    } catch (rollbackError) {
+      // Critical: both failed - column is broken
+      throw new Error(`Column rebuild failed and rollback failed: ${error}. Rollback error: ${rollbackError}`)
+    }
+    throw error  // Re-throw original error
+  }
+}
+```
+
+**Edge Case - Full Undo Rollback**: If undoing the first transform (restoring base → original):
+```typescript
+async restoreOriginalColumn(tableName: string, column: string): Promise<void> {
+  const info = this.versions.get(column)
+  if (!info) throw new Error(`No version info for ${column}`)
+
+  try {
+    await this.db.execute(`ALTER TABLE "${tableName}" DROP COLUMN "${column}"`)
+    await this.db.execute(`ALTER TABLE "${tableName}" RENAME COLUMN "${info.baseColumn}" TO "${column}"`)
+    this.versions.delete(column)
+  } catch (error) {
+    // If DROP succeeded but RENAME failed, column is lost - critical error
+    throw new Error(`Failed to restore original column: ${error}`)
+  }
+}
+```
+
+---
+
+## Implementation Status
+
+### ✅ Phase 1: Core Infrastructure - COMPLETE
+All core files implemented:
+- `types.ts`, `registry.ts`, `executor.ts`, `context.ts`
+- `column-versions.ts`, `diff-views.ts`
+- `utils/sql.ts`, `utils/date.ts`
+
+### ✅ Phase 1.5: Diff View Foundation - INFRASTRUCTURE COMPLETE
+- `createTier1DiffView()` and `createTier3DiffView()` implemented
+- Wired into CommandExecutor
+- Individual commands validated as they're implemented
+
+### ✅ Phase 2: Transform Commands - COMPLETE (22/22)
+
+**All transform commands implemented with expression chaining (Tier 1) and snapshot support (Tier 3):**
+| Tier | Commands |
+|------|----------|
+| Tier 1 | trim, lowercase, uppercase, title_case, remove_accents, sentence_case, collapse_spaces, remove_non_printable, replace, replace_empty |
+| Tier 2 | rename_column |
+| Tier 3 | remove_duplicates, cast_type, custom_sql, split_column, combine_columns, standardize_date, calculate_age, unformat_currency, fix_negatives, pad_zeros, fill_down |
+
+**Key improvements:**
+- Expression chaining implemented for Tier 1 commands (single `__base` column, nested expressions)
+- All Tier 1 commands use `{{COL}}` placeholder for composable transforms
+- All 7 missing Tier 3 commands implemented
+
+### 🔲 Phase 3: Standardizer & Matcher - NOT STARTED
+Commands needed:
+- `standardize:apply` - Cluster-based value standardization
+- `match:merge` - Duplicate row merging
+
+### 🔲 Phase 4: Combiner & Scrubber - NOT STARTED
+Commands needed:
+- `combine:stack` - UNION ALL tables
+- `combine:join` - JOIN tables
+- `scrub:hash` (Tier 1) - SHA-256 with secret
+- `scrub:mask` (Tier 1) - Partial value masking
+- `scrub:redact` (Tier 3) - Full PII redaction
+- `scrub:year_only` (Tier 3) - Date → year only
+
+### 🔲 Phase 5: Unify Undo/Redo - NOT STARTED
+Commands needed:
+- `edit:cell` (Tier 2) - Single cell edit
+- `edit:batch` (Tier 2) - Multiple cell edits
+- Refactor DataGrid.tsx to use CommandExecutor
+- Deprecate editStore.ts
+
+### 🔲 Phase 6: Performance Optimization - NOT STARTED
+
+---
+
+## Next Implementation Priority
+
+### ✅ Priority 0: Fix Column Versioning Chaining - COMPLETE
+
+Expression chaining implemented:
+- `ColumnVersionInfo` updated with `baseColumn` and `expressionStack`
+- Single `__base` column instead of multiple backup columns
+- Nested expressions for chained transforms (e.g., `LOWER(TRIM("Email__base"))`)
+- All Tier 1 commands updated to use `{{COL}}` placeholder
+
+### ✅ Priority 1: Phase 2 Completion (7 Tier 3 Commands) - COMPLETE
+
+All 7 Tier 3 commands implemented:
+- combine_columns, standardize_date, calculate_age
+- unformat_currency, fix_negatives, pad_zeros, fill_down
+
+**Previous ColumnVersionInfo Changes (for reference):**
+```typescript
+export interface ColumnVersionInfo {
+  originalColumn: string
+  baseColumn: string           // Single backup: Email__base
+  expressionStack: {
+    expression: string         // e.g., "TRIM(col)"
+    commandId: string
+  }[]
+}
+```
+
+**createVersion() Logic:**
+```typescript
+async createVersion(tableName, column, expression, commandId) {
+  const info = versions.get(column)
+
+  if (!info) {
+    // First transform: create base column
+    const baseCol = `${column}__base`
+    await db.execute(`ALTER TABLE RENAME COLUMN "${column}" TO "${baseCol}"`)
+    // Create computed column with single expression
+    await db.execute(`ALTER TABLE ADD COLUMN "${column}" AS (${expression.replace(col, baseCol)})`)
+    versions.set(column, { originalColumn: column, baseColumn: baseCol, expressionStack: [{expression, commandId}] })
+  } else {
+    // Chained transform: rebuild with nested expressions
+    info.expressionStack.push({ expression, commandId })
+    await db.execute(`ALTER TABLE DROP COLUMN "${column}"`)
+    const nestedExpr = buildNestedExpression(info.expressionStack, info.baseColumn)
+    await db.execute(`ALTER TABLE ADD COLUMN "${column}" AS (${nestedExpr})`)
+  }
+}
+```
+
+**buildNestedExpression() Helper:**
+```typescript
+function buildNestedExpression(stack, baseColumn) {
+  // stack: [{expr: 'TRIM(col)'}, {expr: 'LOWER(col)'}]
+  // Result: LOWER(TRIM("Email__base"))
+  let result = `"${baseColumn}"`
+  for (const { expression } of stack) {
+    // Replace 'col' placeholder with current result
+    result = expression.replace(/\bcol\b/g, result)
+  }
+  return result
+}
+```
+
+**Transform Expression Format:**
+Each transform's `getTransformExpression()` should return expression with `{{COL}}` placeholder (distinct token to avoid regex collision with SQL keywords like `protocol`, `collection`):
+- Trim: `TRIM({{COL}})`
+- Lowercase: `LOWER({{COL}})`
+- Replace: `REPLACE({{COL}}, 'find', 'replace')`
+
+**Expression Building:**
+```typescript
+function buildNestedExpression(stack, baseColumn) {
+  let result = `"${baseColumn}"`
+  for (const { expression } of stack) {
+    result = expression.replaceAll('{{COL}}', result)  // Explicit, safe replacement
+  }
+  return result
+}
+```
+
+### Next Steps: Phase 3 - Standardizer & Matcher
+
+**Commands to implement:**
+
+| Command | Tier | Description |
+|---------|------|-------------|
+| `standardize:apply` | 3 | Apply cluster-based value standardization |
+| `match:merge` | 3 | Merge duplicate rows based on fuzzy matching |
+
+**Key considerations:**
+- Both require Tier 3 snapshots (destructive operations)
+- `standardize:apply` needs to capture cluster mappings in `StandardizeAuditDetails`
+- `match:merge` needs to track survivor strategy and deleted row IDs
+
+**Files to create:**
+```
+src/lib/commands/standardize/
+└── apply.ts
+
+src/lib/commands/match/
+└── merge.ts
+```

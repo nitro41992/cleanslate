@@ -8,6 +8,7 @@
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { escapeSqlString } from '../../utils/sql'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface ReplaceEmptyParams extends BaseTransformParams {
   column: string
@@ -19,7 +20,7 @@ export class ReplaceEmptyCommand extends Tier1TransformCommand<ReplaceEmptyParam
   readonly label = 'Replace Empty'
 
   getTransformExpression(_ctx: CommandContext): string {
-    const col = this.getQuotedColumn()
+    const col = COLUMN_PLACEHOLDER
     const replacement = escapeSqlString(this.params.replaceWith ?? '')
     return `CASE
       WHEN ${col} IS NULL OR TRIM(CAST(${col} AS VARCHAR)) = ''

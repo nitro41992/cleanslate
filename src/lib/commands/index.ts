@@ -56,6 +56,7 @@ export type {
   ExecutorResult,
   ICommandExecutor,
   ColumnVersionInfo,
+  ExpressionEntry,
   TimelineCommandRecord,
 } from './types'
 
@@ -96,9 +97,19 @@ export {
 // Column Versioning
 export {
   createColumnVersionManager,
-  scanForBackupColumns,
+  scanForBaseColumns,
   getTier1UndoSQL,
   getTier1ExecuteSQL,
+  buildNestedExpression,
+  getBaseColumnName,
+  isBaseColumn,
+  getOriginalFromBase,
+  COLUMN_PLACEHOLDER,
+  // Deprecated but kept for backward compatibility
+  scanForBackupColumns,
+  getBackupColumnName,
+  isBackupColumn,
+  getOriginalFromBackup,
   type ColumnVersionManager,
   type VersionResult,
   type UndoResult,
@@ -130,9 +141,6 @@ export {
   buildColumnList,
   buildSetClause,
   buildInClause,
-  getBackupColumnName,
-  isBackupColumn,
-  getOriginalFromBackup,
   buildAlterTable,
 } from './utils/sql'
 
@@ -171,6 +179,13 @@ import {
   CastTypeCommand,
   CustomSqlCommand,
   SplitColumnCommand,
+  CombineColumnsCommand,
+  StandardizeDateCommand,
+  CalculateAgeCommand,
+  UnformatCurrencyCommand,
+  FixNegativesCommand,
+  PadZerosCommand,
+  FillDownCommand,
 } from './transform/tier3'
 
 // Register all commands
@@ -189,3 +204,10 @@ registerCommand('transform:remove_duplicates', RemoveDuplicatesCommand)
 registerCommand('transform:cast_type', CastTypeCommand)
 registerCommand('transform:custom_sql', CustomSqlCommand)
 registerCommand('transform:split_column', SplitColumnCommand)
+registerCommand('transform:combine_columns', CombineColumnsCommand)
+registerCommand('transform:standardize_date', StandardizeDateCommand)
+registerCommand('transform:calculate_age', CalculateAgeCommand)
+registerCommand('transform:unformat_currency', UnformatCurrencyCommand)
+registerCommand('transform:fix_negatives', FixNegativesCommand)
+registerCommand('transform:pad_zeros', PadZerosCommand)
+registerCommand('transform:fill_down', FillDownCommand)

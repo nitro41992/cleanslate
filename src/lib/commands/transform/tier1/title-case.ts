@@ -7,6 +7,7 @@
 
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface TitleCaseParams extends BaseTransformParams {
   column: string
@@ -17,7 +18,7 @@ export class TitleCaseCommand extends Tier1TransformCommand<TitleCaseParams> {
   readonly label = 'Title Case'
 
   getTransformExpression(_ctx: CommandContext): string {
-    const col = this.getQuotedColumn()
+    const col = COLUMN_PLACEHOLDER
     // DuckDB-WASM doesn't have initcap, use list_transform + list_reduce
     return `CASE
       WHEN ${col} IS NULL OR TRIM(${col}) = '' THEN ${col}

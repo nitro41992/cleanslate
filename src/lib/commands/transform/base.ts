@@ -156,13 +156,21 @@ export abstract class BaseTransformCommand<TParams extends BaseTransformParams =
 
 /**
  * Base class for Tier 1 (Column Versioning) commands
+ *
+ * Uses expression chaining for instant undo - no full table snapshots.
+ * Supports chained transforms (e.g., trim → lowercase on same column).
  */
 export abstract class Tier1TransformCommand<TParams extends BaseTransformParams = BaseTransformParams>
   extends BaseTransformCommand<TParams>
 {
   /**
-   * Get the SQL expression for the transformation
-   * The column reference in the expression will be replaced with the backup column
+   * Get the SQL expression for the transformation.
+   * MUST use {{COL}} placeholder for the column reference.
+   *
+   * @example
+   * // Trim: return 'TRIM({{COL}})'
+   * // Replace: return `REPLACE({{COL}}, 'find', 'replace')`
+   * // Lowercase: return 'LOWER({{COL}})'
    */
   abstract getTransformExpression(ctx: CommandContext): string
 
@@ -229,8 +237,8 @@ export abstract class Tier1TransformCommand<TParams extends BaseTransformParams 
         droppedColumnNames: [],
         versionedColumn: {
           original: column,
-          backup: versionResult.backupColumn,
-          version: versionResult.version,
+          backup: versionResult.baseColumn,
+          version: versionResult.expressionCount,
         },
       }
     } catch (error) {

@@ -7,6 +7,7 @@
 
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface CollapseSpacesParams extends BaseTransformParams {
   column: string
@@ -17,7 +18,7 @@ export class CollapseSpacesCommand extends Tier1TransformCommand<CollapseSpacesP
   readonly label = 'Collapse Spaces'
 
   getTransformExpression(_ctx: CommandContext): string {
-    return `regexp_replace(${this.getQuotedColumn()}, '[ \\t\\n\\r]+', ' ', 'g')`
+    return `regexp_replace(${COLUMN_PLACEHOLDER}, '[ \\t\\n\\r]+', ' ', 'g')`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {

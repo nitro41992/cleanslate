@@ -7,6 +7,7 @@
 
 import type { CommandContext, CommandType } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
+import { COLUMN_PLACEHOLDER } from '../../column-versions'
 
 export interface RemoveAccentsParams extends BaseTransformParams {
   column: string
@@ -17,7 +18,7 @@ export class RemoveAccentsCommand extends Tier1TransformCommand<RemoveAccentsPar
   readonly label = 'Remove Accents'
 
   getTransformExpression(_ctx: CommandContext): string {
-    return `strip_accents(${this.getQuotedColumn()})`
+    return `strip_accents(${COLUMN_PLACEHOLDER})`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
