@@ -58,6 +58,7 @@ export type {
   ColumnVersionInfo,
   ExpressionEntry,
   TimelineCommandRecord,
+  CellChange,
 } from './types'
 
 // Registry
@@ -170,6 +171,9 @@ export * from './combine'
 // Scrub Commands
 export * from './scrub'
 
+// Edit Commands
+export * from './edit'
+
 // ===== COMMAND REGISTRATION =====
 
 import { registerCommand } from './registry'
@@ -203,6 +207,7 @@ import { StandardizeApplyCommand } from './standardize'
 import { MatchMergeCommand } from './match'
 import { CombineStackCommand, CombineJoinCommand } from './combine'
 import { ScrubHashCommand, ScrubMaskCommand, ScrubRedactCommand, ScrubYearOnlyCommand } from './scrub'
+import { EditCellCommand } from './edit'
 
 // Register all commands
 registerCommand('transform:trim', TrimCommand)
@@ -243,3 +248,6 @@ registerCommand('scrub:hash', ScrubHashCommand)
 registerCommand('scrub:mask', ScrubMaskCommand)
 registerCommand('scrub:redact', ScrubRedactCommand)
 registerCommand('scrub:year_only', ScrubYearOnlyCommand)
+
+// Edit commands
+registerCommand('edit:cell', EditCellCommand)

@@ -1,3 +1,18 @@
+/**
+ * @deprecated Use CommandExecutor for cell edits instead.
+ * This store is kept for backward compatibility during migration.
+ * Will be removed after Phase 5 is verified stable.
+ *
+ * New cell edits should use:
+ * ```typescript
+ * import { createCommand, getCommandExecutor } from '@/lib/commands'
+ *
+ * const command = createCommand('edit:cell', {
+ *   tableId, tableName, csId, columnName, previousValue, newValue
+ * })
+ * await getCommandExecutor().execute(command)
+ * ```
+ */
 import { create } from 'zustand'
 
 export interface CellEdit {

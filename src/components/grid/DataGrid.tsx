@@ -16,6 +16,7 @@ import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
 import { updateCell } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
+import { createCommand, getCommandExecutor } from '@/lib/commands'
 import type { TimelineHighlight, ManualEditParams } from '@/types'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
@@ -104,7 +105,11 @@ export function DataGrid({
   // Edit store for tracking edits (legacy)
   const recordEdit = useEditStore((s) => s.recordEdit)
 
+  // Track CommandExecutor timeline version for triggering re-renders
+  const [executorTimelineVersion, setExecutorTimelineVersion] = useState(0)
+
   // Timeline-based dirty cell tracking (replaces editStore.isDirty)
+  // Uses BOTH legacy timelineStore AND CommandExecutor for hybrid support
   const getDirtyCellsAtPosition = useTimelineStore((s) => s.getDirtyCellsAtPosition)
   const timelinePosition = useTimelineStore((s) => {
     if (!tableId) return -1
@@ -113,14 +118,29 @@ export function DataGrid({
 
   // Compute dirty cells set based on timeline position
   // This re-computes when position changes (undo/redo)
-  // Note: timelinePosition is intentionally included to trigger recomputation
+  // Combines cells from legacy timeline AND CommandExecutor
+  // Note: timelinePosition and executorTimelineVersion are intentionally included to trigger recomputation
   const dirtyCells = useMemo(
     () => {
       if (!tableId) return new Set<string>()
-      return getDirtyCellsAtPosition(tableId)
+
+      // Get dirty cells from legacy timeline
+      const legacyDirtyCells = getDirtyCellsAtPosition(tableId)
+
+      // Get dirty cells from CommandExecutor
+      const executor = getCommandExecutor()
+      const executorDirtyCells = executor.getDirtyCells(tableId)
+
+      // Merge both sets
+      const merged = new Set<string>(legacyDirtyCells)
+      for (const cell of executorDirtyCells) {
+        merged.add(cell)
+      }
+
+      return merged
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tableId, getDirtyCellsAtPosition, timelinePosition]
+    [tableId, getDirtyCellsAtPosition, timelinePosition, executorTimelineVersion]
   )
 
   // Audit store for logging edits
@@ -260,7 +280,16 @@ export function DataGrid({
     [data, columns, loadedRange.start, editable]
   )
 
-  // Handle cell edits
+  // Compute reverse map: row index -> csId for the loaded range
+  const rowIndexToCsId = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const [csId, rowIndex] of csIdToRowIndex) {
+      map.set(rowIndex, csId)
+    }
+    return map
+  }, [csIdToRowIndex])
+
+  // Handle cell edits using CommandExecutor
   const onCellEdited = useCallback(
     async ([col, row]: Item, newValue: EditableGridCell) => {
       if (!editable || !tableId) return
@@ -281,97 +310,112 @@ export function DataGrid({
       // Skip if value hasn't changed
       if (previousValue === newCellValue) return
 
-      try {
-        // IMPORTANT: Initialize timeline BEFORE modifying data
-        // This ensures the original snapshot captures the pre-modification state
-        // initializeTimeline creates _timeline_original_${timelineId} which is used by diff
-        console.log('[DATAGRID] Initializing timeline before cell edit...')
-        await initializeTimeline(tableId, tableName)
-
-        // Update DuckDB and get the row's _cs_id
-        console.log('[DATAGRID] Updating cell in DuckDB...')
-        const result = await updateCell(tableName, row, colName, newCellValue)
-        console.log('[DATAGRID] Cell updated, csId:', result.csId)
-        const csId = result.csId
-
-        // Update local data state
-        setData((prevData) => {
-          const newData = [...prevData]
-          if (newData[adjustedRow]) {
-            newData[adjustedRow] = {
-              ...newData[adjustedRow],
-              [colName]: newCellValue,
+      // Get the row's _cs_id for the command
+      const csId = rowIndexToCsId.get(row)
+      if (!csId) {
+        console.error('[DATAGRID] No csId found for row', row)
+        // Fallback to legacy method if no csId
+        try {
+          await initializeTimeline(tableId, tableName)
+          const result = await updateCell(tableName, row, colName, newCellValue)
+          if (result.csId) {
+            // Update local data state
+            setData((prevData) => {
+              const newData = [...prevData]
+              if (newData[adjustedRow]) {
+                newData[adjustedRow] = { ...newData[adjustedRow], [colName]: newCellValue }
+              }
+              return newData
+            })
+            // Record legacy edit
+            recordEdit({
+              tableId, tableName, rowIndex: row, columnName: colName,
+              previousValue, newValue: newCellValue, timestamp: new Date(),
+            })
+            addManualEditEntry({
+              tableId, tableName, rowIndex: row, columnName: colName,
+              previousValue, newValue: newCellValue,
+            })
+            const timelineParams: ManualEditParams = {
+              type: 'manual_edit', csId: result.csId, columnName: colName,
+              previousValue, newValue: newCellValue,
             }
+            await recordCommand(tableId, tableName, 'manual_edit', `Edit cell [${row}, ${colName}]`,
+              timelineParams, { affectedRowIds: [result.csId], affectedColumns: [colName],
+                cellChanges: [{ csId: result.csId, columnName: colName, previousValue, newValue: newCellValue }],
+                rowsAffected: 1 })
           }
-          return newData
-        })
+        } catch (error) {
+          console.error('Failed to update cell (fallback):', error)
+        }
+        return
+      }
 
-        // Record the edit for undo/redo (legacy editStore)
-        recordEdit({
+      try {
+        console.log('[DATAGRID] Creating edit:cell command...')
+
+        // Create and execute the edit:cell command
+        const command = createCommand('edit:cell', {
           tableId,
           tableName,
-          rowIndex: row,
-          columnName: colName,
-          previousValue,
-          newValue: newCellValue,
-          timestamp: new Date(),
-        })
-
-        // Log to audit and get the auditEntryId for timeline linkage
-        const auditEntryId = addManualEditEntry({
-          tableId,
-          tableName,
-          rowIndex: row,
+          csId,
           columnName: colName,
           previousValue,
           newValue: newCellValue,
         })
 
-        // Record to timeline for unified undo/redo (if we have a csId)
-        if (csId) {
-          const timelineParams: ManualEditParams = {
-            type: 'manual_edit',
-            csId,
+        const executor = getCommandExecutor()
+
+        // Execute with skipAudit since we need Type B audit entry (manual edit)
+        const result = await executor.execute(command, { skipAudit: true })
+
+        if (result.success) {
+          console.log('[DATAGRID] Cell edit successful via CommandExecutor')
+
+          // Update local data state
+          setData((prevData) => {
+            const newData = [...prevData]
+            if (newData[adjustedRow]) {
+              newData[adjustedRow] = {
+                ...newData[adjustedRow],
+                [colName]: newCellValue,
+              }
+            }
+            return newData
+          })
+
+          // Record to legacy editStore for backward compatibility
+          recordEdit({
+            tableId,
+            tableName,
+            rowIndex: row,
             columnName: colName,
             previousValue,
             newValue: newCellValue,
-          }
+            timestamp: new Date(),
+          })
 
-          await recordCommand(
+          // Log Type B audit entry (manual edit)
+          addManualEditEntry({
             tableId,
             tableName,
-            'manual_edit',
-            `Edit cell [${row}, ${colName}]`,
-            timelineParams,
-            {
-              auditEntryId, // Link timeline command to audit entry
-              affectedRowIds: [csId],
-              affectedColumns: [colName],
-              cellChanges: [{
-                csId,
-                columnName: colName,
-                previousValue,
-                newValue: newCellValue,
-              }],
-              rowsAffected: 1,
-            }
-          )
+            rowIndex: row,
+            columnName: colName,
+            previousValue,
+            newValue: newCellValue,
+          })
+
+          // Trigger re-render for dirty cell tracking
+          setExecutorTimelineVersion((v) => v + 1)
+        } else {
+          console.error('[DATAGRID] Cell edit failed:', result.error)
         }
       } catch (error) {
         console.error('Failed to update cell:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, recordEdit, addManualEditEntry]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addManualEditEntry]
   )
-
-  // Compute reverse map: row index -> csId for the loaded range
-  const rowIndexToCsId = useMemo(() => {
-    const map = new Map<number, string>()
-    for (const [csId, rowIndex] of csIdToRowIndex) {
-      map.set(rowIndex, csId)
-    }
-    return map
-  }, [csIdToRowIndex])
 
   // Custom cell drawing to show dirty indicator and timeline highlights
   const drawCell: DrawCellCallback = useCallback(

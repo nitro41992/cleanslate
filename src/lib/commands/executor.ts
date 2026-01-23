@@ -23,6 +23,7 @@ import type {
   TimelineCommandRecord,
   HighlightInfo,
   UndoTier,
+  CellChange,
 } from './types'
 import { buildCommandContext, refreshTableContext } from './context'
 import { createColumnVersionManager, type ColumnVersionStore } from './column-versions'
@@ -392,6 +393,45 @@ export class CommandExecutor implements ICommandExecutor {
     return timeline.commands[stepIndex].rowPredicate || null
   }
 
+  /**
+   * Get set of dirty cell keys for a table
+   *
+   * Returns cells that have been modified by edit:cell commands
+   * at or before the current timeline position.
+   *
+   * @param tableId - The table ID to get dirty cells for
+   * @returns Set of cell keys in format "csId:columnName"
+   */
+  getDirtyCells(tableId: string): Set<string> {
+    const timeline = tableTimelines.get(tableId)
+    if (!timeline) return new Set()
+
+    const dirtyCells = new Set<string>()
+
+    // Collect cells from commands up to current position (inclusive)
+    // Commands after currentPosition are "undone" and shouldn't show as dirty
+    for (let i = 0; i <= timeline.position && i < timeline.commands.length; i++) {
+      const cmd = timeline.commands[i]
+      if (cmd.cellChanges) {
+        for (const change of cmd.cellChanges) {
+          // Key format: "{csId}:{columnName}" - consistent with timelineStore
+          dirtyCells.add(`${change.csId}:${change.columnName}`)
+        }
+      }
+    }
+
+    return dirtyCells
+  }
+
+  /**
+   * Get the current timeline position for a table
+   * Useful for triggering re-renders when position changes
+   */
+  getTimelinePosition(tableId: string): number {
+    const timeline = tableTimelines.get(tableId)
+    return timeline?.position ?? -1
+  }
+
   // ===== PRIVATE METHODS =====
 
   private async createSnapshot(ctx: CommandContext): Promise<string> {
@@ -488,6 +528,13 @@ export class CommandExecutor implements ICommandExecutor {
       inverseSql = command.getInverseSql(ctx)
     }
 
+    // Get cell changes for edit:cell commands (for dirty cell tracking)
+    let cellChanges: CellChange[] | undefined
+    const commandWithCellChanges = command as unknown as { getCellChanges?: () => CellChange[] }
+    if (typeof commandWithCellChanges.getCellChanges === 'function') {
+      cellChanges = commandWithCellChanges.getCellChanges()
+    }
+
     // Create record
     const record: TimelineCommandRecord = {
       id: command.id,
@@ -501,6 +548,7 @@ export class CommandExecutor implements ICommandExecutor {
       inverseSql,
       rowPredicate,
       affectedColumns: [], // Will be populated from audit info
+      cellChanges,
     }
 
     timeline.commands.push(record)

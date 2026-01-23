@@ -338,6 +338,20 @@ export interface ICommandExecutor {
 
 // ===== TIMELINE COMMAND (internal) =====
 
+/**
+ * Represents a single cell change for tracking dirty cells
+ */
+export interface CellChange {
+  /** Row identifier (_cs_id) */
+  csId: string
+  /** Column name */
+  columnName: string
+  /** Value before the change (for undo) */
+  previousValue: unknown
+  /** Value after the change (for redo) */
+  newValue: unknown
+}
+
 export interface TimelineCommandRecord {
   id: string
   commandType: CommandType
@@ -356,4 +370,6 @@ export interface TimelineCommandRecord {
   rowPredicate?: string | null
   affectedColumns?: string[]
   rowsAffected?: number
+  /** For edit:cell commands - tracks cell changes for dirty indicators */
+  cellChanges?: CellChange[]
 }

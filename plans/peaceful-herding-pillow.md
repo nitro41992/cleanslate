@@ -11,7 +11,7 @@
 | 2.6 | ✅ Complete | Fix Hybrid State: Wire App.tsx undo/redo to CommandExecutor |
 | 3 | ✅ Complete | Standardizer & Matcher (2 commands) |
 | 4 | ✅ Complete | Combiner & Scrubber (6 commands) |
-| 5 | 🔲 Pending | Unify Undo/Redo (2 commands + keyboard shortcuts) |
+| 5 | ✅ Complete | Unify Undo/Redo (edit:cell command + dirty cell tracking) |
 | 6 | 🔲 Pending | Performance Optimization |
 
 **Key Insight from Phase 2.5**: DuckDB WASM doesn't support `ALTER TABLE ADD COLUMN ... AS (expression)`. All Tier 1 commands use CTAS pattern instead.
@@ -664,27 +664,425 @@ for (const rule of rules) {
 
 ---
 
-## 🔲 Phase 5: Unify Undo/Redo
+## ✅ Phase 5: Unify Undo/Redo (COMPLETE)
 
-**Commands to implement:**
+### Overview
+
+Migrated cell edits from the legacy `timelineStore` + `editStore` system to CommandExecutor. This unifies all operations under a single undo/redo stack.
+
+**Commands implemented:**
 
 | Command | Tier | Description |
 |---------|------|-------------|
 | `edit:cell` | 2 | Single cell edit with inverse SQL |
-| `edit:batch` | 2 | Multiple cell edits |
 
-**Key changes:**
-- `DataGrid.tsx` Ctrl+Z/Y → `CommandExecutor.undo()/redo()`
-- All operations share single undo stack
-- Deprecate `editStore.ts`
+**Note:** `edit:batch` skipped for now - no current UI for batch edits.
 
-**Files:**
+### Implementation (Jan 2026)
+
+**Hybrid Approach Maintained:** Cell edits now use CommandExecutor but maintain backward compatibility:
+- CommandExecutor handles execution and timeline recording
+- Legacy editStore still populated for backward compatibility
+- Type B audit entries (manual edit) created manually (executor handles Type A)
+- Dirty cell tracking merges both CommandExecutor AND legacy timeline
+
+**Key Changes:**
+1. **Types:** Added `CellChange` interface and `cellChanges` field to `TimelineCommandRecord`
+2. **EditCellCommand:** Tier 2 command with inverse SQL for undo
+3. **CommandExecutor:** Added `getDirtyCells()` method for dirty cell tracking
+4. **DataGrid.tsx:** Uses `createCommand('edit:cell', ...)` + `executor.execute()`
+5. **editStore.ts:** Marked as deprecated (kept for backward compatibility)
+
+### Files Changed
+
+| Action | File |
+|--------|------|
+| MODIFY | `src/lib/commands/types.ts` (add CellChange, cellChanges field) |
+| CREATE | `src/lib/commands/edit/cell.ts` (EditCellCommand) |
+| CREATE | `src/lib/commands/edit/index.ts` |
+| MODIFY | `src/lib/commands/index.ts` (register edit:cell, export CellChange) |
+| MODIFY | `src/lib/commands/executor.ts` (add getDirtyCells, record cellChanges) |
+| MODIFY | `src/components/grid/DataGrid.tsx` (use CommandExecutor) |
+| MODIFY | `src/stores/editStore.ts` (add deprecation comment) |
+
+### Verification (Passed)
+
+- ✅ `npm run lint` - No errors
+- ✅ `npm run build` - Builds successfully
+- ✅ FR-A4 tests pass (3/3):
+  - should show dirty indicator on edited cells
+  - should commit cell edit and record in audit log
+  - should undo/redo cell edits
+
+---
+
+### Key Challenge: Dirty Cell Tracking
+
+**Current Implementation:**
+- `DataGrid.tsx` calls `getDirtyCellsAtPosition(tableId)` from timelineStore
+- Returns `Set<string>` of `"${csId}:${columnName}"` keys
+- Red triangle drawn for dirty cells
+
+**Solution:** Add `getDirtyCells(tableId)` to CommandExecutor
+- Executor already stores `TimelineCommandRecord` with `affectedColumns`
+- Need to add `cellChanges` field to `TimelineCommandRecord` (types.ts)
+- DataGrid reads from executor instead of timelineStore
+
+---
+
+### Step 1: Update Types
+
+**File:** `src/lib/commands/types.ts`
+
+Add `cellChanges` to `TimelineCommandRecord`:
+```typescript
+export interface TimelineCommandRecord {
+  // ... existing fields ...
+
+  // For dirty cell tracking (edit:cell commands)
+  cellChanges?: CellChange[]
+}
+
+export interface CellChange {
+  csId: string           // Row ID
+  columnName: string     // Column name
+  previousValue: unknown // For undo
+  newValue: unknown      // For redo
+}
 ```
-src/lib/commands/edit/cell.ts     # NEW - Tier 2 with inverse SQL
-src/lib/commands/edit/batch.ts    # NEW - Tier 2 with inverse SQL
-src/components/grid/DataGrid.tsx  # Wire keyboard shortcuts
-src/stores/editStore.ts           # DEPRECATE
+
+---
+
+### Step 2: Create EditCellCommand
+
+**File:** `src/lib/commands/edit/cell.ts`
+
+```typescript
+export interface EditCellParams {
+  tableId: string
+  tableName: string
+  csId: string           // Row identifier (_cs_id)
+  columnName: string
+  previousValue: unknown
+  newValue: unknown
+}
+
+export class EditCellCommand implements Command<EditCellParams> {
+  readonly type: CommandType = 'edit:cell'
+  readonly label: string
+
+  constructor(public readonly params: EditCellParams) {
+    this.label = `Edit [${params.csId}, ${params.columnName}]`
+  }
+
+  async validate(ctx: CommandContext): Promise<ValidationResult> {
+    // Check column exists
+    const colExists = ctx.table.columns.some(c => c.name === this.params.columnName)
+    if (!colExists) {
+      return { valid: false, error: `Column ${this.params.columnName} not found` }
+    }
+    return { valid: true }
+  }
+
+  async execute(ctx: CommandContext): Promise<ExecutionResult> {
+    // Use existing updateCellByRowId from duckdb
+    await updateCellByRowId(
+      ctx.table.name,
+      this.params.csId,
+      this.params.columnName,
+      this.params.newValue
+    )
+
+    return {
+      success: true,
+      rowCount: ctx.table.rowCount,
+      columns: ctx.table.columns,
+      affected: 1,
+      newColumnNames: [],
+      droppedColumnNames: [],
+    }
+  }
+
+  getInverseSql(ctx: CommandContext): string {
+    const escapedValue = escapeSqlValue(this.params.previousValue)
+    return `UPDATE "${ctx.table.name}" SET "${this.params.columnName}" = ${escapedValue} WHERE _cs_id = '${this.params.csId}'`
+  }
+
+  getInvertibility(): InvertibilityInfo {
+    return {
+      tier: 2,
+      undoStrategy: 'Restore previous value via UPDATE',
+      inverseSql: `UPDATE ... SET "${this.params.columnName}" = <previousValue>`,
+    }
+  }
+
+  async getAffectedRowsPredicate(): Promise<string | null> {
+    return `_cs_id = '${this.params.csId}'`
+  }
+
+  getCellChanges(): CellChange[] {
+    return [{
+      csId: this.params.csId,
+      columnName: this.params.columnName,
+      previousValue: this.params.previousValue,
+      newValue: this.params.newValue,
+    }]
+  }
+}
 ```
+
+**File:** `src/lib/commands/edit/index.ts` - Export
+
+---
+
+### Step 3: Update CommandExecutor
+
+**File:** `src/lib/commands/executor.ts`
+
+Add cellChanges to timeline record:
+```typescript
+// In execute(), after recording command:
+const record: TimelineCommandRecord = {
+  // ... existing fields ...
+  cellChanges: command.getCellChanges?.() ?? undefined,
+}
+```
+
+Add getDirtyCells method:
+```typescript
+getDirtyCells(tableId: string): Set<string> {
+  const timeline = tableTimelines.get(tableId)
+  if (!timeline) return new Set()
+
+  const dirtyCells = new Set<string>()
+
+  // Collect cells from commands up to current position
+  // O(n) iteration - acceptable for Phase 5 (< 10k edits)
+  for (let i = 0; i <= timeline.position && i < timeline.commands.length; i++) {
+    const cmd = timeline.commands[i]
+    if (cmd.cellChanges) {
+      for (const change of cmd.cellChanges) {
+        // Key format: "{csId}:{columnName}" - consistent with timelineStore
+        dirtyCells.add(`${change.csId}:${change.columnName}`)
+      }
+    }
+  }
+
+  return dirtyCells
+}
+```
+
+**Performance Note - Future Optimization (Phase 6):**
+For sessions with 10k+ edits, the O(n) iteration may become a bottleneck. Consider:
+- Maintain a persistent `Set<string>` in `TableCommandTimeline`
+- On `execute(edit:cell)` → Add to Set
+- On `undo(edit:cell)` → Re-evaluate if cell is still dirty (check if current value matches original)
+- Tricky: Need to handle undo of non-edit commands that may affect dirty state
+
+For Phase 5, correctness > complexity. The iterative approach is safe and simple.
+
+**⚠️ CRITICAL - Execution Order:**
+The executor MUST update its internal timeline state (record the command with `cellChanges`) AFTER the SQL succeeds but BEFORE returning to the UI. This ensures the dirty cell render logic has the latest data when the component re-renders.
+
+Current execute() flow:
+```typescript
+async execute(command: Command): Promise<ExecutorResult> {
+  // 1. Validate
+  // 2. Create snapshot if Tier 3
+  // 3. Execute command SQL ← SQL must succeed first
+  // 4. Record to timeline with cellChanges ← THEN record internally
+  // 5. Return result ← UI re-renders with getDirtyCells()
+}
+```
+
+This order is already correct in the existing executor implementation.
+
+---
+
+### Step 4: Register Command
+
+**File:** `src/lib/commands/index.ts`
+
+```typescript
+import { EditCellCommand } from './edit'
+
+registerCommand('edit:cell', EditCellCommand)
+```
+
+**File:** `src/lib/commands/registry.ts`
+
+`edit:cell` is already in `TIER_2_COMMANDS` - verify.
+
+---
+
+### Step 5: Wire DataGrid.tsx
+
+**File:** `src/components/grid/DataGrid.tsx`
+
+**Changes to onCellEdited:**
+```typescript
+// BEFORE:
+await initializeTimeline(tableId, tableName)
+await updateCell(tableName, row, colName, newCellValue)
+recordEdit({ ... })  // editStore
+addManualEditEntry({ ... })  // audit
+await recordCommand(tableId, tableName, 'manual_edit', ...)  // timelineStore
+
+// AFTER:
+import { createCommand, getCommandExecutor } from '@/lib/commands'
+
+const command = createCommand('edit:cell', {
+  tableId,
+  tableName,
+  csId: result.csId,
+  columnName: colName,
+  previousValue,
+  newValue: newCellValue,
+})
+
+const executor = getCommandExecutor()
+const result = await executor.execute(command)
+
+if (result.success) {
+  // Update local data state
+  setData((prevData) => { ... })
+
+  // Audit logging - executor handles via getAuditInfo()
+  // (or add manual addManualEditEntry if needed for Type B entry)
+}
+```
+
+**Changes to dirty cell tracking:**
+```typescript
+// BEFORE:
+const getDirtyCellsAtPosition = useTimelineStore((s) => s.getDirtyCellsAtPosition)
+const dirtyCells = useMemo(() => getDirtyCellsAtPosition(tableId), [tableId, ...])
+
+// AFTER:
+import { getCommandExecutor } from '@/lib/commands'
+
+// Need to trigger re-render when executor timeline changes
+const [dirtyCellsVersion, setDirtyCellsVersion] = useState(0)
+
+const dirtyCells = useMemo(() => {
+  const executor = getCommandExecutor()
+  return executor.getDirtyCells(tableId)
+}, [tableId, dirtyCellsVersion])
+
+// After execute, increment version to trigger re-render
+await executor.execute(command)
+setDirtyCellsVersion(v => v + 1)
+```
+
+**Remove:**
+- Import of `recordEdit` from editStore
+- Import of `recordCommand` from timeline-engine
+- Import of `initializeTimeline` from timeline-engine
+- Call to `recordEdit()`
+- Call to `recordCommand()`
+
+---
+
+### Step 6: Remove Legacy Fallback in App.tsx
+
+**File:** `src/App.tsx`
+
+Once all edits go through CommandExecutor, remove the fallback:
+```typescript
+// BEFORE:
+if (executor.canUndo(activeTableId)) {
+  await executor.undo(activeTableId)
+} else {
+  // Fallback to legacy timeline
+  await undoTimeline(activeTableId)
+}
+
+// AFTER:
+if (executor.canUndo(activeTableId)) {
+  await executor.undo(activeTableId)
+} else {
+  console.log('Nothing to undo')
+}
+```
+
+**Keep the fallback initially** for backward compatibility with existing sessions, then remove in a later cleanup.
+
+---
+
+### Step 7: Deprecate editStore.ts
+
+**File:** `src/stores/editStore.ts`
+
+Add deprecation comment:
+```typescript
+/**
+ * @deprecated Use CommandExecutor for cell edits instead.
+ * This store is kept for backward compatibility during migration.
+ * Will be removed after Phase 5 is verified stable.
+ */
+```
+
+Do NOT delete yet - some code may still reference it.
+
+---
+
+### Files Summary
+
+| Action | File |
+|--------|------|
+| MODIFY | `src/lib/commands/types.ts` (add CellChange, cellChanges field) |
+| CREATE | `src/lib/commands/edit/cell.ts` |
+| CREATE | `src/lib/commands/edit/index.ts` |
+| MODIFY | `src/lib/commands/index.ts` (register edit:cell) |
+| MODIFY | `src/lib/commands/executor.ts` (add getDirtyCells, record cellChanges) |
+| MODIFY | `src/components/grid/DataGrid.tsx` (use CommandExecutor) |
+| MODIFY | `src/App.tsx` (optional: remove legacy fallback) |
+| MODIFY | `src/stores/editStore.ts` (add deprecation comment) |
+
+---
+
+### Verification
+
+1. **Build & Lint:**
+   ```bash
+   npm run lint && npm run build
+   ```
+
+2. **Run FR-A4 tests:**
+   ```bash
+   npm test -- --grep "FR-A4"
+   ```
+
+3. **Manual Test - Cell Edit Undo:**
+   - Load CSV
+   - Double-click cell, edit value
+   - Verify red triangle appears
+   - Press Ctrl+Z → value reverts, triangle disappears
+   - Press Ctrl+Y → value reapplied, triangle reappears
+
+4. **Manual Test - Mixed Undo:**
+   - Apply a transform (e.g., trim)
+   - Edit a cell
+   - Ctrl+Z → cell edit undone first
+   - Ctrl+Z → transform undone second
+
+---
+
+### Notes
+
+**Why Tier 2 (not Tier 1)?**
+- Cell edits are truly invertible: `UPDATE ... SET col = previousValue`
+- No expression chaining needed - direct inverse SQL
+- Simpler than Tier 1 column versioning for single-value changes
+
+**Why skip edit:batch for now?**
+- No current UI for batch edits
+- Can be added later when needed (copy/paste, fill-down scenarios)
+- edit:cell covers 95% of manual editing use cases
+
+**Audit Entry Type:**
+- Cell edits should log as Type B (manual edit)
+- May need to keep `addManualEditEntry()` call or add to EditCellCommand.getAuditInfo()
 
 ---
 
