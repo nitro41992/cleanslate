@@ -58,6 +58,36 @@ export function getTimelineOriginalName(timelineId: string): string {
 }
 
 /**
+ * Check if a table name represents a timeline snapshot
+ * Snapshot tables can be safely dropped after Parquet export
+ * Active tables (user-facing) must NEVER be dropped
+ */
+export function isSnapshotTable(tableName: string): boolean {
+  return (
+    tableName.startsWith('_timeline_original_') ||
+    tableName.startsWith('_timeline_snapshot_') ||
+    tableName.startsWith('_mat_') ||
+    tableName.startsWith('_custom_sql_before_')
+  )
+}
+
+/**
+ * Get all snapshot tables currently in DuckDB memory
+ * Used for debugging and memory profiling
+ */
+export async function listSnapshotTables(): Promise<string[]> {
+  const tables = await query<{ table_name: string }>(`
+    SELECT table_name
+    FROM duckdb_tables()
+    WHERE NOT internal
+  `)
+
+  return tables
+    .map(t => t.table_name)
+    .filter(name => isSnapshotTable(name))
+}
+
+/**
  * Create the original snapshot for a table's timeline
  * This is called when a timeline is first created for a table
  *
@@ -88,13 +118,36 @@ export async function createTimelineOriginalSnapshot(
     return `parquet:${snapshotId}`
   }
 
-  // Small table - use in-memory duplicate (existing behavior)
-  const originalName = `_timeline_original_${timelineId}`
-  const exists = await tableExists(originalName)
-  if (!exists) {
-    await duplicateTable(tableName, originalName, true)
+  // Small table - export to Parquet like large tables do
+  // OPTIMIZATION: Export active table directly (no duplicate needed)
+  // DuckDB handles read consistency, so no risk of corruption during export
+  const db = await initDuckDB()
+  const conn = await getConnection()
+  const snapshotId = `original_${timelineId}`
+
+  try {
+    // Export active table directly to OPFS Parquet
+    // This is safe because:
+    // 1. DuckDB uses MVCC (multi-version concurrency control)
+    // 2. Export reads from a consistent snapshot of the table
+    // 3. No temporary RAM allocation needed (saves ~150MB for small tables)
+    await exportTableToParquet(db, conn, tableName, snapshotId)
+
+    console.log(`[Timeline] Exported original snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+    // Return Parquet reference (same as large table path)
+    return `parquet:${snapshotId}`
+
+  } catch (error) {
+    // On export failure, fall back to in-memory duplicate
+    console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
+
+    const tempSnapshotName = `_timeline_original_${timelineId}`
+    await duplicateTable(tableName, tempSnapshotName, true)
+
+    // Return the in-memory table name instead of Parquet reference
+    return tempSnapshotName
   }
-  return originalName
 }
 
 /**
@@ -159,20 +212,42 @@ export async function createStepSnapshot(
     return `parquet:${snapshotId}`
   }
 
-  // Small table - use in-memory duplicate (existing behavior)
-  const snapshotName = getTimelineSnapshotName(timelineId, stepIndex)
-  const exists = await tableExists(snapshotName)
-  if (!exists) {
-    await duplicateTable(tableName, snapshotName, true)
-  }
+  // Small table - export to Parquet like large tables do
+  // OPTIMIZATION: Export active table directly (no duplicate needed)
+  const db = await initDuckDB()
+  const conn = await getConnection()
+  const snapshotId = `snapshot_${timelineId}_${stepIndex}`
 
-  // Register in store
-  const tableId = findTableIdByTimeline(timelineId)
-  if (tableId) {
-    useTimelineStore.getState().createSnapshot(tableId, stepIndex, snapshotName)
-  }
+  try {
+    // Export active table directly to OPFS Parquet
+    // Safe due to DuckDB MVCC - reads from consistent snapshot
+    await exportTableToParquet(db, conn, tableName, snapshotId)
 
-  return snapshotName
+    console.log(`[Timeline] Exported step ${stepIndex} snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+    // Register in store with Parquet reference
+    const tableId = findTableIdByTimeline(timelineId)
+    if (tableId) {
+      useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+    }
+
+    return `parquet:${snapshotId}`
+
+  } catch (error) {
+    // On export failure, fall back to in-memory duplicate
+    console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
+
+    const tempSnapshotName = getTimelineSnapshotName(timelineId, stepIndex)
+    await duplicateTable(tableName, tempSnapshotName, true)
+
+    // Register in-memory table
+    const tableId = findTableIdByTimeline(timelineId)
+    if (tableId) {
+      useTimelineStore.getState().createSnapshot(tableId, stepIndex, tempSnapshotName)
+    }
+
+    return tempSnapshotName
+  }
 }
 
 /**
