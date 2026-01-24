@@ -70,9 +70,14 @@ export function DiffConfigPanel({
           return true
         }
 
-        // Then check timeline-based snapshot
+        // Then check timeline-based snapshot (handles both in-memory and Parquet)
         const timeline = getTimeline(activeTableId)
         if (timeline?.originalSnapshotName) {
+          // Parquet snapshots are always valid (stored in OPFS)
+          if (timeline.originalSnapshotName.startsWith('parquet:')) {
+            return true
+          }
+          // In-memory snapshots need table existence check
           const timelineSnapshotExists = await tableExists(timeline.originalSnapshotName)
           if (timelineSnapshotExists) {
             return true
