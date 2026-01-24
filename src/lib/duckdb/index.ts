@@ -916,7 +916,7 @@ export async function flushDuckDB(
     try {
       const conn = await getConnection()
       await withMutex(async () => {
-        await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+        await conn.query(`CHECKPOINT`)
       })
       console.log('[OPFS] Immediate flush completed')
       callbacks?.onComplete?.()
@@ -933,7 +933,7 @@ export async function flushDuckDB(
       try {
         const conn = await getConnection()
         await withMutex(async () => {
-          await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+          await conn.query(`CHECKPOINT`)
         })
         console.log('[OPFS] Auto-flush completed')
         callbacks?.onComplete?.()

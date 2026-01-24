@@ -132,8 +132,8 @@ export async function batchExecute(
     // Prevents massive in-memory WAL accumulation before final commit
     // Trade-off: Disables rollback capability, but we're using staging table anyway
     if (batchNum % 5 === 0) {
-      await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
-      console.log(`[BatchExecutor] WAL checkpoint at ${processed.toLocaleString()} rows`)
+      await conn.query(`CHECKPOINT`)
+      console.log(`[BatchExecutor] Checkpoint at ${processed.toLocaleString()} rows`)
     }
 
     // Progress callback
@@ -146,7 +146,7 @@ export async function batchExecute(
   }
 
   // Final checkpoint to ensure all changes are persisted
-  await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+  await conn.query(`CHECKPOINT`)
   console.log(`[BatchExecutor] Completed: ${processed.toLocaleString()} rows in ${batchNum} batches`)
 
   return { rowsProcessed: processed, batches: batchNum, stagingTable }

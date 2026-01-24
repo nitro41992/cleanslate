@@ -13,6 +13,7 @@ import {
   buildDateParseSuccessPredicate,
   type OutputFormat,
 } from '../../utils/date'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface StandardizeDateParams extends BaseTransformParams {
   column: string
@@ -40,14 +41,24 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
-    const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = this.params.column
     const format = this.params.format ?? 'YYYY-MM-DD'
+    const dateExpr = buildDateFormatExpression(col, format)
+
+    // Check if batching is needed (3 lines!)
+    if (ctx.batchMode) {
+      return runBatchedTransform(ctx, `
+        SELECT * EXCLUDE ("${col}"), ${dateExpr} as "${col}"
+        FROM "${ctx.table.name}"
+      `)
+    }
+
+    // Original logic for <500k rows
+    const tableName = ctx.table.name
+    const tempTable = `${tableName}_temp_${Date.now()}`
 
     try {
-      // Build the date standardization expression
-      const dateExpr = buildDateFormatExpression(col, format)
+      // Build the date standardization expression (already done above)
 
       // Create temp table with standardized date
       const sql = `

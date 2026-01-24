@@ -5,9 +5,10 @@
  * Tier 1 - Column versioning for instant undo.
  */
 
-import type { CommandContext, CommandType } from '../../types'
+import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { COLUMN_PLACEHOLDER } from '../../column-versions'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface UppercaseParams extends BaseTransformParams {
   column: string
@@ -25,5 +26,20 @@ export class UppercaseCommand extends Tier1TransformCommand<UppercaseParams> {
     const col = this.getQuotedColumn()
     // Rows where uppercased value differs from original
     return `${col} IS NOT NULL AND ${col} != UPPER(${col})`
+  }
+
+  async execute(ctx: CommandContext): Promise<ExecutionResult> {
+    const col = this.params.column!
+
+    // Check if batching is needed (3 lines!)
+    if (ctx.batchMode) {
+      return runBatchedTransform(ctx, `
+        SELECT * EXCLUDE ("${col}"), UPPER("${col}") as "${col}"
+        FROM "${ctx.table.name}"
+      `)
+    }
+
+    // Original logic for <500k rows (use base class implementation)
+    return super.execute(ctx)
   }
 }
