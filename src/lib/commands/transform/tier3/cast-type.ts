@@ -8,6 +8,7 @@
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
+import { runBatchedTransform } from '../../batch-utils'
 
 export type CastTargetType = 'VARCHAR' | 'INTEGER' | 'DOUBLE' | 'DATE' | 'BOOLEAN'
 
@@ -34,8 +35,26 @@ export class CastTypeCommand extends Tier3TransformCommand<CastTypeParams> {
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = quoteColumn(this.params.column)
+
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      const transformExpr = `TRY_CAST(${col} AS ${this.params.targetType})`
+
+      return runBatchedTransform(
+        ctx,
+        // Transform query
+        `SELECT * EXCLUDE (${col}), ${transformExpr} as ${col}
+         FROM "${tableName}"`,
+        // Sample query (captures before/after for first 1000 affected rows)
+        `SELECT ${col} as before, ${transformExpr} as after
+         FROM "${tableName}"
+         WHERE (${transformExpr} IS NOT NULL OR ${col} IS NOT NULL)`
+      )
+    }
+
+    // Original logic for <500k rows
+    const tempTable = `${tableName}_temp_${Date.now()}`
 
     try {
       // Create temp table with casted column

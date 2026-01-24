@@ -9,6 +9,7 @@
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface PadZerosParams extends BaseTransformParams {
   column: string
@@ -36,9 +37,27 @@ export class PadZerosCommand extends Tier3TransformCommand<PadZerosParams> {
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = quoteColumn(this.params.column)
     const length = this.params.length ?? 5
+
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      const transformExpr = `LPAD(CAST(${col} AS VARCHAR), ${length}, '0')`
+
+      return runBatchedTransform(
+        ctx,
+        // Transform query
+        `SELECT * EXCLUDE (${col}), ${transformExpr} as ${col}
+         FROM "${tableName}"`,
+        // Sample query (captures before/after for first 1000 affected rows)
+        `SELECT ${col} as before, ${transformExpr} as after
+         FROM "${tableName}"
+         WHERE ${col} IS DISTINCT FROM ${transformExpr}`
+      )
+    }
+
+    // Original logic for <500k rows
+    const tempTable = `${tableName}_temp_${Date.now()}`
 
     try {
       // Build the LPAD expression

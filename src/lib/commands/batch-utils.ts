@@ -18,23 +18,46 @@ import { getConnection } from '@/lib/duckdb'
  *
  * @param ctx - Command context with batch settings
  * @param selectQuery - SQL SELECT query to execute in batches (should read from ctx.table.name)
- * @returns Execution result with affected row count
+ * @param sampleQuery - Optional SQL query to capture before/after samples for audit (limit 1000 applied automatically)
+ * @returns Execution result with affected row count and optional sample changes
  *
  * @example
  * // In UppercaseCommand.execute():
  * if (ctx.batchMode) {
- *   return runBatchedTransform(ctx, `
- *     SELECT * EXCLUDE ("name"), UPPER("name") as "name"
- *     FROM "${ctx.table.name}"
- *   `)
+ *   return runBatchedTransform(
+ *     ctx,
+ *     `SELECT * EXCLUDE ("name"), UPPER("name") as "name" FROM "${ctx.table.name}"`,
+ *     `SELECT "name" as before, UPPER("name") as after FROM "${ctx.table.name}" WHERE "name" IS DISTINCT FROM UPPER("name")`
+ *   )
  * }
  */
 export async function runBatchedTransform(
   ctx: CommandContext,
-  selectQuery: string
+  selectQuery: string,
+  sampleQuery?: string
 ): Promise<ExecutionResult> {
   const conn = await getConnection()
   const stagingTable = `_staging_${ctx.table.name}`
+
+  // Capture samples BEFORE transformation (limit 1000 rows)
+  let sampleChanges: { before: string; after: string }[] = []
+
+  if (sampleQuery) {
+    try {
+      const sampleResult = await conn.query(`${sampleQuery} LIMIT 1000`)
+      sampleChanges = sampleResult.toArray().map(row => {
+        const json = row.toJSON()
+        return {
+          before: String(json.before ?? ''),
+          after: String(json.after ?? '')
+        }
+      })
+      console.log(`[BatchExecutor] Captured ${sampleChanges.length} sample rows`)
+    } catch (err) {
+      console.warn('[BatchExecutor] Sample query failed:', err)
+      // Continue without samples - don't block the transformation
+    }
+  }
 
   try {
     // Batch execute the transformation
@@ -57,7 +80,8 @@ export async function runBatchedTransform(
       columns,
       affected: result.rowsProcessed,
       newColumnNames: [],
-      droppedColumnNames: []
+      droppedColumnNames: [],
+      sampleChanges: sampleChanges.length > 0 ? sampleChanges : undefined
     }
   } catch (error) {
     // Cleanup on failure

@@ -112,9 +112,22 @@ async function validateDiffMemoryAvailability(
   const estimatedCols = Number(cols_a) + Number(cols_b)
   const estimatedBytes = estimatedRows * estimatedCols * 100
 
-  // Check available memory (70% threshold for safety)
-  const memStatus = await getMemoryStatus()
-  const availableBytes = memStatus.limitBytes - memStatus.usedBytes
+  // Use 2GB fallback to avoid NaN errors from memory detection
+  const FALLBACK_LIMIT_BYTES = 2 * 1024 * 1024 * 1024 // 2GB
+  let availableBytes = FALLBACK_LIMIT_BYTES
+
+  try {
+    const memStatus = await getMemoryStatus()
+    if (memStatus.limitBytes > 0 && !isNaN(memStatus.limitBytes)) {
+      availableBytes = Math.max(
+        memStatus.limitBytes - memStatus.usedBytes,
+        FALLBACK_LIMIT_BYTES * 0.3 // Minimum 600MB available
+      )
+    }
+  } catch (err) {
+    console.warn('[Diff] Memory status unavailable, using 2GB fallback:', err)
+  }
+
   const threshold = availableBytes * 0.7
 
   if (estimatedBytes > threshold) {

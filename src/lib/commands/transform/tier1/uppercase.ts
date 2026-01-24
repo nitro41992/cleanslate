@@ -31,12 +31,18 @@ export class UppercaseCommand extends Tier1TransformCommand<UppercaseParams> {
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const col = this.params.column!
 
-    // Check if batching is needed (3 lines!)
+    // Check if batching is needed
     if (ctx.batchMode) {
-      return runBatchedTransform(ctx, `
-        SELECT * EXCLUDE ("${col}"), UPPER("${col}") as "${col}"
-        FROM "${ctx.table.name}"
-      `)
+      return runBatchedTransform(
+        ctx,
+        // Transform query
+        `SELECT * EXCLUDE ("${col}"), UPPER("${col}") as "${col}"
+         FROM "${ctx.table.name}"`,
+        // Sample query (captures before/after for first 1000 affected rows)
+        `SELECT "${col}" as before, UPPER("${col}") as after
+         FROM "${ctx.table.name}"
+         WHERE "${col}" IS DISTINCT FROM UPPER("${col}")`
+      )
     }
 
     // Original logic for <500k rows (use base class implementation)

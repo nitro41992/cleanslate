@@ -168,6 +168,8 @@ export interface ExecutionResult {
     backup: string
     version: number
   }
+  /** Sample before/after values for audit drill-down (batched operations only, max 1000 rows) */
+  sampleChanges?: { before: string; after: string }[]
 }
 
 // ===== AUDIT =====
@@ -369,6 +371,23 @@ export interface CellChange {
   newValue: unknown
 }
 
+/**
+ * Snapshot storage types
+ * - table: In-memory DuckDB table (fast undo, high RAM)
+ * - parquet: OPFS Parquet file (slow undo, low RAM)
+ */
+export type SnapshotStorageType = 'table' | 'parquet'
+
+/**
+ * Metadata for a snapshot, tracking its storage location
+ */
+export interface SnapshotMetadata {
+  id: string
+  storageType: SnapshotStorageType
+  tableName?: string  // For 'table' storage
+  path?: string       // For 'parquet' storage
+}
+
 export interface TimelineCommandRecord {
   id: string
   commandType: CommandType
@@ -381,8 +400,8 @@ export interface TimelineCommandRecord {
   backupColumn?: string
   /** For Tier 2: inverse SQL */
   inverseSql?: string
-  /** For Tier 3: snapshot table name */
-  snapshotTable?: string
+  /** For Tier 3: snapshot metadata (table or Parquet) */
+  snapshotTable?: SnapshotMetadata
   /** Highlight predicate */
   rowPredicate?: string | null
   affectedColumns?: string[]
