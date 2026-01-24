@@ -1,6 +1,7 @@
 import { AlertCircle } from 'lucide-react'
 import { usePreviewStore } from '@/stores/previewStore'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
+import { PersistenceIndicator } from '@/components/common/PersistenceIndicator'
 
 export function StatusBar() {
   const isLargeFile = usePreviewStore((s) => s.isLargeFile)
@@ -19,8 +20,10 @@ export function StatusBar() {
         )}
       </div>
 
-      {/* Center: Empty - pending changes UI removed (audit log tracks all changes) */}
-      <div className="flex items-center gap-3" />
+      {/* Center: Persistence status indicator */}
+      <div className="flex items-center gap-3">
+        <PersistenceIndicator />
+      </div>
 
       {/* Right: Empty placeholder for layout balance */}
       <div className="flex items-center gap-2" />

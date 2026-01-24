@@ -15,7 +15,16 @@ export function useBeforeUnload() {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       // Flush immediately (bypasses debounce)
       // This is synchronous in DuckDB-WASM's OPFS backend
-      flushDuckDB(true)
+      flushDuckDB(true, {
+        onStart: () => {
+          // Show saving indicator (though tab is closing)
+          const { useUIStore } = require('@/stores/uiStore')
+          useUIStore.getState().setPersistenceStatus('saving')
+        },
+        onComplete: () => {
+          // Don't set 'saved' - tab is closing
+        }
+      })
 
       // Note: We don't prevent default or show confirmation dialog
       // Auto-save is transparent - user doesn't need to confirm

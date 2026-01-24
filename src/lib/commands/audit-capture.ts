@@ -20,8 +20,9 @@ export interface DbConnection {
 }
 
 // Max rows for which we capture row-level details (performance threshold)
-// 50k is safe for browser memory; existing pagination handles display efficiently
-export const ROW_DETAIL_THRESHOLD = 50_000
+// 10k reduces WASM heap expansion during audit capture by 80%
+// Export modal already limits to 10k rows, so no functional loss
+export const ROW_DETAIL_THRESHOLD = 10_000
 
 /**
  * Ensure _audit_details table exists

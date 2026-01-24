@@ -7,6 +7,7 @@ import { FeaturePanel } from './FeaturePanel'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
+import { useUIStore } from '@/stores/uiStore'
 
 interface AppLayoutProps {
   children: ReactNode
@@ -66,6 +67,19 @@ export function AppLayout({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [setActivePanel, openDiffView, openMatchView])
+
+  // Event listener for storage quota warning to open sidebar
+  useEffect(() => {
+    const handleOpenSidebar = () => {
+      const { sidebarCollapsed, toggleSidebar } = useUIStore.getState()
+      if (sidebarCollapsed) {
+        toggleSidebar()
+      }
+    }
+
+    window.addEventListener('open-table-sidebar', handleOpenSidebar)
+    return () => window.removeEventListener('open-table-sidebar', handleOpenSidebar)
+  }, [])
 
   return (
     <TooltipProvider delayDuration={200}>

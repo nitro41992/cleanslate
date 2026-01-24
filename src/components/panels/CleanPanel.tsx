@@ -3,6 +3,7 @@ import { Loader2, Sparkles, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import {
   Select,
   SelectContent,
@@ -35,6 +36,7 @@ import {
   getCommandExecutor,
   getCommandTypeFromTransform,
   getCommandLabel,
+  type ExecutorProgress,
 } from '@/lib/commands'
 
 export function CleanPanel() {
@@ -46,6 +48,8 @@ export function CleanPanel() {
   // Cast type validation warning state
   const [castWarningOpen, setCastWarningOpen] = useState(false)
   const [castValidation, setCastValidation] = useState<CastTypeValidation | null>(null)
+  // Execution progress state for batched operations
+  const [executionProgress, setExecutionProgress] = useState<ExecutorProgress | null>(null)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -114,6 +118,7 @@ export function CleanPanel() {
       const result = await executor.execute(command, {
         onProgress: (progress) => {
           console.log(`[Command] ${progress.phase}: ${progress.progress}%`)
+          setExecutionProgress(progress)
         },
       })
 
@@ -148,6 +153,7 @@ export function CleanPanel() {
       })
     } finally {
       setIsApplying(false)
+      setExecutionProgress(null)
     }
   }
 
@@ -491,6 +497,17 @@ export function CleanPanel() {
                   </>
                 )}
               </Button>
+
+              {/* Execution Progress (for batched operations) */}
+              {executionProgress && (
+                <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>{executionProgress.message}</span>
+                    <span>{Math.round(executionProgress.progress)}%</span>
+                  </div>
+                  <Progress value={executionProgress.progress} className="h-2" />
+                </div>
+              )}
 
               {/* Cancel Button */}
               <Button

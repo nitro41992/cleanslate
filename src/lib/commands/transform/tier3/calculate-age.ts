@@ -9,6 +9,7 @@ import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
 import { buildAgeExpression, buildDateParseSuccessPredicate } from '../../utils/date'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface CalculateAgeParams extends BaseTransformParams {
   column: string
@@ -22,13 +23,31 @@ export class CalculateAgeCommand extends Tier3TransformCommand<CalculateAgeParam
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = this.params.column
     const newColName = this.params.newColumnName ?? 'age'
 
+    // Build the age calculation expression
+    const ageExpr = buildAgeExpression(col)
+
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      return runBatchedTransform(
+        ctx,
+        // Transform query (adds new column)
+        `SELECT *, ${ageExpr} as ${quoteColumn(newColName)}
+         FROM "${tableName}"`,
+        // Sample query (captures DOB as before, age as after for first 1000 rows)
+        `SELECT ${quoteColumn(col)} as before, ${ageExpr} as after
+         FROM "${tableName}"
+         WHERE ${ageExpr} IS NOT NULL
+         LIMIT 1000`
+      )
+    }
+
+    // Original logic for <500k rows
+    const tempTable = `${tableName}_temp_${Date.now()}`
+
     try {
-      // Build the age calculation expression
-      const ageExpr = buildAgeExpression(col)
 
       // Create temp table with age column
       const sql = `

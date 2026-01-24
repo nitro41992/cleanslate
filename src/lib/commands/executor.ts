@@ -24,6 +24,7 @@ import type {
   HighlightInfo,
   UndoTier,
   CellChange,
+  SnapshotMetadata,
 } from './types'
 import { buildCommandContext, refreshTableContext } from './context'
 import { createColumnVersionManager, type ColumnVersionStore } from './column-versions'
@@ -36,13 +37,25 @@ import {
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
-import { duplicateTable, dropTable, tableExists } from '@/lib/duckdb'
+import { duplicateTable, dropTable, tableExists, getConnection } from '@/lib/duckdb'
+import { initDuckDB } from '@/lib/duckdb'
 import {
   ensureAuditDetailsTable,
   captureTier23RowDetails,
 } from './audit-capture'
 import { getBaseColumnName } from './column-versions'
 import type { TimelineCommandType } from '@/types'
+import { toast } from '@/hooks/use-toast'
+import {
+  getMemoryStatus,
+  getDuckDBMemoryUsage,
+  getEstimatedTableSizes,
+} from '@/lib/duckdb/memory'
+import {
+  exportTableToParquet,
+  importTableFromParquet,
+  deleteParquetSnapshot,
+} from '@/lib/opfs/snapshot-storage'
 
 // ===== TIMELINE STORAGE =====
 
@@ -52,14 +65,20 @@ import type { TimelineCommandType } from '@/types'
  */
 const MAX_SNAPSHOTS_PER_TABLE = 5
 
+/**
+ * Timeout ID for auto-resetting persistence status from 'saved' to 'idle'
+ * Cleared if a new operation starts during the countdown
+ */
+let persistenceAutoResetTimer: NodeJS.Timeout | null = null
+
 // Per-table timeline of executed commands for undo/redo
 // Key: tableId, Value: { commands, position, snapshots }
 interface TableCommandTimeline {
   commands: TimelineCommandRecord[]
   position: number // -1 = before first command, 0+ = after command at that index
-  snapshots: Map<number, string> // position -> snapshot table name
+  snapshots: Map<number, SnapshotMetadata> // position -> snapshot metadata
   snapshotTimestamps: Map<number, number> // position -> timestamp for LRU tracking
-  originalSnapshot?: string // Initial state snapshot
+  originalSnapshot?: SnapshotMetadata // Initial state snapshot
 }
 
 const tableTimelines = new Map<string, TableCommandTimeline>()
@@ -87,14 +106,22 @@ function getTimeline(tableId: string): TableCommandTimeline {
 export function clearCommandTimeline(tableId: string): void {
   const timeline = tableTimelines.get(tableId)
   if (timeline) {
-    // Clean up snapshot tables
-    for (const snapshotName of timeline.snapshots.values()) {
-      dropTable(snapshotName).catch(() => {
-        // Ignore errors during cleanup
-      })
+    // Clean up snapshots (both table and Parquet)
+    for (const snapshot of timeline.snapshots.values()) {
+      if (snapshot.storageType === 'table' && snapshot.tableName) {
+        dropTable(snapshot.tableName).catch(() => {
+          // Ignore errors during cleanup
+        })
+      } else if (snapshot.storageType === 'parquet') {
+        deleteParquetSnapshot(snapshot.id).catch(() => {})
+      }
     }
     if (timeline.originalSnapshot) {
-      dropTable(timeline.originalSnapshot).catch(() => {})
+      if (timeline.originalSnapshot.storageType === 'table' && timeline.originalSnapshot.tableName) {
+        dropTable(timeline.originalSnapshot.tableName).catch(() => {})
+      } else if (timeline.originalSnapshot.storageType === 'parquet') {
+        deleteParquetSnapshot(timeline.originalSnapshot.id).catch(() => {})
+      }
     }
     tableTimelines.delete(tableId)
   }
@@ -157,23 +184,28 @@ export class CommandExecutor implements ICommandExecutor {
       const needsSnapshot = requiresSnapshot(command.type)
 
       // Step 3: Pre-snapshot for Tier 3
-      let snapshotTableName: string | undefined
+      let snapshotMetadata: SnapshotMetadata | undefined
       if (needsSnapshot && !skipTimeline) {
         progress('snapshotting', 20, 'Creating backup snapshot...')
-        snapshotTableName = await this.createSnapshot(ctx)
+        snapshotMetadata = await this.createSnapshot(ctx)
 
         // If this is the first snapshot for this table, set it as originalSnapshotName
         // so the Diff View can compare against original state
         const timelineStoreState = useTimelineStore.getState()
         let existingTimeline = timelineStoreState.getTimeline(tableId)
 
+        // For legacy timelineStore, use table name if available, otherwise snapshot ID
+        const legacySnapshotName = snapshotMetadata.storageType === 'table'
+          ? snapshotMetadata.tableName!
+          : snapshotMetadata.id
+
         // Create timeline if it doesn't exist yet
         if (!existingTimeline) {
-          timelineStoreState.createTimeline(tableId, ctx.table.name, snapshotTableName)
+          timelineStoreState.createTimeline(tableId, ctx.table.name, legacySnapshotName)
           existingTimeline = timelineStoreState.getTimeline(tableId)
         } else if (!existingTimeline.originalSnapshotName) {
           // Timeline exists but no original snapshot set yet
-          timelineStoreState.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
+          timelineStoreState.updateTimelineOriginalSnapshot(tableId, legacySnapshotName)
         }
 
         // Prune oldest snapshot if over limit
@@ -192,14 +224,43 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // Step 3.75: Batching decision for large operations (>500k rows)
+      const shouldBatch = ctx.table.rowCount > 500_000
+      const batchSize = 50_000
+
+      if (shouldBatch) {
+        console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
+      }
+
+      // Inject batching metadata into context
+      // Commands can check ctx.batchMode to enable batched execution
+      // NOTE: Most commands will ignore this and execute normally
+      // Future: Individual commands can opt-in to batching by checking ctx.batchMode
+      const batchableContext: CommandContext = {
+        ...ctx,
+        batchMode: shouldBatch,
+        batchSize: batchSize,
+        onBatchProgress: shouldBatch
+          ? (curr, total, pct) => {
+              // Map batch progress to execute phase (40-80%)
+              const adjustedPct = 40 + (pct * 0.4)
+              progress('executing', adjustedPct, `Processing ${curr.toLocaleString()} / ${total.toLocaleString()} rows`)
+            }
+          : undefined,
+      }
+
+      // Step 3.9: Capture memory state before execution (diagnostic)
+      const memBefore = await getDuckDBMemoryUsage()
+      const tablesBefore = await getEstimatedTableSizes()
+
       // Step 4: Execute
       progress('executing', 40, 'Executing command...')
-      const executionResult = await command.execute(ctx)
+      const executionResult = await command.execute(batchableContext)
 
       if (!executionResult.success) {
         // Rollback snapshot if execution failed
-        if (snapshotTableName) {
-          await this.restoreFromSnapshot(ctx.table.name, snapshotTableName)
+        if (snapshotMetadata) {
+          await this.restoreFromSnapshot(ctx.table.name, snapshotMetadata)
         }
         return {
           success: false,
@@ -208,8 +269,52 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // Step 4.3: Memory diagnostic logging (after execution)
+      const memAfter = await getDuckDBMemoryUsage()
+      const tablesAfter = await getEstimatedTableSizes()
+
+      const memoryDelta = memAfter.totalBytes - memBefore.totalBytes
+      const tableCountDelta = tablesAfter.length - tablesBefore.length
+
+      // Calculate per-tag deltas
+      const tagDeltas = Object.keys(memAfter.byTag).map(tag => {
+        const afterMem = memAfter.byTag[tag]?.memoryBytes || 0
+        const beforeMem = memBefore.byTag[tag]?.memoryBytes || 0
+        return {
+          tag,
+          delta: afterMem - beforeMem,
+          before: beforeMem,
+          after: afterMem,
+        }
+      }).filter(t => t.delta !== 0) // Only show tags with changes
+
+      console.log('[Memory Diagnostic]', {
+        command: command.type,
+        tier,
+        memoryDelta: `${(memoryDelta / 1024 / 1024).toFixed(2)} MB`,
+        tableCountDelta,
+        totalBefore: `${(memBefore.totalBytes / 1024 / 1024).toFixed(2)} MB`,
+        totalAfter: `${(memAfter.totalBytes / 1024 / 1024).toFixed(2)} MB`,
+        byTagDelta: tagDeltas.map(t => ({
+          tag: t.tag,
+          delta: `${(t.delta / 1024 / 1024).toFixed(2)} MB`,
+          before: `${(t.before / 1024 / 1024).toFixed(2)} MB`,
+          after: `${(t.after / 1024 / 1024).toFixed(2)} MB`,
+        })),
+      })
+
       // Refresh context with new schema
       const updatedCtx = await refreshTableContext(ctx)
+
+      // Step 4.5: CHECKPOINT after Tier 3 to flush WAL and release buffer pool
+      if (tier === 3) {
+        try {
+          await ctx.db.execute('CHECKPOINT')
+          console.log('[Memory] Checkpointed after Tier 3 operation')
+        } catch (err) {
+          console.warn('[Memory] CHECKPOINT failed (non-fatal):', err)
+        }
+      }
 
       // Step 5: Audit logging
       let auditInfo
@@ -237,7 +342,7 @@ export class CommandExecutor implements ICommandExecutor {
           tier,
           rowPredicate,
           affectedColumn,
-          snapshotTableName
+          snapshotMetadata
         )
       }
 
@@ -262,6 +367,19 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // Drop diff view immediately after extracting row IDs
+      // Diff views are ephemeral - only needed for highlighting extraction
+      // Prevents accumulation of large views (1M rows each) in memory
+      if (diffViewName) {
+        try {
+          await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
+          console.log(`[Memory] Dropped diff view: ${diffViewName}`)
+        } catch (err) {
+          // Non-fatal - don't fail the command if view cleanup fails
+          console.warn(`[Memory] Failed to drop diff view ${diffViewName}:`, err)
+        }
+      }
+
       // Step 7: Record timeline for undo/redo
       let highlightInfo: HighlightInfo | undefined
       if (!skipTimeline) {
@@ -277,7 +395,7 @@ export class CommandExecutor implements ICommandExecutor {
           command,
           tier,
           updatedCtx,
-          snapshotTableName,
+          snapshotMetadata,
           executionResult.versionedColumn?.backup,
           highlightInfo.rowPredicate
         )
@@ -304,10 +422,41 @@ export class CommandExecutor implements ICommandExecutor {
       progress('complete', 100, 'Complete')
       this.updateTableStore(ctx.table.id, executionResult)
 
+      // Proactive memory management: prune snapshots if memory > 80%
+      await this.pruneSnapshotsIfHighMemory()
+
       // Auto-persist to OPFS (debounced, non-blocking)
       // Waits 1 second of idle time before flushing to prevent stuttering on bulk edits
       const { flushDuckDB } = await import('@/lib/duckdb')
-      flushDuckDB() // Returns immediately, schedules flush for 1s later
+      const { useUIStore } = await import('@/stores/uiStore')
+
+      flushDuckDB(false, {
+        onStart: () => {
+          // Clear any pending auto-reset timeout to prevent race condition
+          if (persistenceAutoResetTimer) {
+            clearTimeout(persistenceAutoResetTimer)
+            persistenceAutoResetTimer = null
+          }
+          useUIStore.getState().setPersistenceStatus('saving')
+        },
+        onComplete: () => {
+          const store = useUIStore.getState()
+          store.setPersistenceStatus('saved')
+
+          // Auto-reset to idle after 3 seconds
+          persistenceAutoResetTimer = setTimeout(() => {
+            // Only reset if still 'saved' (avoid race with new operations)
+            if (useUIStore.getState().persistenceStatus === 'saved') {
+              useUIStore.getState().setPersistenceStatus('idle')
+            }
+            persistenceAutoResetTimer = null
+          }, 3000)
+        },
+        onError: (error) => {
+          useUIStore.getState().setPersistenceStatus('error')
+          console.error('[EXECUTOR] Flush error:', error)
+        }
+      })
 
       return {
         success: true,
@@ -357,7 +506,7 @@ export class CommandExecutor implements ICommandExecutor {
 
       switch (commandRecord.tier) {
         case 1:
-          // Tier 1: Column versioning undo
+          // Tier 1: Column versioning undo OR snapshot if batched
           if (commandRecord.backupColumn && commandRecord.affectedColumns?.[0]) {
             const versionStore: ColumnVersionStore = { versions: ctx.columnVersions }
             const versionManager = createColumnVersionManager(ctx.db, versionStore)
@@ -367,6 +516,15 @@ export class CommandExecutor implements ICommandExecutor {
             )
             if (!result.success) {
               return { success: false, error: result.error }
+            }
+          } else if (commandRecord.snapshotTable) {
+            // Fallback to snapshot if no backup column (batched execution)
+            // Large batched operations use Parquet cold storage
+            await this.restoreFromSnapshot(ctx.table.name, commandRecord.snapshotTable)
+          } else {
+            return {
+              success: false,
+              error: 'Undo unavailable: No backup column or snapshot found'
             }
           }
           break
@@ -396,6 +554,18 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Decrement position
       timeline.position--
+
+      // Drop diff view for the undone command (cleanup orphaned views)
+      // Diff views are created during execute() with stepIndex = position + 1
+      const stepIndex = timeline.position + 1 // Position before decrement
+      const diffViewName = `v_diff_step_${tableId}_${stepIndex}`
+      try {
+        await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
+        console.log(`[Undo] Dropped diff view: ${diffViewName}`)
+      } catch (err) {
+        // Non-fatal - diff view may not exist or already dropped
+        console.warn(`[Undo] Failed to drop diff view ${diffViewName}:`, err)
+      }
 
       // Sync with legacy timelineStore
       const timelineStoreState = useTimelineStore.getState()
@@ -553,10 +723,34 @@ export class CommandExecutor implements ICommandExecutor {
 
   // ===== PRIVATE METHODS =====
 
-  private async createSnapshot(ctx: CommandContext): Promise<string> {
-    const snapshotName = `_cmd_snapshot_${ctx.table.id}_${Date.now()}`
+  private async createSnapshot(ctx: CommandContext): Promise<SnapshotMetadata> {
+    const timestamp = Date.now()
+    const snapshotId = `snapshot_${ctx.table.id}_${timestamp}`
+
+    // For large tables (>500k rows), use Parquet cold storage
+    if (ctx.table.rowCount > 500_000) {
+      console.log(`[Snapshot] Creating Parquet snapshot for ${ctx.table.rowCount.toLocaleString()} rows...`)
+
+      const db = await initDuckDB()
+      const conn = await getConnection()
+      await exportTableToParquet(db, conn, ctx.table.name, snapshotId)
+
+      return {
+        id: snapshotId,
+        storageType: 'parquet',
+        path: `${snapshotId}.parquet`
+      }
+    }
+
+    // For small tables (<500k rows), use in-memory table (fast undo)
+    const snapshotName = `_cmd_snapshot_${ctx.table.id}_${timestamp}`
     await duplicateTable(ctx.table.name, snapshotName, true)
-    return snapshotName
+
+    return {
+      id: snapshotId,
+      storageType: 'table',
+      tableName: snapshotName
+    }
   }
 
   /**
@@ -564,7 +758,7 @@ export class CommandExecutor implements ICommandExecutor {
    * Marks the corresponding command as undoDisabled.
    */
   private async pruneOldestSnapshot(timeline: TableCommandTimeline): Promise<void> {
-    if (timeline.snapshots.size <= MAX_SNAPSHOTS_PER_TABLE) return
+    if (timeline.snapshots.size < MAX_SNAPSHOTS_PER_TABLE) return
 
     // Find oldest by timestamp
     let oldestPosition = -1
@@ -578,10 +772,24 @@ export class CommandExecutor implements ICommandExecutor {
     }
 
     if (oldestPosition >= 0) {
-      const snapshotName = timeline.snapshots.get(oldestPosition)
-      if (snapshotName) {
-        // Drop the snapshot table
-        await dropTable(snapshotName).catch(() => {})
+      const snapshot = timeline.snapshots.get(oldestPosition)
+      if (snapshot) {
+        // Delete based on storage type
+        if (snapshot.storageType === 'table' && snapshot.tableName) {
+          await dropTable(snapshot.tableName).catch(() => {})
+
+          // VACUUM to reclaim freed space
+          try {
+            const conn = await getConnection()
+            await conn.query('VACUUM')
+            console.log('[Memory] VACUUM after snapshot pruning')
+          } catch (err) {
+            console.warn('[Memory] VACUUM failed (non-fatal):', err)
+          }
+        } else if (snapshot.storageType === 'parquet') {
+          await deleteParquetSnapshot(snapshot.id)
+        }
+
         timeline.snapshots.delete(oldestPosition)
         timeline.snapshotTimestamps.delete(oldestPosition)
 
@@ -594,18 +802,67 @@ export class CommandExecutor implements ICommandExecutor {
     }
   }
 
-  private async restoreFromSnapshot(
-    tableName: string,
-    snapshotName: string
-  ): Promise<void> {
-    const exists = await tableExists(snapshotName)
-    if (!exists) {
-      throw new Error(`Snapshot ${snapshotName} not found`)
+  /**
+   * Aggressively prune snapshots across all tables if memory usage > 80%.
+   * Called after command execution to prevent OOM on large datasets.
+   * Shows toast notification to inform user that old undo history was cleared.
+   */
+  private async pruneSnapshotsIfHighMemory(): Promise<void> {
+    const memStatus = await getMemoryStatus()
+
+    if (memStatus.percentage < 80) return // Not critical yet
+
+    console.warn('[Memory] High memory usage detected, pruning snapshots...')
+
+    let prunedCount = 0
+
+    for (const [_tableId, timeline] of tableTimelines.entries()) {
+      // Prune down to MAX_SNAPSHOTS_PER_TABLE
+      while (timeline.snapshots.size > MAX_SNAPSHOTS_PER_TABLE) {
+        await this.pruneOldestSnapshot(timeline)
+        prunedCount++
+      }
     }
 
-    // Drop current table and duplicate from snapshot
-    await dropTable(tableName)
-    await duplicateTable(snapshotName, tableName, true)
+    if (prunedCount > 0) {
+      console.log(`[Memory] Pruned ${prunedCount} snapshots due to high memory`)
+
+      // Notify user that undo history was cleared
+      toast({
+        title: 'Memory Optimization',
+        description: `Old undo history cleared to free memory (${prunedCount} snapshot${prunedCount > 1 ? 's' : ''} removed)`,
+        variant: 'default',
+      })
+    }
+  }
+
+  private async restoreFromSnapshot(
+    tableName: string,
+    snapshot: SnapshotMetadata
+  ): Promise<void> {
+    if (snapshot.storageType === 'table') {
+      // Hot storage: Instant restore from in-memory table
+      const exists = await tableExists(snapshot.tableName!)
+      if (!exists) {
+        throw new Error(`Snapshot table ${snapshot.tableName} not found`)
+      }
+
+      await dropTable(tableName)
+      await duplicateTable(snapshot.tableName!, tableName, true)
+
+    } else if (snapshot.storageType === 'parquet') {
+      // Cold storage: Restore from OPFS Parquet file
+      console.log(`[Snapshot] Restoring from Parquet: ${snapshot.path}`)
+
+      const db = await initDuckDB()
+      const conn = await getConnection()
+      await dropTable(tableName)
+      await importTableFromParquet(db, conn, snapshot.id, tableName)
+
+      console.log(`[Snapshot] Restored ${tableName} from cold storage`)
+    } else {
+      throw new Error(`Unknown snapshot storage type: ${snapshot.storageType}`)
+    }
   }
 
   private async createDiffView(
@@ -613,7 +870,7 @@ export class CommandExecutor implements ICommandExecutor {
     tier: UndoTier,
     rowPredicate: string | null,
     affectedColumn: string | null,
-    snapshotTable?: string
+    snapshot?: SnapshotMetadata
   ): Promise<string | undefined> {
     const timeline = getTimeline(ctx.table.id)
     const stepIndex = timeline.position + 1 // Next position after this command
@@ -628,12 +885,24 @@ export class CommandExecutor implements ICommandExecutor {
     }
 
     try {
-      if (tier === 3 && snapshotTable) {
+      if (tier === 3 && snapshot) {
         // Tier 3 with snapshot - can show deleted/added rows
-        return await createTier3DiffView(ctx, { ...config, snapshotTable })
-      } else {
-        // Tier 1/2 - show modified rows based on predicate
+        // For Parquet snapshots, we can't use them in diff views (must be in-memory)
+        // Skip diff view creation for Parquet snapshots (highlighting still works via affectedRowIds)
+        if (snapshot.storageType === 'table' && snapshot.tableName) {
+          return await createTier3DiffView(ctx, { ...config, snapshotTable: snapshot.tableName })
+        } else {
+          // Parquet snapshot - skip diff view (can't reference Parquet in SQL)
+          console.log('[Diff] Skipping diff view for Parquet snapshot (highlighting via row IDs)')
+          return undefined
+        }
+      } else if (tier === 1) {
+        // Tier 1 - show modified rows using __base columns
         return await createTier1DiffView(ctx, config)
+      } else {
+        // Tier 2 - show modified rows based on predicate (no __base columns)
+        // For now, skip diff view for Tier 2 (can add predicate-based view later)
+        return undefined
       }
     } catch {
       // Diff view creation is non-critical, don't fail the command
@@ -644,7 +913,7 @@ export class CommandExecutor implements ICommandExecutor {
   private findNearestSnapshot(
     timeline: TableCommandTimeline,
     maxPosition: number
-  ): string | undefined {
+  ): SnapshotMetadata | undefined {
     // Look for snapshots at or before maxPosition
     for (let i = maxPosition; i >= 0; i--) {
       const snapshot = timeline.snapshots.get(i)
@@ -658,7 +927,7 @@ export class CommandExecutor implements ICommandExecutor {
     command: Command,
     tier: UndoTier,
     ctx: CommandContext,
-    snapshotTable?: string,
+    snapshot?: SnapshotMetadata,
     backupColumn?: string,
     rowPredicate?: string | null
   ): Promise<void> {
@@ -668,9 +937,13 @@ export class CommandExecutor implements ICommandExecutor {
     if (timeline.position < timeline.commands.length - 1) {
       timeline.commands = timeline.commands.slice(0, timeline.position + 1)
       // Clean up orphaned snapshots and timestamps
-      for (const [pos, name] of timeline.snapshots.entries()) {
+      for (const [pos, snapshotMeta] of timeline.snapshots.entries()) {
         if (pos > timeline.position) {
-          dropTable(name).catch(() => {})
+          if (snapshotMeta.storageType === 'table' && snapshotMeta.tableName) {
+            dropTable(snapshotMeta.tableName).catch(() => {})
+          } else if (snapshotMeta.storageType === 'parquet') {
+            deleteParquetSnapshot(snapshotMeta.id).catch(() => {})
+          }
           timeline.snapshots.delete(pos)
           timeline.snapshotTimestamps.delete(pos)
         }
@@ -704,7 +977,7 @@ export class CommandExecutor implements ICommandExecutor {
       params: command.params,
       timestamp: new Date(),
       tier,
-      snapshotTable,
+      snapshotTable: snapshot,
       backupColumn,
       inverseSql,
       rowPredicate,
@@ -716,8 +989,8 @@ export class CommandExecutor implements ICommandExecutor {
     timeline.position = timeline.commands.length - 1
 
     // Store snapshot reference and timestamp if provided
-    if (snapshotTable) {
-      timeline.snapshots.set(timeline.position, snapshotTable)
+    if (snapshot) {
+      timeline.snapshots.set(timeline.position, snapshot)
       timeline.snapshotTimestamps.set(timeline.position, Date.now())
     }
   }

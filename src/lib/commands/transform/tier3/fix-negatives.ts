@@ -8,6 +8,7 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface FixNegativesParams extends BaseTransformParams {
   column: string
@@ -19,23 +20,38 @@ export class FixNegativesCommand extends Tier3TransformCommand<FixNegativesParam
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = quoteColumn(this.params.column)
 
+    // Build the expression to convert (xxx) to -xxx
+    const fixNegExpr = `
+      CASE
+        WHEN TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'
+        THEN TRY_CAST(
+          '-' || REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(${col} AS VARCHAR)), '$', ''), '(', ''), ')', ''), ',', '')
+          AS DOUBLE
+        )
+        ELSE TRY_CAST(REPLACE(CAST(${col} AS VARCHAR), ',', '') AS DOUBLE)
+      END
+    `
+
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      return runBatchedTransform(
+        ctx,
+        // Transform query
+        `SELECT * EXCLUDE (${col}), ${fixNegExpr} as ${col}
+         FROM "${tableName}"`,
+        // Sample query (captures before/after for first 1000 affected rows)
+        `SELECT ${col} as before, ${fixNegExpr} as after
+         FROM "${tableName}"
+         WHERE ${col} IS NOT NULL AND TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'`
+      )
+    }
+
+    // Original logic for <500k rows
+    const tempTable = `${tableName}_temp_${Date.now()}`
+
     try {
-      // Build the expression to convert (xxx) to -xxx
-      // Pattern: contains ( and ends with ), e.g., "(500)" or "$(750.00)"
-      // Also handles values that may have whitespace
-      const fixNegExpr = `
-        CASE
-          WHEN TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'
-          THEN TRY_CAST(
-            '-' || REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(${col} AS VARCHAR)), '$', ''), '(', ''), ')', ''), ',', '')
-            AS DOUBLE
-          )
-          ELSE TRY_CAST(REPLACE(CAST(${col} AS VARCHAR), ',', '') AS DOUBLE)
-        END
-      `
 
       // Create temp table with fixed negatives
       const sql = `

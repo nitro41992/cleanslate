@@ -9,6 +9,7 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface UnformatCurrencyParams extends BaseTransformParams {
   column: string
@@ -20,28 +21,47 @@ export class UnformatCurrencyCommand extends Tier3TransformCommand<UnformatCurre
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = quoteColumn(this.params.column)
 
+    // Build the unformat expression
+    const unformatExpr = `
+      TRY_CAST(
+        CASE
+          WHEN CAST(${col} AS VARCHAR) LIKE '(%)'
+          THEN '-' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+            CAST(${col} AS VARCHAR), '(', ''), ')', ''), '$', ''), ',', ''), ' ', ''), '€', '')
+          ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+            CAST(${col} AS VARCHAR), '$', ''), ',', ''), ' ', ''), '€', ''), '£', ''), '¥', ''), '+', '')
+        END
+        AS DOUBLE
+      )
+    `
+
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      return runBatchedTransform(
+        ctx,
+        // Transform query
+        `SELECT * EXCLUDE (${col}), ${unformatExpr} as ${col}
+         FROM "${tableName}"`,
+        // Sample query (captures before/after for first 1000 affected rows)
+        `SELECT ${col} as before, ${unformatExpr} as after
+         FROM "${tableName}"
+         WHERE ${col} IS NOT NULL AND (
+           CAST(${col} AS VARCHAR) LIKE '%$%' OR
+           CAST(${col} AS VARCHAR) LIKE '%,%' OR
+           CAST(${col} AS VARCHAR) LIKE '%€%' OR
+           CAST(${col} AS VARCHAR) LIKE '%£%' OR
+           CAST(${col} AS VARCHAR) LIKE '%¥%' OR
+           CAST(${col} AS VARCHAR) LIKE '(%)'
+         )`
+      )
+    }
+
+    // Original logic for <500k rows
+    const tempTable = `${tableName}_temp_${Date.now()}`
+
     try {
-      // Build the unformat expression:
-      // 1. Cast to string
-      // 2. Remove $, €, £, ¥ symbols
-      // 3. Remove commas and spaces
-      // 4. Handle parentheses for negative (accounting format)
-      // 5. Cast to DOUBLE
-      const unformatExpr = `
-        TRY_CAST(
-          CASE
-            WHEN CAST(${col} AS VARCHAR) LIKE '(%)'
-            THEN '-' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-              CAST(${col} AS VARCHAR), '(', ''), ')', ''), '$', ''), ',', ''), ' ', ''), '€', '')
-            ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-              CAST(${col} AS VARCHAR), '$', ''), ',', ''), ' ', ''), '€', ''), '£', ''), '¥', ''), '+', '')
-          END
-          AS DOUBLE
-        )
-      `
 
       // Create temp table with unformatted currency
       const sql = `

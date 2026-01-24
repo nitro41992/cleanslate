@@ -8,6 +8,8 @@
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable, escapeSqlString } from '../../utils/sql'
+import { runBatchedTransform } from '../../batch-utils'
+import { getConnection } from '@/lib/duckdb'
 
 export type SplitMode = 'delimiter' | 'position' | 'length'
 
@@ -43,21 +45,20 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const tempTable = `${tableName}_temp_${Date.now()}`
     const col = this.params.column
     const mode = this.params.splitMode || 'delimiter'
 
-    try {
-      // Determine prefix for new columns
-      const existingCols = ctx.table.columns.map((c) => c.name)
-      let prefix = col
-      if (existingCols.some((c) => c.startsWith(`${col}_1`))) {
-        prefix = `${col}_split`
-      }
+    // Determine prefix for new columns
+    const existingCols = ctx.table.columns.map((c) => c.name)
+    let prefix = col
+    if (existingCols.some((c) => c.startsWith(`${col}_1`))) {
+      prefix = `${col}_split`
+    }
 
-      let partColumns: string
+    let partColumns: string
+    const conn = await getConnection()
 
-      if (mode === 'position') {
+    if (mode === 'position') {
         const pos = this.params.position || 3
         partColumns = `
           substring(CAST(${quoteColumn(col)} AS VARCHAR), 1, ${pos}) as ${quoteColumn(`${prefix}_1`)},
@@ -66,10 +67,10 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
       } else if (mode === 'length') {
         const len = this.params.length || 2
         // Get max length to determine number of parts
-        const maxLenResult = await ctx.db.query<{ max_len: number }>(
+        const maxLenResult = await conn.query(
           `SELECT MAX(LENGTH(CAST(${quoteColumn(col)} AS VARCHAR))) as max_len FROM ${quoteTable(tableName)}`
         )
-        const maxLen = Number(maxLenResult[0]?.max_len) || 0
+        const maxLen = Number(maxLenResult.toArray()[0]?.max_len) || 0
         const numParts = Math.min(Math.ceil(maxLen / len), 50) // Cap at 50
 
         partColumns = Array.from({ length: numParts }, (_, i) =>
@@ -84,16 +85,36 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
         const escapedDelim = escapeSqlString(delimiter)
 
         // Get max parts
-        const maxPartsResult = await ctx.db.query<{ max_parts: number }>(
+        const maxPartsResult = await conn.query(
           `SELECT MAX(len(string_split(CAST(${quoteColumn(col)} AS VARCHAR), '${escapedDelim}'))) as max_parts FROM ${quoteTable(tableName)}`
         )
-        const numParts = Math.min(Number(maxPartsResult[0]?.max_parts) || 2, 10)
+        const numParts = Math.min(Number(maxPartsResult.toArray()[0]?.max_parts) || 2, 10)
 
         partColumns = Array.from({ length: numParts }, (_, i) =>
           `string_split(CAST(${quoteColumn(col)} AS VARCHAR), '${escapedDelim}')[${i + 1}] as ${quoteColumn(`${prefix}_${i + 1}`)}`
         ).join(', ')
       }
 
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      return runBatchedTransform(
+        ctx,
+        // Transform query (adds new columns)
+        `SELECT *, ${partColumns}
+         FROM "${tableName}"`,
+        // Sample query (captures original value and first split part for first 1000 rows)
+        `SELECT ${quoteColumn(col)} as before,
+                ${partColumns.split(',')[0].split(' as ')[0].trim()} as after
+         FROM "${tableName}"
+         WHERE ${quoteColumn(col)} IS NOT NULL AND TRIM(CAST(${quoteColumn(col)} AS VARCHAR)) != ''
+         LIMIT 1000`
+      )
+    }
+
+    // Original logic for <500k rows
+    const tempTable = `${tableName}_temp_${Date.now()}`
+
+    try {
       // Create temp table with split columns
       const sql = `
         CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS

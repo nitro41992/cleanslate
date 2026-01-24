@@ -5,10 +5,11 @@
  * Tier 1 - Column versioning for instant undo.
  */
 
-import type { CommandContext, CommandType, ValidationResult } from '../../types'
+import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { escapeSqlString, escapeRegexPattern } from '../../utils/sql'
 import { COLUMN_PLACEHOLDER } from '../../column-versions'
+import { runBatchedTransform } from '../../batch-utils'
 
 export interface ReplaceParams extends BaseTransformParams {
   column: string
@@ -83,5 +84,54 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
         return `LOWER(${col}) LIKE LOWER('%${find}%')`
       }
     }
+  }
+
+  async execute(ctx: CommandContext): Promise<ExecutionResult> {
+    const col = this.params.column!
+    const find = escapeSqlString(this.params.find)
+    const replace = escapeSqlString(this.params.replace ?? '')
+    const caseSensitive = this.params.caseSensitive === false || this.params.caseSensitive === 'false' ? false : true
+    const matchType = this.params.matchType ?? 'contains'
+
+    // Check if batching is needed
+    if (ctx.batchMode) {
+      let transformExpr: string
+
+      if (matchType === 'exact') {
+        if (caseSensitive) {
+          transformExpr = `CASE WHEN "${col}" = '${find}' THEN '${replace}' ELSE "${col}" END`
+        } else {
+          transformExpr = `CASE WHEN LOWER("${col}") = LOWER('${find}') THEN '${replace}' ELSE "${col}" END`
+        }
+      } else {
+        // contains
+        if (caseSensitive) {
+          transformExpr = `REPLACE("${col}", '${find}', '${replace}')`
+        } else {
+          // Case-insensitive regex replacement (character class workaround)
+          let pattern = escapeRegexPattern(this.params.find)
+          pattern = pattern.replace(/[a-z]/gi, (letter) => {
+            const lower = letter.toLowerCase()
+            const upper = letter.toUpperCase()
+            return lower !== upper ? `[${lower}${upper}]` : letter
+          })
+          transformExpr = `REGEXP_REPLACE("${col}", '${pattern}', '${replace}', 'g')`
+        }
+      }
+
+      return runBatchedTransform(
+        ctx,
+        // Transform query
+        `SELECT * EXCLUDE ("${col}"), ${transformExpr} as "${col}"
+         FROM "${ctx.table.name}"`,
+        // Sample query (captures before/after for first 1000 affected rows)
+        `SELECT "${col}" as before, ${transformExpr} as after
+         FROM "${ctx.table.name}"
+         WHERE "${col}" IS DISTINCT FROM ${transformExpr}`
+      )
+    }
+
+    // Original logic for <500k rows
+    return super.execute(ctx)
   }
 }

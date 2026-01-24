@@ -11,6 +11,8 @@ import { detectBrowserCapabilities } from './browser-detection'
 import { migrateFromCSVStorage } from './opfs-migration'
 import { pruneAuditLog } from '../audit-pruning'
 import { toast } from '@/hooks/use-toast'
+import { getStorageInfo, formatBytes } from './storage-info'
+import { toast as sonnerToast } from 'sonner'
 
 /**
  * Internal row ID column name for stable row identity across mutations.
@@ -41,6 +43,7 @@ let conn: duckdb.AsyncDuckDBConnection | null = null
 let isPersistent = false
 let isReadOnly = false
 let flushTimer: NodeJS.Timeout | null = null
+let hasShownStorageWarning = false // Reset on page reload
 
 const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
   mvp: {
@@ -63,7 +66,8 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
   const bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
   const worker = new Worker(bundle.mainWorker!)
-  const logger = new duckdb.ConsoleLogger()
+  // Use VoidLogger to silence noisy query logs - our diagnostic logging is more useful
+  const logger = new duckdb.VoidLogger()
 
   db = new duckdb.AsyncDuckDB(logger, worker)
   await db.instantiate(bundle.mainModule)
@@ -126,12 +130,30 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   // All done in a single connection to avoid "Missing DB manager" errors
   const isTestEnv = typeof navigator !== 'undefined' &&
                     navigator.userAgent.includes('Playwright')
-  const memoryLimit = isTestEnv ? '256MB' : '3GB'
+  const memoryLimit = isTestEnv ? '256MB' : '2GB'  // Realistic browser limit with ~900MB overhead
 
   const initConn = await db.connect()
 
   // Set memory limit
   await initConn.query(`SET memory_limit = '${memoryLimit}'`)
+
+  // Reduce thread count to minimize memory overhead per thread
+  // NOTE: DuckDB-WASM may not support thread configuration (compiled without threads)
+  // Silently skip - this is expected and doesn't affect functionality
+  try {
+    await initConn.query(`SET threads = 2`)
+  } catch (err) {
+    // Silently ignore - WASM build doesn't support thread configuration (expected)
+  }
+
+  // Set temporary directory for large operations (spilling to disk)
+  // CRITICAL: Only enable for write-access OPFS mode
+  // Read-only tabs (secondary tabs) should NOT set temp_directory to avoid conflicts
+  // NOTE: DuckDB-WASM 1.32.0 accepts this setting but doesn't use it for spilling yet
+  if (isPersistent && !isReadOnly) {
+    await initConn.query(`SET temp_directory = 'opfs://cleanslate_temp.db'`)
+    // Removed log to avoid confusion - feature not working in WASM yet
+  }
 
   // Enable compression (both OPFS and in-memory benefit)
   await initConn.query(`PRAGMA enable_object_cache=true`)
@@ -823,12 +845,64 @@ export function isDuckDBReadOnly(): boolean {
 }
 
 /**
+ * Check storage quota and warn user if approaching limit (>80%)
+ * Shows one-time toast per session to avoid spam
+ */
+async function checkStorageQuota(): Promise<void> {
+  // Skip if already warned this session
+  if (hasShownStorageWarning) return
+
+  // Skip if read-only (user can't fix quota issues)
+  if (isReadOnly) return
+
+  try {
+    const info = await getStorageInfo(isPersistent, isReadOnly)
+
+    // No quota info available (Firefox, or API not supported)
+    if (!info.quota) return
+
+    if (info.quota.isNearLimit) {
+      const { usedBytes, quotaBytes, usagePercent } = info.quota
+
+      sonnerToast.error('Storage Almost Full', {
+        description: `You're using ${formatBytes(usedBytes)} of ${formatBytes(quotaBytes)} (${Math.round(usagePercent)}%). Export or delete old tables to free up space.`,
+        duration: 10000, // 10 seconds
+        action: {
+          label: 'View Tables',
+          onClick: () => {
+            // Trigger sidebar open (if collapsed)
+            window.dispatchEvent(new CustomEvent('open-table-sidebar'))
+          }
+        }
+      })
+
+      hasShownStorageWarning = true
+      console.warn('[Storage Quota] Near limit:', { usedBytes, quotaBytes, usagePercent })
+    }
+  } catch (err) {
+    // Silently fail - don't interrupt user workflow
+    console.warn('[Storage Quota] Check failed:', err)
+  }
+}
+
+/**
  * Flush DuckDB WAL to OPFS
  * Debounced (1 second idle time) to prevent UI stuttering on bulk edits
  * @param immediate - If true, flush immediately (bypasses debounce)
+ * @param callbacks - Optional callbacks for flush lifecycle events
  */
-export async function flushDuckDB(immediate = false): Promise<void> {
+export async function flushDuckDB(
+  immediate = false,
+  callbacks?: {
+    onStart?: () => void
+    onComplete?: () => void
+    onError?: (error: Error) => void
+  }
+): Promise<void> {
   if (!isPersistent || isReadOnly) return // In-memory or read-only - nothing to flush
+
+  // Notify start of flush
+  callbacks?.onStart?.()
 
   // Clear existing timer
   if (flushTimer) {
@@ -841,11 +915,16 @@ export async function flushDuckDB(immediate = false): Promise<void> {
     try {
       const conn = await getConnection()
       await withMutex(async () => {
-        await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+        await conn.query(`CHECKPOINT`)
       })
       console.log('[OPFS] Immediate flush completed')
+      callbacks?.onComplete?.()
+
+      // Check storage quota after successful flush
+      await checkStorageQuota()
     } catch (err) {
       console.warn('[OPFS] Immediate flush failed:', err)
+      callbacks?.onError?.(err instanceof Error ? err : new Error(String(err)))
     }
   } else {
     // Debounced flush (1 second idle time)
@@ -853,11 +932,16 @@ export async function flushDuckDB(immediate = false): Promise<void> {
       try {
         const conn = await getConnection()
         await withMutex(async () => {
-          await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+          await conn.query(`CHECKPOINT`)
         })
         console.log('[OPFS] Auto-flush completed')
+        callbacks?.onComplete?.()
+
+        // Check storage quota after successful flush
+        await checkStorageQuota()
       } catch (err) {
         console.warn('[OPFS] Auto-flush failed:', err)
+        callbacks?.onError?.(err instanceof Error ? err : new Error(String(err)))
       }
       flushTimer = null
     }, 1000)

@@ -1,5 +1,8 @@
-import { query, execute, tableExists, isInternalColumn } from '@/lib/duckdb'
+import { query, execute, tableExists, isInternalColumn, getConnection } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
+import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
+import { formatBytes } from './duckdb/storage-info'
+import { getMemoryStatus } from './duckdb/memory'
 
 /**
  * STRICT type compatibility check for DuckDB.
@@ -81,6 +84,66 @@ export interface DiffRow {
 
 
 /**
+ * Validate memory availability before attempting large diff operations
+ * Prevents OOM by failing fast with actionable error messages
+ */
+async function validateDiffMemoryAvailability(
+  conn: AsyncDuckDBConnection,
+  tableA: string,
+  tableB: string
+): Promise<void> {
+  // Get table dimensions
+  const sizeQuery = `
+    SELECT
+      (SELECT COUNT(*) FROM "${tableA}") as rows_a,
+      (SELECT COUNT(*) FROM "${tableB}") as rows_b,
+      (SELECT COUNT(*) FROM information_schema.columns
+       WHERE table_name = '${tableA}' AND column_name NOT LIKE '%__base') as cols_a,
+      (SELECT COUNT(*) FROM information_schema.columns
+       WHERE table_name = '${tableB}' AND column_name NOT LIKE '%__base') as cols_b
+  `
+  const sizeResult = await conn.query(sizeQuery)
+  const { rows_a, rows_b, cols_a, cols_b } = sizeResult.toArray()[0].toJSON()
+
+  // Rough heuristic: FULL OUTER JOIN needs ~100 bytes per cell
+  // Result rows = max(rows_a, rows_b) + duplicates
+  // Result cols = cols_a + cols_b (doubled columns: a_*, b_*)
+  const estimatedRows = Number(rows_a) + Number(rows_b)
+  const estimatedCols = Number(cols_a) + Number(cols_b)
+  const estimatedBytes = estimatedRows * estimatedCols * 100
+
+  // Use 2GB fallback to avoid NaN errors from memory detection
+  const FALLBACK_LIMIT_BYTES = 2 * 1024 * 1024 * 1024 // 2GB
+  let availableBytes = FALLBACK_LIMIT_BYTES
+
+  try {
+    const memStatus = await getMemoryStatus()
+    if (memStatus.limitBytes > 0 && !isNaN(memStatus.limitBytes)) {
+      availableBytes = Math.max(
+        memStatus.limitBytes - memStatus.usedBytes,
+        FALLBACK_LIMIT_BYTES * 0.3 // Minimum 600MB available
+      )
+    }
+  } catch (err) {
+    console.warn('[Diff] Memory status unavailable, using 2GB fallback:', err)
+  }
+
+  const threshold = availableBytes * 0.7
+
+  if (estimatedBytes > threshold) {
+    throw new Error(
+      `Diff operation requires ~${formatBytes(estimatedBytes)} ` +
+      `but only ${formatBytes(availableBytes)} available.\n\n` +
+      `Recommendations:\n` +
+      `1. Select a more unique key column (reduces duplicate matching)\n` +
+      `2. Filter tables to smaller subsets before diffing\n` +
+      `3. Export as CSV and use external diff tools\n` +
+      `4. Current size: ${Number(rows_a).toLocaleString()} vs ${Number(rows_b).toLocaleString()} rows`
+    )
+  }
+}
+
+/**
  * Run diff comparison using a temp table approach for scalability.
  * The JOIN executes once and results are stored in a temp table for pagination.
  */
@@ -102,6 +165,10 @@ export async function runDiff(
     if (!tableBExists) {
       throw new Error(`Table "${tableB}" does not exist`)
     }
+
+    // PRE-FLIGHT CHECK: Validate memory availability
+    const conn = await getConnection()
+    await validateDiffMemoryAvailability(conn, tableA, tableB)
 
     // Get columns AND types from both tables
     const colsA = await query<{ column_name: string; data_type: string }>(
@@ -242,7 +309,16 @@ export async function runDiff(
     `
 
     try {
-      await execute(createTempTableQuery)
+      // Disable insertion order preservation for memory efficiency
+      // Allows DuckDB to use streaming aggregations instead of materializing
+      await conn.query(`SET preserve_insertion_order = false`)
+
+      try {
+        await execute(createTempTableQuery)
+      } finally {
+        // Restore default setting
+        await conn.query(`SET preserve_insertion_order = true`)
+      }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       console.error('Diff temp table creation failed:', error)
