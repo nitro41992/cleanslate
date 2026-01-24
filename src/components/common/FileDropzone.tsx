@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { Upload, FileSpreadsheet } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useUIStore } from '@/stores/uiStore'
 
 interface FileDropzoneProps {
   onFileDrop: (file: File) => void
@@ -20,6 +21,8 @@ export function FileDropzone({
   accept = ['.csv'],
   className,
 }: FileDropzoneProps) {
+  const loadingMessage = useUIStore((s) => s.loadingMessage)
+
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       if (acceptedFiles.length > 0) {
@@ -73,11 +76,11 @@ export function FileDropzone({
           {isDragActive
             ? 'Drop your CSV file here'
             : isLoading
-            ? 'Processing file...'
+            ? loadingMessage || 'Processing file...'
             : 'Drag & drop a CSV file'}
         </p>
         <p className="text-sm text-muted-foreground mt-1">
-          or click to browse
+          {!isLoading && 'or click to browse'}
         </p>
       </div>
 

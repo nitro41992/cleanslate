@@ -21,6 +21,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useUIStore } from '@/stores/uiStore'
 import { toast } from '@/hooks/use-toast'
+import { generateId } from '@/lib/utils'
 import type { ColumnInfo, CSVIngestionSettings } from '@/types'
 
 export function useDuckDB() {
@@ -30,6 +31,7 @@ export function useDuckDB() {
   const removeTable = useTableStore((s) => s.removeTable)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
   const refreshMemory = useUIStore((s) => s.refreshMemory)
+  const setLoadingMessage = useUIStore((s) => s.setLoadingMessage)
 
   useEffect(() => {
     initDuckDB()
@@ -75,6 +77,7 @@ export function useDuckDB() {
   const loadFile = useCallback(
     async (file: File, csvSettings?: CSVIngestionSettings) => {
       setIsLoading(true)
+      setLoadingMessage('Reading file...')
       try {
         // Pre-load capacity check: estimate file size impact (files expand ~2x in memory)
         const estimatedImpact = file.size * 2
@@ -101,6 +104,7 @@ export function useDuckDB() {
 
         const ext = file.name.split('.').pop()?.toLowerCase()
 
+        setLoadingMessage('Creating table...')
         if (ext === 'csv') {
           result = await loadCSV(tableName, file, csvSettings)
         } else if (ext === 'json') {
@@ -119,7 +123,32 @@ export function useDuckDB() {
           nullable: true,
         }))
 
-        const tableId = addTable(tableName, columns, result.rowCount)
+        // Generate tableId BEFORE adding to store so we can create snapshot first
+        const tableId = generateId()
+
+        // 🟢 Eagerly initialize timeline to create baseline snapshot
+        // This creates the original Parquet snapshot NOW instead of on first edit
+        // For large tables (≥100k rows), this adds ~3s but the grid won't show until ready
+        try {
+          console.log('[Import] Eagerly initializing timeline snapshot...')
+
+          // Update loading message based on table size
+          if (result.rowCount >= 100000) {
+            setLoadingMessage(`Preparing for edits (${result.rowCount.toLocaleString()} rows)...`)
+          } else {
+            setLoadingMessage('Preparing for edits...')
+          }
+
+          const { initializeTimeline } = await import('@/lib/timeline-engine')
+          await initializeTimeline(tableId, tableName)
+          console.log('[Import] Timeline snapshot created successfully')
+        } catch (error) {
+          // Non-fatal - timeline will be created on first transformation if this fails
+          console.warn('[Import] Failed to eagerly initialize timeline:', error)
+        }
+
+        // NOW add to store - this triggers grid rendering
+        addTable(tableName, columns, result.rowCount, tableId)
 
         // Build details string with settings info for CSV
         let details = `Loaded ${file.name} (${result.rowCount} rows, ${result.columns.length} columns)`
@@ -170,9 +199,10 @@ export function useDuckDB() {
         throw error
       } finally {
         setIsLoading(false)
+        setLoadingMessage(null)
       }
     },
-    [addTable, addAuditEntry, refreshMemory]
+    [addTable, addAuditEntry, refreshMemory, setLoadingMessage]
   )
 
   const getData = useCallback(
