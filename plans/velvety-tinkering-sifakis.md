@@ -1,476 +1,691 @@
-# Bug Fixes: Diff Binder Error + Standardize Performance
+# Regression Testing: Large-Scale Dataset Validation
 
-**Status:** ✅ IMPLEMENTED
+**Status:** 📝 PLANNING
 **Branch:** `opfs-ux-polish`
 **Date:** January 24, 2026
-**Issues:** 2 critical bugs discovered after memory optimization
-
-## Implementation Summary
-
-**Implemented:** January 24, 2026
-
-### Bug 1: Diff Binder Error ✅
-- Added `getOrderByColumn()` helper function to detect correct ORDER BY column
-- Updated chunked export to use dynamic ORDER BY (handles diff tables with `row_id`)
-- Updated single-file export to use dynamic ORDER BY
-- Graceful fallback if no suitable column found
-
-**Files Modified:**
-- `src/lib/opfs/snapshot-storage.ts` (lines 30-50, 84-91, 125-131)
-
-### Bug 2: Standardize Performance ✅ (All 4 Phases)
-- **Phase 1:** Skip pre-snapshot for standardize (saves ~2-3 seconds)
-- **Phase 2:** Skip pre-execution audit capture (saves ~1-2 seconds)
-- **Phase 3:** Skip diff view creation (saves ~1-2 seconds)
-- **Phase 4:** Conditional VACUUM - skip for non-destructive operations (saves ~1-2 seconds)
-
-**Files Modified:**
-- `src/lib/commands/registry.ts` - Added `CommandMetadata` interface and metadata for standardize:apply
-- `src/lib/commands/executor.ts` - Updated to respect optimization flags in 4 locations
-
-**Expected Performance:** Standardize operation on 1M rows: ~5-10s → ~0.5-1s (10x faster)
+**Goal:** Add regression tests for recent bug fixes with 100k+ row datasets
 
 ---
 
+## Executive Summary
+
+**Recent Bug Fixes Requiring Test Coverage:**
+
+1. **Diff Export Binder Error** (commit `98e335b`)
+   - Bug: Large diff operations (>100k rows) crashed with "Binder Error: Referenced column _cs_id not found"
+   - Fix: Added `getOrderByColumn()` to detect correct ORDER BY column (row_id vs _cs_id)
+   - **Current Test Coverage:** ❌ NONE
+
+2. **Standardize Performance** (commit `98e335b`)
+   - Bug: 1M row standardize took 5-10 seconds
+   - Fix: CommandMetadata optimization (skip snapshot, pre-audit, diff view, VACUUM)
+   - Result: 1M rows now takes 0.5-1s (10x faster)
+   - **Current Test Coverage:** ❌ NONE
+
+3. **Diff RAM Spikes** (commit `39852ed`)
+   - Bug: Diff operations caused permanent RAM increases
+   - Fix: Added VACUUM after diff temp table cleanup
+   - **Current Test Coverage:** ❌ NONE
+
+4. **Diff Chunked Parquet NotFoundError** (commit `1270bee`) - **JUST FIXED**
+   - Bug: Large diff (>250k rows) exported to chunked OPFS files but fetchDiffPage looked for single file
+   - Error: "NotFoundError: A requested file or directory could not be found"
+   - Fix: Updated fetchDiffPage() and cleanupDiffTable() to handle chunked files
+   - **Current Test Coverage:** ❌ NONE
+
+**Current State:** Only 1 test file (`memory-optimization.spec.ts`) tests large datasets, max 5k rows. No tests for 100k+ scenarios that exposed these bugs.
+
+**Latest Discovery:** Found additional bug during testing - diff operations with 1M+ rows export to chunked OPFS files but UI fails to load them (NotFoundError). Fixed in commit `1270bee`.
+
 ---
 
-## TL;DR - Two Bugs Discovered
+## Test File Structure
 
-### Bug 1: Diff Export Fails with Binder Error ❌
-**Symptom:** Large diffs (>100k rows) crash when exporting to OPFS
-**Error:** `Binder Error: Referenced column "_cs_id" not found in FROM clause! Candidate bindings: "a_row_id", "b_row_id", "row_id"`
-**Root Cause:** Diff temp tables have `row_id` column but `exportTableToParquet()` uses hardcoded `ORDER BY "_cs_id"`
-**Impact:** Users cannot compare large tables (diff crashes mid-export)
+### Create New File: `e2e/tests/large-scale-regression.spec.ts`
 
-### Bug 2: Standardize Takes 5-10+ Seconds on 1M Rows ❌
-**Symptom:** Standardize transformation is very slow compared to other operations
-**Root Cause:** Over-instrumentation - unnecessary snapshots, pre-audit capture, and VACUUM for simple UPDATE
-**Impact:** Poor UX - users wait 10+ seconds for simple value replacements
+**Rationale:**
+- Separate from existing memory tests (which focus on compression)
+- Clear separation allows CI to skip large tests if needed
+- Easier to manage timeouts for scale-specific scenarios
 
----
-
-## Bug 1: Diff Binder Error
-
-### Problem Analysis
-
-**Diff Temp Table Schema** (created in `diff-engine.ts:312-326`):
-```sql
-CREATE TEMP TABLE "_diff_TIMESTAMP" AS
-SELECT
-  COALESCE(a."_cs_id", b."_cs_id") as row_id,  -- NOT "_cs_id"!
-  a."_cs_id" as a_row_id,
-  b."_cs_id" as b_row_id,
-  CASE ... END as diff_status
-FROM tableA a FULL OUTER JOIN tableB b ON ...
+**Organization (by operation type):**
+```
+large-scale-regression.spec.ts
+├── Serial Group 1: Diff Export Regression (100k-250k rows)
+├── Serial Group 2: Standardize Performance Regression (100k-1M rows)
+├── Serial Group 3: Memory Stability (VACUUM verification)
+└── Serial Group 4: OPFS Chunking Boundary (250k threshold)
 ```
 
-**Columns:** `row_id`, `a_row_id`, `b_row_id`, `diff_status` (NO `_cs_id` column)
-
-**Export Code That Fails** (`snapshot-storage.ts:84-91`):
+**Test Pattern:**
 ```typescript
-await conn.query(`
-  COPY (
-    SELECT * FROM "${tableName}"
-    ORDER BY "${CS_ID_COLUMN}"  // <-- CS_ID_COLUMN = "_cs_id" ❌
-    LIMIT ${batchSize} OFFSET ${offset}
-  ) TO '${tempFileName}'
-  (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-`)
+test.describe.serial('Diff Export Regression (100k+ rows)', () => {
+  let page: Page
+  let inspector: StoreInspector
+  let diffView: DiffViewPage
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    inspector = createStoreInspector(page)
+    diffView = new DiffViewPage(page)
+    await page.goto('/')
+    await inspector.waitForDuckDBReady()  // Only once per group
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  // Tests share same DuckDB context (fast)
+})
 ```
 
-**Trigger Conditions:**
-- Diff result has ≥100k rows (triggers OPFS export at `diff-engine.ts:403`)
-- Export fails when trying to ORDER BY missing `_cs_id` column
+---
 
-### Solution: Dynamic ORDER BY Column
+## Dataset Generation Strategy
 
-**Approach:** Detect actual table schema and use appropriate ORDER BY column
+### Create Helper: `e2e/helpers/data-generator.ts`
 
-**Implementation:**
-1. Add helper function `getOrderByColumn(tableName)` to check if `_cs_id` exists
-2. Use `row_id` as fallback for diff tables
-3. Update both chunked and single-file export paths
+**Programmatic Generation (Don't Commit Large CSVs):**
+- 100k row CSV = ~5-10MB → bloats repo
+- 1M row CSV = ~50MB → unacceptable
+- Programmatic generation is fast (<1s for 100k rows)
 
-**Code Changes:**
+**Generator Functions:**
 
-**File:** `src/lib/opfs/snapshot-storage.ts`
-
-Add helper function:
 ```typescript
 /**
- * Detect the correct ORDER BY column for deterministic export
- * Regular tables use _cs_id, diff tables use row_id
+ * Generate two tables for diff testing with controlled overlap
  */
-async function getOrderByColumn(
-  conn: AsyncDuckDBConnection,
-  tableName: string
-): Promise<string> {
-  try {
-    // Check if _cs_id column exists
-    const result = await conn.query(`
-      SELECT column_name
-      FROM (DESCRIBE "${tableName}")
-      WHERE column_name = '${CS_ID_COLUMN}'
-    `)
+export async function generateDiffTables(config: {
+  rowCount: number
+  addedPercent: number      // % rows only in Table B
+  removedPercent: number    // % rows only in Table A
+  modifiedPercent: number   // % rows in both but different values
+  unchangedPercent: number  // % rows identical
+}): Promise<{ tableA: File, tableB: File }>
 
-    if (result.numRows > 0) {
-      return CS_ID_COLUMN  // Use _cs_id if it exists
+/**
+ * Generate table with duplicate values for standardization testing
+ */
+export async function generateStandardizeData(config: {
+  rowCount: number
+  uniqueValues: number      // e.g., 1000 unique names
+  variantFactor: number     // e.g., 3 = each name has 3 variants
+}): Promise<File>
+
+/**
+ * Generate generic large CSV
+ */
+export async function generateLargeCSV(
+  rowCount: number,
+  columns: Array<{name: string, type: 'id' | 'text' | 'email' | 'number' | 'date'}>
+): Promise<File>
+```
+
+**Implementation Pattern (from existing memory-optimization.spec.ts):**
+```typescript
+async function generateLargeCSV(rowCount: number): Promise<File> {
+  const lines = ['id,name,email,value']
+  for (let i = 0; i < rowCount; i++) {
+    lines.push(`${i},Name${i},email${i}@example.com,${Math.random()}`)
+  }
+  return new File([lines.join('\n')], `large_${rowCount}.csv`, { type: 'text/csv' })
+}
+```
+
+**Performance:** 100k rows generated in ~500ms, 1M rows in ~5s
+
+---
+
+## Test Scenarios (Priority Order)
+
+### CRITICAL Priority - Regression Prevention
+
+#### Test 1: Diff Export Binder Error Fix (100k rows)
+
+**File:** `large-scale-regression.spec.ts:20-80`
+
+**Scenario:**
+1. Generate Table A (100k rows)
+2. Generate Table B (100k rows, 10% modified from A)
+3. Upload both tables
+4. Open Diff panel → Compare Two Tables mode
+5. Select both tables, choose `id` as key column
+6. Run comparison (creates temp table with 110k rows)
+7. Export diff results as CSV
+8. Verify: No "Binder Error: Referenced column _cs_id not found"
+
+**Assertions:**
+```typescript
+// High-fidelity: Verify export completes
+await expect(page.getByText('Export complete')).toBeVisible({ timeout: 60000 })
+
+// Verify file downloaded
+const download = await downloadPromise
+expect(download.suggestedFilename()).toContain('_diff_')
+
+// Verify row count (100k unchanged + 10k modified)
+const exportedData = await parseCSV(await download.path())
+expect(exportedData.length).toBe(110_000)
+
+// CRITICAL: Verify diff columns (row_id, not _cs_id)
+const columns = Object.keys(exportedData[0])
+expect(columns).toContain('row_id')
+expect(columns).toContain('diff_status')
+```
+
+**Data Characteristics:**
+```typescript
+const { tableA, tableB } = await generateDiffTables({
+  rowCount: 100_000,
+  addedPercent: 0,
+  removedPercent: 0,
+  modifiedPercent: 10,
+  unchangedPercent: 90
+})
+```
+
+**Performance Threshold:** Export completes in < 30s for 100k rows
+
+**Timeout:** 120s (diff + export)
+
+---
+
+#### Test 2: Standardize Performance Fix (100k rows)
+
+**File:** `large-scale-regression.spec.ts:85-150`
+
+**Scenario:**
+1. Generate table with 100k rows, 1000 unique names (100 variants each)
+2. Upload to Data Laundromat
+3. Open Value Standardization panel
+4. Select column, run fingerprint clustering
+5. Select all clusters → Apply standardization
+6. Measure total execution time
+
+**Assertions:**
+```typescript
+const startTime = performance.now()
+
+// ... run standardization ...
+
+const endTime = performance.now()
+const executionTime = endTime - startTime
+
+// CRITICAL: Must complete in < 2 seconds (was 5-10s before fix)
+expect(executionTime).toBeLessThan(2000)
+
+// Verify audit entry created
+const auditEntries = await inspector.getAuditEntries(tableId)
+const standardizeEntry = auditEntries.find(e => e.action.includes('Standardize'))
+expect(standardizeEntry).toBeDefined()
+expect(standardizeEntry.rowsAffected).toBe(expectedRowsAffected)
+
+// Verify CommandMetadata optimization flags used
+// (No snapshot created, no diff view created)
+const tables = await inspector.getTables()
+const snapshotTables = tables.filter(t => t.name.includes('snapshot_'))
+expect(snapshotTables.length).toBe(0)  // No snapshot for standardize
+```
+
+**Data Characteristics:**
+```typescript
+const csvFile = await generateStandardizeData({
+  rowCount: 100_000,
+  uniqueValues: 1000,
+  variantFactor: 100  // "John Smith", "JOHN SMITH", "john smith", etc.
+})
+```
+
+**Performance Thresholds:**
+- 100k rows: < 2s ✅
+- 250k rows: < 5s (if tested)
+- 500k rows: < 10s (if tested)
+
+**Timeout:** 30s (generous, should complete in ~1s)
+
+---
+
+#### Test 3: Memory Stability (VACUUM Fix)
+
+**File:** `large-scale-regression.spec.ts:155-220`
+
+**Scenario:**
+1. Load table with 100k rows
+2. Capture baseline memory
+3. Run diff comparison (creates temp table)
+4. Close diff
+5. Capture memory after first diff
+6. Run diff again (2nd comparison)
+7. Close diff
+8. Capture memory after second diff
+9. Verify memory returns to baseline (< 50MB delta)
+
+**Assertions:**
+```typescript
+const memBefore = await getMemoryUsage(page)
+
+// Run 3 diff operations
+for (let i = 0; i < 3; i++) {
+  await diffView.selectCompareTwoTablesMode()
+  await diffView.runComparison()
+  await diffView.close()
+}
+
+const memAfter = await getMemoryUsage(page)
+const memoryDelta = memAfter - memBefore
+
+// CRITICAL: Memory should return to baseline after VACUUM
+expect(memoryDelta).toBeLessThan(50 * 1024 * 1024)  // < 50MB
+
+// Verify VACUUM was executed (check console logs)
+const logs = await page.evaluate(() => window.__CONSOLE_LOGS__)
+expect(logs.some(log => log.includes('VACUUM completed'))).toBe(true)
+```
+
+**Helper Function:**
+```typescript
+async function getMemoryUsage(page: Page): Promise<number> {
+  // Chrome only: performance.memory API
+  return await page.evaluate(() => {
+    if ('memory' in performance) {
+      return (performance as any).memory.usedJSHeapSize
     }
-
-    // Fallback: Check for row_id (used by diff tables)
-    const rowIdResult = await conn.query(`
-      SELECT column_name
-      FROM (DESCRIBE "${tableName}")
-      WHERE column_name = 'row_id'
-    `)
-
-    if (rowIdResult.numRows > 0) {
-      return 'row_id'  // Use row_id for diff tables
-    }
-
-    // No suitable column found - skip ORDER BY
-    return ''
-  } catch (err) {
-    console.warn('[Snapshot] Failed to detect ORDER BY column:', err)
-    return ''  // Safe fallback: no ordering (still works, just not deterministic)
-  }
+    return 0  // Graceful degradation for non-Chrome browsers
+  })
 }
 ```
 
-Update chunked export (lines 84-91):
-```typescript
-// Detect correct ORDER BY column for this table
-const orderByCol = await getOrderByColumn(conn, tableName)
-const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
+**Timeout:** 120s (multiple diff operations)
 
-await conn.query(`
-  COPY (
-    SELECT * FROM "${tableName}"
-    ${orderByClause}  // <-- Dynamic ORDER BY
-    LIMIT ${batchSize} OFFSET ${offset}
-  ) TO '${tempFileName}'
-  (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+---
+
+#### Test 4: OPFS Chunking Boundary (250k rows)
+
+**File:** `large-scale-regression.spec.ts:225-280`
+
+**Scenario:**
+1. Generate table with 250,001 rows (just over chunking threshold)
+2. Upload to Data Laundromat
+3. Trigger snapshot creation (run a Tier 3 transform like remove_duplicates)
+4. Verify chunked Parquet files created in OPFS
+5. Verify import from chunked snapshot works correctly
+
+**Assertions:**
+```typescript
+// Trigger snapshot creation
+await transformPicker.addTransformation('Remove Duplicates', {
+  column: 'id'
+})
+await laundromat.clickRunRecipe()
+
+// Verify chunked file pattern in OPFS
+const opfsFiles = await inspector.runQuery(`
+  SELECT * FROM glob('/cleanslate/snapshots/*.parquet')
 `)
+
+// CRITICAL: Should use _part_0, _part_1 naming for >250k rows
+const chunkFiles = opfsFiles.filter(f => f.path.includes('_part_'))
+expect(chunkFiles.length).toBeGreaterThan(0)
+expect(chunkFiles.some(f => f.path.includes('_part_0'))).toBe(true)
+
+// Verify undo works with chunked snapshot
+await executor.undo(tableId)
+const restoredData = await inspector.getTableData(tableName, 5)
+expect(restoredData.length).toBe(5)  // Sample verification
 ```
 
-Update single-file export (lines 125-131):
-```typescript
-// Detect correct ORDER BY column for this table
-const orderByCol = await getOrderByColumn(conn, tableName)
-const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
+**Timeout:** 120s (250k row operations)
 
-await conn.query(`
-  COPY (
-    SELECT * FROM "${tableName}"
-    ${orderByClause}  // <-- Dynamic ORDER BY
-  ) TO '${tempFileName}'
-  (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+---
+
+#### Test 5: Diff Chunked Parquet Loading (250k+ rows)
+
+**File:** `large-scale-regression.spec.ts:285-350`
+
+**Scenario:**
+1. Generate Table A (300k rows)
+2. Generate Table B (300k rows, 10% modified)
+3. Upload both tables
+4. Run diff comparison (creates 330k row result → triggers chunked export)
+5. **CRITICAL:** View diff results in grid
+6. Verify: No "NotFoundError" when loading chunked Parquet files
+7. Scroll through diff results (triggers pagination)
+8. Close diff → verify cleanup removes all chunk files
+
+**Assertions:**
+```typescript
+// Verify diff completed and exported to OPFS
+await expect(page.getByText(/Diff completed/i)).toBeVisible({ timeout: 120000 })
+
+// CRITICAL: Verify grid loads from chunked files (no NotFoundError)
+await expect(page.getByRole('grid')).toBeVisible({ timeout: 30000 })
+
+// Verify first row loads
+const firstRow = await page.getByRole('gridcell').first()
+await expect(firstRow).toBeVisible()
+
+// Check console for chunked file pattern
+const logs = await page.evaluate(() => {
+  return (window as any).__CONSOLE_LOGS__ || []
+})
+const chunkLog = logs.find(log => log.includes('_part_') && log.includes('.parquet'))
+expect(chunkLog).toBeDefined()  // Should see chunked file logs
+
+// Scroll to trigger pagination (load from chunk files)
+await page.mouse.wheel(0, 1000)
+await page.waitForTimeout(1000)
+
+// Close diff
+await page.getByRole('button', { name: /close/i }).click()
+
+// Verify cleanup removed chunk files
+const opfsFiles = await inspector.runQuery(`
+  SELECT * FROM glob('/cleanslate/snapshots/*.parquet')
 `)
+const diffChunks = opfsFiles.filter(f => f.path.includes('_diff_') && f.path.includes('_part_'))
+expect(diffChunks.length).toBe(0)  // All chunks cleaned up
 ```
 
-**Impact:**
-- ✅ Diff export to OPFS works for tables >100k rows
-- ✅ Regular table exports still use `_cs_id` (no regression)
-- ✅ Graceful fallback if no suitable column found (export works without ORDER BY)
+**Data Characteristics:**
+```typescript
+const { tableA, tableB } = await generateDiffTables({
+  rowCount: 300_000,  // Above 250k chunking threshold
+  addedPercent: 0,
+  removedPercent: 0,
+  modifiedPercent: 10,
+  unchangedPercent: 90
+})
+```
+
+**Performance Threshold:** Grid loads in < 10s from chunked OPFS files
+
+**Timeout:** 180s (large diff + chunked file operations)
 
 ---
 
-## Bug 2: Standardize Performance
+### HIGH Priority - Scale Validation
 
-### Problem Analysis
+#### Test 6: Diff Export at OPFS Chunking Boundary (250k rows)
 
-**Current Execution Flow for Standardize on 1M Rows:**
-```
-1. Pre-snapshot Parquet export         ~2-3 seconds
-2. Pre-execution audit capture         ~1-2 seconds
-3. Affected row ID query               ~0.5 seconds (loads huge array)
-4. Execute UPDATE statement            ~0.5 seconds (actual work)
-5. Audit detail inserts                ~0.1 seconds
-6. Diff view creation                  ~1-2 seconds
-7. VACUUM                              ~1-2 seconds
----------------------------------------------------
-TOTAL: 5-10+ seconds
-```
+**Scenario:** Same as Test 1, but with 250k rows to verify chunked Parquet export
 
-**The actual UPDATE only takes 0.5 seconds!** The rest is overhead.
+**Performance Threshold:** < 60s for 250k row diff export
 
-### Root Cause: Standardize Is Over-Instrumented
+#### Test 7: Standardize Stress Test (500k rows)
 
-Standardize is classified as Tier 3 (expensive operation requiring snapshots), but it's actually a simple UPDATE that doesn't need:
-- ❌ **Pre-snapshot** - UPDATE is reversible with inverse CASE-WHEN
-- ❌ **Pre-execution audit capture** - Only value mappings matter, not row-level "before" values
-- ❌ **Diff view** - Highlighting isn't essential for standardize
-- ❌ **Heavy VACUUM** - UPDATE doesn't create significant dead rows like DELETE does
+**Scenario:** Same as Test 2, but with 500k rows to verify optimization holds at scale
 
-**Comparison:**
-
-| Aspect | Remove Duplicates | Standardize | Why Different? |
-|--------|-------------------|-------------|------------------|
-| Modifies all rows? | Maybe | NO (subset) | Only rows matching mappings |
-| Destructive? | YES (deletes) | NO (UPDATE) | UPDATE is reversible |
-| Pre-snapshot needed? | YES | NO | Can undo via inverse UPDATE |
-| Diff view useful? | YES | Weak | User doesn't need row highlighting |
-
-### Solution: Lightweight Standardize Path
-
-**Approach:** Create optimization flags to skip unnecessary steps for UPDATE-only operations
-
-**Phase 1: Skip Pre-Snapshot for Standardize (Quick Win)**
-
-Standardize doesn't need pre-snapshots because:
-1. UPDATE is fully reversible with inverse CASE-WHEN
-2. Value mappings are stored in audit (can reconstruct inverse)
-3. No data deletion (unlike remove_duplicates)
-
-**Implementation:**
-
-**File:** `src/lib/commands/registry.ts`
-
-Add metadata flag:
-```typescript
-{
-  id: 'standardize:apply',
-  tier: 3,
-  requiresSnapshot: false,  // <-- NEW: Skip pre-snapshot for UPDATE-only ops
-  label: 'Apply Standardization',
-  // ...
-}
-```
-
-**File:** `src/lib/commands/executor.ts`
-
-Check flag in snapshot logic (line 184-188):
-```typescript
-const tier = getUndoTier(command.type)
-const needsSnapshot = requiresSnapshot(command.type)
-
-// Step 3: Pre-snapshot for Tier 3 (delegated to timeline system)
-let snapshotMetadata: SnapshotMetadata | undefined
-if (needsSnapshot && !skipTimeline) {  // <-- Respects requiresSnapshot: false
-  // ... existing snapshot creation code
-}
-```
-
-**Expected Savings:** ~2-3 seconds (eliminates Parquet export)
+**Performance Threshold:** < 10s for 500k row standardize
 
 ---
 
-**Phase 2: Skip Pre-Execution Audit Capture (Medium Win)**
+## Performance Thresholds Reference
 
-Standardize stores value mappings, not row-level changes. Pre-capture is unnecessary.
+**Expected Execution Times:**
 
-**Implementation:**
+| Operation | 50k rows | 100k rows | 250k rows | 500k rows | 1M rows |
+|-----------|----------|-----------|-----------|-----------|---------|
+| **Diff Export** | < 5s | < 15s | < 30s | < 60s | < 120s |
+| **Standardize** | < 1s | < 2s | < 5s | < 10s | < 20s |
+| **Snapshot (Parquet)** | < 2s | < 3s | < 5s | < 8s | < 15s |
+| **Import (Parquet)** | < 2s | < 3s | < 5s | < 8s | < 15s |
 
-**File:** `src/lib/commands/registry.ts`
+**Memory Thresholds:**
 
-Add metadata flag:
-```typescript
-{
-  id: 'standardize:apply',
-  tier: 3,
-  requiresSnapshot: false,
-  capturePreExecution: false,  // <-- NEW: Skip pre-capture for mapping-based ops
-  // ...
-}
-```
-
-**File:** `src/lib/commands/executor.ts`
-
-Check flag (line 243-249):
-```typescript
-const preGeneratedAuditEntryId = `audit_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-const shouldCapturePreExecution = getCommandMetadata(command.type)?.capturePreExecution ?? (tier !== 1)
-
-if (!skipAudit && shouldCapturePreExecution) {  // <-- Respects capturePreExecution flag
-  try {
-    await this.capturePreExecutionDetails(ctx, command, preGeneratedAuditEntryId)
-  } catch (err) {
-    console.warn('[EXECUTOR] Failed to capture pre-execution row details:', err)
-  }
-}
-```
-
-**Expected Savings:** ~1-2 seconds (eliminates pre-audit scan)
+| Operation | Expected RAM Delta | Max Acceptable |
+|-----------|-------------------|----------------|
+| **Diff (temp table)** | +100-200MB | +300MB |
+| **After VACUUM** | Baseline | +50MB |
+| **Snapshot Export** | +50MB (buffer) | +150MB |
+| **Standardize (100k)** | +20MB | +100MB |
 
 ---
 
-**Phase 3: Skip Diff View for Standardize (Small Win)**
+## CI/Local Execution Strategy
 
-Diff highlighting isn't essential for standardize - users care about value mappings, not which specific rows changed.
+### Environment-Based Test Skipping
 
-**Implementation:**
-
-**File:** `src/lib/commands/registry.ts`
-
-Add metadata flag:
+**Configuration:**
 ```typescript
-{
-  id: 'standardize:apply',
-  tier: 3,
-  requiresSnapshot: false,
-  capturePreExecution: false,
-  createDiffView: false,  // <-- NEW: Skip diff view for standardize
-  // ...
-}
+// large-scale-regression.spec.ts
+const LARGE_SCALE_TESTS_ENABLED =
+  process.env.RUN_LARGE_TESTS === 'true' || !process.env.CI
+
+test.describe.serial('Large Scale Regression', () => {
+  test.skip(!LARGE_SCALE_TESTS_ENABLED, 'Skipping large tests in CI')
+
+  // All large-scale tests
+})
 ```
 
-**File:** `src/lib/commands/executor.ts`
+**Default Behavior:**
+- **CI:** Skip large tests (save runtime, fast feedback)
+- **Local:** Always run (catch regressions early)
 
-Check flag (line 360-387):
-```typescript
-const shouldCreateDiffView = getCommandMetadata(command.type)?.createDiffView ?? (tier >= 2)
+**Manual Trigger:**
+```bash
+# Run all tests including large-scale
+RUN_LARGE_TESTS=true npm test
 
-// Step 6: Create diff view if needed
-if (!skipAudit && shouldCreateDiffView) {  // <-- Respects createDiffView flag
-  try {
-    const { createDiffView } = await import('@/lib/commands/diff-views')
-    // ... existing diff view creation code
-  }
-}
+# Run only large-scale tests
+npm test large-scale-regression.spec.ts
 ```
 
-**Expected Savings:** ~1-2 seconds (eliminates diff view creation)
+**Rationale:**
+- Large tests add ~5-10 minutes to CI runtime
+- Most commits don't affect large-scale behavior
+- Manual trigger available for critical changes (diff, standardize, memory)
 
 ---
 
-**Phase 4: Conditional VACUUM (Small Win)**
+## Implementation Sequence
 
-VACUUM is heavy-handed for simple UPDATE operations. Only run on truly destructive Tier 3 ops.
+### Phase 1: Foundation (Week 1)
 
-**Implementation:**
+**Day 1-2: Data Generator**
+- Create `e2e/helpers/data-generator.ts`
+- Implement `generateDiffTables()` (100k rows in ~500ms)
+- Implement `generateStandardizeData()` (100k rows with duplicates)
+- Implement `generateLargeCSV()` (generic large dataset)
 
-**File:** `src/lib/commands/executor.ts`
+**Day 3-4: Test File Setup**
+- Create `e2e/tests/large-scale-regression.spec.ts`
+- Set up serial groups with shared DuckDB context
+- Add memory tracking helper (`getMemoryUsage()`)
 
-Modify VACUUM condition (line 392-398):
-```typescript
-// Step 6.5: VACUUM after large operations to reclaim dead row space
-// Skip for UPDATE-only operations (standardize) - they don't create significant dead rows
-const isDestructiveOp = !getCommandMetadata(command.type)?.requiresSnapshot !== false
-const shouldVacuum = (tier === 3 && isDestructiveOp) || ctx.table.rowCount > 100_000
+**Day 5: Diff Export Test (Test 1)**
+- Implement 100k row diff export test
+- Verify binder error fix
+- Add performance assertions (< 30s)
 
-if (shouldVacuum) {
-  try {
-    const vacuumStart = performance.now()
-    await ctx.db.execute('VACUUM')
-    const vacuumTime = performance.now() - vacuumStart
-    console.log(`[Memory] VACUUM completed in ${vacuumTime.toFixed(0)}ms - reclaimed dead row space`)
-  } catch (err) {
-    console.warn('[Memory] VACUUM failed (non-fatal):', err)
-  }
-}
-```
+### Phase 2: Core Regression Tests (Week 2)
 
-**Expected Savings:** ~1-2 seconds (skips VACUUM for standardize)
+**Day 1-2: Standardize Performance Test (Test 2)**
+- Implement 100k row standardize test
+- Verify < 2s execution time
+- Verify CommandMetadata optimizations
+
+**Day 3-4: Memory Stability Test (Test 3)**
+- Implement VACUUM regression test
+- Add memory tracking before/after diff
+- Verify < 50MB delta after 3 diff operations
+
+**Day 5: OPFS Chunking Test (Test 4)**
+- Implement 250k row chunking boundary test
+- Verify `_part_0.parquet` files created
+- Test undo with chunked snapshots
+
+### Phase 3: Scale Testing (Week 3 - Optional)
+
+**Day 1-2: 250k Row Tests**
+- Add Test 5: Diff export with 250k rows
+- Verify chunked Parquet export works
+
+**Day 3-4: 500k Row Tests**
+- Add Test 6: Standardize with 500k rows
+- Verify < 10s threshold
+
+**Day 5: Documentation & Baselines**
+- Document performance baselines
+- Update CLAUDE.md with new test patterns
+- Create README in `e2e/tests/` explaining large-scale tests
 
 ---
 
-### Expected Performance Improvement
+## Critical Files to Modify
 
-**Before Optimizations:**
-- Standardize 1M rows: ~5-10 seconds
-- Breakdown: 2-3s snapshot + 1-2s pre-audit + 0.5s UPDATE + 1-2s diff + 1-2s VACUUM
+### New Files (Create)
 
-**After All Optimizations:**
-- Standardize 1M rows: ~0.5-1 second
-- Breakdown: 0.5s UPDATE + 0.1s audit inserts
+1. **`e2e/helpers/data-generator.ts`** (~150 lines)
+   - `generateDiffTables()` - Generate 2 tables with controlled overlap
+   - `generateStandardizeData()` - Generate data with duplicate variants
+   - `generateLargeCSV()` - Generic large dataset generator
 
-**Total Speedup:** 10x faster (5-10s → 0.5-1s)
+2. **`e2e/tests/large-scale-regression.spec.ts`** (~400 lines)
+   - Serial Group 1: Diff Export Regression (Test 1, Test 5)
+   - Serial Group 2: Standardize Performance (Test 2, Test 6)
+   - Serial Group 3: Memory Stability (Test 3)
+   - Serial Group 4: OPFS Chunking (Test 4)
 
----
+3. **`e2e/helpers/memory-tracker.ts`** (~50 lines)
+   - `getMemoryUsage()` - Chrome performance.memory API wrapper
+   - `trackMemoryDelta()` - Before/after helper
 
-## Files to Modify
+### Modified Files
 
-### Bug 1: Diff Binder Error
-1. **`src/lib/opfs/snapshot-storage.ts`**
-   - Add `getOrderByColumn()` helper function (after line 50)
-   - Update chunked export ORDER BY (lines 84-91)
-   - Update single-file export ORDER BY (lines 125-131)
+4. **`playwright.config.ts`** (update timeout for large tests)
+   ```typescript
+   projects: [
+     {
+       name: 'chromium',
+       use: {
+         ...devices['Desktop Chrome'],
+         launchOptions: {
+           args: ['--enable-precise-memory-info']  // For performance.memory
+         }
+       },
+     },
+   ]
+   ```
 
-### Bug 2: Standardize Performance
-1. **`src/lib/commands/registry.ts`**
-   - Add metadata flags: `requiresSnapshot`, `capturePreExecution`, `createDiffView` (line ~159)
-
-2. **`src/lib/commands/executor.ts`**
-   - Update snapshot check to respect `requiresSnapshot` flag (line 188)
-   - Update pre-audit check to respect `capturePreExecution` flag (line 243)
-   - Update diff view check to respect `createDiffView` flag (line 360)
-   - Update VACUUM condition to skip standardize (line 392)
-
-3. **`src/lib/commands/types.ts`**
-   - Add optional metadata fields to `CommandRegistration` interface:
-     ```typescript
-     requiresSnapshot?: boolean
-     capturePreExecution?: boolean
-     createDiffView?: boolean
-     ```
+5. **`package.json`** (add test commands)
+   ```json
+   "scripts": {
+     "test:large": "playwright test large-scale-regression.spec.ts",
+     "test:quick": "playwright test --ignore-snapshots large-scale-regression.spec.ts"
+   }
+   ```
 
 ---
 
 ## Verification Plan
 
-### Test 1: Diff Export Fix
-1. Upload two 1M row CSV files (different data)
-2. Open Diff panel → Compare Two Tables
-3. Select both tables, choose key columns
-4. Run comparison (creates >100k diff rows)
-5. ✅ Expected: Export to OPFS succeeds (no binder error)
-6. ✅ Expected: Diff view loads and displays results
+### End-to-End Test Verification
 
-### Test 2: Standardize Performance
-1. Upload 1M row CSV with messy data
-2. Open Value Standardization panel
-3. Create clusters and select master values
-4. Apply standardization
-5. ✅ Expected: Completes in ~0.5-1 second (not 5-10 seconds)
-6. ✅ Expected: Audit log shows value mappings
-7. ✅ Expected: Undo/redo still works correctly
+**Step 1: Run Tests Locally**
+```bash
+# Run all large-scale tests
+npm test large-scale-regression.spec.ts
 
-### Test 3: No Regressions
-1. Test other Tier 3 operations (remove_duplicates, cast_type)
-2. ✅ Expected: Still create pre-snapshots
-3. ✅ Expected: Still create diff views
-4. ✅ Expected: Still run VACUUM
+# Verify all 4 critical tests pass
+# Expected output:
+# ✅ should export diff results with 100k+ rows (binder error fix)
+# ✅ should standardize 100k rows in < 2 seconds
+# ✅ should maintain stable RAM during multiple diff operations
+# ✅ should use chunked Parquet export at 250k boundary
+```
+
+**Step 2: Verify Performance Thresholds**
+- Diff export 100k rows: Completes in < 30s
+- Standardize 100k rows: Completes in < 2s
+- Memory delta after 3 diffs: < 50MB
+- Chunked files created at 250k boundary
+
+**Step 3: Verify CI Behavior**
+```bash
+# Simulate CI environment
+CI=true npm test
+
+# Expected: Large tests skipped
+# Output: "Skipping large tests in CI"
+
+# Manual trigger
+RUN_LARGE_TESTS=true npm test
+# Expected: All tests run
+```
+
+**Step 4: Regression Verification**
+- Revert fix in `snapshot-storage.ts` (remove `getOrderByColumn()`)
+- Run Test 1 → Should FAIL with binder error ✅
+- Restore fix → Test 1 passes ✅
+
+- Revert fix in `registry.ts` (remove CommandMetadata for standardize)
+- Run Test 2 → Should FAIL with timeout (> 2s) ✅
+- Restore fix → Test 2 passes ✅
+
+### Success Criteria
+
+**Regression Prevention:**
+- ✅ Diff export binder error never occurs again (100k+ rows)
+- ✅ Standardize stays < 2s for 100k rows
+- ✅ Memory returns to baseline after diff operations
+- ✅ OPFS chunking works correctly at 250k boundary
+
+**Scale Confidence:**
+- ✅ All critical operations handle 100k rows gracefully
+- ✅ Performance thresholds documented and enforced
+- ✅ Test suite completes in < 10 minutes (with large tests enabled)
+
+**Developer Experience:**
+- ✅ Large tests run locally by default (catch regressions early)
+- ✅ Large tests skipped in CI by default (fast feedback)
+- ✅ Manual trigger available for thorough validation
+- ✅ Clear documentation of test patterns
 
 ---
 
 ## Risk Assessment
 
-**Risk Level:** 🟢 **LOW-MEDIUM**
+**Risk Level:** 🟢 LOW
 
 **Risks:**
 
-1. **Diff export may not be deterministic without ORDER BY**
-   - Mitigation: Fallback still works, just not guaranteed same order
-   - Impact: Low (export still succeeds, data is correct)
+1. **Large tests may be flaky in CI**
+   - Mitigation: Skip by default, manual trigger for validation
+   - Impact: Low (local tests still catch regressions)
 
-2. **Standardize undo may be broken without pre-snapshot**
-   - Mitigation: Standardize uses Tier 3 undo (timeline snapshots from PREVIOUS operations)
-   - Impact: Medium (need thorough testing of undo/redo)
+2. **Performance thresholds may vary across machines**
+   - Mitigation: Conservative thresholds with 2x safety margin
+   - Impact: Low (failures indicate real regressions, not false positives)
 
-3. **Metadata flags may not be respected everywhere**
-   - Mitigation: Flags have sensible defaults (e.g., `requiresSnapshot ?? tier === 3`)
-   - Impact: Low (falls back to current behavior)
+3. **Data generation may be slow**
+   - Mitigation: Optimize with batch string concatenation
+   - Impact: Low (100k rows in ~500ms is acceptable)
 
 **Benefits:**
-- ✅ Diff works on large tables (critical bug fix)
-- ✅ Standardize 10x faster (massive UX improvement)
-- ✅ No changes to other operations (opt-in optimization)
-- ✅ Reduced memory pressure (less OPFS writes, less VACUUM)
+- ✅ Prevents regression of critical bug fixes
+- ✅ Validates large-scale performance optimizations
+- ✅ Builds confidence in OPFS chunking and memory management
+- ✅ Establishes baseline for future performance work
 
 ---
 
-## Implementation Priority
+## Notes
 
-**Priority 1 (CRITICAL):** Bug 1 - Diff Binder Error
-- Blocks users from comparing large tables
-- Simple fix (dynamic ORDER BY)
-- Low risk
+**Why Not Use Committed Fixtures?**
+- 100k row CSV = ~5-10MB → bloats repo
+- 1M row CSV = ~50MB → unacceptable for version control
+- Programmatic generation is fast and flexible
 
-**Priority 2 (HIGH):** Bug 2 - Standardize Performance (Phase 1 only)
-- Major UX issue (10 second wait)
-- Skip pre-snapshot for quick win
-- Test undo/redo thoroughly
+**Why Skip in CI by Default?**
+- Large tests add 5-10 minutes to CI runtime
+- Most commits don't affect large-scale behavior
+- Manual trigger provides safety net for critical changes
 
-**Priority 3 (MEDIUM):** Bug 2 - Standardize Performance (Phases 2-4)
-- Incremental improvements
-- Can be done separately after Phase 1 proves stable
+**Future Enhancements:**
+- Add 1M row test suite (optional, very slow)
+- Add streaming export verification for gigabyte-scale data
+- Add concurrent operation testing (multiple users)
+- Add browser memory leak detection (extended sessions)
