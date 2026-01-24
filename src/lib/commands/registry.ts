@@ -172,9 +172,45 @@ export function getUndoTier(type: CommandType): 1 | 2 | 3 {
 }
 
 /**
+ * Command execution metadata for optimization flags
+ */
+export interface CommandMetadata {
+  /** Skip pre-snapshot for UPDATE-only operations (Phase 2.1) */
+  requiresSnapshot?: boolean
+  /** Skip pre-execution audit capture for mapping-based ops (Phase 2.2) */
+  capturePreExecution?: boolean
+  /** Skip diff view creation (Phase 2.3) */
+  createDiffView?: boolean
+}
+
+/**
+ * Command-specific metadata overrides
+ */
+const COMMAND_METADATA: Partial<Record<CommandType, CommandMetadata>> = {
+  // Standardize is Tier 3 but doesn't need heavy instrumentation
+  // It's a simple UPDATE that can be undone via inverse CASE-WHEN
+  'standardize:apply': {
+    requiresSnapshot: false,      // UPDATE is reversible, no pre-snapshot needed
+    capturePreExecution: false,   // Value mappings stored in audit, not row-level changes
+    createDiffView: false,         // Highlighting not essential for standardize
+  },
+}
+
+/**
+ * Get execution metadata for a command type
+ */
+export function getCommandMetadata(type: CommandType): CommandMetadata | undefined {
+  return COMMAND_METADATA[type]
+}
+
+/**
  * Check if a command type requires a snapshot before execution
  */
 export function requiresSnapshot(type: CommandType): boolean {
+  const metadata = COMMAND_METADATA[type]
+  if (metadata?.requiresSnapshot !== undefined) {
+    return metadata.requiresSnapshot
+  }
   return TIER_3_COMMANDS.has(type)
 }
 

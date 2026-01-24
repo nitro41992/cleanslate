@@ -29,6 +29,45 @@ export async function ensureSnapshotDir(): Promise<void> {
 }
 
 /**
+ * Detect the correct ORDER BY column for deterministic export
+ * Regular tables use _cs_id, diff tables use row_id
+ */
+async function getOrderByColumn(
+  conn: AsyncDuckDBConnection,
+  tableName: string
+): Promise<string> {
+  try {
+    // Check if _cs_id column exists
+    const result = await conn.query(`
+      SELECT column_name
+      FROM (DESCRIBE "${tableName}")
+      WHERE column_name = '${CS_ID_COLUMN}'
+    `)
+
+    if (result.numRows > 0) {
+      return CS_ID_COLUMN  // Use _cs_id if it exists
+    }
+
+    // Fallback: Check for row_id (used by diff tables)
+    const rowIdResult = await conn.query(`
+      SELECT column_name
+      FROM (DESCRIBE "${tableName}")
+      WHERE column_name = 'row_id'
+    `)
+
+    if (rowIdResult.numRows > 0) {
+      return 'row_id'  // Use row_id for diff tables
+    }
+
+    // No suitable column found - skip ORDER BY
+    return ''
+  } catch (err) {
+    console.warn('[Snapshot] Failed to detect ORDER BY column:', err)
+    return ''  // Safe fallback: no ordering (still works, just not deterministic)
+  }
+}
+
+/**
  * Export a table to Parquet file in OPFS
  *
  * CRITICAL MEMORY SAFETY: Uses in-memory buffer pattern with chunking.
@@ -81,10 +120,14 @@ export async function exportTableToParquet(
 
       // 1. COPY TO in-memory file (DuckDB WASM memory)
       // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
+      // Detect correct ORDER BY column for this table (handles diff tables with row_id)
+      const orderByCol = await getOrderByColumn(conn, tableName)
+      const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
+
       await conn.query(`
         COPY (
           SELECT * FROM "${tableName}"
-          ORDER BY "${CS_ID_COLUMN}"
+          ${orderByClause}
           LIMIT ${batchSize} OFFSET ${offset}
         ) TO '${tempFileName}'
         (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
@@ -122,10 +165,14 @@ export async function exportTableToParquet(
     const finalFileName = `${snapshotId}.parquet`
 
     // 1. COPY TO in-memory file
+    // Detect correct ORDER BY column for this table (handles diff tables with row_id)
+    const orderByCol = await getOrderByColumn(conn, tableName)
+    const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
+
     await conn.query(`
       COPY (
         SELECT * FROM "${tableName}"
-        ORDER BY "${CS_ID_COLUMN}"
+        ${orderByClause}
       ) TO '${tempFileName}'
       (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
     `)
