@@ -8,9 +8,9 @@
 
 import { query } from './index'
 
-// Memory limit: 3GB (75% of 4GB WASM ceiling)
-// Leaves 1GB headroom for temp query buffers, sorts, joins, GC pressure
-export const MEMORY_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
+// Memory limit: 2GB (align with DuckDB WASM ceiling)
+// Conservative limit ensures compatibility with 32-bit WASM builds
+export const MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 
 // Conservative estimate for average bytes per cell (VARCHAR, numbers, etc.)
 export const AVG_BYTES_PER_CELL = 50

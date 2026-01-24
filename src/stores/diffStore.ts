@@ -25,6 +25,7 @@ interface DiffState {
   summary: DiffSummary | null    // Summary counts (small, keep in memory)
   newColumns: string[]           // Columns added (in A but not B)
   removedColumns: string[]       // Columns removed (in B but not A)
+  storageType: 'memory' | 'parquet' | null  // Storage type for diff results
   // UI state
   isComparing: boolean
   blindMode: boolean
@@ -48,6 +49,7 @@ interface DiffActions {
     summary: DiffSummary
     newColumns: string[]
     removedColumns: string[]
+    storageType: 'memory' | 'parquet'
   }) => void
   setSummary: (summary: DiffState['summary']) => void
   setIsComparing: (comparing: boolean) => void
@@ -72,6 +74,7 @@ const initialState: DiffState = {
   summary: null,
   newColumns: [],
   removedColumns: [],
+  storageType: null,
   isComparing: false,
   blindMode: false,
 }
@@ -93,6 +96,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     summary: null,
     newColumns: [],
     removedColumns: [],
+    storageType: null,
     keyColumns: [],
   }),
   setTableA: (tableId) => set({ tableA: tableId }),
@@ -109,6 +113,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     summary: config.summary,
     newColumns: config.newColumns,
     removedColumns: config.removedColumns,
+    storageType: config.storageType,
   }),
   setSummary: (summary) => set({ summary }),
   setIsComparing: (comparing) => set({ isComparing: comparing }),
@@ -123,6 +128,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     summary: null,
     newColumns: [],
     removedColumns: [],
+    storageType: null,
   }),
   reset: () => set(initialState),
 }))

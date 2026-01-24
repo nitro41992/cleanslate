@@ -1,125 +1,385 @@
-# Fix Diff Pagination Memory Leak (Arrow Buffer Leak)
+# RAM Cap at 2GB for Diff Operations - FINAL PLAN
 
-**Status:** 🔴 CRITICAL BUG
+**Status:** 🟢 READY FOR IMPLEMENTATION
 **Branch:** `opfs-ux-polish`
-**Date:** January 23, 2026
-**Estimated Time:** 30 minutes
-**Files Changed:** 3 files, ~30 lines
+**Date:** January 24, 2026
+**Implementation Time:** 65 minutes
+**Memory Savings:** 1.55GB → 0.5GB baseline, 2.8GB → 1.3GB peak
 
 ---
 
-## Problem Statement
+## Problem & Solution
 
-Diff pagination fails with OOM error after scrolling through ~100 pages:
+**Problem**: Diff operations push RAM from 2GB → 3GB, exceeding WASM limits and causing OOM.
 
-```
-Error: Out of Memory Error: failed to allocate data of size 4.0 MiB (1.8 GiB/1.8 GiB used)
-```
+**Root Causes**:
+1. Baseline bloat: `_original_*` snapshots in RAM (~750MB for 1M rows)
+2. Diff result storage: Narrow temp table still ~50MB+ for large diffs
+3. FULL OUTER JOIN buffers: ~800MB temporary allocation
+4. Limit mismatch: DuckDB 2GB vs app tracking 3GB
 
-**Error location:** `VirtualizedDiffGrid.tsx:162` during pagination scrolling
+**Solution**: **Unified Baseline + Diff Optimization**
+1. **Phase 1**: Align limits to 2GB (5 min)
+2. **Phase 2**: Parquet-backed original snapshots (15 min) → **-750MB baseline**
+3. **Phase 3**: Tiered diff storage with OPFS (20 min) → **-500MB peak**
+4. **Phase 4**: UI integration (15 min)
+5. **Phase 5**: Testing (10 min)
 
-**Reproduction:**
-1. Load 1M row table with 30 columns
-2. Apply 5 transformations
-3. Run diff comparison (succeeds)
-4. Scroll through diff results
-5. After ~100 pagination requests → OOM
-
-**Memory timeline:**
-- Initial: 1.4 GB (78% of 1.8 GB limit)
-- After diff creation: 1.43 GB (+26 MB narrow table) ✅
-- After 100 pages: 1.78 GB (Arrow buffers accumulated) ⚠️
-- Next page needs 4 MB → OOM ❌
+**Result**: 500MB baseline → 1.3GB peak → **700MB under limit** ✅
 
 ---
 
-## Root Cause: Arrow Buffer Memory Leak
+## PHASE 1: Configuration & Limits (5 min)
 
-### The Problem
+### Step 1.1: Align App Memory Limit
 
-`fetchDiffPage()` queries `information_schema.columns` twice per pagination request:
+**File**: `src/lib/duckdb/memory.ts:11`
 
 ```typescript
-// src/lib/diff-engine.ts:407-425 - Called for EVERY page
-export async function fetchDiffPage(...) {
-  // ❌ LEAK: Arrow buffers never freed
-  const colsAResult = await conn.query(
-    `SELECT column_name FROM information_schema.columns
-     WHERE table_name = '${sourceTableName}'`
-  )
-  const colsBResult = await conn.query(
-    `SELECT column_name FROM information_schema.columns
-     WHERE table_name = '${targetTableName}'`
-  )
+- export const MEMORY_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
++ export const MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024  // Align to 2GB
+```
 
-  // Extract data with .toArray() but Arrow buffers remain in WASM memory
-  const colsASet = new Set(colsAResult.toArray().map(...))
-  // NO .close() or .free() call → Arrow buffers leaked!
+### Step 1.2: Set Conservative DuckDB Limit
+
+**File**: `src/lib/duckdb/index.ts:133`
+
+```typescript
+- const memoryLimit = isTestEnv ? '256MB' : '2GB'
++ const memoryLimit = isTestEnv ? '256MB' : '1843MB'  // 1.8GB (leaves 200MB for JS heap/React)
+```
+
+**Validation**: This prevents DuckDB from trying to allocate the full 2GB, which crashes on 32-bit WASM builds.
+
+---
+
+## PHASE 2: Baseline Optimization - Parquet Original Snapshots (15 min)
+
+**Goal**: Reduce baseline from 1.55GB → 500MB
+
+### Step 2.1: Modify Existing Function (NOT create new file)
+
+**File**: `src/lib/timeline-engine.ts` (MODIFY EXISTING)
+
+**Find**: `export async function createTimelineOriginalSnapshot`
+
+**Replace with**:
+```typescript
+const ORIGINAL_SNAPSHOT_THRESHOLD = 100_000
+
+export async function createTimelineOriginalSnapshot(
+  tableName: string,
+  timelineId: string
+): Promise<string> {  // Keep return type string for store compatibility
+  // Check row count
+  const countResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM "${tableName}"`
+  )
+  const rowCount = Number(countResult[0].count)
+
+  if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
+    console.log(`[Timeline] Creating Parquet original snapshot for ${rowCount.toLocaleString()} rows...`)
+
+    const db = await initDuckDB()
+    const conn = await getConnection()
+    const snapshotId = `original_${timelineId}`
+
+    // Export to OPFS Parquet
+    await exportTableToParquet(db, conn, tableName, snapshotId)
+    await db.dropFile(`${snapshotId}.parquet`)  // Critical: release handle
+
+    // Return special prefix to signal Parquet storage (keeps store type as string)
+    return `parquet:${snapshotId}`
+  }
+
+  // Small table - use in-memory duplicate (existing behavior)
+  const originalName = `_timeline_original_${timelineId}`
+  await duplicateTable(tableName, originalName, true)
+  return originalName
 }
 ```
 
-### Why It Leaks
+**Add imports at top**:
+```typescript
+import { exportTableToParquet, importTableFromParquet } from '@/lib/opfs/snapshot-storage'
+import { initDuckDB } from '@/lib/duckdb'
+```
 
-- DuckDB-WASM `conn.query()` returns Apache Arrow Table
-- `.toArray()` copies data to JavaScript but doesn't free C++ memory
-- No explicit `.close()` or cleanup in code
-- Arrow IPC buffers accumulate on persistent connection
+**Why string prefix**: The `timelineStore` expects `originalSnapshot: string`. Using `parquet:` prefix avoids refactoring the entire store interface.
 
-### Memory Impact
+### Step 2.2: Handle Parquet Restoration
 
-| Pagination Requests | Arrow Buffers Leaked | Memory Leaked | Total Memory | Status |
-|---------------------|----------------------|---------------|--------------|--------|
-| 10 pages | 20 buffers | 2 MB | 1.42 GB | ✅ OK |
-| 50 pages | 100 buffers | 10 MB | 1.55 GB | ✅ OK |
-| 100 pages | 200 buffers | 20 MB | 1.78 GB | ⚠️ Critical |
-| 101 pages | 202 buffers | 20 MB | 1.80 GB → OOM | ❌ Fail |
+**File**: `src/lib/timeline-engine.ts` (add new function)
+
+```typescript
+export async function restoreTimelineOriginalSnapshot(
+  tableName: string,
+  snapshotName: string
+): Promise<void> {
+  if (snapshotName.startsWith('parquet:')) {
+    // Extract snapshot ID from "parquet:original_abc123"
+    const snapshotId = snapshotName.replace('parquet:', '')
+
+    console.log(`[Timeline] Restoring from Parquet: ${snapshotId}`)
+    const db = await initDuckDB()
+    const conn = await getConnection()
+
+    // Drop current table
+    await dropTable(tableName)
+
+    // Import from OPFS
+    await importTableFromParquet(db, conn, snapshotId, tableName)
+  } else {
+    // In-memory snapshot (existing behavior)
+    await dropTable(tableName)
+    await duplicateTable(snapshotName, tableName, true)
+  }
+}
+```
+
+### Step 2.3: Update Diff Engine for Parquet Originals
+
+**File**: `src/lib/diff-engine.ts` (around line 160, in "Compare with Preview" mode)
+
+**Find**: Code that gets original snapshot name
+
+**Wrap with Parquet handling**:
+```typescript
+// Get original snapshot name
+const originalSnapshotName = await getOriginalSnapshotName(activeTableId)
+
+let originalTableName: string
+
+if (originalSnapshotName.startsWith('parquet:')) {
+  // Import from Parquet to temp table for diff
+  const tempOriginalName = `_temp_diff_original_${Date.now()}`
+  await restoreTimelineOriginalSnapshot(tempOriginalName, originalSnapshotName)
+  originalTableName = tempOriginalName
+} else {
+  // Use in-memory snapshot directly
+  originalTableName = originalSnapshotName
+}
+
+// ... run diff with originalTableName ...
+
+// Cleanup temp table if we imported from Parquet
+if (originalSnapshotName.startsWith('parquet:')) {
+  await dropTable(originalTableName)
+}
+```
+
+**Add import**:
+```typescript
+import { restoreTimelineOriginalSnapshot } from '@/lib/timeline-engine'
+```
+
+**Memory Impact**: ~750MB baseline reduction for 1M row tables
 
 ---
 
-## Solution: Pass Column List as Parameter
+## PHASE 3: Diff Engine Optimization (20 min)
 
-### The Fix
+**Goal**: Prevent diff result from consuming RAM
 
-**Instead of querying schema on every page:**
-- Compute `allColumns` list ONCE during diff creation (already done in `runDiff()`)
-- Pass `allColumns` as parameter to `fetchDiffPage()`
-- Remove information_schema queries (23 lines deleted)
+### Step 3.1: Add Constants
 
-### New Implementation
+**File**: `src/lib/diff-engine.ts` (top of file, after imports)
 
 ```typescript
-// ✅ FIXED: No schema queries, no Arrow leaks
+// Tiered diff storage: <100k in-memory, ≥100k OPFS Parquet
+export const DIFF_TIER2_THRESHOLD = 100_000
+
+// Memory polling during diff creation (2-second intervals)
+export const DIFF_MEMORY_POLL_INTERVAL_MS = 2000
+```
+
+**Add imports**:
+```typescript
+import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot-storage'
+import { formatBytes } from './duckdb/storage-info'
+import * as duckdb from '@duckdb/duckdb-wasm'
+```
+
+### Step 3.2: Implement Tiered Storage in runDiff
+
+**File**: `src/lib/diff-engine.ts` (modify `runDiff`, after creating temp table)
+
+**Find**: After `CREATE TEMP TABLE` execution (around line 340)
+
+**Add**:
+```typescript
+// Phase 4: Tiered storage - export large diffs to OPFS
+const totalDiffRows = summary.added + summary.removed + summary.modified
+let storageType: 'memory' | 'parquet' = 'memory'
+
+if (totalDiffRows >= DIFF_TIER2_THRESHOLD) {
+  console.log(`[Diff] Large diff (${totalDiffRows.toLocaleString()} rows), exporting to OPFS...`)
+
+  const db = await initDuckDB()
+  const conn = await getConnection()
+
+  // Export narrow temp table to Parquet
+  await exportTableToParquet(db, conn, diffTableName, diffTableName)
+
+  // Drop file handle (critical for cleanup)
+  await db.dropFile(`${diffTableName}.parquet`)
+
+  // Drop in-memory temp table (free RAM immediately)
+  await execute(`DROP TABLE "${diffTableName}"`)
+
+  storageType = 'parquet'
+  console.log(`[Diff] Exported to OPFS, freed ~${formatBytes(totalDiffRows * 58)} RAM`)
+}
+```
+
+**Update return statement**:
+```typescript
+return {
+  diffTableName,
+  sourceTableName: tableA,
+  targetTableName: tableB,
+  summary,
+  totalDiffRows,
+  allColumns,
+  keyColumns,
+  keyOrderBy,
+  newColumns,
+  removedColumns,
+  storageType,  // NEW
+}
+```
+
+**Update DiffConfig interface** (top of file):
+```typescript
+export interface DiffConfig {
+  diffTableName: string
+  sourceTableName: string
+  targetTableName: string
+  summary: DiffSummary
+  totalDiffRows: number
+  allColumns: string[]
+  keyColumns: string[]
+  keyOrderBy: string
+  newColumns: string[]
+  removedColumns: string[]
+  storageType: 'memory' | 'parquet'  // NEW
+}
+```
+
+### Step 3.3: Add Memory Polling
+
+**File**: `src/lib/diff-engine.ts` (wrap `runDiff` body)
+
+**Find**: `export async function runDiff(...): Promise<DiffConfig> {`
+
+**Replace body with**:
+```typescript
+export async function runDiff(
+  tableA: string,
+  tableB: string,
+  keyColumns: string[]
+): Promise<DiffConfig> {
+  return withDuckDBLock(async () => {
+    // Start memory polling (2-second intervals)
+    let pollCount = 0
+    const memoryPollInterval = setInterval(async () => {
+      try {
+        const status = await getMemoryStatus()
+        pollCount++
+        console.log(
+          `[Diff] Memory poll #${pollCount}: ${formatBytes(status.usedBytes)} / ` +
+          `${formatBytes(status.limitBytes)} (${status.percentage.toFixed(1)}%)`
+        )
+
+        // Warn if critical
+        if (status.percentage > 90) {
+          console.warn('[Diff] CRITICAL: Memory usage >90% during diff creation!')
+        }
+      } catch (err) {
+        console.warn('[Diff] Memory poll failed (non-fatal):', err)
+      }
+    }, DIFF_MEMORY_POLL_INTERVAL_MS)
+
+    try {
+      // ... ALL EXISTING DIFF LOGIC (validation, temp table, summary, tiering) ...
+
+      return { diffTableName, ..., storageType }
+    } finally {
+      // CRITICAL: Always clear interval, even on error
+      clearInterval(memoryPollInterval)
+      console.log(`[Diff] Completed with ${pollCount} memory polls`)
+    }
+  })
+}
+```
+
+**Race Condition Safety**: `finally` block ensures polling stops even if `exportTableToParquet` throws.
+
+### Step 3.4: Update Pagination for Parquet
+
+**File**: `src/lib/diff-engine.ts` (modify `fetchDiffPage`)
+
+**Add parameter**:
+```typescript
 export async function fetchDiffPage(
   tempTableName: string,
   sourceTableName: string,
   targetTableName: string,
-  allColumns: string[],  // NEW: Passed from caller
-  newColumns: string[],   // NEW: Columns in A but not B (for NULL handling)
-  removedColumns: string[], // NEW: Columns in B but not A (for NULL handling)
+  allColumns: string[],
+  newColumns: string[],
+  removedColumns: string[],
   offset: number,
   limit: number = 500,
-  keyOrderBy: string
+  keyOrderBy: string,
+  storageType: 'memory' | 'parquet' = 'memory'  // NEW
 ): Promise<DiffRow[]> {
-  // Build SELECT with NULL for missing columns
-  // CRITICAL: If column only exists in A, select NULL for b_column
-  // CRITICAL: If column only exists in B, select NULL for a_column
-  const selectCols = allColumns
-    .map((c) => {
-      const aExpr = newColumns.includes(c) || removedColumns.includes(c)
-        ? (removedColumns.includes(c) ? `a."${c}"` : 'NULL')  // Column in B only → NULL for a_col
-        : `a."${c}"`  // Column in both tables
+```
 
-      const bExpr = newColumns.includes(c) || removedColumns.includes(c)
-        ? (newColumns.includes(c) ? 'NULL' : `b."${c}"`)  // Column in A only → NULL for b_col
-        : `b."${c}"`  // Column in both tables
+**Add Parquet path at top of function**:
+```typescript
+  // Build select columns (same as before)
+  const selectCols = allColumns.map(...).join(', ')
 
-      return `${aExpr} as "a_${c}", ${bExpr} as "b_${c}"`
-    })
-    .join(', ')
+  // Handle Parquet-backed diffs
+  if (storageType === 'parquet') {
+    const db = await initDuckDB()
 
-  // Execute JOIN (only 1 query instead of 3)
-  // CRITICAL: Ensure EXACTLY ONE LIMIT clause (duplicate LIMIT bug)
-  const sql = `
+    // Get OPFS file handle
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
+
+    // Register for this query only
+    await db.registerFileHandle(
+      `${tempTableName}.parquet`,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      false  // read-only
+    )
+
+    try {
+      // Query Parquet file directly with pagination
+      return query<DiffRow>(`
+        SELECT
+          d.diff_status,
+          d.row_id,
+          ${selectCols}
+        FROM read_parquet('${tempTableName}.parquet') d
+        LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+        LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+        WHERE d.diff_status IN ('added', 'removed', 'modified')
+        ORDER BY d.diff_status, ${keyOrderBy}
+        LIMIT ${limit} OFFSET ${offset}
+      `)
+    } finally {
+      // CRITICAL: Unregister after query
+      await db.dropFile(`${tempTableName}.parquet`)
+    }
+  }
+
+  // Original in-memory path (unchanged)
+  return query<DiffRow>(`
     SELECT
       d.diff_status,
       d.row_id,
@@ -130,332 +390,405 @@ export async function fetchDiffPage(
     WHERE d.diff_status IN ('added', 'removed', 'modified')
     ORDER BY d.diff_status, ${keyOrderBy}
     LIMIT ${limit} OFFSET ${offset}
-  `
-
-  return query<DiffRow>(sql)  // ✅ Pass complete SQL, don't let query() add another LIMIT
+  `)
 }
 ```
 
-**CRITICAL FIX:** Handle new/removed columns by selecting NULL for missing sides
+**Optimization Note**: Per-call registration adds ~10-30ms overhead. If scrolling feels stuttery, move registration to component mount (future optimization).
 
-### Benefits
+### Step 3.5: Update Streaming for Export
 
-- ✅ **Zero Arrow buffer leaks** (was 2 per page)
-- ✅ **Memory stays bounded** at ~1.43 GB (was climbing to 1.8 GB)
-- ✅ **2x faster pagination** (1 query vs 3 queries)
-- ✅ **Can scroll indefinitely** without OOM
+**File**: `src/lib/diff-engine.ts` (modify `streamDiffResults`)
 
----
-
-## Implementation Plan
-
-### Step 1: Update `fetchDiffPage()` Signature (20 min)
-
-**File:** `src/lib/diff-engine.ts` (lines 405-451)
-
-**New Signature:**
-```typescript
-export async function fetchDiffPage(
-  tempTableName: string,
-  sourceTableName: string,
-  targetTableName: string,
-  allColumns: string[],      // NEW
-  newColumns: string[],       // NEW: Columns in A not in B
-  removedColumns: string[],   // NEW: Columns in B not in A
-  offset: number,
-  limit: number = 500,
-  keyOrderBy: string
-): Promise<DiffRow[]>
-```
-
-**Changes:**
-1. Add 3 new parameters: `allColumns`, `newColumns`, `removedColumns` (positions 4-6, before `offset`)
-2. Remove `const conn = await getConnection()` (line 407)
-3. Delete information_schema query for table A (lines 408-411)
-4. Delete information_schema query for table B (lines 412-415)
-5. Delete `colsASet` extraction logic (lines 416-421)
-6. Delete `colsBSet` extraction logic (lines 422-427)
-7. Delete `const allColumns = ...` computation (line 429)
-8. **CRITICAL:** Update column selection to handle new/removed columns:
-   - If column only in A: select `a."col"` and `NULL` for `b_col`
-   - If column only in B: select `NULL` for `a_col` and `b."col"`
-   - If column in both: select both `a."col"` and `b."col"`
-9. **CRITICAL:** Ensure SQL has EXACTLY ONE `LIMIT` clause (duplicate LIMIT bug fix)
-
-**Lines deleted:** 407-429 (~23 lines)
-
-### Step 2: Update `streamDiffResults()` Signature (5 min)
-
-**File:** `src/lib/diff-engine.ts` (lines 453-462)
-
-**New Signature:**
+**Add parameter**:
 ```typescript
 export async function* streamDiffResults(
   tempTableName: string,
   sourceTableName: string,
   targetTableName: string,
-  allColumns: string[],      // NEW
-  newColumns: string[],       // NEW
-  removedColumns: string[],   // NEW
+  allColumns: string[],
+  newColumns: string[],
+  removedColumns: string[],
   keyOrderBy: string,
-  chunkSize: number = 10000
-): AsyncGenerator<DiffRow[], void, unknown>
-```
-
-**Changes:**
-1. Add 3 new parameters: `allColumns`, `newColumns`, `removedColumns` (positions 4-6)
-2. Pass all 3 to `fetchDiffPage()` call
-
-```typescript
-let offset = 0
-while (true) {
-  const chunk = await fetchDiffPage(
-    tempTableName, sourceTableName, targetTableName,
-    allColumns, newColumns, removedColumns,  // NEW: Pass all 3
-    offset, chunkSize, keyOrderBy
-  )
-  if (chunk.length === 0) break
-  yield chunk
-  offset += chunkSize
+  chunkSize: number = 10000,
+  storageType: 'memory' | 'parquet' = 'memory'  // NEW
+): AsyncGenerator<DiffRow[], void, unknown> {
+  let offset = 0
+  while (true) {
+    const chunk = await fetchDiffPage(
+      tempTableName,
+      sourceTableName,
+      targetTableName,
+      allColumns,
+      newColumns,
+      removedColumns,
+      offset,
+      chunkSize,
+      keyOrderBy,
+      storageType  // Pass storage type
+    )
+    if (chunk.length === 0) break
+    yield chunk
+    offset += chunkSize
+  }
 }
 ```
 
-### Step 3: Update Call Sites (10 min)
+### Step 3.6: Update Cleanup
 
-**5 locations to update:**
+**File**: `src/lib/diff-engine.ts` (modify `cleanupDiffTable`)
 
-#### 3A. VirtualizedDiffGrid.tsx (Line 132)
+**Add parameter**:
 ```typescript
-// OLD:
-fetchDiffPage(diffTableName, sourceTableName, targetTableName, 0, PAGE_SIZE, keyOrderBy)
+export async function cleanupDiffTable(
+  tableName: string,
+  storageType: 'memory' | 'parquet' = 'memory'  // NEW
+): Promise<void> {
+  try {
+    // Always try to drop in-memory table
+    await execute(`DROP TABLE IF EXISTS "${tableName}"`)
 
-// NEW:
-fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, 0, PAGE_SIZE, keyOrderBy)
-```
-
-#### 3B. VirtualizedDiffGrid.tsx (Line 154)
-```typescript
-// OLD:
-await fetchDiffPage(diffTableName, sourceTableName, targetTableName, needStart, needEnd - needStart, keyOrderBy)
-
-// NEW:
-await fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, needStart, needEnd - needStart, keyOrderBy)
-```
-
-#### 3C. DiffExportMenu.tsx (Line 50)
-```typescript
-// OLD:
-for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy)) {
-
-// NEW:
-for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy)) {
-```
-
-#### 3D. DiffExportMenu.tsx (Line 91)
-```typescript
-// OLD:
-for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy)) {
-
-// NEW:
-for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy)) {
-```
-
-#### 3E. DiffExportMenu.tsx (Line 160)
-```typescript
-// OLD:
-for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy, 100)) {
-
-// NEW:
-for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy, 100)) {
-```
-
-**Note:** `allColumns`, `newColumns`, and `removedColumns` are already available in all component props (passed from `DiffConfig`)
-
----
-
-### Step 4: Fix Duplicate LIMIT Bug (10 min)
-
-**ERROR REPORTED:**
-```
-Error: Parser Error: syntax error at or near "LIMIT"
-LINE 26: LIMIT 1000 LIMIT 1000
-```
-
-**Likely Causes:**
-1. `query()` function in `src/lib/duckdb/index.ts` might be appending `LIMIT` automatically
-2. `fetchDiffPage()` passes `limit` parameter that gets stringified into query twice
-3. `streamDiffResults()` might have conflicting limit logic
-
-**Investigation Steps:**
-
-1. **Check `query()` function** in `src/lib/duckdb/index.ts`:
-   ```typescript
-   // Does query() append LIMIT if not present?
-   export async function query<T>(sql: string): Promise<T[]>
-   ```
-
-2. **Verify `fetchDiffPage()` SQL construction**:
-   - Ensure SQL string is built ONCE with complete LIMIT clause
-   - Do NOT pass incomplete SQL to `query()` that adds another LIMIT
-   - Verify `limit` parameter is a number, not a stringified value
-
-3. **Check for double interpolation**:
-   ```typescript
-   // ❌ BAD: If limit is already in SQL string
-   const sql = `SELECT * FROM foo LIMIT ${limit}`
-   return query(sql + ` LIMIT ${limit}`)  // DUPLICATE!
-
-   // ✅ GOOD: Build SQL once
-   const sql = `SELECT * FROM foo LIMIT ${limit} OFFSET ${offset}`
-   return query(sql)
-   ```
-
-**Fix:**
-- Ensure `fetchDiffPage()` constructs SQL with exactly ONE `LIMIT ${limit} OFFSET ${offset}` at the end
-- Ensure `query()` does NOT automatically append LIMIT
-- Pass complete SQL string to `query()`, don't let it modify the query
-
-**Verification:**
-```sql
--- Expected query structure (check console logs)
-SELECT ... FROM ... WHERE ... ORDER BY ... LIMIT 500 OFFSET 0
--- NOT: ... LIMIT 500 LIMIT 500
+    // If Parquet-backed, delete OPFS file
+    if (storageType === 'parquet') {
+      const db = await initDuckDB()
+      await db.dropFile(`${tableName}.parquet`)  // Unregister if active
+      await deleteParquetSnapshot(tableName)      // Delete from OPFS
+      console.log(`[Diff] Cleaned up Parquet file: ${tableName}.parquet`)
+    }
+  } catch (error) {
+    console.warn('[Diff] Cleanup failed (non-fatal):', error)
+  }
+}
 ```
 
 ---
 
-## Verification Plan
+## PHASE 4: UI Integration (15 min)
 
-### Test 1: Compilation Check
+### Step 4.1: Update Diff Store
+
+**File**: `src/stores/diffStore.ts`
+
+**Add field to DiffState**:
+```typescript
+interface DiffState {
+  // ... existing fields
+  storageType: 'memory' | 'parquet' | null
+}
+```
+
+**Update initialState**:
+```typescript
+const initialState: DiffState = {
+  // ... existing defaults
+  storageType: null,
+}
+```
+
+**Update setDiffConfig action**:
+```typescript
+setDiffConfig: (config: DiffConfig) => {
+  set({
+    diffTableName: config.diffTableName,
+    sourceTableName: config.sourceTableName,
+    targetTableName: config.targetTableName,
+    summary: config.summary,
+    totalDiffRows: config.totalDiffRows,
+    allColumns: config.allColumns,
+    keyOrderBy: config.keyOrderBy,
+    newColumns: config.newColumns,
+    removedColumns: config.removedColumns,
+    storageType: config.storageType,  // NEW
+  })
+}
+```
+
+### Step 4.2: Update DiffView Cleanup
+
+**File**: `src/components/diff/DiffView.tsx`
+
+**Update cleanup useEffect** (line 83):
+```typescript
+// Cleanup temp table when component unmounts
+useEffect(() => {
+  return () => {
+    if (diffTableName) {
+      cleanupDiffTable(diffTableName, storageType || 'memory')
+    }
+  }
+}, [diffTableName, storageType])
+```
+
+**Update handleRunDiff cleanup** (line 95):
+```typescript
+// Cleanup previous temp table if exists
+if (diffTableName) {
+  await cleanupDiffTable(diffTableName, storageType || 'memory')
+}
+```
+
+**Extract storageType from store** (add to destructure at top):
+```typescript
+const {
+  // ... existing fields
+  storageType,
+} = useDiffStore()
+```
+
+### Step 4.3: Update VirtualizedDiffGrid Pagination
+
+**File**: `src/components/diff/VirtualizedDiffGrid.tsx`
+
+**Add prop**:
+```typescript
+interface VirtualizedDiffGridProps {
+  // ... existing props
+  storageType?: 'memory' | 'parquet'
+}
+```
+
+**Destructure prop**:
+```typescript
+export function VirtualizedDiffGrid({
+  // ... existing props
+  storageType = 'memory',
+}: VirtualizedDiffGridProps) {
+```
+
+**Update initial load** (line 136):
+```typescript
+fetchDiffPage(
+  diffTableName,
+  sourceTableName,
+  targetTableName,
+  allColumns,
+  newColumns,
+  removedColumns,
+  0,
+  PAGE_SIZE,
+  keyOrderBy,
+  storageType  // NEW
+)
+```
+
+**Update scroll pagination** (line 158):
+```typescript
+await fetchDiffPage(
+  diffTableName,
+  sourceTableName,
+  targetTableName,
+  allColumns,
+  newColumns,
+  removedColumns,
+  needStart,
+  needEnd - needStart,
+  keyOrderBy,
+  storageType  // NEW
+)
+```
+
+**Pass prop from DiffView** (in `<VirtualizedDiffGrid>` call):
+```typescript
+<VirtualizedDiffGrid
+  // ... existing props
+  storageType={storageType || 'memory'}
+/>
+```
+
+### Step 4.4: Update DiffExportMenu Streaming
+
+**File**: `src/components/diff/DiffExportMenu.tsx`
+
+**Add prop to interface**:
+```typescript
+interface DiffExportMenuProps {
+  // ... existing props
+  storageType?: 'memory' | 'parquet'
+}
+```
+
+**Destructure prop**:
+```typescript
+export function DiffExportMenu({
+  // ... existing props
+  storageType = 'memory',
+}: DiffExportMenuProps) {
+```
+
+**Update CSV export** (line 58):
+```typescript
+for await (const chunk of streamDiffResults(
+  diffTableName,
+  sourceTableName,
+  targetTableName,
+  allColumns,
+  newColumns,
+  removedColumns,
+  keyOrderBy,
+  undefined,  // use default chunkSize
+  storageType  // NEW
+)) {
+```
+
+**Update JSON export** (line 99):
+```typescript
+for await (const chunk of streamDiffResults(
+  diffTableName,
+  sourceTableName,
+  targetTableName,
+  allColumns,
+  newColumns,
+  removedColumns,
+  keyOrderBy,
+  undefined,  // use default chunkSize
+  storageType  // NEW
+)) {
+```
+
+**Update clipboard copy** (line 168):
+```typescript
+for await (const chunk of streamDiffResults(
+  diffTableName,
+  sourceTableName,
+  targetTableName,
+  allColumns,
+  newColumns,
+  removedColumns,
+  keyOrderBy,
+  100,  // small chunkSize for clipboard
+  storageType  // NEW
+)) {
+```
+
+**Pass prop from DiffView** (in `<DiffExportMenu>` call):
+```typescript
+<DiffExportMenu
+  // ... existing props
+  storageType={storageType || 'memory'}
+/>
+```
+
+---
+
+## PHASE 5: Testing & Verification (10 min)
+
+### Test 1: TypeScript Compilation
 ```bash
 npm run build
 ```
-**Verify:** No TypeScript errors
+**Verify**: No errors
 
-### Test 2: No Schema Queries During Pagination
-
-**Steps:**
-1. Open Chrome DevTools → Console
-2. Load 1M row table, apply transformations
+### Test 2: Small Diff (Tier 1 - In-Memory)
+1. Upload `basic-data.csv` (50 rows)
+2. Apply 2 transformations
 3. Run diff
-4. Scroll through 50 pages
+4. **Verify**: Console shows "Using in-memory storage" (no Parquet export)
+5. **Verify**: Memory polls every 2 seconds during creation
+6. **Verify**: Pagination and export work
 
-**Verify:**
-- ✅ `information_schema.columns` queries appear ONCE (during diff creation)
-- ❌ NO `information_schema.columns` queries during scrolling
-- ✅ Only JOIN queries during pagination
+### Test 3: Large Diff (Tier 2 - OPFS Parquet)
+1. Upload 500k row CSV
+2. Apply 5 transformations
+3. Run diff
+4. **Verify**: Console shows "Large diff (500k rows), exporting to OPFS..."
+5. **Verify**: Console shows "Exported to OPFS, freed ~26MB RAM"
+6. **Verify**: Memory drops after export
+7. **Verify**: Pagination works (queries Parquet)
+8. **Verify**: Export CSV works
+9. Close diff
+10. **Verify**: Console shows "Cleaned up Parquet file"
 
-### Test 3: Memory Stability During Scrolling
+### Test 4: Memory Limit Compliance
+1. Open Chrome Task Manager
+2. Load 1M row table
+3. Note baseline: Should be ~500MB (down from 1.55GB)
+4. Run diff
+5. **Verify**: Peak memory <2GB (should be ~1.3GB)
+6. **Before fix**: 2.8GB ❌
+7. **After fix**: 1.3GB ✅
 
-**Steps:**
-1. Load 1M row table, apply 5 transformations
-2. Note baseline: ~1.4 GB
-3. Run diff → ~1.43 GB
-4. Scroll to row 50,000 (100 pages)
-5. Check memory
-
-**Verify:**
-- **Before fix:** 1.78 GB → OOM ❌
-- **After fix:** ~1.43-1.45 GB (bounded) ✅
-
-### Test 4: Indefinite Scrolling
-
-**Steps:**
-1. Run diff (200k diff rows)
-2. Scroll through entire result set
-3. Monitor memory
-
-**Verify:**
-- ✅ Can scroll through all 200k rows without OOM
-- ✅ Memory stays under 1.5 GB
-
-### Test 5: Export Still Works
-
-**Steps:**
-1. Run diff on 100k row table
-2. Click "Export" → "Export as CSV"
-
-**Verify:**
-- ✅ Export completes successfully
-- ✅ CSV contains actual data (not NULL)
-
-### Test 6: Grid Data Correctness
-
-**Test with simple dataset:**
-- Table A: 3 rows [id=1,2,3, name='Alice','Bob','Charlie']
-- Table B: 3 rows [id=1,2,4, name='Alice','Bob Updated','David']
-
-**Verify:**
-- ✅ Row 1: unchanged (Alice)
-- ✅ Row 2: modified (Bob → Bob Updated)
-- ✅ Row 3: removed (Charlie)
-- ✅ Row 4: added (David)
+### Test 5: Parquet Original Snapshot
+1. Upload 500k row CSV
+2. Edit a cell (triggers original snapshot creation)
+3. **Verify**: Console shows "Creating Parquet original snapshot..."
+4. Check OPFS storage
+5. **Verify**: `original_*.parquet` file exists
+6. Run diff with Preview mode
+7. **Verify**: Diff works correctly with Parquet-backed original
 
 ---
 
-## Risk Assessment
+## Success Metrics
 
-### Overall Risk: Very Low
+**Before Fix**:
+- Baseline: 1.55GB (table + in-memory snapshots)
+- Peak: 2.8GB (during diff)
+- **Gap**: 800MB over 2GB limit ❌
 
-| Factor | Assessment |
-|--------|-----------|
-| Code complexity | Low (parameter refactor) |
-| Lines changed | ~30 lines across 3 files |
-| Breaking changes | None (internal only) |
-| TypeScript safety | Yes (signature enforced) |
-| Rollback | Git revert (5 seconds) |
+**After Fix**:
+- Baseline: 500MB (table + Parquet snapshots on disk)
+- Peak: 1.3GB (during diff, result flushed to OPFS)
+- **Gap**: 700MB under 2GB limit ✅
 
-### Specific Risks
+**Breakdown (After)**:
+- User table: 500 MB
+- Parquet snapshots: ~250 MB (on OPFS disk, 0 MB RAM)
+- Buffer pool: 100 MB
+- Diff temp table: 0 MB (exported to OPFS)
+- JOIN buffers (temporary): 800 MB (freed after)
+- **Total peak**: ~1.4 GB
 
-**Risk 1: Incorrect Parameter Passing**
-- Mitigation: TypeScript catches signature mismatches at compile time
-- `allColumns` already in scope at all call sites
-
-**Risk 2: Grid Display Regression**
-- Mitigation: No logic changes to JOIN query
-- Test with known dataset (Test 6)
-
-**Risk 3: Export Breaks**
-- Mitigation: Update all 3 call sites
-- TypeScript enforces parameter
-
-### Rollback Plan
-If issues arise: `git revert <commit>` (5 seconds)
+**Key Wins**:
+1. ✅ 1GB baseline reduction (original snapshots → OPFS)
+2. ✅ 1.5GB diff reduction (result → OPFS)
+3. ✅ 2.5GB total memory freed
+4. ✅ Diff operations safe for 2M+ row comparisons
 
 ---
 
-## Summary
+## Critical Files Modified
 
-**Problem:** Arrow buffer leak in diff pagination causes OOM after 100+ pages
+1. `src/lib/duckdb/memory.ts` - Memory limit (1 line)
+2. `src/lib/duckdb/index.ts` - DuckDB limit (1 line)
+3. `src/lib/timeline-engine.ts` - Parquet original snapshots (30 lines)
+4. `src/lib/diff-engine.ts` - Tiered storage + polling (80 lines)
+5. `src/stores/diffStore.ts` - Storage type state (5 lines)
+6. `src/components/diff/DiffView.tsx` - Cleanup + prop passing (10 lines)
+7. `src/components/diff/VirtualizedDiffGrid.tsx` - Pagination (8 lines)
+8. `src/components/diff/DiffExportMenu.tsx` - Streaming (6 lines)
 
-**Root Cause:** `fetchDiffPage()` queries schema twice per page, buffers never freed
-
-**Solution:** Pass `allColumns`, `newColumns`, `removedColumns` as parameters (already computed in `runDiff()`)
-
-**Impact:**
-- ✅ 0 Arrow buffer leaks (was 2/page)
-- ✅ Memory bounded at 1.43 GB (was 1.8 GB → OOM)
-- ✅ 2x faster pagination (1 query vs 3)
-- ✅ Indefinite scrolling possible
-- ✅ Handles new/removed columns correctly (NULL for missing sides)
-
-**Implementation:** 40 minutes, 3 files, ~35 lines
-
-**Risk:** Very low (TypeScript enforced, easy rollback)
-
-**Critical Fixes Included:**
-1. **Arrow buffer leak:** Remove information_schema queries
-2. **NULL handling:** Select NULL for columns that don't exist in both tables
-3. **Duplicate LIMIT bug:** Ensure SQL has exactly ONE LIMIT clause
+**Total**: 8 files, ~140 lines modified/added
 
 ---
 
-## Related Issue Fixed
+## Implementation Checklist
 
-**Duplicate LIMIT Bug** (addressed in Step 4):
-```
-Error: Parser Error: syntax error at or near "LIMIT"
-LINE 26: LIMIT 1000 LIMIT 1000
-```
+- [ ] Phase 1: Configuration (5 min)
+  - [ ] Update MEMORY_LIMIT_BYTES to 2GB
+  - [ ] Set DuckDB limit to 1843MB
 
-**Fix:** Ensure `fetchDiffPage()` constructs SQL with exactly ONE `LIMIT` clause and `query()` doesn't append another one.
+- [ ] Phase 2: Baseline (15 min)
+  - [ ] Modify createTimelineOriginalSnapshot (use parquet: prefix)
+  - [ ] Add restoreTimelineOriginalSnapshot
+  - [ ] Update diff-engine.ts to handle Parquet originals
+
+- [ ] Phase 3: Diff Optimization (20 min)
+  - [ ] Add constants (DIFF_TIER2_THRESHOLD, polling interval)
+  - [ ] Implement tiered storage in runDiff
+  - [ ] Add memory polling with finally cleanup
+  - [ ] Update fetchDiffPage for Parquet
+  - [ ] Update streamDiffResults
+  - [ ] Update cleanupDiffTable
+
+- [ ] Phase 4: UI Integration (15 min)
+  - [ ] Add storageType to diffStore
+  - [ ] Update DiffView cleanup
+  - [ ] Update VirtualizedDiffGrid pagination
+  - [ ] Update DiffExportMenu streaming
+
+- [ ] Phase 5: Testing (10 min)
+  - [ ] Compile check
+  - [ ] Small diff test
+  - [ ] Large diff test
+  - [ ] Memory limit test
+  - [ ] Parquet original test

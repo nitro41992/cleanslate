@@ -130,7 +130,7 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   // All done in a single connection to avoid "Missing DB manager" errors
   const isTestEnv = typeof navigator !== 'undefined' &&
                     navigator.userAgent.includes('Playwright')
-  const memoryLimit = isTestEnv ? '256MB' : '2GB'  // Realistic browser limit with ~900MB overhead
+  const memoryLimit = isTestEnv ? '256MB' : '1843MB'  // 1.8GB (leaves 200MB for JS heap/React)
 
   const initConn = await db.connect()
 
