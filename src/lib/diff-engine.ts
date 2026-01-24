@@ -484,37 +484,121 @@ export async function fetchDiffPage(
   if (storageType === 'parquet') {
     const db = await initDuckDB()
 
-    // Get OPFS file handle
+    // Get OPFS snapshots directory
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
 
-    // Register for this query only
-    await db.registerFileHandle(
-      `${tempTableName}.parquet`,
-      fileHandle,
-      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-      false  // read-only
-    )
+    // Check if this is a chunked snapshot (multiple _part_N files) or single file
+    let isChunked = false
+    try {
+      await snapshotsDir.getFileHandle(`${tempTableName}_part_0.parquet`, { create: false })
+      isChunked = true
+    } catch {
+      // Not chunked, try single file
+      isChunked = false
+    }
 
     try {
-      // Query Parquet file directly with pagination
-      return query<DiffRow>(`
-        SELECT
-          d.diff_status,
-          d.row_id,
-          ${selectCols}
-        FROM read_parquet('${tempTableName}.parquet') d
-        LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
-        LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-        WHERE d.diff_status IN ('added', 'removed', 'modified')
-        ORDER BY d.diff_status, ${keyOrderBy}
-        LIMIT ${limit} OFFSET ${offset}
-      `)
-    } finally {
-      // CRITICAL: Unregister after query
-      await db.dropFile(`${tempTableName}.parquet`)
+      if (isChunked) {
+        // Register all chunk files
+        let partIndex = 0
+        const fileHandles: FileSystemFileHandle[] = []
+
+        while (true) {
+          try {
+            const fileName = `${tempTableName}_part_${partIndex}.parquet`
+            const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+            fileHandles.push(fileHandle)
+
+            await db.registerFileHandle(
+              fileName,
+              fileHandle,
+              duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+              false  // read-only
+            )
+
+            partIndex++
+          } catch {
+            break // No more chunks
+          }
+        }
+
+        // Query all chunks with glob pattern
+        const result = await query<DiffRow>(`
+          SELECT
+            d.diff_status,
+            d.row_id,
+            ${selectCols}
+          FROM read_parquet('${tempTableName}_part_*.parquet') d
+          LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+          LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+          WHERE d.diff_status IN ('added', 'removed', 'modified')
+          ORDER BY d.diff_status, ${keyOrderBy}
+          LIMIT ${limit} OFFSET ${offset}
+        `)
+
+        // Unregister all chunk files
+        for (let i = 0; i < partIndex; i++) {
+          await db.dropFile(`${tempTableName}_part_${i}.parquet`)
+        }
+
+        return result
+      } else {
+        // Single file - original logic
+        const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
+
+        // Register for this query only
+        await db.registerFileHandle(
+          `${tempTableName}.parquet`,
+          fileHandle,
+          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+          false  // read-only
+        )
+
+        // Query Parquet file directly with pagination
+        const result = await query<DiffRow>(`
+          SELECT
+            d.diff_status,
+            d.row_id,
+            ${selectCols}
+          FROM read_parquet('${tempTableName}.parquet') d
+          LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+          LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+          WHERE d.diff_status IN ('added', 'removed', 'modified')
+          ORDER BY d.diff_status, ${keyOrderBy}
+          LIMIT ${limit} OFFSET ${offset}
+        `)
+
+        // Unregister after query
+        await db.dropFile(`${tempTableName}.parquet`)
+
+        return result
+      }
+    } catch (error) {
+      // Cleanup on error - unregister any registered files
+      if (isChunked) {
+        try {
+          let partIndex = 0
+          while (true) {
+            try {
+              await db.dropFile(`${tempTableName}_part_${partIndex}.parquet`)
+              partIndex++
+            } catch {
+              break
+            }
+          }
+        } catch {
+          // Ignore cleanup errors
+        }
+      } else {
+        try {
+          await db.dropFile(`${tempTableName}.parquet`)
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      throw error
     }
   }
 
@@ -545,12 +629,31 @@ export async function cleanupDiffTable(
     // Always try to drop in-memory table
     await execute(`DROP TABLE IF EXISTS "${tableName}"`)
 
-    // If Parquet-backed, delete OPFS file
+    // If Parquet-backed, delete OPFS file (handles both single and chunked files)
     if (storageType === 'parquet') {
       const db = await initDuckDB()
-      await db.dropFile(`${tableName}.parquet`)  // Unregister if active
-      await deleteParquetSnapshot(tableName)      // Delete from OPFS
-      console.log(`[Diff] Cleaned up Parquet file: ${tableName}.parquet`)
+
+      // Try to unregister both single and chunked files (one will fail silently)
+      try {
+        await db.dropFile(`${tableName}.parquet`)  // Unregister single file if active
+      } catch {
+        // Ignore - file might not be registered or might be chunked
+      }
+
+      // Try to unregister chunked files
+      let partIndex = 0
+      while (true) {
+        try {
+          await db.dropFile(`${tableName}_part_${partIndex}.parquet`)
+          partIndex++
+        } catch {
+          break  // No more chunks
+        }
+      }
+
+      // Delete from OPFS (deleteParquetSnapshot handles both single and chunked)
+      await deleteParquetSnapshot(tableName)
+      console.log(`[Diff] Cleaned up Parquet file(s): ${tableName}`)
     }
   } catch (error) {
     console.warn('[Diff] Cleanup failed (non-fatal):', error)
