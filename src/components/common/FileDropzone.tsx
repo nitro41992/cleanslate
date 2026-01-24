@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileSpreadsheet, FileJson, File } from 'lucide-react'
+import { Upload, FileSpreadsheet } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface FileDropzoneProps {
@@ -12,15 +12,12 @@ interface FileDropzoneProps {
 
 const fileIcons: Record<string, typeof FileSpreadsheet> = {
   csv: FileSpreadsheet,
-  json: FileJson,
-  parquet: File,
-  xlsx: FileSpreadsheet,
 }
 
 export function FileDropzone({
   onFileDrop,
   isLoading = false,
-  accept = ['.csv', '.json', '.parquet'],
+  accept = ['.csv'],
   className,
 }: FileDropzoneProps) {
   const onDrop = useCallback(
@@ -36,11 +33,6 @@ export function FileDropzone({
     onDrop,
     accept: {
       'text/csv': ['.csv'],
-      'application/json': ['.json'],
-      'application/octet-stream': ['.parquet'],
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [
-        '.xlsx',
-      ],
     },
     maxFiles: 1,
     disabled: isLoading,
@@ -79,10 +71,10 @@ export function FileDropzone({
       <div className="text-center">
         <p className="font-medium">
           {isDragActive
-            ? 'Drop your file here'
+            ? 'Drop your CSV file here'
             : isLoading
             ? 'Processing file...'
-            : 'Drag & drop a file'}
+            : 'Drag & drop a CSV file'}
         </p>
         <p className="text-sm text-muted-foreground mt-1">
           or click to browse
@@ -91,11 +83,11 @@ export function FileDropzone({
 
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
         {accept.map((ext) => {
-          const Icon = fileIcons[ext.replace('.', '')] || File
+          const Icon = fileIcons[ext.replace('.', '')] || FileSpreadsheet
           return (
             <span key={ext} className="flex items-center gap-1">
               <Icon className="w-3.5 h-3.5" />
-              {ext.toUpperCase().replace('.', '')}
+              {ext.toUpperCase().replace('.', '')} files only
             </span>
           )
         })}

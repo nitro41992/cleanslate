@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { FileText, Settings2 } from 'lucide-react'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/600.css'
 import {
   Dialog,
   DialogContent,
@@ -27,6 +29,22 @@ import {
   type FilePreviewResult,
 } from '@/lib/fileUtils'
 import type { CSVIngestionSettings } from '@/types'
+
+// Rainbow color spectrum for column visualization
+const rainbowColors = [
+  'rgb(255, 71, 87)',   // Coral Red
+  'rgb(255, 168, 0)',   // Orange
+  'rgb(255, 214, 0)',   // Gold
+  'rgb(163, 255, 0)',   // Lime
+  'rgb(0, 255, 163)',   // Mint
+  'rgb(0, 214, 255)',   // Cyan
+  'rgb(0, 168, 255)',   // Sky Blue
+  'rgb(71, 87, 255)',   // Blue
+  'rgb(163, 0, 255)',   // Purple
+  'rgb(255, 0, 214)',   // Magenta
+  'rgb(255, 0, 87)',    // Hot Pink
+  'rgb(255, 102, 0)',   // Tangerine
+]
 
 interface IngestionWizardProps {
   open: boolean
@@ -114,16 +132,53 @@ export function IngestionWizard({
     onOpenChange(false)
   }
 
+  // Render a line with rainbow-colored columns
+  const renderRainbowLine = (line: string, isHeader: boolean) => {
+    const fields = parseLine(line, effectiveDelimiter)
+
+    return (
+      <span className="inline-flex flex-wrap gap-1">
+        {fields.map((field, idx) => {
+          const color = rainbowColors[idx % rainbowColors.length]
+          return (
+            <span
+              key={idx}
+              style={{
+                color,
+                fontWeight: isHeader ? 600 : 400,
+                backgroundColor: `${color}15`,
+                padding: '2px 6px',
+                borderRadius: '4px',
+              }}
+            >
+              {field || '(empty)'}
+            </span>
+          )
+        })}
+      </span>
+    )
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col" data-testid="ingestion-wizard">
+      <DialogContent
+        className="max-w-[90vw] max-h-[90vh] w-full h-full flex flex-col"
+        data-testid="ingestion-wizard"
+        style={{
+          animation: 'scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
+        }}
+      >
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <FileText className="w-5 h-5" />
-            CSV Import Settings
+          <DialogTitle className="flex items-center gap-3 text-2xl">
+            <div className="p-2 rounded-lg bg-primary/10">
+              <FileText className="w-6 h-6 text-primary" />
+            </div>
+            <span className="bg-gradient-to-r from-primary via-primary/80 to-primary bg-clip-text text-transparent">
+              Data Inspection Terminal
+            </span>
           </DialogTitle>
-          <DialogDescription>
-            Configure how to parse {file?.name || 'your CSV file'}
+          <DialogDescription className="text-base mt-2">
+            Configure how to parse <span className="font-semibold text-foreground">{file?.name || 'your CSV file'}</span>
           </DialogDescription>
         </DialogHeader>
 
@@ -201,58 +256,65 @@ export function IngestionWizard({
               </div>
             </div>
 
-            {/* Detected Columns */}
+            {/* Detected Columns with Rainbow Colors */}
             {headerColumns.length > 0 && (
-              <div className="rounded-lg border border-border/50 p-3 bg-muted/30">
-                <div className="flex items-center gap-2 mb-2">
-                  <Settings2 className="w-4 h-4 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">
+              <div className="rounded-xl border border-border/50 p-4 bg-muted/30">
+                <div className="flex items-center gap-2 mb-3">
+                  <Settings2 className="w-5 h-5 text-muted-foreground" />
+                  <span className="text-sm font-medium text-foreground">
                     Detected {headerColumns.length} columns from row {headerRow}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-1">
-                  {headerColumns.slice(0, 15).map((col, i) => (
-                    <span
-                      key={i}
-                      className="px-2 py-0.5 text-xs rounded bg-primary/10 text-primary"
-                    >
-                      {col || `(empty)`}
-                    </span>
-                  ))}
-                  {headerColumns.length > 15 && (
-                    <span className="px-2 py-0.5 text-xs text-muted-foreground">
-                      +{headerColumns.length - 15} more
+                <div className="flex flex-wrap gap-2">
+                  {headerColumns.slice(0, 20).map((col, i) => {
+                    const color = rainbowColors[i % rainbowColors.length]
+                    return (
+                      <span
+                        key={i}
+                        style={{
+                          backgroundColor: `${color}20`,
+                          color: color,
+                          border: `1px solid ${color}40`,
+                          animationDelay: `${i * 30}ms`
+                        }}
+                        className="px-3 py-1.5 text-sm rounded-lg font-medium animate-in"
+                      >
+                        {col || `(empty)`}
+                      </span>
+                    )
+                  })}
+                  {headerColumns.length > 20 && (
+                    <span className="px-3 py-1.5 text-sm text-muted-foreground">
+                      +{headerColumns.length - 20} more
                     </span>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Raw Preview */}
+            {/* Raw Preview with Rainbow Columns */}
             <div className="flex-1 min-h-0 flex flex-col">
-              <Label className="text-xs text-muted-foreground mb-2">
-                Raw File Preview (first {preview?.lines.length || 0} lines)
+              <Label className="text-sm font-medium text-foreground mb-3">
+                Data Canvas <span className="text-muted-foreground font-normal">(first {preview?.lines.length || 0} lines)</span>
               </Label>
-              <ScrollArea className="flex-1 rounded-lg border border-border/50 bg-background" data-testid="raw-preview">
-                <div className="p-3 font-mono text-xs">
+              <ScrollArea className="flex-1 rounded-xl border-2 border-border/50 bg-background" data-testid="raw-preview">
+                <div className="p-4" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
                   {preview?.lines.map((line, i) => {
                     const lineNum = i + 1
                     const isHeader = lineNum === headerRow
                     return (
                       <div
                         key={i}
-                        className={`flex hover:bg-muted/50 ${
-                          isHeader ? 'bg-primary/10 font-semibold' : ''
+                        className={`flex py-2 hover:bg-muted/30 transition-colors ${
+                          isHeader ? 'bg-primary/5 border-l-2 border-primary' : ''
                         }`}
                       >
-                        <span className="w-8 text-right pr-3 text-muted-foreground select-none shrink-0">
+                        <span className="w-12 text-right pr-4 text-muted-foreground select-none shrink-0 text-xs">
                           {lineNum}
                         </span>
-                        <span className={`whitespace-pre overflow-hidden text-ellipsis ${
-                          isHeader ? 'text-primary' : ''
-                        }`}>
-                          {line || ' '}
-                        </span>
+                        <div className="flex-1 text-sm leading-relaxed">
+                          {renderRainbowLine(line, isHeader)}
+                        </div>
                       </div>
                     )
                   })}
@@ -262,12 +324,22 @@ export function IngestionWizard({
           </div>
         )}
 
-        <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={handleCancel} data-testid="cancel-btn">
+        <DialogFooter className="mt-6 gap-3">
+          <Button
+            variant="outline"
+            onClick={handleCancel}
+            data-testid="cancel-btn"
+            className="px-6"
+          >
             Cancel
           </Button>
-          <Button onClick={handleConfirm} disabled={isLoading || !preview} data-testid="import-btn">
-            Import
+          <Button
+            onClick={handleConfirm}
+            disabled={isLoading || !preview}
+            data-testid="import-btn"
+            className="px-8 bg-primary hover:bg-primary/90"
+          >
+            Import CSV
           </Button>
         </DialogFooter>
       </DialogContent>
