@@ -1222,12 +1222,20 @@ export class CommandExecutor implements ICommandExecutor {
       } as import('@/types').TimelineParams
     }
 
+    // Extract cell changes for highlighting (manual edits, batch edits)
+    let cellChanges: import('@/types').CellChange[] | undefined
+    const commandWithCellChanges = command as unknown as { getCellChanges?: () => import('@/types').CellChange[] }
+    if (typeof commandWithCellChanges.getCellChanges === 'function') {
+      cellChanges = commandWithCellChanges.getCellChanges()
+    }
+
     timelineStoreState.appendCommand(tableId, legacyCommandType, command.label, timelineParams, {
       auditEntryId: auditInfo?.auditEntryId ?? command.id,
       affectedColumns: auditInfo?.affectedColumns ?? (column ? [column] : []),
       rowsAffected: auditInfo?.rowsAffected,
       hasRowDetails: auditInfo?.hasRowDetails,
       affectedRowIds,
+      cellChanges,
     })
   }
 }
