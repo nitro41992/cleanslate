@@ -28,11 +28,15 @@ export class RemoveDuplicatesCommand extends Tier3TransformCommand<RemoveDuplica
         .filter((c) => c.name !== CS_ID_COLUMN)
         .map((c) => quoteColumn(c.name))
 
-      // Create temp table with distinct rows and new _cs_id values
+      // Create temp table with distinct rows, preserving _cs_id of first occurrence
+      // CRITICAL: Keep original _cs_id to maintain row lineage for diff comparison
       const sql = `
         CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT gen_random_uuid() as ${quoteColumn(CS_ID_COLUMN)}, ${userCols.join(', ')}
-        FROM (SELECT DISTINCT ${userCols.join(', ')} FROM ${quoteTable(tableName)})
+        SELECT
+          FIRST(${quoteColumn(CS_ID_COLUMN)}) as ${quoteColumn(CS_ID_COLUMN)},
+          ${userCols.join(', ')}
+        FROM ${quoteTable(tableName)}
+        GROUP BY ${userCols.join(', ')}
       `
       await ctx.db.execute(sql)
 

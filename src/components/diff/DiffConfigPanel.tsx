@@ -124,13 +124,14 @@ export function DiffConfigPanel({
   // Determine if we can run the diff
   const canRunDiff = (() => {
     if (isComparing) return false
-    if (keyColumns.length === 0) return false
 
     if (mode === 'compare-preview') {
+      // Preview mode uses _cs_id internally, so key columns are optional
       return activeTableId !== null && hasSnapshot
     }
     if (mode === 'compare-tables') {
-      return tableA !== null && tableB !== null && columns.length > 0
+      // Two-tables mode requires key columns for matching
+      return tableA !== null && tableB !== null && columns.length > 0 && keyColumns.length > 0
     }
     return false
   })()
@@ -167,7 +168,13 @@ export function DiffConfigPanel({
             </Label>
             <div className="grid grid-cols-1 gap-2">
               <button
-                onClick={() => onModeChange('compare-preview')}
+                onClick={() => {
+                  onModeChange('compare-preview')
+                  // Clear key columns when switching to preview (they're not used)
+                  if (mode !== 'compare-preview') {
+                    onKeyColumnsChange([])
+                  }
+                }}
                 className={cn(
                   'flex items-center gap-3 p-3 rounded-lg border text-left transition-all',
                   mode === 'compare-preview'
@@ -226,7 +233,7 @@ export function DiffConfigPanel({
                         Original snapshot available
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Comparing original data with current preview state.
+                        Rows are automatically matched by internal ID. No key selection needed.
                       </p>
                     </div>
                   ) : (
@@ -331,8 +338,8 @@ export function DiffConfigPanel({
             </>
           )}
 
-          {/* Key Columns - shown for both modes when columns are available */}
-          {columns.length > 0 && (
+          {/* Key Columns - only shown for two-tables mode */}
+          {mode === 'compare-tables' && columns.length > 0 && (
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground">
                 Key Columns (for matching rows)

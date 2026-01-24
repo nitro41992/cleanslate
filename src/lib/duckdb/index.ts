@@ -32,10 +32,15 @@ export function filterInternalColumns(columns: string[]): string[] {
 
 /**
  * Check if a column is an internal system column
- * Includes _cs_id and __base backup columns created by Tier 1 transforms
+ * Includes:
+ * - _cs_id (CleanSlate row ID)
+ * - __base backup columns (Tier 1 transforms)
+ * - duckdb_* metadata columns (DuckDB internals)
  */
 export function isInternalColumn(columnName: string): boolean {
-  return columnName === CS_ID_COLUMN || columnName.endsWith('__base')
+  return columnName === CS_ID_COLUMN ||
+         columnName.endsWith('__base') ||
+         columnName.startsWith('duckdb_')
 }
 
 let db: duckdb.AsyncDuckDB | null = null

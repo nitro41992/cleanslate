@@ -6,6 +6,131 @@ import { formatBytes } from './duckdb/storage-info'
 import { getMemoryStatus } from './duckdb/memory'
 import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot-storage'
 
+// Track which Parquet snapshots are currently registered to prevent re-registration
+const registeredParquetSnapshots = new Set<string>()
+// Track which diff tables are currently registered (for chunked diff results)
+const registeredDiffTables = new Set<string>()
+
+/**
+ * Resolve a table reference to a SQL expression, with robust Parquet handling.
+ * Checks OPFS file existence before using read_parquet to avoid IO errors.
+ *
+ * @param tableName - Table name or "parquet:snapshot_id" reference
+ * @returns SQL expression (quoted table name or read_parquet(...))
+ */
+async function resolveTableRef(tableName: string): Promise<string> {
+  // 1. Normal table - return quoted name
+  if (!tableName.startsWith('parquet:')) {
+    return `"${tableName}"`
+  }
+
+  // 2. Parquet snapshot - verify file exists before using read_parquet
+  const snapshotId = tableName.replace('parquet:', '')
+
+  // Skip registration if already done (prevents OPFS file locking errors)
+  if (registeredParquetSnapshots.has(snapshotId)) {
+    console.log(`[Diff] Parquet snapshot ${snapshotId} already registered, skipping`)
+
+    // Check if chunked or single file to return correct expression
+    const db = await initDuckDB()
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+    try {
+      await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+      return `read_parquet('${snapshotId}_part_*.parquet')`  // Chunked
+    } catch {
+      return `read_parquet('${snapshotId}.parquet')`  // Single file
+    }
+  }
+
+  // Helper to check OPFS file existence
+  async function fileExistsInOpfs(filename: string): Promise<boolean> {
+    try {
+      const root = await navigator.storage.getDirectory()
+      const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+      const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
+      await snapshots.getFileHandle(filename, { create: false })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // CHECK 1: Try exact match first (single file export)
+  const exactFile = `${snapshotId}.parquet`
+  const exactExists = await fileExistsInOpfs(exactFile)
+
+  if (exactExists) {
+    // Register single file with DuckDB
+    const db = await initDuckDB()
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
+    const fileHandle = await snapshots.getFileHandle(exactFile, { create: false })
+
+    await db.registerFileHandle(
+      exactFile,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      false // read-only
+    )
+
+    // Mark as registered after successful registration
+    registeredParquetSnapshots.add(snapshotId)
+
+    console.log(`[Diff] Resolved ${tableName} to read_parquet('${exactFile}')`)
+    return `read_parquet('${exactFile}')`
+  }
+
+  // CHECK 2: Try chunked pattern (for large tables >250k rows)
+  // Verify at least part_0 exists to avoid "IO Error: No files found"
+  const part0 = `${snapshotId}_part_0.parquet`
+  const part0Exists = await fileExistsInOpfs(part0)
+
+  if (part0Exists) {
+    // Register all chunks
+    const db = await initDuckDB()
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+    let partIndex = 0
+    while (true) {
+      try {
+        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        const fileHandle = await snapshots.getFileHandle(fileName, { create: false })
+
+        await db.registerFileHandle(
+          fileName,
+          fileHandle,
+          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+          false
+        )
+
+        partIndex++
+      } catch {
+        break // No more chunks
+      }
+    }
+
+    // Mark as registered after successful registration
+    registeredParquetSnapshots.add(snapshotId)
+
+    const chunkPattern = `${snapshotId}_part_*.parquet`
+    console.log(`[Diff] Resolved ${tableName} to read_parquet('${chunkPattern}') with ${partIndex} chunks`)
+    return `read_parquet('${chunkPattern}')`
+  }
+
+  // CHECK 3: Snapshot file missing (deleted or corrupted)
+  console.error(`[Diff] Snapshot file missing: ${tableName}`)
+  throw new Error(
+    `Snapshot file not found: ${snapshotId}. The original snapshot may have been deleted. ` +
+    `Please reload the table or run a transform to recreate the snapshot.`
+  )
+}
+
 // Tiered diff storage: <100k in-memory, ≥100k OPFS Parquet
 export const DIFF_TIER2_THRESHOLD = 100_000
 
@@ -151,11 +276,14 @@ async function validateDiffMemoryAvailability(
 /**
  * Run diff comparison using a temp table approach for scalability.
  * The JOIN executes once and results are stored in a temp table for pagination.
+ *
+ * @param diffMode - 'preview' uses row-based matching (_cs_id), 'two-tables' uses key-based matching
  */
 export async function runDiff(
   tableA: string,
   tableB: string,
-  keyColumns: string[]
+  keyColumns: string[],
+  diffMode: 'preview' | 'two-tables' = 'two-tables'
 ): Promise<DiffConfig> {
   return withDuckDBLock(async () => {
     // Start memory polling (2-second intervals)
@@ -179,30 +307,64 @@ export async function runDiff(
     }, DIFF_MEMORY_POLL_INTERVAL_MS)
 
     try {
-    // Validate tables exist before running queries
-    const [tableAExists, tableBExists] = await Promise.all([
-      tableExists(tableA),
-      tableExists(tableB),
-    ])
+    // Check if source is a Parquet snapshot
+    const isParquetSource = tableA.startsWith('parquet:')
+    const snapshotId = isParquetSource ? tableA.substring(8) : null // Remove 'parquet:' prefix
 
-    if (!tableAExists) {
-      throw new Error(`Table "${tableA}" does not exist`)
+    // 🟢 NEW: Register Parquet files IMMEDIATELY (before schema query)
+    let sourceTableExpr: string
+    if (isParquetSource) {
+      // Register files and get SQL expression (e.g., "read_parquet('original_abc.parquet')")
+      sourceTableExpr = await resolveTableRef(tableA)
+      console.log(`[Diff] Pre-registered Parquet source: ${sourceTableExpr}`)
+    } else {
+      sourceTableExpr = `"${tableA}"`
     }
+
+    // Validate tables exist (skip Parquet sources since they're already validated)
+    if (!isParquetSource) {
+      const tableAExists = await tableExists(tableA)
+      if (!tableAExists) {
+        throw new Error(`Table "${tableA}" does not exist`)
+      }
+    }
+    const tableBExists = await tableExists(tableB)
     if (!tableBExists) {
       throw new Error(`Table "${tableB}" does not exist`)
     }
 
-    // PRE-FLIGHT CHECK: Validate memory availability
+    // PRE-FLIGHT CHECK: Validate memory availability (skip for Parquet sources)
     const conn = await getConnection()
-    await validateDiffMemoryAvailability(conn, tableA, tableB)
+    if (!isParquetSource) {
+      await validateDiffMemoryAvailability(conn, tableA, tableB)
+    }
 
     // Get columns AND types from both tables
-    const colsA = await query<{ column_name: string; data_type: string }>(
-      `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tableA}' ORDER BY ordinal_position`
-    )
-    const colsB = await query<{ column_name: string; data_type: string }>(
+    let colsAAll: { column_name: string; data_type: string }[]
+    if (isParquetSource && snapshotId) {
+      // Read column info from Parquet file using glob pattern
+      // Matches both single files (snapshotId.parquet) and chunked files (snapshotId_part_*.parquet)
+      // IMPORTANT: Use root path (no /cleanslate/snapshots/ prefix) to match registration path
+      const globPattern = `${snapshotId}*.parquet`
+      const parquetColumns = await query<{ column_name: string; column_type: string }>(
+        `SELECT name AS column_name, type AS column_type FROM parquet_schema('${globPattern}')`
+      )
+      colsAAll = parquetColumns.map(c => ({
+        column_name: c.column_name,
+        data_type: c.column_type
+      }))
+    } else {
+      colsAAll = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tableA}' ORDER BY ordinal_position`
+      )
+    }
+    const colsBAll = await query<{ column_name: string; data_type: string }>(
       `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tableB}' ORDER BY ordinal_position`
     )
+
+    // Filter internal columns early to reduce memory overhead
+    const colsA = colsAAll.filter(c => !isInternalColumn(c.column_name))
+    const colsB = colsBAll.filter(c => !isInternalColumn(c.column_name))
 
     // Build type maps for quick lookup
     const typeMapA = new Map(colsA.map((c) => [c.column_name, c.data_type]))
@@ -253,31 +415,38 @@ export async function runDiff(
       .join(' AND ')
 
     // Build ORDER BY: only cast if types are incompatible
-    const keyOrderBy = keyColumns
-      .map((c) => {
-        const typeA = typeMapA.get(c)
-        const typeB = typeMapB.get(c)
-        if (typeA && typeB && typesCompatible(typeA, typeB)) {
-          return `COALESCE("a_${c}", "b_${c}")`
-        } else {
-          return `COALESCE(CAST("a_${c}" AS VARCHAR), CAST("b_${c}" AS VARCHAR))`
-        }
-      })
-      .join(', ')
+    // In preview mode, if no keys provided, use _cs_id for sorting
+    const keyOrderBy = diffMode === 'preview' && keyColumns.length === 0
+      ? 'COALESCE(a."_cs_id", b."_cs_id")'
+      : keyColumns
+          .map((c) => {
+            const typeA = typeMapA.get(c)
+            const typeB = typeMapB.get(c)
+            if (typeA && typeB && typesCompatible(typeA, typeB)) {
+              return `COALESCE("a_${c}", "b_${c}")`
+            } else {
+              return `COALESCE(CAST("a_${c}" AS VARCHAR), CAST("b_${c}" AS VARCHAR))`
+            }
+          })
+          .join(', ')
 
     // Columns that exist in A (source/original) but not in B (target/current)
     // From user's perspective: these columns were REMOVED from current
-    const newColumns = [...colsASet].filter((c) => !colsBSet.has(c))
+    const newColumns = [...colsASet]
+      .filter((c) => !colsBSet.has(c))
+      .filter((c) => !isInternalColumn(c))
     // Columns that exist in B (target/current) but not in A (source/original)
     // From user's perspective: these columns were ADDED to current (e.g., 'age' from Calculate Age)
-    const removedColumns = [...colsBSet].filter((c) => !colsASet.has(c))
+    const removedColumns = [...colsBSet]
+      .filter((c) => !colsASet.has(c))
+      .filter((c) => !isInternalColumn(c))
 
     const allColumns = [
       ...new Set([
         ...colsA.map((c) => c.column_name),
         ...colsB.map((c) => c.column_name),
       ]),
-    ]
+    ]  // Already filtered at source
     // For modification detection, only compare columns that exist in BOTH tables
     // Columns unique to one table are tracked as newColumns/removedColumns
     const sharedColumns = allColumns.filter((c) => colsASet.has(c) && colsBSet.has(c))
@@ -309,20 +478,40 @@ export async function runDiff(
     // - diff_status: 'added' | 'removed' | 'modified' | 'unchanged'
     //
     // Actual column data is fetched on-demand during pagination via LEFT JOIN
-    const createTempTableQuery = `
-      CREATE TEMP TABLE "${diffTableName}" AS
-      SELECT
-        COALESCE(a."_cs_id", b."_cs_id") as row_id,
-        a."_cs_id" as a_row_id,
-        b."_cs_id" as b_row_id,
+    // sourceTableExpr already defined and cached at line 285 (files registered early)
+
+    // Determine JOIN condition and CASE logic based on diff mode
+    const diffJoinCondition = diffMode === 'preview'
+      ? `a."_cs_id" = b."_cs_id"`  // Row-based for preview (detects removed duplicates)
+      : joinCondition  // Key-based for two-tables (uses user-selected keys)
+
+    const diffCaseLogic = diffMode === 'preview'
+      ? `
+        CASE
+          WHEN a."_cs_id" IS NULL THEN 'added'
+          WHEN b."_cs_id" IS NULL THEN 'removed'
+          WHEN ${sharedColModificationExpr} THEN 'modified'
+          ELSE 'unchanged'
+        END as diff_status
+      `
+      : `
         CASE
           WHEN ${keyColumns.map((c) => `a."${c}" IS NULL`).join(' AND ')} THEN 'added'
           WHEN ${keyColumns.map((c) => `b."${c}" IS NULL`).join(' AND ')} THEN 'removed'
           WHEN ${sharedColModificationExpr} THEN 'modified'
           ELSE 'unchanged'
         END as diff_status
-      FROM "${tableA}" a
-      FULL OUTER JOIN "${tableB}" b ON ${joinCondition}
+      `
+
+    const createTempTableQuery = `
+      CREATE TEMP TABLE "${diffTableName}" AS
+      SELECT
+        COALESCE(a."_cs_id", b."_cs_id") as row_id,
+        a."_cs_id" as a_row_id,
+        b."_cs_id" as b_row_id,
+        ${diffCaseLogic}
+      FROM ${sourceTableExpr} a
+      FULL OUTER JOIN "${tableB}" b ON ${diffJoinCondition}
     `
 
     try {
@@ -465,6 +654,9 @@ export async function fetchDiffPage(
   keyOrderBy: string,
   storageType: 'memory' | 'parquet' = 'memory'
 ): Promise<DiffRow[]> {
+  // Use robust resolver to handle Parquet sources with file existence checks and registration
+  const sourceTableExpr = await resolveTableRef(sourceTableName)
+
   // Build select columns: a_col and b_col for each column
   // CRITICAL: Handle new/removed columns by selecting NULL for missing sides
   // - If column only in A (newColumns): select a."col" and NULL for b_col
@@ -499,29 +691,38 @@ export async function fetchDiffPage(
       isChunked = false
     }
 
+    // Skip registration if already done (prevents OPFS file locking errors on pagination)
+    const needsRegistration = !registeredDiffTables.has(tempTableName)
+
     try {
       if (isChunked) {
-        // Register all chunk files
+        // Register all chunk files (only if not already registered)
         let partIndex = 0
         const fileHandles: FileSystemFileHandle[] = []
 
-        while (true) {
-          try {
-            const fileName = `${tempTableName}_part_${partIndex}.parquet`
-            const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-            fileHandles.push(fileHandle)
+        if (needsRegistration) {
+          while (true) {
+            try {
+              const fileName = `${tempTableName}_part_${partIndex}.parquet`
+              const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+              fileHandles.push(fileHandle)
 
-            await db.registerFileHandle(
-              fileName,
-              fileHandle,
-              duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-              false  // read-only
-            )
+              await db.registerFileHandle(
+                fileName,
+                fileHandle,
+                duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+                false  // read-only
+              )
 
-            partIndex++
-          } catch {
-            break // No more chunks
+              partIndex++
+            } catch {
+              break // No more chunks
+            }
           }
+
+          // Mark as registered after successful registration
+          registeredDiffTables.add(tempTableName)
+          console.log(`[Diff] Registered ${partIndex} diff table chunks: ${tempTableName}`)
         }
 
         // Query all chunks with glob pattern
@@ -531,7 +732,7 @@ export async function fetchDiffPage(
             d.row_id,
             ${selectCols}
           FROM read_parquet('${tempTableName}_part_*.parquet') d
-          LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+          LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
           LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.diff_status, ${keyOrderBy}
@@ -545,16 +746,21 @@ export async function fetchDiffPage(
 
         return result
       } else {
-        // Single file - original logic
-        const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
+        // Single file - register only once
+        if (needsRegistration) {
+          const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
 
-        // Register for this query only
-        await db.registerFileHandle(
-          `${tempTableName}.parquet`,
-          fileHandle,
-          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-          false  // read-only
-        )
+          await db.registerFileHandle(
+            `${tempTableName}.parquet`,
+            fileHandle,
+            duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+            false  // read-only
+          )
+
+          // Mark as registered after successful registration
+          registeredDiffTables.add(tempTableName)
+          console.log(`[Diff] Registered diff table: ${tempTableName}`)
+        }
 
         // Query Parquet file directly with pagination
         const result = await query<DiffRow>(`
@@ -563,41 +769,18 @@ export async function fetchDiffPage(
             d.row_id,
             ${selectCols}
           FROM read_parquet('${tempTableName}.parquet') d
-          LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+          LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
           LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.diff_status, ${keyOrderBy}
           LIMIT ${limit} OFFSET ${offset}
         `)
 
-        // Unregister after query
-        await db.dropFile(`${tempTableName}.parquet`)
-
         return result
       }
     } catch (error) {
-      // Cleanup on error - unregister any registered files
-      if (isChunked) {
-        try {
-          let partIndex = 0
-          while (true) {
-            try {
-              await db.dropFile(`${tempTableName}_part_${partIndex}.parquet`)
-              partIndex++
-            } catch {
-              break
-            }
-          }
-        } catch {
-          // Ignore cleanup errors
-        }
-      } else {
-        try {
-          await db.dropFile(`${tempTableName}.parquet`)
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
+      // No cleanup needed - files stay registered for next pagination call
+      // Cleanup only happens in cleanupDiffTable() when diff view is closed
       throw error
     }
   }
@@ -609,7 +792,7 @@ export async function fetchDiffPage(
       d.row_id,
       ${selectCols}
     FROM "${tempTableName}" d
-    LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
     LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
     WHERE d.diff_status IN ('added', 'removed', 'modified')
     ORDER BY d.diff_status, ${keyOrderBy}
@@ -621,6 +804,50 @@ export async function fetchDiffPage(
  * Clean up the temp diff table.
  * Note: If user crashes/reloads, temp table dies automatically (DuckDB WASM memory is volatile).
  */
+/**
+ * Unregister source snapshot files from DuckDB after diff completes.
+ * This cleans up file handles registered by resolveTableRef.
+ */
+export async function cleanupDiffSourceFiles(sourceTableName: string): Promise<void> {
+  if (!sourceTableName.startsWith('parquet:')) {
+    return // Not a Parquet source, nothing to cleanup
+  }
+
+  try {
+    const db = await initDuckDB()
+    const snapshotId = sourceTableName.replace('parquet:', '')
+
+    // Try to unregister single file
+    try {
+      await db.dropFile(`${snapshotId}.parquet`)
+      console.log(`[Diff] Unregistered source file: ${snapshotId}.parquet`)
+    } catch {
+      // Might be chunked, try chunks
+    }
+
+    // Try to unregister chunked files
+    let partIndex = 0
+    while (true) {
+      try {
+        await db.dropFile(`${snapshotId}_part_${partIndex}.parquet`)
+        partIndex++
+      } catch {
+        break // No more chunks
+      }
+    }
+
+    if (partIndex > 0) {
+      console.log(`[Diff] Unregistered ${partIndex} source file chunks for: ${snapshotId}`)
+    }
+
+    // Remove from registered set
+    registeredParquetSnapshots.delete(snapshotId)
+    console.log(`[Diff] Cleared registration state for ${snapshotId}`)
+  } catch (error) {
+    console.warn('[Diff] Source file cleanup failed (non-fatal):', error)
+  }
+}
+
 export async function cleanupDiffTable(
   tableName: string,
   storageType: 'memory' | 'parquet' = 'memory'
@@ -653,7 +880,10 @@ export async function cleanupDiffTable(
 
       // Delete from OPFS (deleteParquetSnapshot handles both single and chunked)
       await deleteParquetSnapshot(tableName)
-      console.log(`[Diff] Cleaned up Parquet file(s): ${tableName}`)
+
+      // Remove from registered set
+      registeredDiffTables.delete(tableName)
+      console.log(`[Diff] Cleaned up Parquet file(s) and cleared registration: ${tableName}`)
     }
   } catch (error) {
     console.warn('[Diff] Cleanup failed (non-fatal):', error)

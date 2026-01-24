@@ -303,6 +303,11 @@ export function DataGrid({
       let newCellValue: unknown
       if (newValue.kind === GridCellKind.Text) {
         newCellValue = newValue.data
+        // Convert empty strings to null (users clearing a cell expect NULL, not '')
+        // This prevents "Could not convert string '' to INT64" errors
+        if (newCellValue === '') {
+          newCellValue = null
+        }
       } else {
         return // Only handle text cells for now
       }

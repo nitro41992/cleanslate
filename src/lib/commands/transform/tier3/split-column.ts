@@ -97,6 +97,24 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
 
     // Check if batching is needed
     if (ctx.batchMode) {
+      // Construct the "after" expression based on split mode
+      let afterExpression: string
+      if (mode === 'position') {
+        const pos = this.params.position || 3
+        afterExpression = `substring(CAST(${quoteColumn(col)} AS VARCHAR), 1, ${pos})`
+      } else if (mode === 'length') {
+        const len = this.params.length || 2
+        afterExpression = `substring(CAST(${quoteColumn(col)} AS VARCHAR), 1, ${len})`
+      } else {
+        // Delimiter mode
+        let delimiter = this.params.delimiter || ' '
+        if (delimiter.trim().length > 0) {
+          delimiter = delimiter.trim()
+        }
+        const escapedDelim = escapeSqlString(delimiter)
+        afterExpression = `string_split(CAST(${quoteColumn(col)} AS VARCHAR), '${escapedDelim}')[1]`
+      }
+
       return runBatchedTransform(
         ctx,
         // Transform query (adds new columns)
@@ -104,7 +122,7 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
          FROM "${tableName}"`,
         // Sample query (captures original value and first split part for first 1000 rows)
         `SELECT ${quoteColumn(col)} as before,
-                ${partColumns.split(',')[0].split(' as ')[0].trim()} as after
+                ${afterExpression} as after
          FROM "${tableName}"
          WHERE ${quoteColumn(col)} IS NOT NULL AND TRIM(CAST(${quoteColumn(col)} AS VARCHAR)) != ''
          LIMIT 1000`

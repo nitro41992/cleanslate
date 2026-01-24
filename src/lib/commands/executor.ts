@@ -192,7 +192,26 @@ export class CommandExecutor implements ICommandExecutor {
         console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
       }
 
-      // Step 3: Pre-snapshot for Tier 3 OR batched Tier 1 (delegated to timeline system)
+      // Step 3: Initialize timeline for ALL commands (Tier 1, 2, 3) to ensure original snapshot exists
+      // This enables diff functionality even after manual edits (Tier 2)
+      const timelineStoreState = useTimelineStore.getState()
+      let existingTimeline = timelineStoreState.getTimeline(tableId)
+
+      // Create timeline if it doesn't exist yet
+      if (!existingTimeline && !skipTimeline) {
+        const { initializeTimeline } = await import('@/lib/timeline-engine')
+        await initializeTimeline(tableId, ctx.table.name)
+        existingTimeline = timelineStoreState.getTimeline(tableId)
+        console.log(`[Executor] Initialized timeline for ${ctx.table.name} (tier ${tier})`)
+      } else if (existingTimeline && !existingTimeline.originalSnapshotName && !skipTimeline) {
+        // Timeline exists but no original snapshot yet - create it
+        const { createTimelineOriginalSnapshot } = await import('@/lib/timeline-engine')
+        const snapshotName = await createTimelineOriginalSnapshot(ctx.table.name, existingTimeline.id)
+        timelineStoreState.updateTimelineOriginalSnapshot(tableId, snapshotName)
+        console.log(`[Executor] Created missing original snapshot: ${snapshotName}`)
+      }
+
+      // Step 3.5: Pre-snapshot for Tier 3 OR batched Tier 1 (delegated to timeline system)
       let snapshotMetadata: SnapshotMetadata | undefined
       const needsSnapshotForBatchedTier1 = tier === 1 && shouldBatch
       if ((needsSnapshot || needsSnapshotForBatchedTier1) && !skipTimeline) {
@@ -203,22 +222,8 @@ export class CommandExecutor implements ICommandExecutor {
           console.log(`[Executor] Created snapshot for batched Tier 1 operation (fallback undo strategy)`)
         }
 
-        // Get or create timeline
-        const timelineStoreState = useTimelineStore.getState()
-        let existingTimeline = timelineStoreState.getTimeline(tableId)
-
-        // Create timeline if it doesn't exist yet
-        if (!existingTimeline) {
-          // Create with empty snapshot name initially
-          const { initializeTimeline } = await import('@/lib/timeline-engine')
-          const timelineId = await initializeTimeline(tableId, ctx.table.name)
-          existingTimeline = timelineStoreState.getTimeline(tableId)
-        } else if (!existingTimeline.originalSnapshotName) {
-          // Timeline exists but no original snapshot set yet
-          const { createTimelineOriginalSnapshot } = await import('@/lib/timeline-engine')
-          const snapshotName = await createTimelineOriginalSnapshot(ctx.table.name, existingTimeline.id)
-          timelineStoreState.updateTimelineOriginalSnapshot(tableId, snapshotName)
-        }
+        // Timeline was already initialized above, fetch it
+        existingTimeline = timelineStoreState.getTimeline(tableId)
 
         // Call timeline engine's createStepSnapshot for Parquet-backed snapshots
         // This creates a snapshot of the CURRENT state (before the new command is applied)

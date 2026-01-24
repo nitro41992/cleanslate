@@ -17,9 +17,8 @@ import { useTableStore } from '@/stores/tableStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
-import { runDiff, cleanupDiffTable } from '@/lib/diff-engine'
-import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists, dropTable } from '@/lib/duckdb'
-import { restoreTimelineOriginalSnapshot } from '@/lib/timeline-engine'
+import { runDiff, cleanupDiffTable, cleanupDiffSourceFiles } from '@/lib/diff-engine'
+import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
 import { toast } from 'sonner'
 
 interface DiffViewProps {
@@ -81,25 +80,31 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose])
 
-  // Cleanup temp table when component unmounts or when starting new comparison
+  // Cleanup temp table and source files when component unmounts
   useEffect(() => {
     return () => {
       if (diffTableName) {
         cleanupDiffTable(diffTableName, storageType || 'memory')
       }
+      if (sourceTableName) {
+        cleanupDiffSourceFiles(sourceTableName)
+      }
     }
-  }, [diffTableName, storageType])
+  }, [diffTableName, sourceTableName, storageType])
 
   const handleRunDiff = useCallback(async () => {
-    if (keyColumns.length === 0) return
+    // Only require key columns for two-tables mode (preview uses _cs_id internally)
+    if (mode === 'compare-tables' && keyColumns.length === 0) return
 
-    // Cleanup previous temp table if exists
+    // Cleanup previous temp table and source files if exists
     if (diffTableName) {
       await cleanupDiffTable(diffTableName, storageType || 'memory')
     }
+    if (sourceTableName) {
+      await cleanupDiffSourceFiles(sourceTableName)
+    }
 
     setIsComparing(true)
-    let tempOriginalTableName: string | null = null
     try {
       let sourceTableName: string
       let targetTableName: string
@@ -122,12 +127,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           if (timeline?.originalSnapshotName) {
             const originalSnapshotName = timeline.originalSnapshotName
 
-            // Handle Parquet-backed original snapshots
+            // Use the Parquet path directly (don't create temp table)
+            // fetchDiffPage will handle reading from Parquet on-demand
             if (originalSnapshotName.startsWith('parquet:')) {
-              // Import from Parquet to temp table for diff
-              tempOriginalTableName = `_temp_diff_original_${Date.now()}`
-              await restoreTimelineOriginalSnapshot(tempOriginalTableName, originalSnapshotName)
-              sourceTableName = tempOriginalTableName
+              sourceTableName = originalSnapshotName
             } else {
               // Use in-memory snapshot directly
               const timelineSnapshotExists = await tableExists(originalSnapshotName)
@@ -158,9 +161,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       // - newColumns = columns in A but not B = columns REMOVED from current
       // - removedColumns = columns in B but not A = columns ADDED to current (user's "new columns")
       const config = await runDiff(
-        sourceTableName,   // original snapshot (A)
+        sourceTableName,   // original snapshot (A) - may be "parquet:snapshot_abc"
         targetTableName,   // current table (B)
-        keyColumns
+        keyColumns,
+        mode === 'compare-preview' ? 'preview' : 'two-tables'  // Row-based for preview, key-based for two-tables
       )
 
       setDiffConfig({
@@ -185,28 +189,12 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         description: error instanceof Error ? error.message : 'An error occurred',
       })
     } finally {
-      // Cleanup temp table if we imported from Parquet
-      if (tempOriginalTableName) {
-        await dropTable(tempOriginalTableName)
-
-        // VACUUM to immediately reclaim RAM from dropped temp table
-        // Without this, dead rows stay in memory (~1.5GB for 1M row table)
-        try {
-          const { execute } = await import('@/lib/duckdb')
-          const vacuumStart = performance.now()
-          await execute('VACUUM')
-          const vacuumTime = performance.now() - vacuumStart
-          console.log(`[Diff] VACUUM after temp table drop completed in ${vacuumTime.toFixed(0)}ms`)
-        } catch (err) {
-          console.warn('[Diff] VACUUM failed (non-fatal):', err)
-        }
-      }
       setIsComparing(false)
     }
-  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, setIsComparing, setDiffConfig, getTimeline])
+  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, sourceTableName, storageType, setIsComparing, setDiffConfig, getTimeline])
 
   const handleNewComparison = useCallback(async () => {
-    // Cleanup current temp table
+    // Cleanup current temp table and source files
     if (diffTableName) {
       await cleanupDiffTable(diffTableName, storageType || 'memory')
 
@@ -223,13 +211,16 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           console.warn('[Diff] VACUUM failed (non-fatal):', err)
         }
       }
+    }
+    if (sourceTableName) {
+      await cleanupDiffSourceFiles(sourceTableName)
     }
     clearResults()
     setKeyColumns([])
-  }, [diffTableName, storageType, clearResults, setKeyColumns])
+  }, [diffTableName, sourceTableName, storageType, clearResults, setKeyColumns])
 
   const handleClose = useCallback(async () => {
-    // Cleanup temp table on close
+    // Cleanup temp table and source files on close
     if (diffTableName) {
       await cleanupDiffTable(diffTableName, storageType || 'memory')
 
@@ -247,9 +238,12 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         }
       }
     }
+    if (sourceTableName) {
+      await cleanupDiffSourceFiles(sourceTableName)
+    }
     reset()
     onClose()
-  }, [diffTableName, storageType, reset, onClose])
+  }, [diffTableName, sourceTableName, storageType, reset, onClose])
 
   if (!open) return null
 
