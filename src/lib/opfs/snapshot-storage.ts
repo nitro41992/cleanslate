@@ -82,16 +82,21 @@ export async function exportTableToParquet(
       )
 
       // Export chunk (only buffers batchSize rows)
-      await conn.query(`
-        COPY (
-          SELECT * FROM "${tableName}"
-          LIMIT ${batchSize} OFFSET ${offset}
-        ) TO '${fileName}'
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-      `)
+      try {
+        await conn.query(`
+          COPY (
+            SELECT * FROM "${tableName}"
+            LIMIT ${batchSize} OFFSET ${offset}
+          ) TO '${fileName}'
+          (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+        `)
 
-      // Unregister file handle after write
-      await db.dropFile(fileName)
+        // CRITICAL: Flush DuckDB write buffers to OPFS before unregistering
+        await db.flushFiles()
+      } finally {
+        // Unregister file handle after write (always cleanup to prevent leaks)
+        await db.dropFile(fileName)
+      }
 
       offset += batchSize
       partIndex++
@@ -111,10 +116,18 @@ export async function exportTableToParquet(
       true
     )
 
-    await conn.query(`
-      COPY "${tableName}" TO '${fileName}'
-      (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-    `)
+    try {
+      await conn.query(`
+        COPY "${tableName}" TO '${fileName}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+      `)
+
+      // CRITICAL: Flush DuckDB write buffers to OPFS before unregistering
+      await db.flushFiles()
+    } finally {
+      // Unregister file handle after write (always cleanup to prevent leaks)
+      await db.dropFile(fileName)
+    }
 
     console.log(`[Snapshot] Exported to ${fileName}`)
   }
