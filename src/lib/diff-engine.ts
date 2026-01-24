@@ -406,11 +406,8 @@ export async function runDiff(
       const db = await initDuckDB()
       const conn = await getConnection()
 
-      // Export narrow temp table to Parquet
+      // Export narrow temp table to Parquet (file handles are dropped inside exportTableToParquet)
       await exportTableToParquet(db, conn, diffTableName, diffTableName)
-
-      // Drop file handle (critical for cleanup)
-      await db.dropFile(`${diffTableName}.parquet`)
 
       // Drop in-memory temp table (free RAM immediately)
       await execute(`DROP TABLE "${diffTableName}"`)

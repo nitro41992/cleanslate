@@ -121,7 +121,10 @@ export async function exportTableToParquet(
 
     try {
       await conn.query(`
-        COPY "${tableName}" TO '${fileName}'
+        COPY (
+          SELECT * FROM "${tableName}"
+          ORDER BY "${CS_ID_COLUMN}"
+        ) TO '${fileName}'
         (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
       `)
 
