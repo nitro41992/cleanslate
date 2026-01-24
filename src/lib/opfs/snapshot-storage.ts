@@ -261,6 +261,37 @@ export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
 }
 
 /**
+ * Check if a Parquet snapshot file exists in OPFS
+ * Handles both single files and chunked files
+ *
+ * @param snapshotId - Unique snapshot identifier (e.g., "original_abc123")
+ * @returns true if snapshot exists (single or chunked), false otherwise
+ */
+export async function checkSnapshotFileExists(snapshotId: string): Promise<boolean> {
+  try {
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+    // Check for single file
+    try {
+      await snapshotsDir.getFileHandle(`${snapshotId}.parquet`, { create: false })
+      return true
+    } catch {
+      // Check for chunked files (part_0 indicates chunked snapshot exists)
+      try {
+        await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+        return true
+      } catch {
+        return false
+      }
+    }
+  } catch {
+    return false
+  }
+}
+
+/**
  * List all Parquet snapshots in OPFS
  */
 export async function listParquetSnapshots(): Promise<string[]> {
