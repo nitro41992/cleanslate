@@ -389,6 +389,9 @@ export async function runDiff(
  * This function fetches visible rows and JOINs to original tables for actual data.
  * Memory per page: ~3 MB (500 rows × 60 cols) vs ~12 GB for full materialized table!
  *
+ * MEMORY LEAK FIX: Column lists are now passed as parameters instead of querying
+ * information_schema on every page. This eliminates Arrow buffer leaks that caused OOM.
+ *
  * Note: We use LIMIT/OFFSET instead of keyset pagination because:
  * - Keyset via _row_num creates gaps when filtering (row 1001 might be first non-unchanged)
  * - DuckDB handles OFFSET efficiently on large datasets
@@ -398,39 +401,24 @@ export async function fetchDiffPage(
   tempTableName: string,
   sourceTableName: string,
   targetTableName: string,
+  allColumns: string[],
+  newColumns: string[],
+  removedColumns: string[],
   offset: number,
   limit: number = 500,
   keyOrderBy: string
 ): Promise<DiffRow[]> {
-  // Get schema info for building SELECT clause
-  const conn = await getConnection()
-  const colsAResult = await conn.query(
-    `SELECT column_name FROM information_schema.columns WHERE table_name = '${sourceTableName}' ORDER BY ordinal_position`
-  )
-  const colsBResult = await conn.query(
-    `SELECT column_name FROM information_schema.columns WHERE table_name = '${targetTableName}' ORDER BY ordinal_position`
-  )
-
-  const colsASet = new Set(
-    colsAResult.toArray().map(r => {
-      const row = r.toJSON() as Record<string, unknown>
-      return row.column_name as string
-    })
-  )
-  const colsBSet = new Set(
-    colsBResult.toArray().map(r => {
-      const row = r.toJSON() as Record<string, unknown>
-      return row.column_name as string
-    })
-  )
-  const allColumns = [...new Set([...colsASet, ...colsBSet])]
-
   // Build select columns: a_col and b_col for each column
-  // Use NULL for columns that don't exist in one of the tables
+  // CRITICAL: Handle new/removed columns by selecting NULL for missing sides
+  // - If column only in A (newColumns): select a."col" and NULL for b_col
+  // - If column only in B (removedColumns): select NULL for a_col and b."col"
+  // - If column in both: select both a."col" and b."col"
   const selectCols = allColumns
     .map((c) => {
-      const aExpr = colsASet.has(c) ? `a."${c}"` : 'NULL'
-      const bExpr = colsBSet.has(c) ? `b."${c}"` : 'NULL'
+      const inA = !removedColumns.includes(c)  // Column exists in A if not in removedColumns
+      const inB = !newColumns.includes(c)       // Column exists in B if not in newColumns
+      const aExpr = inA ? `a."${c}"` : 'NULL'
+      const bExpr = inB ? `b."${c}"` : 'NULL'
       return `${aExpr} as "a_${c}", ${bExpr} as "b_${c}"`
     })
     .join(', ')
@@ -472,12 +460,25 @@ export async function* streamDiffResults(
   tempTableName: string,
   sourceTableName: string,
   targetTableName: string,
+  allColumns: string[],
+  newColumns: string[],
+  removedColumns: string[],
   keyOrderBy: string,
   chunkSize: number = 10000
 ): AsyncGenerator<DiffRow[], void, unknown> {
   let offset = 0
   while (true) {
-    const chunk = await fetchDiffPage(tempTableName, sourceTableName, targetTableName, offset, chunkSize, keyOrderBy)
+    const chunk = await fetchDiffPage(
+      tempTableName,
+      sourceTableName,
+      targetTableName,
+      allColumns,
+      newColumns,
+      removedColumns,
+      offset,
+      chunkSize,
+      keyOrderBy
+    )
     if (chunk.length === 0) break
     yield chunk
     offset += chunkSize

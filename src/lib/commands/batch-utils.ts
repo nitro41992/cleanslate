@@ -44,7 +44,10 @@ export async function runBatchedTransform(
 
   if (sampleQuery) {
     try {
-      const sampleResult = await conn.query(`${sampleQuery} LIMIT 1000`)
+      // Only add LIMIT if not already present (some callers include it already)
+      const hasLimit = /LIMIT\s+\d+/i.test(sampleQuery)
+      const query = hasLimit ? sampleQuery : `${sampleQuery} LIMIT 1000`
+      const sampleResult = await conn.query(query)
       sampleChanges = sampleResult.toArray().map(row => {
         const json = row.toJSON()
         return {

@@ -269,6 +269,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                 summary={summary}
                 allColumns={allColumns}
                 keyColumns={keyColumns}
+                newColumns={newColumns}
+                removedColumns={removedColumns}
                 tableAName={mode === 'compare-preview' ? activeTableInfo?.name || '' : tableAInfo?.name || ''}
                 tableBName={mode === 'compare-preview' ? activeTableInfo?.name || '' : tableBInfo?.name || ''}
                 totalRows={totalDiffRows}

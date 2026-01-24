@@ -19,6 +19,8 @@ interface DiffExportMenuProps {
   summary: DiffSummary
   allColumns: string[]
   keyColumns: string[]
+  newColumns: string[]
+  removedColumns: string[]
   tableAName: string
   tableBName: string
   totalRows: number
@@ -33,6 +35,8 @@ export function DiffExportMenu({
   summary,
   allColumns,
   keyColumns,
+  newColumns,
+  removedColumns,
   tableAName,
   tableBName,
   totalRows,
@@ -51,7 +55,7 @@ export function DiffExportMenu({
 
       // Stream chunks
       let exportedCount = 0
-      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy)) {
+      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy)) {
         for (const row of chunk) {
           const line = formatRowAsCSV(row, allColumns, keyColumns)
           csvLines.push(line)
@@ -92,7 +96,7 @@ export function DiffExportMenu({
       }> = []
 
       // Stream chunks
-      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy)) {
+      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy)) {
         for (const row of chunk) {
           const status = row.diff_status
           const rowA: Record<string, unknown> = {}
@@ -161,7 +165,7 @@ export function DiffExportMenu({
 
       // Only copy first 100 rows for clipboard
       let count = 0
-      outer: for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy, 100)) {
+      outer: for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy, 100)) {
         for (const row of chunk) {
           if (count >= 100) break outer
 
