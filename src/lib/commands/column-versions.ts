@@ -157,6 +157,8 @@ export function getOriginalFromBase(baseColumnName: string): string | null {
  *
  * This is called when expression stack reaches COLUMN_MATERIALIZATION_THRESHOLD
  * to prevent expressions from growing too large and impacting performance.
+ *
+ * MEMORY OPTIMIZATION: Exports snapshot to Parquet instead of keeping in RAM
  */
 async function materializeColumn(
   db: {
@@ -171,9 +173,33 @@ async function materializeColumn(
   const snapshotName = `_mat_${tableName}_${column}_${Date.now()}`
   await duplicateTable(tableName, snapshotName, true)
 
-  // Store materialization info for potential undo
-  versionInfo.materializationSnapshot = snapshotName
-  versionInfo.materializationPosition = versionInfo.expressionStack.length
+  // MEMORY OPTIMIZATION: Export snapshot to Parquet and drop from RAM
+  // This preserves undo functionality while freeing memory
+  try {
+    const { initDuckDB, getConnection } = await import('@/lib/duckdb')
+    const { exportTableToParquet } = await import('@/lib/opfs/snapshot-storage')
+
+    const duckdb = await initDuckDB()
+    const conn = await getConnection()
+    const snapshotId = `mat_${tableName}_${column}_${Date.now()}`
+
+    // Export to OPFS Parquet
+    await exportTableToParquet(duckdb, conn, snapshotName, snapshotId)
+
+    // Drop the in-memory duplicate (snapshot now in OPFS)
+    await dropTable(snapshotName)
+    console.log(`[Materialization] Exported snapshot to OPFS, dropped from RAM`)
+
+    // Store Parquet reference for potential undo
+    versionInfo.materializationSnapshot = `parquet:${snapshotId}`
+    versionInfo.materializationPosition = versionInfo.expressionStack.length
+
+  } catch (error) {
+    // On failure, keep in-memory snapshot as fallback
+    console.error('[Materialization] Parquet export failed, keeping in-memory snapshot:', error)
+    versionInfo.materializationSnapshot = snapshotName
+    versionInfo.materializationPosition = versionInfo.expressionStack.length
+  }
 
   // Materialize: copy current computed value to base column
   // This uses CTAS pattern for DuckDB WASM compatibility
@@ -390,7 +416,14 @@ export function createColumnVersionManager(
           // At materialization boundary - cannot undo past this point
           // Clean up the materialization snapshot since we're at the limit
           if (versionInfo.materializationSnapshot) {
-            await dropTable(versionInfo.materializationSnapshot).catch(() => {})
+            // Handle both Parquet and in-memory snapshots
+            if (versionInfo.materializationSnapshot.startsWith('parquet:')) {
+              const snapshotId = versionInfo.materializationSnapshot.replace('parquet:', '')
+              const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+              await deleteParquetSnapshot(snapshotId).catch(() => {})
+            } else {
+              await dropTable(versionInfo.materializationSnapshot).catch(() => {})
+            }
             versionInfo.materializationSnapshot = undefined
             versionInfo.materializationPosition = undefined
           }
@@ -431,7 +464,14 @@ export function createColumnVersionManager(
 
           // Clean up materialization snapshot if it exists
           if (versionInfo.materializationSnapshot) {
-            await dropTable(versionInfo.materializationSnapshot).catch(() => {})
+            // Handle both Parquet and in-memory snapshots
+            if (versionInfo.materializationSnapshot.startsWith('parquet:')) {
+              const snapshotId = versionInfo.materializationSnapshot.replace('parquet:', '')
+              const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+              await deleteParquetSnapshot(snapshotId).catch(() => {})
+            } else {
+              await dropTable(versionInfo.materializationSnapshot).catch(() => {})
+            }
           }
 
           // Remove from version store

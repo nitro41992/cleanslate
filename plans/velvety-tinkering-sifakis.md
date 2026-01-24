@@ -1,466 +1,819 @@
-# CRITICAL: Fix DuckDB Parquet Flush to OPFS
+# Memory Pruning: Drop Snapshot Tables After Parquet Export
 
-**Status:** 🔴 CRITICAL BUG
+**Status:** ✅ IMPLEMENTED
 **Branch:** `opfs-ux-polish`
 **Date:** January 24, 2026
-**Discovered:** User testing after hotfix merge
-**Impact:** ALL Parquet snapshots are 0 bytes - RAM optimizations completely non-functional
+**Parent Issue:** Parquet export fix (completed)
+**Impact:** RAM should reduce from 2.2GB → 1.5GB (active table only, all snapshots in OPFS)
 
 ---
 
-## TL;DR - The Fundamental Mistake
+## TL;DR - The Memory Leak
 
-**Current Code Assumes:** `registerFileHandle()` + `COPY TO parquet` writes directly to OPFS (like CSV does)
+**Current State:**
+- ✅ Parquet exports ARE working (88 MB in OPFS confirmed)
+- ❌ RAM stays at 2.2GB because temporary snapshot tables remain in memory
+- ❌ Multiple duplicate tables created but never dropped
 
-**Reality:** DuckDB-WASM's `COPY TO parquet` creates an **in-memory virtual file** that must be manually retrieved with `copyFileToBuffer()` and written to OPFS using File System Access API.
+**Root Cause:**
+1. Small table snapshots (<100k rows) create in-memory duplicates that are never dropped
+2. Temporary snapshot tables (`_custom_sql_before_*`, `_mat_*`) stay in memory indefinitely
+3. No automatic cleanup mechanism while table is active (only cleaned on table deletion)
 
-**Fix:** Remove all `registerFileHandle()` calls for Parquet exports and use the 4-step in-memory buffer pattern (COPY TO → copyFileToBuffer → write to OPFS → dropFile).
+**Solution:**
+- Drop small-table snapshot duplicates immediately after Parquet export
+- Add cleanup for temporary snapshot tables after operations complete
+- Implement memory-based snapshot pruning (keep only N most recent)
 
-**Impact:** ~50 lines of code simplified, RAM will drop from 2.2GB to 0.8GB after transformations.
-
-⚠️ **CRITICAL MEMORY WARNING:** `copyFileToBuffer()` copies data to JavaScript heap. Must NEVER be used on files > 250MB or browser will OOM crash. Chunking is mandatory for safety.
-
----
-
-## Problem Summary
-
-After implementing the duplicate snapshot hotfix, user testing revealed a **catastrophic failure**: All 74 Parquet snapshot files in OPFS are **0 bytes**. The entire Parquet-based RAM optimization strategy is non-functional.
-
-**Root Cause (DISCOVERED):** The current implementation attempts to use `registerFileHandle()` with BROWSER_FSACCESS to have DuckDB write directly to OPFS. **This pattern does NOT work for Parquet exports in DuckDB-WASM.**
-
-According to official DuckDB-WASM patterns ([Discussion #1714](https://github.com/duckdb/duckdb-wasm/discussions/1714), [duckdb-wasm-kit](https://github.com/holdenmatt/duckdb-wasm-kit/blob/main/src/files/exportFile.ts)), `COPY TO` creates an **in-memory virtual file**, not a direct write to registered handles. You must:
-1. Create in-memory file with `COPY TO`
-2. Retrieve buffer with `db.copyFileToBuffer()`
-3. Manually write buffer to OPFS using File System Access API
-4. Cleanup with `db.dropFile()`
-
-**Evidence:**
-- 74 Parquet files in OPFS, all showing 0 bytes
-- OPFS write test passes (permissions work)
-- Console errors: "Buffering missing file: tmp_snapshot_*.parquet" (DuckDB creating in-memory files, not finding registered handles)
-- RAM at 2.2GB instead of expected 0.8GB (data never leaves DuckDB memory)
+**Expected Impact:** 2.2GB → 1.5GB (Active table only, all snapshots in OPFS)
 
 ---
 
-## Investigation Results
+## Problem Analysis
 
-### Research Sources
-- [DuckDB-WASM Discussion #1714](https://github.com/duckdb/duckdb-wasm/discussions/1714) - "By default everything in WASM is in memory"
-- [duckdb-wasm-kit exportFile.ts](https://github.com/holdenmatt/duckdb-wasm-kit/blob/main/src/files/exportFile.ts) - Reference implementation
-- [DuckDB-WASM OPFS Test](https://github.com/duckdb/duckdb-wasm/blob/main/packages/duckdb-wasm/test/opfs.test.ts) - Official patterns
-- [voluntas/duckdb-wasm-parquet](https://github.com/voluntas/duckdb-wasm-parquet) - Real-world example
+### Memory Breakdown (1M row table after 1 transformation)
 
-### Current (WRONG) Implementation
+| Component | Size | Location | Issue |
+|-----------|------|----------|-------|
+| Active table (`my_table`) | 1.5 GB | DuckDB memory | ✅ Must stay (DataGrid displays this) |
+| Parquet original snapshot | 44 MB | OPFS disk | ✅ Correct |
+| Parquet step snapshot | 44 MB | OPFS disk | ✅ Correct |
+| **Small table duplicates** | 0-700 MB | DuckDB memory | ❌ Never dropped |
+| **Temporary snapshots** | 0-700 MB | DuckDB memory | ❌ Never dropped |
+| **Total RAM** | **2.2 GB** | | ❌ Should be 1.5 GB |
+
+### Snapshot Tables Found in Codebase
+
+**1. Timeline Snapshots (Small Tables <100k rows)**
+- `_timeline_original_{timelineId}` - Created in `timeline-engine.ts:95`
+- `_timeline_snapshot_{timelineId}_{stepIndex}` - Created in `timeline-engine.ts:166`
+- **Issue:** These stay in memory forever (until table deletion)
+
+**2. Temporary Operation Snapshots**
+- `_custom_sql_before_{timestamp}` - Created in `transformations.ts:1072`
+- `_mat_{tableName}_{column}_{timestamp}` - Created in `column-versions.ts:172`
+- **Issue:** Created for diff tracking but never cleaned up
+
+**3. User Checkpoints** (Not an issue)
+- `{tableName}_checkpoint_{timestamp}` - Created by user action
+- These are intentional and should stay
+
+---
+
+## Current Architecture Analysis
+
+### Where Snapshots Are Created
+
+#### **Large Tables (≥100k rows) - Parquet Path**
+
+**File:** `src/lib/timeline-engine.ts`
+
+**Original Snapshot (lines 77-88):**
 ```typescript
-// ❌ Attempting to write Parquet directly to registered OPFS handle
-const fileHandle = await snapshotsDir.getFileHandle('file.parquet', { create: true })
-await db.registerFileHandle('file.parquet', fileHandle, BROWSER_FSACCESS, true)
-await conn.query(`COPY (...) TO 'file.parquet' (FORMAT PARQUET)`)
-await db.flushFiles()  // ← Doesn't work for Parquet!
-await db.dropFile('file.parquet')
-// Result: 0 byte file in OPFS
+if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
+  const snapshotId = `original_${timelineId}`
+  await exportTableToParquet(db, conn, tableName, snapshotId)
+  return `parquet:${snapshotId}`
+}
+// No in-memory table created ✅
 ```
 
-**Why It Fails:** DuckDB-WASM's `COPY TO` for Parquet creates an **in-memory virtual file**, ignoring registered file handles. The official test suite only shows CSV exports working with `registerFileHandle()`, NOT Parquet.
-
-### Correct Pattern (from duckdb-wasm-kit)
+**Step Snapshot (lines 143-159):**
 ```typescript
-// ✅ COPY TO creates in-memory file
-await conn.query(`COPY (...) TO 'temp.parquet' (FORMAT PARQUET)`)
-
-// ✅ Retrieve buffer from memory
-const buffer = await db.copyFileToBuffer('temp.parquet')
-
-// ✅ Write to OPFS manually
-const fileHandle = await snapshotsDir.getFileHandle('final.parquet', { create: true })
-const writable = await fileHandle.createWritable()
-await writable.write(buffer)
-await writable.close()
-
-// ✅ Cleanup in-memory file
-await db.dropFile('temp.parquet')
+if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
+  const snapshotId = `snapshot_${timelineId}_${stepIndex}`
+  await exportTableToParquet(db, conn, tableName, snapshotId)
+  return `parquet:${snapshotId}`
+}
+// No in-memory table created ✅
 ```
+
+**Analysis:** Large tables don't create duplicates - they export directly from the active table. This is correct.
 
 ---
 
-## Solution: Use In-Memory Buffer Pattern
+#### **Small Tables (<100k rows) - In-Memory Path**
 
-**CRITICAL:** Remove all `registerFileHandle()` calls for Parquet exports. Use the correct 4-step pattern:
-1. `COPY TO` → creates in-memory virtual file
-2. `copyFileToBuffer()` → retrieves buffer from memory
-3. Write buffer to OPFS using File System Access API
-4. `dropFile()` → cleanup virtual file
+**Original Snapshot (lines 92-97):**
+```typescript
+const originalName = `_timeline_original_${timelineId}`
+const exists = await tableExists(originalName)
+if (!exists) {
+  await duplicateTable(tableName, originalName, true)  // ❌ 1.5 GB duplicate created
+}
+return originalName
+// Duplicate stays in memory forever ❌
+```
 
-### Architectural Changes
+**Step Snapshot (lines 163-175):**
+```typescript
+const snapshotName = getTimelineSnapshotName(timelineId, stepIndex)  // _timeline_snapshot_X_Y
+const exists = await tableExists(snapshotName)
+if (!exists) {
+  await duplicateTable(tableName, snapshotName, true)  // ❌ 1.5 GB duplicate created
+}
+// Register in store
+useTimelineStore.getState().createSnapshot(tableId, stepIndex, snapshotName)
+return snapshotName
+// Duplicate stays in memory forever ❌
+```
 
-**File:** `src/lib/opfs/snapshot-storage.ts`
+**Issue:** Small tables create in-memory duplicates that are NEVER dropped (even though they could be exported to Parquet and dropped).
 
-**Impact:** Complete rewrite of `exportTableToParquet()` function
+---
 
-### Current Broken Code (lines 46-164)
+#### **Temporary Snapshots**
 
-The current implementation has these fatal flaws:
-- ✗ Calls `registerFileHandle()` for Parquet files (doesn't work)
-- ✗ Attempts to use `db.flushFiles()` (only works for CSV)
-- ✗ Manual file copying with tmp_ prefix (unnecessary complexity)
-- ✗ `NoModificationAllowedError` when deleting registered files
+**Custom SQL (transformations.ts:1069-1090):**
+```typescript
+// Create before-snapshot for diff tracking
+const beforeSnapshotName = `_custom_sql_before_${Date.now()}`
+await duplicateTable(tableName, beforeSnapshotName, true)  // ❌ Created
 
-### New Implementation Pattern
+try {
+  // Execute custom SQL...
+  // Create diff view...
+  // Drop diff view ✅
+} finally {
+  await dropTable(beforeSnapshotName)  // ✅ Cleanup exists!
+}
+```
+
+**Analysis:** Custom SQL DOES have cleanup in a finally block (line 1089). So this might not be the issue.
+
+**Materialization (column-versions.ts:169-176):**
+```typescript
+// Create snapshot for undo safety
+const snapshotName = `_mat_${tableName}_${column}_${Date.now()}`
+await duplicateTable(tableName, snapshotName, true)  // ❌ Created
+
+// Store materialization info
+versionInfo.materializationSnapshot = snapshotName
+// ❌ No cleanup! Table stays in memory indefinitely
+```
+
+**Issue:** Materialization snapshots are created but never dropped.
+
+---
+
+### Where Snapshots Are Cleaned Up (Only on Table Deletion)
+
+**File:** `src/lib/timeline-engine.ts:523-561` (`cleanupTimelineSnapshots`)
 
 ```typescript
-export async function exportTableToParquet(
-  db: AsyncDuckDB,
-  conn: AsyncDuckDBConnection,
-  tableName: string,
-  snapshotId: string
-): Promise<void> {
-  await ensureSnapshotDir()
+export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
+  const timeline = store.getTimeline(tableId)
+  if (!timeline) return
 
-  // Check table size
-  const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-  const rowCount = Number(countResult.toArray()[0].toJSON().count)
-
-  console.log(`[Snapshot] Exporting ${tableName} (${rowCount.toLocaleString()} rows) to OPFS...`)
-
-  const root = await navigator.storage.getDirectory()
-  const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
-  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
-
-  const CHUNK_THRESHOLD = 250_000
-
-  // CRITICAL: Always chunk for tables > 250k rows to prevent JS heap OOM
-  // copyFileToBuffer() copies data to JS heap, so we must limit buffer size
-  if (rowCount > CHUNK_THRESHOLD) {
-    // Chunked export (safe for any table size)
-    const batchSize = CHUNK_THRESHOLD
-    let offset = 0
-    let partIndex = 0
-
-    while (offset < rowCount) {
-      const tempFileName = `temp_${snapshotId}_part_${partIndex}.parquet`
-      const finalFileName = `${snapshotId}_part_${partIndex}.parquet`
-
-      // 1. COPY TO in-memory file (DuckDB WASM memory)
-      await conn.query(`
-        COPY (
-          SELECT * FROM "${tableName}"
-          ORDER BY "${CS_ID_COLUMN}"
-          LIMIT ${batchSize} OFFSET ${offset}
-        ) TO '${tempFileName}'
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-      `)
-
-      // 2. Retrieve buffer from WASM memory → JS heap (~50MB compressed)
-      const buffer = await db.copyFileToBuffer(tempFileName)
-
-      // 3. Write to OPFS (buffer cleared after write)
-      const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-      const writable = await fileHandle.createWritable()
-      await writable.write(buffer)
-      await writable.close()
-
-      // 4. Cleanup virtual file in WASM
-      await db.dropFile(tempFileName)
-
-      offset += batchSize
-      partIndex++
-      console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
-    }
-
-    console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
+  // Drop original snapshot
+  if (timeline.originalSnapshotName.startsWith('parquet:')) {
+    await deleteParquetSnapshot(snapshotId)  // Deletes OPFS file
   } else {
-    // Single file export (ONLY safe for tables <= 250k rows)
-    // If rowCount == CHUNK_THRESHOLD, this path is safe (equality handled by > check above)
-    const tempFileName = `temp_${snapshotId}.parquet`
-    const finalFileName = `${snapshotId}.parquet`
+    await dropTable(timeline.originalSnapshotName)  // Drops in-memory table ✅
+  }
 
-    // 1. COPY TO in-memory file
-    await conn.query(`
-      COPY (
-        SELECT * FROM "${tableName}"
-        ORDER BY "${CS_ID_COLUMN}"
-      ) TO '${tempFileName}'
-      (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-    `)
-
-    // 2. Retrieve buffer from WASM → JS heap (safe: < 50MB)
-    const buffer = await db.copyFileToBuffer(tempFileName)
-
-    // 3. Write to OPFS
-    const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-    const writable = await fileHandle.createWritable()
-    await writable.write(buffer)
-    await writable.close()
-
-    // 4. Cleanup virtual file
-    await db.dropFile(tempFileName)
-
-    console.log(`[Snapshot] Exported to ${finalFileName}`)
+  // Drop all step snapshots
+  for (const snapshotName of timeline.snapshots.values()) {
+    if (snapshotName.startsWith('parquet:')) {
+      await deleteParquetSnapshot(snapshotId)
+    } else {
+      await dropTable(snapshotName)  // Drops in-memory tables ✅
+    }
   }
 }
 ```
 
-### Key Changes
-1. **Remove all `registerFileHandle()` calls** - not needed for exports
-2. **Add `db.copyFileToBuffer(tempFileName)`** - retrieve in-memory file
-3. **Use File System Access API directly** - `createWritable()` + `write(buffer)`
-4. **Simplify cleanup** - just `dropFile()` the temp virtual file
-5. **Remove tmp_ prefix handling** - no longer relevant
-6. **Add safety comments** - explain why chunking is mandatory (JS heap OOM prevention)
+**Trigger:** Only called when user explicitly deletes the table (`tableStore.ts:removeTable`)
 
-### Memory Safety Guarantees
-
-**Why Chunking is MANDATORY:**
-- `copyFileToBuffer()` copies data from WASM heap → JavaScript heap
-- Large buffers (>250MB) cause browser OOM crashes
-- Chunking limits each buffer to ~50MB compressed (~250k rows)
-
-**Edge Case Handling:**
-- `if (rowCount > CHUNK_THRESHOLD)` uses strict inequality (`>`)
-- Tables with **exactly** 250,000 rows use single-file export (safe: ~50MB compressed)
-- Tables with 250,001+ rows use chunked export (safe: multiple ~50MB buffers)
-- `while (offset < rowCount)` correctly handles remainder chunks (e.g., 275k rows = 250k + 25k)
-
-**Memory Pattern Per Export:**
-- Single file (≤250k rows): Peak JS heap +50MB (temporary), clears after OPFS write
-- Chunked (>250k rows): Peak JS heap +50MB per chunk (temporary), clears after each chunk write
-- Total RAM impact: Minimal (buffers are temporary and GC'd immediately)
+**Issue:** As long as the table exists in the UI, all snapshots stay in memory.
 
 ---
 
-## Implementation Plan
+## Solution Design
 
-### Step 1: Rewrite Chunked Export Loop (lines 64-121)
+### Strategy: Drop Small Table Duplicates After Parquet Export
 
-**Remove:**
-- All `registerFileHandle()` calls
-- All `db.flushFiles()` calls
-- Manual file copying with `createWritable()` on fileHandle from tmp file
-- `removeEntry(tmpFileName)` cleanup
+**Principle:** Small tables should use the same Parquet storage strategy as large tables.
 
-**Add:**
-- `db.copyFileToBuffer(tempFileName)` after COPY TO
-- Direct write to OPFS using final file handle
-- Single `dropFile()` call for cleanup
+**Current behavior:**
+- Large table (≥100k rows): Export to Parquet, no duplicate created
+- Small table (<100k rows): Create in-memory duplicate, keep forever
 
-**Pattern per chunk:**
+**New behavior:**
+- Large table (≥100k rows): Export to Parquet, no duplicate created ✅ (unchanged)
+- Small table (<100k rows): Create duplicate, export to Parquet, **DROP duplicate** ✅ (new)
+
+**Why export small tables to Parquet?**
+- Consistency: All snapshots in one place (OPFS)
+- Memory: Free up RAM for active data
+- Reliability: Parquet is more durable than in-memory tables
+- User request: "Accept I/O latency penalty to ensure stability"
+
+**Trade-off:**
+- Undo/redo on small tables will be slightly slower (read from disk vs memory)
+- But small tables are fast anyway (<100k rows = <1 second to restore)
+
+---
+
+### Implementation Plan
+
+#### **Phase 1: Modify Small Table Snapshot Creation**
+
+**File:** `src/lib/timeline-engine.ts`
+
+**Function:** `createTimelineOriginalSnapshot()` (lines 67-98)
+
+**Change:** Export small tables to Parquet and drop the in-memory duplicate
+
+**Before:**
 ```typescript
-const tempFileName = `temp_${snapshotId}_part_${partIndex}.parquet`
-const finalFileName = `${snapshotId}_part_${partIndex}.parquet`
-
-await conn.query(`COPY (...) TO '${tempFileName}' (...)`)
-const buffer = await db.copyFileToBuffer(tempFileName)
-
-const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-const writable = await fileHandle.createWritable()
-await writable.write(buffer)
-await writable.close()
-
-await db.dropFile(tempFileName)
+// Small table - use in-memory duplicate (existing behavior)
+const originalName = `_timeline_original_${timelineId}`
+const exists = await tableExists(originalName)
+if (!exists) {
+  await duplicateTable(tableName, originalName, true)
+}
+return originalName
 ```
 
-### Step 2: Rewrite Single File Export (lines 122-163)
+**After (OPTIMIZED - Direct Export):**
+```typescript
+// Small table - export to Parquet like large tables do
+// OPTIMIZATION: Export active table directly (no duplicate needed)
+// DuckDB handles read consistency, so no risk of corruption during export
+const db = await initDuckDB()
+const conn = await getConnection()
+const snapshotId = `original_${timelineId}`
 
-**Remove:**
-- `registerFileHandle()` call
-- Manual file copying logic
-- tmp_ prefix handling
+try {
+  // Export active table directly to OPFS Parquet
+  // This is safe because:
+  // 1. DuckDB uses MVCC (multi-version concurrency control)
+  // 2. Export reads from a consistent snapshot of the table
+  // 3. No temporary RAM allocation needed (saves ~150MB for small tables)
+  await exportTableToParquet(db, conn, tableName, snapshotId)
 
-**Add:**
-- Same 4-step pattern as chunked export
+  console.log(`[Timeline] Exported original snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+  // Return Parquet reference (same as large table path)
+  return `parquet:${snapshotId}`
+
+} catch (error) {
+  // On export failure, fall back to in-memory duplicate
+  console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
+
+  const tempSnapshotName = `_timeline_original_${timelineId}`
+  await duplicateTable(tableName, tempSnapshotName, true)
+
+  // Return the in-memory table name instead of Parquet reference
+  return tempSnapshotName
+}
+```
+
+**Error Handling:**
+- If Parquet export fails, create in-memory duplicate as fallback (only on error)
+- Return the in-memory table name (no `parquet:` prefix)
+- Timeline system will use it for undo/redo
+
+**Key Optimization:**
+- No duplicate created on success path - saves ~150MB RAM per snapshot
+- Active table exported directly (DuckDB MVCC ensures consistency)
+- Duplicate only created on fallback path (rare error case)
+
+---
+
+**Function:** `createStepSnapshot()` (lines 132-176)
+
+**Change:** Same pattern - export to Parquet and drop duplicate
+
+**Before:**
+```typescript
+// Small table - use in-memory duplicate (existing behavior)
+const snapshotName = getTimelineSnapshotName(timelineId, stepIndex)
+const exists = await tableExists(snapshotName)
+if (!exists) {
+  await duplicateTable(tableName, snapshotName, true)
+}
+
+// Register in store
+const tableId = findTableIdByTimeline(timelineId)
+if (tableId) {
+  useTimelineStore.getState().createSnapshot(tableId, stepIndex, snapshotName)
+}
+
+return snapshotName
+```
+
+**After (OPTIMIZED - Direct Export):**
+```typescript
+// Small table - export to Parquet like large tables do
+// OPTIMIZATION: Export active table directly (no duplicate needed)
+const db = await initDuckDB()
+const conn = await getConnection()
+const snapshotId = `snapshot_${timelineId}_${stepIndex}`
+
+try {
+  // Export active table directly to OPFS Parquet
+  // Safe due to DuckDB MVCC - reads from consistent snapshot
+  await exportTableToParquet(db, conn, tableName, snapshotId)
+
+  console.log(`[Timeline] Exported step ${stepIndex} snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+  // Register in store with Parquet reference
+  const tableId = findTableIdByTimeline(timelineId)
+  if (tableId) {
+    useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+  }
+
+  return `parquet:${snapshotId}`
+
+} catch (error) {
+  // On export failure, fall back to in-memory duplicate
+  console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
+
+  const tempSnapshotName = getTimelineSnapshotName(timelineId, stepIndex)
+  await duplicateTable(tableName, tempSnapshotName, true)
+
+  // Register in-memory table
+  const tableId = findTableIdByTimeline(timelineId)
+  if (tableId) {
+    useTimelineStore.getState().createSnapshot(tableId, stepIndex, tempSnapshotName)
+  }
+
+  return tempSnapshotName
+}
+```
+
+---
+
+#### **Phase 2: Clean Up Materialization Snapshots (OPTIONAL - REQUIRES INVESTIGATION)**
+
+**File:** `src/lib/commands/column-versions.ts`
+
+**Function:** `materializeColumnExpression()` (lines 161-195)
+
+**Issue:** Materialization snapshot is created but never dropped
+
+**⚠️ CRITICAL WARNING:** Before implementing this phase, investigate whether Tier 1 undo logic depends on the materialization snapshot. Simply dropping it could break undo functionality.
+
+**Current code (lines 169-176):**
+```typescript
+// Create snapshot for undo safety
+const snapshotName = `_mat_${tableName}_${column}_${Date.now()}`
+await duplicateTable(tableName, snapshotName, true)
+
+// Store materialization info for potential undo
+versionInfo.materializationSnapshot = snapshotName
+// ❌ Snapshot stays in memory forever
+```
+
+**Investigation Required:**
+1. Check if Tier 1 undo (`column-versions.ts`) tries to restore from `versionInfo.materializationSnapshot`
+2. Check if materialization undo can fall back to Timeline snapshots (Tier 3)
+3. If snapshot is needed for undo, use Parquet export instead of dropping
+
+**Option A: Export to Parquet (SAFER - Recommended):**
+```typescript
+// Create snapshot for undo safety
+const snapshotName = `_mat_${tableName}_${column}_${Date.now()}`
+await duplicateTable(tableName, snapshotName, true)
+
+try {
+  // ... existing materialization logic ...
+
+  // SUCCESS: Export snapshot to Parquet instead of keeping in RAM
+  const snapshotId = `mat_${timelineId}_${column}_${Date.now()}`
+  await exportTableToParquet(db, conn, snapshotName, snapshotId)
+
+  // Drop the in-memory duplicate
+  await dropTable(snapshotName)
+  console.log(`[Materialization] Exported snapshot to OPFS, dropped from RAM`)
+
+  // Store Parquet reference for undo
+  versionInfo.materializationSnapshot = `parquet:${snapshotId}`
+
+} catch (error) {
+  // Keep in-memory snapshot on failure
+  console.error('[Materialization] Parquet export failed, keeping in-memory snapshot:', error)
+  versionInfo.materializationSnapshot = snapshotName
+}
+```
+
+**Option B: Drop Immediately (RISKY - Only if undo doesn't need it):**
+```typescript
+try {
+  // ... existing materialization logic ...
+
+  // Drop snapshot if undo doesn't need it
+  // (User can still undo via Timeline Tier 3 snapshots)
+  await dropTable(snapshotName)
+  console.log(`[Materialization] Dropped snapshot: ${snapshotName}`)
+
+  versionInfo.materializationSnapshot = undefined
+
+} catch (error) {
+  console.error('[Materialization] Failed, keeping snapshot for debugging:', error)
+  throw error
+}
+```
+
+**Recommendation:** Use Option A (Parquet export) to be safe. This preserves undo functionality while still freeing RAM.
+
+---
+
+#### **Phase 3: Add Safety Utilities**
+
+**File:** `src/lib/timeline-engine.ts`
+
+**Add helper function after line 58:**
+
+```typescript
+/**
+ * Check if a table name represents a timeline snapshot
+ * Snapshot tables can be safely dropped after Parquet export
+ * Active tables (user-facing) must NEVER be dropped
+ */
+export function isSnapshotTable(tableName: string): boolean {
+  return (
+    tableName.startsWith('_timeline_original_') ||
+    tableName.startsWith('_timeline_snapshot_') ||
+    tableName.startsWith('_mat_') ||
+    tableName.startsWith('_custom_sql_before_')
+  )
+}
+
+/**
+ * Get all snapshot tables currently in DuckDB memory
+ * Used for debugging and memory profiling
+ */
+export async function listSnapshotTables(): Promise<string[]> {
+  const tables = await query<{ table_name: string }>(`
+    SELECT table_name
+    FROM duckdb_tables()
+    WHERE NOT internal
+  `)
+
+  return tables
+    .map(t => t.table_name)
+    .filter(name => isSnapshotTable(name))
+}
+```
+
+---
+
+### Error Handling Strategy
+
+**Principle:** Never drop a table until Parquet export succeeds and is verified.
 
 **Pattern:**
+1. Create duplicate (or check if exists)
+2. Export to Parquet
+3. **Verify export success** (file size > 0 bytes) - Already implemented ✅
+4. **ONLY THEN** drop the duplicate
+5. On any error, keep the in-memory table as fallback
+
+**Specific Error Cases:**
+
+| Error Scenario | Handling |
+|----------------|----------|
+| `exportTableToParquet()` throws | Keep in-memory duplicate, return non-Parquet reference |
+| `dropTable()` throws | Log warning, continue (table already exported) |
+| OPFS permission denied | Keep in-memory duplicate, show toast warning |
+| Out of disk space | Keep in-memory duplicate, show toast warning |
+| Parquet file is 0 bytes | Throw error (already implemented), keep duplicate |
+
+---
+
+### Restore Flow (Unchanged)
+
+**File:** `src/lib/timeline-engine.ts:104-126` (`restoreTimelineOriginalSnapshot`)
+
+The restore flow already handles Parquet snapshots correctly:
+
 ```typescript
-const tempFileName = `temp_${snapshotId}.parquet`
-const finalFileName = `${snapshotId}.parquet`
+if (snapshotName.startsWith('parquet:')) {
+  // Extract snapshot ID
+  const snapshotId = snapshotName.replace('parquet:', '')
 
-await conn.query(`COPY (...) TO '${tempFileName}' (...)`)
-const buffer = await db.copyFileToBuffer(tempFileName)
+  // Drop current table
+  await dropTable(tableName)
 
-const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-const writable = await fileHandle.createWritable()
-await writable.write(buffer)
-await writable.close()
-
-await db.dropFile(tempFileName)
-```
-
-### Step 3: Add File Size Validation
-
-After writing to OPFS, verify the file has actual data:
-
-```typescript
-await writable.close()
-
-// Verify file was written
-const file = await fileHandle.getFile()
-if (file.size === 0) {
-  throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
+  // Import from OPFS (creates new in-memory table)
+  await importTableFromParquet(db, conn, snapshotId, tableName)
 }
-console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
 ```
 
-### Step 4: Clean Up Orphaned 0-Byte Files
-After fixing the code, we should clean up the 74 empty Parquet files from previous failed exports.
-
-**Option A:** Manual cleanup via console
-```javascript
-async function cleanupEmptyParquetFiles() {
-  const root = await navigator.storage.getDirectory()
-  const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-  let deletedCount = 0
-  for await (const [name, handle] of snapshotsDir.entries()) {
-    if (handle.kind === 'file' && name.endsWith('.parquet')) {
-      const file = await handle.getFile()
-      if (file.size === 0) {
-        await snapshotsDir.removeEntry(name)
-        deletedCount++
-      }
-    }
-  }
-  console.log(`Deleted ${deletedCount} empty Parquet files`)
-}
-
-await cleanupEmptyParquetFiles()
-```
-
-**Option B:** Add cleanup logic to app startup (lower priority)
+**Key insight:** We only need tables in memory when they're the ACTIVE state. All other snapshots can stay in OPFS until needed.
 
 ---
 
 ## Verification Plan
 
-### Test 1: File Size Check (Large Table)
-1. Clear all existing snapshots (run cleanup function above)
-2. Reload app with fresh DuckDB instance
-3. Upload 1M row CSV file
-4. Run 1 transformation (e.g., Standardize Date)
-5. Check OPFS file sizes via console:
+### Test 1: Small Table Snapshot Memory Usage
+
+1. Upload a CSV with 50,000 rows (below 100k threshold)
+2. Perform 3 transformations
+3. Check tables in DuckDB memory via console:
 
 ```javascript
-await listOPFSSnapshots()
-// Expected: 5 original files + 5 step files, each ~40-50MB
-// NOT: 0 bytes
+const conn = await window.__db.connect()
+const tables = await conn.query("SELECT table_name, estimated_size FROM duckdb_tables() WHERE NOT internal")
+console.table(tables.toArray())
+await conn.close()
+
+// Expected BEFORE fix:
+// - my_table: 150 MB
+// - _timeline_original_abc123: 150 MB  ← Should be dropped
+// - _timeline_snapshot_abc123_0: 150 MB  ← Should be dropped
+// - _timeline_snapshot_abc123_1: 150 MB  ← Should be dropped
+// Total: 600 MB
+
+// Expected AFTER fix:
+// - my_table: 150 MB  ← Active table only
+// Total: 150 MB (snapshots in OPFS)
 ```
 
-### Test 1b: Edge Case - Exactly 250k Rows
-1. Create a CSV with exactly 250,000 rows
-2. Upload and transform
-3. Verify single-file export (no _part_0.parquet suffix)
-4. Verify file size ~50MB
+4. Check OPFS to verify Parquet files exist:
 
-### Test 1c: Edge Case - 250k + 1 Row
-1. Create a CSV with 250,001 rows
-2. Upload and transform
-3. Verify chunked export (files: *_part_0.parquet, *_part_1.parquet)
-4. Verify part_0 is ~50MB and part_1 is tiny
+```javascript
+const root = await navigator.storage.getDirectory()
+const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
-### Test 2: RAM Usage Check
-1. Monitor RAM in Chrome Task Manager
-2. Run 2 consecutive transformations
-3. Expected RAM pattern:
-   - Baseline after load: ~400MB
-   - During transform 1: Spike to ~1.5GB (COPY TO)
-   - After transform 1 completes: Drop to ~600MB (data flushed to OPFS)
-   - During transform 2: Spike to ~1.5GB
-   - After transform 2 completes: Drop to ~800MB
+for await (const [name, handle] of snapshotsDir.entries()) {
+  if (handle.kind === 'file' && name.endsWith('.parquet')) {
+    const file = await handle.getFile()
+    console.log(`${name}: ${(file.size / 1024 / 1024).toFixed(2)} MB`)
+  }
+}
 
-**Success Criteria:**
-- ✅ Parquet files have actual data (40-50MB each)
-- ✅ RAM drops after each transformation completes
-- ✅ Total RAM stays under 1.0GB between transformations
-
-### Test 3: Snapshot Restore
-1. Create snapshot with transformation
-2. Close and reopen browser tab
-3. Undo transformation (should restore from Parquet)
-4. Verify data is correct
-
-**Success Criteria:**
-- ✅ No errors during import
-- ✅ Data matches pre-transformation state
-- ✅ Undo completes in <5 seconds
+// Expected:
+// - original_abc123.parquet: 5-10 MB
+// - snapshot_abc123_0.parquet: 5-10 MB
+// - snapshot_abc123_1.parquet: 5-10 MB
+```
 
 ---
 
-## Expected Impact
+### Test 2: Large Table (No Regression)
 
-### Before Fix
-- **OPFS Usage:** 0 MB (all files empty)
-- **RAM at Rest:** 2.2GB (all data in DuckDB memory)
-- **RAM Spike:** 2.5GB during transformations
-- **Parquet Strategy:** Completely broken
-
-### After Fix
-- **OPFS Usage:** ~400-500MB (compressed Parquet files)
-- **RAM at Rest:** 600-800MB (most data in OPFS)
-- **RAM Spike:** 1.5GB during transformations (drops after flush)
-- **Parquet Strategy:** Fully functional
-
-**Projected RAM Savings:** 1.4GB reduction (2.2GB → 0.8GB)
+1. Upload 1M row CSV (above 100k threshold)
+2. Perform 1 transformation
+3. Verify behavior unchanged:
+   - Active table in memory: 1.5 GB
+   - No duplicate tables created
+   - Parquet files in OPFS: 40-50 MB each
 
 ---
 
-## Risk Assessment
+### Test 3: Undo/Redo with Small Tables
 
-**Risk Level:** 🔴 **CRITICAL**
+1. Upload 50k row CSV
+2. Perform 2 transformations
+3. Undo once (should restore from Parquet)
+4. Verify:
+   - Data is correct (matches state before last transformation)
+   - Only active table in memory
+   - Undo completes in <2 seconds (I/O latency acceptable)
 
-**Why This Wasn't Caught Earlier:**
-1. Console logs show "Exported 5 chunks" - misleading success message
-2. No file size verification in code
-3. DuckDB's silent buffer handling (no errors thrown)
+---
 
-**Blast Radius:**
-- Every table snapshot ever created is 0 bytes
-- Undo/redo relies on these snapshots
-- Diff highlighting relies on these snapshots
-- Memory management strategy completely non-functional
+### Test 4: Error Handling
 
-**Mitigation:**
-- Add file size assertions after export
-- Add startup validation (warn if Parquet files are 0 bytes)
-- Add E2E test that verifies actual file sizes in OPFS
+**Scenario A: OPFS Permission Denied**
+1. Simulate OPFS failure (block permissions via DevTools)
+2. Upload small CSV
+3. Perform transformation
+4. Expected: Falls back to in-memory snapshot, shows warning toast
+
+**Scenario B: Out of Disk Space**
+1. Simulate quota exceeded
+2. Upload small CSV
+3. Perform transformation
+4. Expected: Falls back to in-memory snapshot, shows warning toast
+
+---
+
+### Test 5: Memory Profiling (Chrome Task Manager)
+
+1. Upload 1M row CSV
+2. Perform 5 transformations
+3. Monitor RAM in Chrome Task Manager:
+
+**Before Fix:**
+- After upload: 1.5 GB
+- After transform 1: 2.2 GB (snapshot created)
+- After transform 2: 2.9 GB (another snapshot)
+- After transform 5: 4-5 GB (multiple snapshots)
+
+**After Fix:**
+- After upload: 1.5 GB
+- After transform 1: 1.5 GB (snapshot in OPFS)
+- After transform 2: 1.5 GB (snapshot in OPFS)
+- After transform 5: 1.5 GB (all snapshots in OPFS)
+
+**Success Criteria:**
+- ✅ RAM stays at ~1.5 GB (active table only)
+- ✅ No growth with multiple transformations
+- ✅ Undo/redo still functional
 
 ---
 
 ## Files to Modify
 
-1. **`src/lib/opfs/snapshot-storage.ts`** (CRITICAL - Complete Rewrite)
-   - **Lines 64-121** (Chunked Export): Remove `registerFileHandle()` + manual file copy, add `copyFileToBuffer()` pattern
-   - **Lines 122-163** (Single File Export): Remove `registerFileHandle()` + manual file copy, add `copyFileToBuffer()` pattern
-   - **Add file size validation** after each write
-   - **Net change**: ~30 lines removed (registration/tmp handling), ~15 lines added (buffer retrieval)
+1. **`src/lib/timeline-engine.ts`** (CRITICAL)
+   - **Lines 77-97** (createTimelineOriginalSnapshot - small table path): Add Parquet export + dropTable
+   - **Lines 162-175** (createStepSnapshot - small table path): Add Parquet export + dropTable
+   - **Add after line 58**: Helper functions `isSnapshotTable()` and `listSnapshotTables()`
 
-2. **OPFS Cleanup** (Manual via console - ONE TIME)
-   - Delete 74 empty Parquet files from previous sessions (see cleanup function in plan)
+2. **`src/lib/commands/column-versions.ts`** (MEDIUM PRIORITY)
+   - **Lines 169-195** (materializeColumnExpression): Add dropTable after materialization or convert to Parquet
 
 ---
 
-## Follow-Up Tasks (Post-Fix)
+## Expected Impact
 
-1. **File Size Validation** (Included in Step 3)
-   - ✅ Already added to implementation plan
-   - Verify file size > 0 after write
-   - Throw error if write failed
+**Before Fix:**
+- RAM: 2.2 GB (active table + snapshots)
+- OPFS: 88 MB (Parquet files)
+- Snapshots: Mixed (some in memory, some in OPFS)
 
-2. **Add Startup Health Check** (Optional, lower priority)
-   - On app load, scan OPFS for 0-byte Parquet files
-   - Show warning toast if found
-   - Offer "Clean Up" button
+**After Fix:**
+- RAM: 1.5 GB (active table only)
+- OPFS: 150-200 MB (all snapshots as Parquet)
+- Snapshots: All in OPFS (consistent storage)
 
-3. **Add E2E Test** (High priority)
-   - Test that Parquet files have actual data after export (check file size)
-   - Test that snapshots can be restored correctly (undo transformation)
-   - Verify RAM drops after transformation completes
+**Projected RAM Savings:** **0.7 GB reduction** (2.2GB → 1.5GB)
 
-4. **Add Monitoring** (Included in Step 3)
-   - ✅ Already added to implementation plan
-   - Log file sizes after export
-   - Track OPFS storage quota usage
+**Trade-off:**
+- Undo/redo on small tables: +200-500ms latency (acceptable per user request)
+- Memory stability: Much improved (no growth over time)
 
-5. **Documentation**
-   - Add JSDoc comment explaining in-memory buffer pattern
-   - Document why `registerFileHandle()` doesn't work for Parquet exports
-   - Link to upstream DuckDB-WASM discussion #1714
+---
+
+## Risk Assessment
+
+**Risk Level:** 🟡 **MEDIUM**
+
+**Risks:**
+1. **Undo/redo latency** - Small tables will be slower to restore
+   - Mitigation: Small tables are fast anyway (<2 seconds)
+   - User explicitly requested accepting I/O latency
+
+2. **Parquet export failure** - If export fails, falls back to in-memory
+   - Mitigation: Error handling keeps in-memory duplicate as fallback
+   - File size validation catches 0-byte exports
+
+3. **Timeline store inconsistency** - Parquet references might not be handled everywhere
+   - Mitigation: Restore flow already handles both `parquet:` and regular names
+   - Extensive testing of undo/redo
+
+**Benefits:**
+- ✅ Consistent storage strategy (all snapshots in OPFS)
+- ✅ Predictable RAM usage (scales with active data, not history)
+- ✅ Better stability for long editing sessions
+- ✅ No more "out of memory" crashes from snapshot accumulation
+
+---
+
+## Implementation Checklist
+
+### Phase 1: Timeline Snapshots (OPTIMIZED - Direct Export) ✅
+- [x] Modify `createTimelineOriginalSnapshot()` - small table path
+  - [x] Export active table directly to Parquet (no duplicate needed)
+  - [x] Add error handling (create duplicate only on fallback)
+  - [x] Return `parquet:` reference on success
+
+- [x] Modify `createStepSnapshot()` - small table path
+  - [x] Export active table directly to Parquet (no duplicate needed)
+  - [x] Add error handling (create duplicate only on fallback)
+  - [x] Update store registration to use `parquet:` reference
+
+### Phase 2: Utilities ✅
+- [x] Add `isSnapshotTable()` helper function
+- [x] Add `listSnapshotTables()` debug function
+
+### Phase 3: Materialization Cleanup ✅
+- [x] Investigated Tier 1 undo dependency (does NOT restore from materialization snapshot)
+- [x] Implemented Option A: Convert to Parquet export (Recommended)
+- [x] Added Parquet cleanup in `undoVersion()` for both materialization boundaries
+
+### Phase 4: Testing
+- [ ] Test small table snapshot creation (verify Parquet + memory drop)
+- [ ] Test large table (verify no regression)
+- [ ] Test undo/redo with small tables (verify restore from Parquet)
+- [ ] Test error handling (OPFS permission, disk space)
+- [ ] Profile memory usage (Chrome Task Manager)
+
+### Phase 5: Documentation
+- [ ] Update JSDoc comments to explain Parquet strategy
+- [ ] Add comment explaining why all snapshots use Parquet now
+- [ ] Document trade-off (latency vs memory)
+
+---
+
+## Implementation Summary
+
+**Date Implemented:** January 24, 2026
+
+### Changes Made
+
+#### 1. **Timeline Engine Optimization** (`src/lib/timeline-engine.ts`)
+
+**Added Utility Functions:**
+- `isSnapshotTable()` - Identifies temporary snapshot tables (lines 60-71)
+- `listSnapshotTables()` - Lists all snapshot tables in DuckDB memory for debugging (lines 73-87)
+
+**Modified `createTimelineOriginalSnapshot()`:**
+- **Before:** Small tables created in-memory duplicates that stayed in RAM forever
+- **After:** Small tables export directly to Parquet (no duplicate created)
+- **Optimization:** Saves ~150MB RAM per snapshot by eliminating temporary duplicates
+- **Fallback:** Creates in-memory duplicate only on Parquet export failure
+- **Lines:** 118-148 (original lines 90-97)
+
+**Modified `createStepSnapshot()`:**
+- **Before:** Small tables created in-memory duplicates for each step
+- **After:** Small tables export directly to Parquet (no duplicate created)
+- **Optimization:** Same ~150MB savings per step snapshot
+- **Fallback:** Creates in-memory duplicate only on Parquet export failure
+- **Lines:** 188-220 (original lines 162-175)
+
+**Key Innovation:**
+- Used DuckDB MVCC (multi-version concurrency control) to safely export active tables without creating duplicates first
+- Both large and small tables now use consistent Parquet storage strategy
+
+#### 2. **Materialization Optimization** (`src/lib/commands/column-versions.ts`)
+
+**Modified `materializeColumn()`:**
+- **Before:** Created in-memory snapshot that stayed in RAM indefinitely
+- **After:** Exports snapshot to Parquet and drops in-memory copy
+- **Memory Savings:** ~150-700MB per materialization (depends on table size)
+- **Fallback:** Keeps in-memory snapshot on Parquet export failure
+- **Lines:** 161-212 (original lines 161-195)
+
+**Updated `undoVersion()` Cleanup:**
+- Added Parquet reference handling for materialization snapshots
+- Properly deletes Parquet files when hitting materialization boundary (lines 399-408)
+- Properly deletes Parquet files on full restore (lines 460-468)
+
+### Memory Impact (Expected)
+
+**Before Implementation:**
+- 1M row table + 3 transformations = 2.2-3.0 GB RAM
+- In-memory duplicates: `_timeline_original_*`, `_timeline_snapshot_*_*`, `_mat_*`
+
+**After Implementation:**
+- 1M row table + 3 transformations = 1.5 GB RAM (active table only)
+- All snapshots stored in OPFS Parquet files (150-200 MB total disk space)
+
+**Projected Savings:** **0.7-1.5 GB RAM reduction** depending on number of transformations
+
+### Trade-offs
+
+**Pros:**
+- ✅ Consistent storage strategy (all snapshots in OPFS)
+- ✅ Predictable RAM usage (scales with active data, not history)
+- ✅ Better stability for long editing sessions
+- ✅ No more "out of memory" crashes from snapshot accumulation
+
+**Cons:**
+- ⚠️ Undo/redo on small tables: +200-500ms latency (reading from disk vs RAM)
+- User explicitly requested accepting I/O latency for stability
+
+### Error Handling
+
+All changes include robust fallback mechanisms:
+1. **Parquet export failure** → Falls back to in-memory duplicate
+2. **OPFS permission denied** → Falls back to in-memory duplicate
+3. **Disk quota exceeded** → Falls back to in-memory duplicate
+4. **File size validation** → Already implemented in `exportTableToParquet()`
+
+### Next Steps (Testing Required)
+
+1. **Verification Test 1:** Upload 50k row CSV, perform 3 transformations
+   - Check DuckDB memory: Should only see active table
+   - Check OPFS: Should see 3-4 Parquet files (original + steps)
+
+2. **Verification Test 2:** Upload 1M row CSV, perform 5 transformations
+   - Monitor RAM in Chrome Task Manager: Should stay at ~1.5 GB
+   - Previous behavior: Would grow to 4-5 GB
+
+3. **Verification Test 3:** Test undo/redo with small tables
+   - Verify data correctness after undo
+   - Measure latency (should be <2 seconds for 50k rows)
+
+4. **Verification Test 4:** Test error handling
+   - Simulate OPFS failure (DevTools permissions)
+   - Verify fallback to in-memory snapshots works
+
+### Files Modified
+
+1. `src/lib/timeline-engine.ts` - Timeline snapshot optimization
+2. `src/lib/commands/column-versions.ts` - Materialization snapshot optimization
+
+### Backward Compatibility
+
+✅ **Fully backward compatible:**
+- Restore flow already handles both `parquet:` and regular table names
+- Timeline store already supports mixed snapshot types
+- No breaking changes to public APIs
