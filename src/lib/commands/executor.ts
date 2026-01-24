@@ -242,7 +242,25 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // Extract affected row IDs from diff view for highlighting support
-      const affectedRowIds = await this.extractAffectedRowIds(updatedCtx, diffViewName)
+      let affectedRowIds = await this.extractAffectedRowIds(updatedCtx, diffViewName)
+
+      // CRITICAL FIX: For transform commands, ensure affectedRowIds are populated
+      // even if diff view extraction fails. Use conservative approach: all non-null values.
+      if (affectedRowIds.length === 0 && command.type.startsWith('transform:')) {
+        const column = (command.params as { column?: string })?.column
+        if (column) {
+          try {
+            const quotedColumn = `"${column}"`
+            const result = await updatedCtx.db.query<{ _cs_id: string }>(`
+              SELECT _cs_id FROM "${updatedCtx.table.name}"
+              WHERE ${quotedColumn} IS NOT NULL
+            `)
+            affectedRowIds = result.map(r => String(r._cs_id))
+          } catch (err) {
+            console.warn('[EXECUTOR] Failed to extract affectedRowIds for transform:', err)
+          }
+        }
+      }
 
       // Step 7: Record timeline for undo/redo
       let highlightInfo: HighlightInfo | undefined

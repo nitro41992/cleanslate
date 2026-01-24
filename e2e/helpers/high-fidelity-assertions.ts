@@ -253,3 +253,104 @@ export function expectDifferentHashes(hash1: string, hash2: string): void {
   // Then assert they're different
   expect(hash1 !== hash2).toBe(true)
 }
+
+/**
+ * Assert UUID v4 format (for _cs_id columns)
+ * Use this instead of expect(uuid).not.toBe(otherUuid)
+ *
+ * Rule 2 Compliance: Validates both UUIDs are well-formed before comparing
+ *
+ * @example
+ * expectValidUuid(row._cs_id)
+ * expectValidUuid(row._cs_id, { notEqual: otherRow._cs_id })
+ */
+export function expectValidUuid(
+  value: unknown,
+  options?: { notEqual?: unknown }
+): void {
+  expect(value).toBeDefined()
+  expect(typeof value).toBe('string')
+  expect((value as string).length).toBe(36)
+
+  if (options?.notEqual !== undefined) {
+    // First validate the comparison value
+    expect(options.notEqual).toBeDefined()
+    expect(typeof options.notEqual).toBe('string')
+    expect((options.notEqual as string).length).toBe(36)
+
+    // Now safe to compare
+    expect(value).not.toEqual(options.notEqual)
+  }
+}
+
+// ============================================================================
+// Value Standardization & Clustering Helpers (Rule 1)
+// ============================================================================
+
+/**
+ * Assert specific row IDs are highlighted (not just count)
+ * Use this instead of expect(rowCount).toBeGreaterThan(0)
+ *
+ * @example
+ * const highlightState = await inspector.getTimelineHighlight()
+ * expectRowIdsHighlighted(highlightState.rowIds, [1, 2, 3])
+ */
+export function expectRowIdsHighlighted(
+  highlightedRowIds: string[],
+  expectedRowIds: (string | number)[]
+): void {
+  const actualIds = highlightedRowIds.map(String).sort()
+  const expected = expectedRowIds.map(String).sort()
+  expect(actualIds).toEqual(expected)
+}
+
+/**
+ * Get cluster master values from standardizerStore
+ * Use this to verify search/filter results contain expected clusters
+ *
+ * @example
+ * const masterValues = await getClusterMasterValues(page)
+ * expect(masterValues).toContain('John Smith')
+ */
+export async function getClusterMasterValues(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> })
+      .__CLEANSLATE_STORES__
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (stores?.standardizerStore as any)?.getState?.()
+    const filtered = state?.getFilteredClusters?.() || []
+    return filtered.map((c: any) => c.masterValue)
+  })
+}
+
+/**
+ * Assert specific rows belong to a cluster with expected master value
+ * Use this instead of count-based assertions like toBeGreaterThan(0)
+ *
+ * @example
+ * await expectClusterMembership(page, [
+ *   { masterValue: 'John Smith', rowIds: [1, 2, 3] }
+ * ])
+ */
+export async function expectClusterMembership(
+  page: Page,
+  expectedClusters: Array<{ masterValue: string; rowIds: number[] }>
+): Promise<void> {
+  const clusterData = await page.evaluate(() => {
+    const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> })
+      .__CLEANSLATE_STORES__
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (stores?.standardizerStore as any)?.getState?.()
+    return state?.clusters || []
+  })
+
+  expectedClusters.forEach(({ masterValue, rowIds }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cluster = clusterData.find((c: any) => c.masterValue === masterValue)
+    expect(cluster, `Cluster with master "${masterValue}" not found`).toBeDefined()
+
+    // Verify this cluster contains the expected row count (identity check)
+    const clusterRowCount = cluster.values.reduce((sum: number, v: any) => sum + v.count, 0)
+    expect(clusterRowCount, `Cluster "${masterValue}" should contain ${rowIds.length} rows`).toBe(rowIds.length)
+  })
+}

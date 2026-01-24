@@ -5,6 +5,7 @@ import { StandardizeViewPage } from '../page-objects/standardize-view.page'
 import { DiffViewPage } from '../page-objects/diff-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { expectClusterMembership, getClusterMasterValues } from '../helpers/high-fidelity-assertions'
 
 /**
  * FR-F: Value Standardization Tests
@@ -79,12 +80,25 @@ test.describe.serial('FR-F: Value Standardization', () => {
 
     // Verify clusters were created
     const stats = await standardize.getStats()
-    expect(stats.totalClusters).toBeGreaterThan(0)
-
-    // With fingerprint algorithm:
-    // "John Smith", "JOHN SMITH", "john  smith" should cluster together
-    // "Jane Doe", "Jane   Doe", "JANE DOE" should cluster together
     expect(stats.actionable).toBeGreaterThanOrEqual(2)
+
+    // Rule 1: Verify specific cluster sizes exist (identity, not just count)
+    // With fingerprint algorithm:
+    // "John Smith", "JOHN SMITH", "john  smith" should cluster together (3 rows)
+    // "Jane Doe", "Jane   Doe", "JANE DOE" should cluster together (3 rows)
+    const clusterData = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> })
+        .__CLEANSLATE_STORES__
+      const state = (stores?.standardizerStore as any)?.getState?.()
+      return state?.clusters || []
+    })
+
+    // Verify we have at least 2 clusters with 3 rows each (John variants + Jane variants)
+    const clusterSizes = clusterData.map((c: any) =>
+      c.values.reduce((sum: number, v: any) => sum + v.count, 0)
+    ).sort((a: number, b: number) => b - a)
+
+    expect(clusterSizes.filter((size: number) => size === 3).length).toBeGreaterThanOrEqual(2)
 
     await standardize.close()
   })
@@ -109,6 +123,20 @@ test.describe.serial('FR-F: Value Standardization', () => {
     // "Mike Smith" and "Mik Smith" should cluster together (phonetically similar)
     const stats = await standardize.getStats()
     expect(stats.totalClusters).toBeGreaterThan(0)
+
+    // Rule 1: Verify phonetically similar names cluster together
+    const clusterData = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> })
+        .__CLEANSLATE_STORES__
+      const state = (stores?.standardizerStore as any)?.getState?.()
+      return state?.clusters || []
+    })
+
+    // Verify at least one cluster has 2 rows (Mike + Mik)
+    const clusterSizes = clusterData.map((c: any) =>
+      c.values.reduce((sum: number, v: any) => sum + v.count, 0)
+    )
+    expect(clusterSizes.filter((size: number) => size === 2).length).toBeGreaterThanOrEqual(1)
 
     await standardize.close()
   })
@@ -203,9 +231,16 @@ test.describe.serial('FR-F: Value Standardization', () => {
     const uniqueInitial = new Set(initialNames).size
     const uniqueUpdated = new Set(updatedNames).size
     expect(uniqueUpdated).toBeLessThan(uniqueInitial)
-    // Rule 1: Verify standardization happened to expected master values
-    const johnVariants = updatedData.filter((r) => r.name === 'John Smith')
-    expect(johnVariants.length).toBeGreaterThanOrEqual(2)
+
+    // Rule 1: Verify rows 1-3 all standardized to "John Smith" (identity check)
+    expect(updatedData[0].name).toBe('John Smith')
+    expect(updatedData[1].name).toBe('John Smith')
+    expect(updatedData[2].name).toBe('John Smith')
+
+    // Verify rows 6-8 standardized to "Jane Doe"
+    expect(updatedData[5].name).toBe('Jane Doe')
+    expect(updatedData[6].name).toBe('Jane Doe')
+    expect(updatedData[7].name).toBe('Jane Doe')
   })
 
   test('FR-F3: should create audit entry with drill-down', async () => {
@@ -271,15 +306,15 @@ test.describe.serial('FR-F: Value Standardization', () => {
     // Get initial cluster count
     const initialCount = await standardize.getClusterCount()
 
-    // Search for a specific name
+    // Search for "John"
     await standardize.search('John')
-
-    // Wait for filter to apply
     await page.waitForTimeout(300)
 
-    // Should show fewer clusters
-    const filteredCount = await standardize.getClusterCount()
-    expect(filteredCount).toBeLessThanOrEqual(initialCount)
+    // Rule 1: Verify only clusters with "John" remain visible (identity check)
+    const visibleClusters = await getClusterMasterValues(page)
+    expect(visibleClusters.some(name => name.includes('John'))).toBe(true)
+    expect(visibleClusters.every(name => !name.includes('Jane'))).toBe(true)
+    expect(visibleClusters.every(name => !name.includes('Bob'))).toBe(true)
 
     await standardize.close()
   })
@@ -297,16 +332,23 @@ test.describe.serial('FR-F: Value Standardization', () => {
     await standardize.analyze()
     await standardize.waitForClusters()
 
-    // Get actionable count (default filter)
-    const actionableCount = await standardize.getClusterCount()
+    // Ensure we start with actionable filter
+    await standardize.filterBy('actionable')
+    await page.waitForTimeout(300)
+    const actionableClusters = await getClusterMasterValues(page)
 
-    // Switch to All filter
+    // Switch to "All" filter
     await standardize.filterBy('all')
     await page.waitForTimeout(300)
+    const allClusters = await getClusterMasterValues(page)
 
-    // All count should be >= actionable count
-    const allCount = await standardize.getClusterCount()
-    expect(allCount).toBeGreaterThanOrEqual(actionableCount)
+    // Rule 1: All filter shows more/equal clusters (includes singletons)
+    expect(allClusters.length).toBeGreaterThanOrEqual(actionableClusters.length)
+
+    // Verify actionable clusters are subset of all clusters
+    actionableClusters.forEach(cluster => {
+      expect(allClusters).toContain(cluster)
+    })
 
     await standardize.close()
   })

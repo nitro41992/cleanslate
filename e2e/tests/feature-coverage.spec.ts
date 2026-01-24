@@ -6,6 +6,7 @@ import { DiffViewPage } from '../page-objects/diff-view.page'
 import { MatchViewPage } from '../page-objects/match-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { expectValidUuid } from '../helpers/high-fidelity-assertions'
 
 /**
  * Feature Coverage Tests
@@ -615,12 +616,22 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test('should log merge operations to audit', async () => {
+    // Wait for match panel to fully close and UI to stabilize
+    await page.waitForTimeout(1000)
+    await page.waitForLoadState('networkidle')
+
     // Open audit sidebar to verify the merge was logged
     await laundromat.openAuditSidebar()
     await page.waitForTimeout(300)
 
-    // Verify audit entry exists for the merge operation
-    await expect(page.locator('text=/Apply Merges|Find Duplicates/').first()).toBeVisible({ timeout: 5000 })
+    // Rule 1: Assert exact action text, not regex pattern (high-fidelity)
+    const mergeAuditEntry = page.getByText('Merge Duplicates', { exact: true })
+    await expect(mergeAuditEntry).toBeVisible({ timeout: 5000 })
+
+    // Rule 3: Verify it has row details indicator (visual validation)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    const entryWithDetails = auditSidebar.locator('.cursor-pointer').filter({ hasText: 'Merge Duplicates' })
+    await expect(entryWithDetails).toBeVisible()
 
     // Close audit sidebar
     await laundromat.closeAuditSidebar()
@@ -1253,11 +1264,23 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM join_result')
     expect(Number(result[0].cnt)).toBe(6)
 
-    // Verify unmatched orders have NULL customer info
-    const unmatched = await inspector.runQuery(
-      'SELECT count(*) as cnt FROM join_result WHERE name IS NULL'
-    )
-    expect(Number(unmatched[0].cnt)).toBeGreaterThan(0) // C004 order has no matching customer
+    // Rule 1: Assert identity, not just cardinality
+    const unmatched = await inspector.runQuery(`
+      SELECT order_id, customer_id, product, name, email
+      FROM join_result
+      WHERE name IS NULL
+      ORDER BY order_id
+    `)
+
+    // Exact count
+    expect(unmatched.length).toBe(1)
+
+    // Exact identity - verify which order is unmatched
+    expect(unmatched[0].order_id).toBe('O005')
+    expect(unmatched[0].customer_id).toBe('C004')
+    expect(unmatched[0].product).toBe('Headphones')
+    expect(unmatched[0].name).toBeNull()
+    expect(unmatched[0].email).toBeNull()
   })
 })
 
@@ -1570,7 +1593,9 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     // 5. Verify _cs_id actually differs between tables
     const row1A = await inspector.runQuery('SELECT _cs_id FROM test_original WHERE id = 1')
     const row1B = await inspector.runQuery('SELECT _cs_id FROM test_duplicate WHERE id = 1')
-    expect(row1A[0]._cs_id).not.toBe(row1B[0]._cs_id)
+
+    // Rule 2: Positive UUID validation before comparison (high-fidelity helper)
+    expectValidUuid(row1A[0]._cs_id, { notEqual: row1B[0]._cs_id })
 
     // 6. Open Diff view
     await laundromat.openDiffView()

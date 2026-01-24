@@ -4,6 +4,7 @@ import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { expectRowIdsHighlighted } from '../helpers/high-fidelity-assertions'
 
 /**
  * Audit + Undo/Redo Regression Tests
@@ -89,7 +90,15 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     // NOTE: Canvas-based grid (Glide Data Grid) - no DOM classes to check
     const highlightState = await inspector.getTimelineHighlight()
     expect(highlightState.commandId).toBeDefined()
-    expect(highlightState.rowCount).toBeGreaterThan(0)
+
+    // Rule 1: Verify specific rows are highlighted (identity, not just count)
+    // Trim Whitespace only affects rows 1 and 2 (row 3 "Bob Johnson" has no whitespace)
+    // Get the actual _cs_id values for the affected rows
+    const affectedRows = await inspector.runQuery(
+      'SELECT _cs_id FROM whitespace_data WHERE id IN (1, 2) ORDER BY id'
+    )
+    const expected_cs_ids = affectedRows.map(r => String(r._cs_id))
+    expectRowIdsHighlighted(highlightState.rowIds, expected_cs_ids)
 
     // Click Clear to remove highlighting
     await clearBtn.first().click()

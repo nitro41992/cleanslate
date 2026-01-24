@@ -26,7 +26,8 @@ export interface AuditEntry {
 
 export interface TimelineHighlightState {
   commandId: string | null
-  rowCount: number
+  rowCount: number           // Keep for backward compatibility
+  rowIds: string[]           // NEW: Expose actual row IDs
   columnCount: number
   diffMode: string
 }
@@ -227,7 +228,7 @@ export function createStoreInspector(page: Page): StoreInspector {
       return page.evaluate(() => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
         if (!stores?.timelineStore) {
-          return { commandId: null, rowCount: 0, columnCount: 0, diffMode: 'none' }
+          return { commandId: null, rowCount: 0, rowIds: [], columnCount: 0, diffMode: 'none' }
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const state = (stores.timelineStore as any).getState()
@@ -235,6 +236,7 @@ export function createStoreInspector(page: Page): StoreInspector {
         return {
           commandId: highlight?.commandId || null,
           rowCount: highlight?.rowIds?.size || 0,
+          rowIds: Array.from(highlight?.rowIds || []),  // NEW: Expose actual row IDs
           columnCount: highlight?.highlightedColumns?.size || 0,
           diffMode: highlight?.diffMode || 'none',
         }
