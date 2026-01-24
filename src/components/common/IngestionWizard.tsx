@@ -137,7 +137,7 @@ export function IngestionWizard({
     const fields = parseLine(line, effectiveDelimiter)
 
     return (
-      <span className="inline-flex items-start flex-wrap gap-x-0">
+      <span className="inline-flex items-baseline whitespace-nowrap">
         {fields.map((field, idx) => {
           const color = rainbowColors[idx % rainbowColors.length]
           const isLast = idx === fields.length - 1
