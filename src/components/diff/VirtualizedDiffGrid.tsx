@@ -133,7 +133,7 @@ export function VirtualizedDiffGrid({
     setData([])
     setLoadedRange({ start: 0, end: 0 })
 
-    fetchDiffPage(diffTableName, sourceTableName, targetTableName, 0, PAGE_SIZE, keyOrderBy)
+    fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, 0, PAGE_SIZE, keyOrderBy)
       .then((rows) => {
         setData(rows)
         setLoadedRange({ start: 0, end: rows.length })
@@ -143,7 +143,7 @@ export function VirtualizedDiffGrid({
         console.error('Error loading diff data:', err)
         setIsLoading(false)
       })
-  }, [diffTableName, sourceTableName, targetTableName, totalRows, keyOrderBy])
+  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy])
 
   // Load more data on scroll
   const onVisibleRegionChanged = useCallback(
@@ -155,7 +155,7 @@ export function VirtualizedDiffGrid({
 
       if (needStart < loadedRange.start || needEnd > loadedRange.end) {
         try {
-          const newData = await fetchDiffPage(diffTableName, sourceTableName, targetTableName, needStart, needEnd - needStart, keyOrderBy)
+          const newData = await fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, needStart, needEnd - needStart, keyOrderBy)
           setData(newData)
           setLoadedRange({ start: needStart, end: needStart + newData.length })
         } catch (err) {
@@ -163,7 +163,7 @@ export function VirtualizedDiffGrid({
         }
       }
     },
-    [diffTableName, sourceTableName, targetTableName, totalRows, keyOrderBy, loadedRange]
+    [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, loadedRange]
   )
 
   const getCellContent = useCallback(
