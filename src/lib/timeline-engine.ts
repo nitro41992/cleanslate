@@ -124,18 +124,43 @@ export async function restoreTimelineOriginalSnapshot(
 
 /**
  * Create a snapshot at a specific step index (before expensive operation)
+ * Uses Parquet storage for large tables to prevent RAM spikes
  */
 export async function createStepSnapshot(
   tableName: string,
   timelineId: string,
   stepIndex: number
 ): Promise<string> {
-  const snapshotName = getTimelineSnapshotName(timelineId, stepIndex)
+  // Check row count to decide storage strategy
+  const countResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM "${tableName}"`
+  )
+  const rowCount = Number(countResult[0].count)
 
-  // Check if it already exists
+  if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
+    console.log(`[Timeline] Creating Parquet step snapshot for ${rowCount.toLocaleString()} rows at step ${stepIndex}...`)
+
+    const db = await initDuckDB()
+    const conn = await getConnection()
+    const snapshotId = `snapshot_${timelineId}_${stepIndex}`
+
+    // Export to OPFS Parquet
+    await exportTableToParquet(db, conn, tableName, snapshotId)
+    await db.dropFile(`${snapshotId}.parquet`)  // Critical: release handle
+
+    // Register in store with parquet: prefix
+    const tableId = findTableIdByTimeline(timelineId)
+    if (tableId) {
+      useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+    }
+
+    return `parquet:${snapshotId}`
+  }
+
+  // Small table - use in-memory duplicate (existing behavior)
+  const snapshotName = getTimelineSnapshotName(timelineId, stepIndex)
   const exists = await tableExists(snapshotName)
   if (!exists) {
-    // Create snapshot preserving _cs_id values
     await duplicateTable(tableName, snapshotName, true)
   }
 
@@ -347,9 +372,10 @@ export async function replayToPosition(
       store.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
     }
 
-    // Verify snapshot exists
-    const snapshotExists = await tableExists(snapshotTableName)
-    console.log('[REPLAY] Snapshot exists check:', { snapshotTableName, snapshotExists })
+    // Verify snapshot exists (handle both Parquet and in-memory)
+    const isParquetSnapshot = snapshotTableName.startsWith('parquet:')
+    const snapshotExists = isParquetSnapshot || await tableExists(snapshotTableName)
+    console.log('[REPLAY] Snapshot exists check:', { snapshotTableName, snapshotExists, isParquetSnapshot })
 
     if (!snapshotExists) {
       // Last resort: try to create snapshot from current table
@@ -360,10 +386,14 @@ export async function replayToPosition(
 
     onProgress?.(10, `Restoring from ${snapshotIndex === -1 ? 'original' : `step ${snapshotIndex}`}...`)
 
-    // Restore from snapshot
-    console.log('[REPLAY] Restoring table from snapshot:', { tableName, snapshotTableName })
-    await execute(`DROP TABLE IF EXISTS "${tableName}"`)
-    await duplicateTable(snapshotTableName, tableName, true)
+    // Restore from snapshot (handle both Parquet and in-memory)
+    console.log('[REPLAY] Restoring table from snapshot:', { tableName, snapshotTableName, isParquetSnapshot })
+    if (snapshotTableName.startsWith('parquet:')) {
+      await restoreTimelineOriginalSnapshot(tableName, snapshotTableName)
+    } else {
+      await execute(`DROP TABLE IF EXISTS "${tableName}"`)
+      await duplicateTable(snapshotTableName, tableName, true)
+    }
 
     // Debug: Query a sample of the restored data
     const sampleData = await query<Record<string, unknown>>(`SELECT * FROM "${tableName}" LIMIT 3`)
@@ -486,6 +516,7 @@ export async function redoTimeline(
 /**
  * Cleanup all timeline snapshots for a table
  * Called when a table is deleted
+ * Handles both in-memory and Parquet snapshots
  */
 export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
   const store = useTimelineStore.getState()
@@ -493,9 +524,17 @@ export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
 
   if (!timeline) return
 
+  const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+
   // Drop original snapshot
   try {
-    await dropTable(timeline.originalSnapshotName)
+    if (timeline.originalSnapshotName.startsWith('parquet:')) {
+      const snapshotId = timeline.originalSnapshotName.replace('parquet:', '')
+      await deleteParquetSnapshot(snapshotId)
+      console.log(`[Timeline] Deleted Parquet original snapshot: ${snapshotId}`)
+    } else {
+      await dropTable(timeline.originalSnapshotName)
+    }
   } catch (e) {
     console.warn(`Failed to drop original snapshot: ${e}`)
   }
@@ -503,7 +542,13 @@ export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
   // Drop all step snapshots
   for (const snapshotName of timeline.snapshots.values()) {
     try {
-      await dropTable(snapshotName)
+      if (snapshotName.startsWith('parquet:')) {
+        const snapshotId = snapshotName.replace('parquet:', '')
+        await deleteParquetSnapshot(snapshotId)
+        console.log(`[Timeline] Deleted Parquet step snapshot: ${snapshotId}`)
+      } else {
+        await dropTable(snapshotName)
+      }
     } catch (e) {
       console.warn(`Failed to drop snapshot ${snapshotName}: ${e}`)
     }
