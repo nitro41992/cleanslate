@@ -1197,6 +1197,23 @@ export class CommandExecutor implements ICommandExecutor {
         columnName: standardizeParams.column,
         mappings: standardizeParams.mappings,
       } as import('@/types').StandardizeParams
+    } else if (command.type === 'edit:cell') {
+      // Manual edits need complete EditCellParams for replay
+      const editParams = command.params as {
+        tableId: string
+        tableName: string
+        csId: string
+        columnName: string
+        previousValue: unknown
+        newValue: unknown
+      }
+      timelineParams = {
+        type: 'manual_edit',
+        csId: editParams.csId,
+        columnName: editParams.columnName,
+        previousValue: editParams.previousValue,
+        newValue: editParams.newValue,
+      } as import('@/types').ManualEditParams
     } else {
       timelineParams = {
         type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
