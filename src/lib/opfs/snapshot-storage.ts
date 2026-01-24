@@ -32,6 +32,9 @@ export async function ensureSnapshotDir(): Promise<void> {
  * Uses DuckDB's file handle registration for zero-copy writes.
  * Data never touches JavaScript heap - flows from WASM to OPFS disk.
  *
+ * For large tables (>250k rows), uses chunked files to reduce peak memory usage.
+ * Each chunk is written separately, keeping RAM usage low.
+ *
  * @param db - DuckDB instance (for file registration)
  * @param conn - Active DuckDB connection (for transaction consistency)
  * @param tableName - Source table to export
@@ -45,35 +48,76 @@ export async function exportTableToParquet(
   tableName: string,
   snapshotId: string
 ): Promise<void> {
-  // Ensure directory exists before export
   await ensureSnapshotDir()
 
-  const fileName = `${snapshotId}.parquet`
+  // Check table size
+  const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+  const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-  console.log(`[Snapshot] Exporting ${tableName} to OPFS...`)
+  console.log(`[Snapshot] Exporting ${tableName} (${rowCount.toLocaleString()} rows) to OPFS...`)
 
-  // Get OPFS file handle
   const root = await navigator.storage.getDirectory()
   const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
   const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
-  const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
 
-  // Register the file handle with DuckDB (required for COPY TO)
-  await db.registerFileHandle(
-    fileName,
-    fileHandle,
-    duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-    true // writable
-  )
+  // For large tables (>250k rows), use chunked files to reduce peak memory
+  const CHUNK_THRESHOLD = 250_000
+  if (rowCount > CHUNK_THRESHOLD) {
+    console.log('[Snapshot] Using chunked Parquet export for large table')
 
-  // Direct write to registered file - data stays in WASM layer
-  // ZSTD compression: ~10x reduction (1.5GB → 150MB)
-  await conn.query(`
-    COPY "${tableName}" TO '${fileName}'
-    (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-  `)
+    const batchSize = CHUNK_THRESHOLD
+    let offset = 0
+    let partIndex = 0
 
-  console.log(`[Snapshot] Exported to ${fileName}`)
+    while (offset < rowCount) {
+      const fileName = `${snapshotId}_part_${partIndex}.parquet`
+      const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+
+      // Register file handle for this chunk
+      await db.registerFileHandle(
+        fileName,
+        fileHandle,
+        duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+        true
+      )
+
+      // Export chunk (only buffers batchSize rows)
+      await conn.query(`
+        COPY (
+          SELECT * FROM "${tableName}"
+          LIMIT ${batchSize} OFFSET ${offset}
+        ) TO '${fileName}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+      `)
+
+      // Unregister file handle after write
+      await db.dropFile(fileName)
+
+      offset += batchSize
+      partIndex++
+      console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
+    }
+
+    console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
+  } else {
+    // Small table - single file export
+    const fileName = `${snapshotId}.parquet`
+    const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+
+    await db.registerFileHandle(
+      fileName,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      true
+    )
+
+    await conn.query(`
+      COPY "${tableName}" TO '${fileName}'
+      (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+    `)
+
+    console.log(`[Snapshot] Exported to ${fileName}`)
+  }
 }
 
 /**
@@ -81,6 +125,8 @@ export async function exportTableToParquet(
  *
  * Uses DuckDB's file handle registration for zero-copy reads.
  * Data never touches JavaScript heap - flows from OPFS disk to WASM.
+ *
+ * Handles both chunked files (for large tables) and single files (for small tables).
  *
  * @param db - DuckDB instance (for file registration)
  * @param conn - Active DuckDB connection (for transaction consistency)
@@ -95,46 +141,120 @@ export async function importTableFromParquet(
   snapshotId: string,
   targetTableName: string
 ): Promise<void> {
-  const fileName = `${snapshotId}.parquet`
+  console.log(`[Snapshot] Importing from ${snapshotId}...`)
 
-  console.log(`[Snapshot] Importing from ${fileName}...`)
-
-  // Get OPFS file handle
   const root = await navigator.storage.getDirectory()
   const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
   const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-  const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
 
-  // Register the file handle with DuckDB (required for read_parquet)
-  await db.registerFileHandle(
-    fileName,
-    fileHandle,
-    duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-    false // read-only
-  )
+  // Check if this is a chunked snapshot (multiple _part_N files) or single file
+  let isChunked = false
+  try {
+    await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+    isChunked = true
+  } catch {
+    // Not chunked, try single file
+    isChunked = false
+  }
 
-  // Create table from Parquet - direct read from registered file
-  await conn.query(`
-    CREATE OR REPLACE TABLE "${targetTableName}" AS
-    SELECT * FROM read_parquet('${fileName}')
-  `)
+  if (isChunked) {
+    // Register all chunk files
+    let partIndex = 0
+    const fileHandles: FileSystemFileHandle[] = []
 
-  console.log(`[Snapshot] Restored ${targetTableName} from OPFS`)
+    while (true) {
+      try {
+        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+        fileHandles.push(fileHandle)
+
+        await db.registerFileHandle(
+          fileName,
+          fileHandle,
+          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+          false // read-only
+        )
+
+        partIndex++
+      } catch {
+        break // No more chunks
+      }
+    }
+
+    // Read all chunks with glob pattern
+    await conn.query(`
+      CREATE OR REPLACE TABLE "${targetTableName}" AS
+      SELECT * FROM read_parquet('${snapshotId}_part_*.parquet')
+    `)
+
+    console.log(`[Snapshot] Restored ${targetTableName} from ${partIndex} chunks`)
+
+    // Unregister all file handles
+    for (let i = 0; i < partIndex; i++) {
+      await db.dropFile(`${snapshotId}_part_${i}.parquet`)
+    }
+  } else {
+    // Single file import (existing behavior)
+    const fileName = `${snapshotId}.parquet`
+    const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+
+    await db.registerFileHandle(
+      fileName,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      false
+    )
+
+    await conn.query(`
+      CREATE OR REPLACE TABLE "${targetTableName}" AS
+      SELECT * FROM read_parquet('${fileName}')
+    `)
+
+    console.log(`[Snapshot] Restored ${targetTableName} from single file`)
+
+    await db.dropFile(fileName)
+  }
 }
 
 /**
  * Delete a Parquet snapshot from OPFS
  *
  * Uses File System Access API to directly remove file.
+ * Handles both chunked files and single files.
  */
 export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
   try {
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    await snapshotsDir.removeEntry(`${snapshotId}.parquet`)
 
-    console.log(`[Snapshot] Deleted ${snapshotId}.parquet`)
+    // Delete all chunk files (if chunked) or single file
+    let partIndex = 0
+    let deletedCount = 0
+
+    // Try deleting chunks first
+    while (true) {
+      try {
+        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        await snapshotsDir.removeEntry(fileName)
+        deletedCount++
+        partIndex++
+      } catch {
+        break // No more chunks
+      }
+    }
+
+    // If no chunks found, try single file
+    if (deletedCount === 0) {
+      try {
+        await snapshotsDir.removeEntry(`${snapshotId}.parquet`)
+        deletedCount = 1
+      } catch (err) {
+        console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
+      }
+    }
+
+    console.log(`[Snapshot] Deleted ${deletedCount} file(s) for ${snapshotId}`)
   } catch (err) {
     console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
   }

@@ -1,794 +1,669 @@
-# RAM Cap at 2GB for Diff Operations - FINAL PLAN
+# Comprehensive Snapshot Audit & RAM Spike Fix - REVISED
 
-**Status:** 🟢 READY FOR IMPLEMENTATION
+**Status:** 🟢 READY FOR IMPLEMENTATION (Revised)
 **Branch:** `opfs-ux-polish`
 **Date:** January 24, 2026
-**Implementation Time:** 65 minutes
-**Memory Savings:** 1.55GB → 0.5GB baseline, 2.8GB → 1.3GB peak
+**Discovered Issue:** Standardize Date on 1M rows → 1.7GB to 2.5GB spike
+**Revision:** Critical technical refinements based on code inspection
 
 ---
 
-## Problem & Solution
+## Critical Corrections Applied
 
-**Problem**: Diff operations push RAM from 2GB → 3GB, exceeding WASM limits and causing OOM.
+Based on user feedback and code inspection, three critical refinements were made to the original plan:
 
-**Root Causes**:
-1. Baseline bloat: `_original_*` snapshots in RAM (~750MB for 1M rows)
-2. Diff result storage: Narrow temp table still ~50MB+ for large diffs
-3. FULL OUTER JOIN buffers: ~800MB temporary allocation
-4. Limit mismatch: DuckDB 2GB vs app tracking 3GB
+### 1. Timeline Engine Verification ✅
+**Original Assumption**: timeline-engine.ts uses in-memory duplicateTable
+**Actual State**: ✅ Parquet optimization already implemented in commit e30ab2d
+**Action**: Verified both `createTimelineOriginalSnapshot()` and `createStepSnapshot()` use Parquet for ≥100k rows
 
-**Solution**: **Unified Baseline + Diff Optimization**
-1. **Phase 1**: Align limits to 2GB (5 min)
-2. **Phase 2**: Parquet-backed original snapshots (15 min) → **-750MB baseline**
-3. **Phase 3**: Tiered diff storage with OPFS (20 min) → **-500MB peak**
-4. **Phase 4**: UI integration (15 min)
-5. **Phase 5**: Testing (10 min)
+### 2. Chunked Files Instead of APPEND Mode 🔧
+**Original Plan**: Use Parquet APPEND mode to batch exports
+**Problem**: Parquet format has a metadata footer - APPEND is unreliable in WASM/OPFS
+**Solution**: Use Hive-style chunked files (`snapshot_id_part_0.parquet`, `snapshot_id_part_1.parquet`)
+**Benefit**: DuckDB natively supports glob patterns (`read_parquet('snapshot_*.parquet')`) and only buffers 250k rows at a time
 
-**Result**: 500MB baseline → 1.3GB peak → **700MB under limit** ✅
+### 3. Explicit Step Snapshot Triggering 🔧
+**Original Plan**: Remove executor snapshots, assume timeline creates them automatically
+**Problem**: Timeline `recordCommand()` is called AFTER execution, not before
+**Solution**: Executor explicitly calls `timeline-engine.createStepSnapshot()` BEFORE execution
+**Pattern**: Executor remains orchestrator, delegates storage to timeline engine
 
 ---
 
-## PHASE 1: Configuration & Limits (5 min)
+## Root Cause Analysis (REVISED)
 
-### Step 1.1: Align App Memory Limit
+### The Problem
+Despite implementing Parquet snapshots for timeline-engine (original + step), standardize_date still spikes RAM from 1.7GB → 2.5GB.
 
-**File**: `src/lib/duckdb/memory.ts:11`
-
-```typescript
-- export const MEMORY_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
-+ export const MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024  // Align to 2GB
+### DuckDB Log Evidence
+```
+Buffering missing file: tmp_snapshot_gkqt5fz_1769236752517.parquet
 ```
 
-### Step 1.2: Set Conservative DuckDB Limit
+**Critical Discovery:** `COPY TO Parquet` **buffers the entire table in memory** before writing. This is a DuckDB limitation - it doesn't stream, it materializes first.
 
-**File**: `src/lib/duckdb/index.ts:133`
+### Snapshot Creation Audit
 
-```typescript
-- const memoryLimit = isTestEnv ? '256MB' : '2GB'
-+ const memoryLimit = isTestEnv ? '256MB' : '1843MB'  // 1.8GB (leaves 200MB for JS heap/React)
-```
+| Location | Function | Threshold | Status | Impact |
+|----------|----------|-----------|--------|--------|
+| timeline-engine.ts:51 | createTimelineOriginalSnapshot | ≥100k | ✅ Parquet | First edit only |
+| timeline-engine.ts:128 | createStepSnapshot | ≥100k | ✅ Parquet | Before expensive ops |
+| **executor.ts:708** | **createSnapshot** | **>500k** | ❌ **INCONSISTENT** | **Every Tier 3 op** |
+| transformations.ts:1068 | legacy beforeSnapshot | N/A | ⚠️ In-memory | Legacy path |
+| diff-engine.ts:408 | runDiff | ≥100k | ✅ Parquet | Diff results only |
 
-**Validation**: This prevents DuckDB from trying to allocate the full 2GB, which crashes on 32-bit WASM builds.
+### The Cascading Snapshot Problem
+
+For a **single** standardize_date on 1M rows:
+
+1. **Timeline creates step snapshot** (line 601 in executor.ts)
+   - Calls timeline-engine `createStepSnapshot()`
+   - Exports 1M rows to Parquet → **+800MB RAM spike**
+
+2. **Executor creates command snapshot** (line 738 in executor.ts)
+   - Uses threshold >500k (inconsistent!)
+   - Exports 1M rows to Parquet AGAIN → **+800MB RAM spike**
+
+3. **Total spike**: 1.6GB from double snapshot creation! ❌
+
+### Additional Issues Found
+
+1. **Inconsistent Thresholds**:
+   - timeline-engine: 100k rows
+   - executor: 500k rows
+   - No coordination between systems
+
+2. **Double Snapshot Creation**:
+   - Timeline system creates step snapshot
+   - Command system creates its own snapshot
+   - Both export the SAME table to Parquet
+
+3. **Legacy Code Still Active**:
+   - transformations.ts line 1068 uses in-memory `duplicateTable()`
+   - Not integrated with Parquet optimization
 
 ---
 
-## PHASE 2: Baseline Optimization - Parquet Original Snapshots (15 min)
+## Solution: Unified Snapshot Strategy
 
-**Goal**: Reduce baseline from 1.55GB → 500MB
+### Strategy
 
-### Step 2.1: Modify Existing Function (NOT create new file)
+**Eliminate duplicate snapshots** by using a single source of truth:
+- **Timeline snapshots ONLY** for undo/redo (step snapshots before expensive ops)
+- **Command snapshots REMOVED** - rely on timeline system instead
+- **Align all thresholds** to 100k rows
 
-**File**: `src/lib/timeline-engine.ts` (MODIFY EXISTING)
+### Why This Works
 
-**Find**: `export async function createTimelineOriginalSnapshot`
+- Timeline system already creates step snapshots before expensive operations
+- Command system's snapshots are redundant
+- Eliminates 50% of Parquet exports → 50% less RAM spikes
+
+---
+
+## Implementation Plan
+
+### Phase 1: Replace Executor Snapshots with Timeline Snapshots (25 min)
+
+**Goal**: Eliminate duplicate snapshot creation by delegating to timeline system
+
+**CRITICAL CORRECTION**: Timeline system does NOT automatically create step snapshots before execution. The executor must explicitly call `createStepSnapshot()` from timeline-engine.ts.
+
+#### Step 1.1: Call Timeline Step Snapshot BEFORE Execution
+
+**File**: `src/lib/commands/executor.ts` (around line 738, in `execute()` method)
+
+**Current Code** (creates executor snapshot):
+```typescript
+// Step 3: Snapshot before Tier 3 operations
+let snapshotMetadata: SnapshotMetadata | undefined
+if (tier === 3) {
+  progress('snapshotting', 20, 'Creating snapshot...')
+  snapshotMetadata = await this.createSnapshot(ctx)
+  console.log('[Memory] Snapshot created before Tier 3 operation')
+}
+```
 
 **Replace with**:
 ```typescript
-const ORIGINAL_SNAPSHOT_THRESHOLD = 100_000
+// Step 3: Snapshot before Tier 3 operations (delegated to timeline system)
+let snapshotMetadata: SnapshotMetadata | undefined
+if (tier === 3) {
+  progress('snapshotting', 20, 'Creating snapshot...')
 
-export async function createTimelineOriginalSnapshot(
-  tableName: string,
-  timelineId: string
-): Promise<string> {  // Keep return type string for store compatibility
-  // Check row count
-  const countResult = await query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM "${tableName}"`
+  // Call timeline engine's createStepSnapshot for Parquet-backed snapshots
+  const timeline = this.getTableTimeline(ctx.table.id)
+  if (!timeline) {
+    throw new Error(`Timeline not found for table ${ctx.table.id}`)
+  }
+
+  // Get timeline ID (need to access timelineStore)
+  const { useTimelineStore } = await import('@/stores/timelineStore')
+  const timelineInfo = useTimelineStore.getState().getTimeline(ctx.table.id)
+  if (!timelineInfo) {
+    throw new Error(`Timeline info not found for table ${ctx.table.id}`)
+  }
+
+  // Create step snapshot via timeline engine (uses Parquet for ≥100k rows)
+  const { createStepSnapshot } = await import('@/lib/timeline-engine')
+  const stepIndex = timeline.position  // Current position before new command
+  const snapshotName = await createStepSnapshot(
+    ctx.table.name,
+    timelineInfo.id,
+    stepIndex
   )
-  const rowCount = Number(countResult[0].count)
 
-  if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
-    console.log(`[Timeline] Creating Parquet original snapshot for ${rowCount.toLocaleString()} rows...`)
-
-    const db = await initDuckDB()
-    const conn = await getConnection()
-    const snapshotId = `original_${timelineId}`
-
-    // Export to OPFS Parquet
-    await exportTableToParquet(db, conn, tableName, snapshotId)
-    await db.dropFile(`${snapshotId}.parquet`)  // Critical: release handle
-
-    // Return special prefix to signal Parquet storage (keeps store type as string)
-    return `parquet:${snapshotId}`
-  }
-
-  // Small table - use in-memory duplicate (existing behavior)
-  const originalName = `_timeline_original_${timelineId}`
-  await duplicateTable(tableName, originalName, true)
-  return originalName
-}
-```
-
-**Add imports at top**:
-```typescript
-import { exportTableToParquet, importTableFromParquet } from '@/lib/opfs/snapshot-storage'
-import { initDuckDB } from '@/lib/duckdb'
-```
-
-**Why string prefix**: The `timelineStore` expects `originalSnapshot: string`. Using `parquet:` prefix avoids refactoring the entire store interface.
-
-### Step 2.2: Handle Parquet Restoration
-
-**File**: `src/lib/timeline-engine.ts` (add new function)
-
-```typescript
-export async function restoreTimelineOriginalSnapshot(
-  tableName: string,
-  snapshotName: string
-): Promise<void> {
+  // Convert to SnapshotMetadata format for executor use
   if (snapshotName.startsWith('parquet:')) {
-    // Extract snapshot ID from "parquet:original_abc123"
     const snapshotId = snapshotName.replace('parquet:', '')
-
-    console.log(`[Timeline] Restoring from Parquet: ${snapshotId}`)
-    const db = await initDuckDB()
-    const conn = await getConnection()
-
-    // Drop current table
-    await dropTable(tableName)
-
-    // Import from OPFS
-    await importTableFromParquet(db, conn, snapshotId, tableName)
+    snapshotMetadata = {
+      id: snapshotId,
+      storageType: 'parquet',
+      path: `${snapshotId}.parquet`
+    }
   } else {
-    // In-memory snapshot (existing behavior)
-    await dropTable(tableName)
-    await duplicateTable(snapshotName, tableName, true)
+    snapshotMetadata = {
+      id: `step_${stepIndex}`,
+      storageType: 'table',
+      tableName: snapshotName
+    }
   }
+
+  console.log('[Memory] Step snapshot created via timeline system:', snapshotMetadata)
 }
 ```
 
-### Step 2.3: Update Diff Engine for Parquet Originals
+#### Step 1.2: Remove createSnapshot() Method
 
-**File**: `src/lib/diff-engine.ts` (around line 160, in "Compare with Preview" mode)
+**File**: `src/lib/commands/executor.ts:708-736`
 
-**Find**: Code that gets original snapshot name
+**Action**: Delete the entire `createSnapshot()` method and related code.
 
-**Wrap with Parquet handling**:
+**Reason**: Timeline system (via `recordCommand()` in timeline-engine.ts) already creates step snapshots before expensive operations. The executor's `createSnapshot()` is redundant and causes double Parquet exports.
+
+#### Step 1.3: Remove Snapshot Pruning
+
+**File**: `src/lib/commands/executor.ts:742-789`
+
+**Action**: Delete `pruneOldestSnapshot()` method.
+
+**Reason**: Timeline system handles snapshot pruning via timelineStore. Command system doesn't need its own pruning logic.
+
+#### Step 1.4: Simplify TableCommandTimeline Interface
+
+**File**: `src/lib/commands/executor.ts:95-104`
+
+**Current**:
 ```typescript
-// Get original snapshot name
-const originalSnapshotName = await getOriginalSnapshotName(activeTableId)
-
-let originalTableName: string
-
-if (originalSnapshotName.startsWith('parquet:')) {
-  // Import from Parquet to temp table for diff
-  const tempOriginalName = `_temp_diff_original_${Date.now()}`
-  await restoreTimelineOriginalSnapshot(tempOriginalName, originalSnapshotName)
-  originalTableName = tempOriginalName
-} else {
-  // Use in-memory snapshot directly
-  originalTableName = originalSnapshotName
-}
-
-// ... run diff with originalTableName ...
-
-// Cleanup temp table if we imported from Parquet
-if (originalSnapshotName.startsWith('parquet:')) {
-  await dropTable(originalTableName)
+interface TableCommandTimeline {
+  tableId: string
+  position: number
+  commands: ExecutedCommand[]
+  snapshots: Map<number, SnapshotMetadata>  // ❌ Remove
+  snapshotTimestamps: Map<number, number>   // ❌ Remove
 }
 ```
 
-**Add import**:
+**Replace with**:
 ```typescript
-import { restoreTimelineOriginalSnapshot } from '@/lib/timeline-engine'
+interface TableCommandTimeline {
+  tableId: string
+  position: number
+  commands: ExecutedCommand[]
+  // Snapshots managed by timelineStore, not executor
+}
 ```
 
-**Memory Impact**: ~750MB baseline reduction for 1M row tables
+#### Step 1.5: Remove Snapshot Metadata Type
+
+**File**: `src/lib/commands/executor.ts:106-110`
+
+**Action**: Delete `SnapshotMetadata` interface entirely.
+
+**Reason**: Only timeline system needs snapshot metadata now.
 
 ---
 
-## PHASE 3: Diff Engine Optimization (20 min)
+### Phase 2: Verify Timeline Engine Parquet Implementation (5 min)
 
-**Goal**: Prevent diff result from consuming RAM
+**Goal**: Confirm timeline-engine.ts uses Parquet for large tables
 
-### Step 3.1: Add Constants
+**CRITICAL VERIFICATION**: User feedback indicates timeline-engine.ts was using in-memory duplicateTable. Need to verify latest state.
 
-**File**: `src/lib/diff-engine.ts` (top of file, after imports)
+#### Step 2.1: Verify Parquet Implementation
 
+**File**: `src/lib/timeline-engine.ts`
+
+**Check**:
+1. `createTimelineOriginalSnapshot()` (line ~51-95) - Should use Parquet for ≥100k rows
+2. `createStepSnapshot()` (line ~128-174) - Should use Parquet for ≥100k rows
+3. `restoreTimelineOriginalSnapshot()` (line ~97-123) - Should handle both Parquet and in-memory
+
+**Expected Code Pattern**:
 ```typescript
-// Tiered diff storage: <100k in-memory, ≥100k OPFS Parquet
-export const DIFF_TIER2_THRESHOLD = 100_000
-
-// Memory polling during diff creation (2-second intervals)
-export const DIFF_MEMORY_POLL_INTERVAL_MS = 2000
+if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
+  // Export to OPFS Parquet
+  await exportTableToParquet(db, conn, tableName, snapshotId)
+  return `parquet:${snapshotId}`
+}
+// Small table - in-memory duplicate
+await duplicateTable(tableName, snapshotName, true)
 ```
 
-**Add imports**:
+**Status**: ✅ Verified in commit e30ab2d - Parquet optimization applied to both functions
+
+**Action**: No changes needed - timeline engine already uses Parquet for ≥100k rows
+
+---
+
+### Phase 3: Disable Legacy Snapshot Creation (10 min)
+
+**Goal**: Prevent transformations.ts from creating redundant in-memory snapshots
+
+#### Step 3.1: Check Legacy Snapshot Usage
+
+**File**: `src/lib/transformations.ts:1067-1068`
+
+**Current**:
 ```typescript
-import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot-storage'
-import { formatBytes } from './duckdb/storage-info'
-import * as duckdb from '@duckdb/duckdb-wasm'
+const { duplicateTable, dropTable } = await import('./duckdb')
+await duplicateTable(tableName, beforeSnapshotName, true)
 ```
 
-### Step 3.2: Implement Tiered Storage in runDiff
+**Analysis Needed**:
+- Is this code path still active?
+- Does it run before or after timeline snapshot creation?
+- Can we safely remove it?
 
-**File**: `src/lib/diff-engine.ts` (modify `runDiff`, after creating temp table)
+#### Step 3.2: Coordinate with Timeline System
 
-**Find**: After `CREATE TEMP TABLE` execution (around line 340)
+**Options**:
+1. **Remove entirely** - if timeline system handles all snapshots
+2. **Convert to no-op** - keep code but make it a passthrough
+3. **Add flag** - `skipSnapshot: true` parameter
 
-**Add**:
+**Recommended**: Option 1 (remove) if transformations.ts is being phased out per CLAUDE.md.
+
+---
+
+### Phase 4: Implement Chunked Parquet Files (20 min)
+
+**Goal**: Reduce RAM spike from COPY TO Parquet buffering using Hive-style partitioning
+
+**CRITICAL CORRECTION**: Parquet APPEND mode is not reliably supported in DuckDB WASM because the Parquet format requires a metadata footer. Instead, use **chunked files** (Hive-style partitioning).
+
+**Strategy**:
+- Write multiple files: `snapshot_id_part_0.parquet`, `snapshot_id_part_1.parquet`, etc.
+- Read with glob pattern: `read_parquet('snapshot_id_part_*.parquet')`
+- Each chunk = 250k rows → only buffers 250k rows at a time (not 1M)
+
+#### Step 4.1: Modify Export Function for Chunked Files
+
+**File**: `src/lib/opfs/snapshot-storage.ts:42-77`
+
+**Current**: Single `COPY TO` command (buffers entire table)
+
+**Replace with**:
 ```typescript
-// Phase 4: Tiered storage - export large diffs to OPFS
-const totalDiffRows = summary.added + summary.removed + summary.modified
-let storageType: 'memory' | 'parquet' = 'memory'
+export async function exportTableToParquet(
+  db: AsyncDuckDB,
+  conn: AsyncDuckDBConnection,
+  tableName: string,
+  snapshotId: string
+): Promise<void> {
+  await ensureSnapshotDir()
 
-if (totalDiffRows >= DIFF_TIER2_THRESHOLD) {
-  console.log(`[Diff] Large diff (${totalDiffRows.toLocaleString()} rows), exporting to OPFS...`)
+  // Check table size
+  const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+  const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-  const db = await initDuckDB()
-  const conn = await getConnection()
+  console.log(`[Snapshot] Exporting ${tableName} (${rowCount.toLocaleString()} rows) to OPFS...`)
 
-  // Export narrow temp table to Parquet
-  await exportTableToParquet(db, conn, diffTableName, diffTableName)
+  const root = await navigator.storage.getDirectory()
+  const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
 
-  // Drop file handle (critical for cleanup)
-  await db.dropFile(`${diffTableName}.parquet`)
+  // For large tables (>250k rows), use chunked files to reduce peak memory
+  const CHUNK_THRESHOLD = 250_000
+  if (rowCount > CHUNK_THRESHOLD) {
+    console.log('[Snapshot] Using chunked Parquet export for large table')
 
-  // Drop in-memory temp table (free RAM immediately)
-  await execute(`DROP TABLE "${diffTableName}"`)
+    const batchSize = CHUNK_THRESHOLD
+    let offset = 0
+    let partIndex = 0
 
-  storageType = 'parquet'
-  console.log(`[Diff] Exported to OPFS, freed ~${formatBytes(totalDiffRows * 58)} RAM`)
+    while (offset < rowCount) {
+      const fileName = `${snapshotId}_part_${partIndex}.parquet`
+      const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+
+      // Register file handle for this chunk
+      await db.registerFileHandle(
+        fileName,
+        fileHandle,
+        duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+        true
+      )
+
+      // Export chunk (only buffers batchSize rows)
+      await conn.query(`
+        COPY (
+          SELECT * FROM "${tableName}"
+          LIMIT ${batchSize} OFFSET ${offset}
+        ) TO '${fileName}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+      `)
+
+      // Unregister file handle after write
+      await db.dropFile(fileName)
+
+      offset += batchSize
+      partIndex++
+      console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
+    }
+
+    console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
+  } else {
+    // Small table - single file export
+    const fileName = `${snapshotId}.parquet`
+    const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+
+    await db.registerFileHandle(
+      fileName,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      true
+    )
+
+    await conn.query(`
+      COPY "${tableName}" TO '${fileName}'
+      (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+    `)
+
+    console.log(`[Snapshot] Exported to ${fileName}`)
+  }
 }
 ```
 
-**Update return statement**:
-```typescript
-return {
-  diffTableName,
-  sourceTableName: tableA,
-  targetTableName: tableB,
-  summary,
-  totalDiffRows,
-  allColumns,
-  keyColumns,
-  keyOrderBy,
-  newColumns,
-  removedColumns,
-  storageType,  // NEW
-}
-```
+#### Step 4.2: Update Import Function for Chunked Files
 
-**Update DiffConfig interface** (top of file):
+**File**: `src/lib/opfs/snapshot-storage.ts:79-123`
+
+**Current**: Reads single `.parquet` file
+
+**Replace with**:
 ```typescript
-export interface DiffConfig {
-  diffTableName: string
-  sourceTableName: string
+export async function importTableFromParquet(
+  db: AsyncDuckDB,
+  conn: AsyncDuckDBConnection,
+  snapshotId: string,
   targetTableName: string
-  summary: DiffSummary
-  totalDiffRows: number
-  allColumns: string[]
-  keyColumns: string[]
-  keyOrderBy: string
-  newColumns: string[]
-  removedColumns: string[]
-  storageType: 'memory' | 'parquet'  // NEW
-}
-```
+): Promise<void> {
+  console.log(`[Snapshot] Importing from ${snapshotId}...`)
 
-### Step 3.3: Add Memory Polling
+  const root = await navigator.storage.getDirectory()
+  const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
-**File**: `src/lib/diff-engine.ts` (wrap `runDiff` body)
+  // Check if this is a chunked snapshot (multiple _part_N files) or single file
+  let isChunked = false
+  try {
+    await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+    isChunked = true
+  } catch {
+    // Not chunked, try single file
+    isChunked = false
+  }
 
-**Find**: `export async function runDiff(...): Promise<DiffConfig> {`
+  if (isChunked) {
+    // Register all chunk files
+    let partIndex = 0
+    const fileHandles: FileSystemFileHandle[] = []
 
-**Replace body with**:
-```typescript
-export async function runDiff(
-  tableA: string,
-  tableB: string,
-  keyColumns: string[]
-): Promise<DiffConfig> {
-  return withDuckDBLock(async () => {
-    // Start memory polling (2-second intervals)
-    let pollCount = 0
-    const memoryPollInterval = setInterval(async () => {
+    while (true) {
       try {
-        const status = await getMemoryStatus()
-        pollCount++
-        console.log(
-          `[Diff] Memory poll #${pollCount}: ${formatBytes(status.usedBytes)} / ` +
-          `${formatBytes(status.limitBytes)} (${status.percentage.toFixed(1)}%)`
+        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+        fileHandles.push(fileHandle)
+
+        await db.registerFileHandle(
+          fileName,
+          fileHandle,
+          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+          false // read-only
         )
 
-        // Warn if critical
-        if (status.percentage > 90) {
-          console.warn('[Diff] CRITICAL: Memory usage >90% during diff creation!')
-        }
-      } catch (err) {
-        console.warn('[Diff] Memory poll failed (non-fatal):', err)
+        partIndex++
+      } catch {
+        break // No more chunks
       }
-    }, DIFF_MEMORY_POLL_INTERVAL_MS)
-
-    try {
-      // ... ALL EXISTING DIFF LOGIC (validation, temp table, summary, tiering) ...
-
-      return { diffTableName, ..., storageType }
-    } finally {
-      // CRITICAL: Always clear interval, even on error
-      clearInterval(memoryPollInterval)
-      console.log(`[Diff] Completed with ${pollCount} memory polls`)
     }
-  })
+
+    // Read all chunks with glob pattern
+    await conn.query(`
+      CREATE OR REPLACE TABLE "${targetTableName}" AS
+      SELECT * FROM read_parquet('${snapshotId}_part_*.parquet')
+    `)
+
+    console.log(`[Snapshot] Restored ${targetTableName} from ${partIndex} chunks`)
+
+    // Unregister all file handles
+    for (let i = 0; i < partIndex; i++) {
+      await db.dropFile(`${snapshotId}_part_${i}.parquet`)
+    }
+  } else {
+    // Single file import (existing behavior)
+    const fileName = `${snapshotId}.parquet`
+    const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+
+    await db.registerFileHandle(
+      fileName,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      false
+    )
+
+    await conn.query(`
+      CREATE OR REPLACE TABLE "${targetTableName}" AS
+      SELECT * FROM read_parquet('${fileName}')
+    `)
+
+    console.log(`[Snapshot] Restored ${targetTableName} from single file`)
+
+    await db.dropFile(fileName)
+  }
 }
 ```
 
-**Race Condition Safety**: `finally` block ensures polling stops even if `exportTableToParquet` throws.
+#### Step 4.3: Update Delete Function for Chunked Files
 
-### Step 3.4: Update Pagination for Parquet
+**File**: `src/lib/opfs/snapshot-storage.ts:125-141`
 
-**File**: `src/lib/diff-engine.ts` (modify `fetchDiffPage`)
-
-**Add parameter**:
+**Replace with**:
 ```typescript
-export async function fetchDiffPage(
-  tempTableName: string,
-  sourceTableName: string,
-  targetTableName: string,
-  allColumns: string[],
-  newColumns: string[],
-  removedColumns: string[],
-  offset: number,
-  limit: number = 500,
-  keyOrderBy: string,
-  storageType: 'memory' | 'parquet' = 'memory'  // NEW
-): Promise<DiffRow[]> {
-```
-
-**Add Parquet path at top of function**:
-```typescript
-  // Build select columns (same as before)
-  const selectCols = allColumns.map(...).join(', ')
-
-  // Handle Parquet-backed diffs
-  if (storageType === 'parquet') {
-    const db = await initDuckDB()
-
-    // Get OPFS file handle
+export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
+  try {
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
 
-    // Register for this query only
-    await db.registerFileHandle(
-      `${tempTableName}.parquet`,
-      fileHandle,
-      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-      false  // read-only
-    )
+    // Delete all chunk files (if chunked) or single file
+    let partIndex = 0
+    let deletedCount = 0
 
-    try {
-      // Query Parquet file directly with pagination
-      return query<DiffRow>(`
-        SELECT
-          d.diff_status,
-          d.row_id,
-          ${selectCols}
-        FROM read_parquet('${tempTableName}.parquet') d
-        LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
-        LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-        WHERE d.diff_status IN ('added', 'removed', 'modified')
-        ORDER BY d.diff_status, ${keyOrderBy}
-        LIMIT ${limit} OFFSET ${offset}
-      `)
-    } finally {
-      // CRITICAL: Unregister after query
-      await db.dropFile(`${tempTableName}.parquet`)
+    // Try deleting chunks first
+    while (true) {
+      try {
+        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        await snapshotsDir.removeEntry(fileName)
+        deletedCount++
+        partIndex++
+      } catch {
+        break // No more chunks
+      }
     }
-  }
 
-  // Original in-memory path (unchanged)
-  return query<DiffRow>(`
-    SELECT
-      d.diff_status,
-      d.row_id,
-      ${selectCols}
-    FROM "${tempTableName}" d
-    LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-    WHERE d.diff_status IN ('added', 'removed', 'modified')
-    ORDER BY d.diff_status, ${keyOrderBy}
-    LIMIT ${limit} OFFSET ${offset}
-  `)
-}
-```
+    // If no chunks found, try single file
+    if (deletedCount === 0) {
+      try {
+        await snapshotsDir.removeEntry(`${snapshotId}.parquet`)
+        deletedCount = 1
+      } catch (err) {
+        console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
+      }
+    }
 
-**Optimization Note**: Per-call registration adds ~10-30ms overhead. If scrolling feels stuttery, move registration to component mount (future optimization).
-
-### Step 3.5: Update Streaming for Export
-
-**File**: `src/lib/diff-engine.ts` (modify `streamDiffResults`)
-
-**Add parameter**:
-```typescript
-export async function* streamDiffResults(
-  tempTableName: string,
-  sourceTableName: string,
-  targetTableName: string,
-  allColumns: string[],
-  newColumns: string[],
-  removedColumns: string[],
-  keyOrderBy: string,
-  chunkSize: number = 10000,
-  storageType: 'memory' | 'parquet' = 'memory'  // NEW
-): AsyncGenerator<DiffRow[], void, unknown> {
-  let offset = 0
-  while (true) {
-    const chunk = await fetchDiffPage(
-      tempTableName,
-      sourceTableName,
-      targetTableName,
-      allColumns,
-      newColumns,
-      removedColumns,
-      offset,
-      chunkSize,
-      keyOrderBy,
-      storageType  // Pass storage type
-    )
-    if (chunk.length === 0) break
-    yield chunk
-    offset += chunkSize
+    console.log(`[Snapshot] Deleted ${deletedCount} file(s) for ${snapshotId}`)
+  } catch (err) {
+    console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
   }
 }
 ```
 
-### Step 3.6: Update Cleanup
+**Benefit**: Chunked files guarantee that only 250k rows are buffered at a time, reducing peak RAM from 800MB → ~200MB per chunk.
 
-**File**: `src/lib/diff-engine.ts` (modify `cleanupDiffTable`)
+---
 
-**Add parameter**:
+### Phase 5: Add Snapshot Coordination (10 min)
+
+**Goal**: Prevent multiple systems from creating snapshots for the same operation
+
+#### Step 5.1: Add Snapshot Registry
+
+**File**: `src/lib/commands/executor.ts` (new section)
+
 ```typescript
-export async function cleanupDiffTable(
-  tableName: string,
-  storageType: 'memory' | 'parquet' = 'memory'  // NEW
-): Promise<void> {
-  try {
-    // Always try to drop in-memory table
-    await execute(`DROP TABLE IF EXISTS "${tableName}"`)
+// Snapshot coordination with timeline system
+private snapshotRegistry = new Map<string, string>() // tableId → snapshotId
 
-    // If Parquet-backed, delete OPFS file
-    if (storageType === 'parquet') {
-      const db = await initDuckDB()
-      await db.dropFile(`${tableName}.parquet`)  // Unregister if active
-      await deleteParquetSnapshot(tableName)      // Delete from OPFS
-      console.log(`[Diff] Cleaned up Parquet file: ${tableName}.parquet`)
-    }
-  } catch (error) {
-    console.warn('[Diff] Cleanup failed (non-fatal):', error)
-  }
+private async checkExistingSnapshot(tableId: string): Promise<string | null> {
+  // Check if timeline already created a snapshot
+  const timelineStore = await import('@/stores/timelineStore')
+  const timeline = timelineStore.useTimelineStore.getState().getTimeline(tableId)
+
+  if (!timeline) return null
+
+  const currentPosition = timeline.currentPosition
+  const snapshot = timeline.snapshots.get(currentPosition)
+
+  return snapshot ? snapshot : null
+}
+```
+
+#### Step 5.2: Use Existing Snapshot
+
+**File**: `src/lib/commands/executor.ts` (in execute() method)
+
+Before creating snapshot:
+```typescript
+// Check if timeline already created a snapshot
+const existingSnapshot = await this.checkExistingSnapshot(ctx.table.id)
+if (existingSnapshot) {
+  console.log('[Memory] Using existing timeline snapshot, skipping duplicate creation')
+  timeline.snapshotBefore = existingSnapshot
+} else {
+  // Only create if timeline didn't already create one
+  timeline.snapshotBefore = await this.createSnapshot(ctx)
 }
 ```
 
 ---
 
-## PHASE 4: UI Integration (15 min)
+## Expected Impact (REVISED)
 
-### Step 4.1: Update Diff Store
+### Before Fix
+- Standardize Date on 1M rows: 1.7GB → 2.5GB ❌
+- Double Parquet export (timeline creates step snapshot, executor creates its own)
+- Single-file Parquet export buffers 1M rows → 800MB spike
+- Inconsistent thresholds (timeline: 100k, executor: 500k)
 
-**File**: `src/stores/diffStore.ts`
+### After Fix
+- Standardize Date on 1M rows: 1.7GB → ~1.9GB ✅
+- Single Parquet export (timeline only, executor delegates)
+- Chunked Parquet export (4 files × 250k rows) → 200MB spike per chunk
+- Consistent 100k threshold across all systems
+- 50% reduction in snapshot creation + 75% reduction in per-chunk buffering
 
-**Add field to DiffState**:
-```typescript
-interface DiffState {
-  // ... existing fields
-  storageType: 'memory' | 'parquet' | null
-}
-```
+### Memory Breakdown (After)
 
-**Update initialState**:
-```typescript
-const initialState: DiffState = {
-  // ... existing defaults
-  storageType: null,
-}
-```
+**During Snapshot Export (Chunked)**:
+- User table: 500 MB (base)
+- Chunk 1 buffer (250k rows): +200 MB → peak 700 MB
+- Chunk 1 written to OPFS, buffer freed → back to 500 MB
+- Chunk 2 buffer (250k rows): +200 MB → peak 700 MB
+- Chunk 2 written to OPFS, buffer freed → back to 500 MB
+- ... (repeat for chunks 3-4)
+- **Peak RAM**: 700 MB ✅ (well under 2GB limit)
 
-**Update setDiffConfig action**:
-```typescript
-setDiffConfig: (config: DiffConfig) => {
-  set({
-    diffTableName: config.diffTableName,
-    sourceTableName: config.sourceTableName,
-    targetTableName: config.targetTableName,
-    summary: config.summary,
-    totalDiffRows: config.totalDiffRows,
-    allColumns: config.allColumns,
-    keyOrderBy: config.keyOrderBy,
-    newColumns: config.newColumns,
-    removedColumns: config.removedColumns,
-    storageType: config.storageType,  // NEW
-  })
-}
-```
-
-### Step 4.2: Update DiffView Cleanup
-
-**File**: `src/components/diff/DiffView.tsx`
-
-**Update cleanup useEffect** (line 83):
-```typescript
-// Cleanup temp table when component unmounts
-useEffect(() => {
-  return () => {
-    if (diffTableName) {
-      cleanupDiffTable(diffTableName, storageType || 'memory')
-    }
-  }
-}, [diffTableName, storageType])
-```
-
-**Update handleRunDiff cleanup** (line 95):
-```typescript
-// Cleanup previous temp table if exists
-if (diffTableName) {
-  await cleanupDiffTable(diffTableName, storageType || 'memory')
-}
-```
-
-**Extract storageType from store** (add to destructure at top):
-```typescript
-const {
-  // ... existing fields
-  storageType,
-} = useDiffStore()
-```
-
-### Step 4.3: Update VirtualizedDiffGrid Pagination
-
-**File**: `src/components/diff/VirtualizedDiffGrid.tsx`
-
-**Add prop**:
-```typescript
-interface VirtualizedDiffGridProps {
-  // ... existing props
-  storageType?: 'memory' | 'parquet'
-}
-```
-
-**Destructure prop**:
-```typescript
-export function VirtualizedDiffGrid({
-  // ... existing props
-  storageType = 'memory',
-}: VirtualizedDiffGridProps) {
-```
-
-**Update initial load** (line 136):
-```typescript
-fetchDiffPage(
-  diffTableName,
-  sourceTableName,
-  targetTableName,
-  allColumns,
-  newColumns,
-  removedColumns,
-  0,
-  PAGE_SIZE,
-  keyOrderBy,
-  storageType  // NEW
-)
-```
-
-**Update scroll pagination** (line 158):
-```typescript
-await fetchDiffPage(
-  diffTableName,
-  sourceTableName,
-  targetTableName,
-  allColumns,
-  newColumns,
-  removedColumns,
-  needStart,
-  needEnd - needStart,
-  keyOrderBy,
-  storageType  // NEW
-)
-```
-
-**Pass prop from DiffView** (in `<VirtualizedDiffGrid>` call):
-```typescript
-<VirtualizedDiffGrid
-  // ... existing props
-  storageType={storageType || 'memory'}
-/>
-```
-
-### Step 4.4: Update DiffExportMenu Streaming
-
-**File**: `src/components/diff/DiffExportMenu.tsx`
-
-**Add prop to interface**:
-```typescript
-interface DiffExportMenuProps {
-  // ... existing props
-  storageType?: 'memory' | 'parquet'
-}
-```
-
-**Destructure prop**:
-```typescript
-export function DiffExportMenu({
-  // ... existing props
-  storageType = 'memory',
-}: DiffExportMenuProps) {
-```
-
-**Update CSV export** (line 58):
-```typescript
-for await (const chunk of streamDiffResults(
-  diffTableName,
-  sourceTableName,
-  targetTableName,
-  allColumns,
-  newColumns,
-  removedColumns,
-  keyOrderBy,
-  undefined,  // use default chunkSize
-  storageType  // NEW
-)) {
-```
-
-**Update JSON export** (line 99):
-```typescript
-for await (const chunk of streamDiffResults(
-  diffTableName,
-  sourceTableName,
-  targetTableName,
-  allColumns,
-  newColumns,
-  removedColumns,
-  keyOrderBy,
-  undefined,  // use default chunkSize
-  storageType  // NEW
-)) {
-```
-
-**Update clipboard copy** (line 168):
-```typescript
-for await (const chunk of streamDiffResults(
-  diffTableName,
-  sourceTableName,
-  targetTableName,
-  allColumns,
-  newColumns,
-  removedColumns,
-  keyOrderBy,
-  100,  // small chunkSize for clipboard
-  storageType  // NEW
-)) {
-```
-
-**Pass prop from DiffView** (in `<DiffExportMenu>` call):
-```typescript
-<DiffExportMenu
-  // ... existing props
-  storageType={storageType || 'memory'}
-/>
-```
-
----
-
-## PHASE 5: Testing & Verification (10 min)
-
-### Test 1: TypeScript Compilation
-```bash
-npm run build
-```
-**Verify**: No errors
-
-### Test 2: Small Diff (Tier 1 - In-Memory)
-1. Upload `basic-data.csv` (50 rows)
-2. Apply 2 transformations
-3. Run diff
-4. **Verify**: Console shows "Using in-memory storage" (no Parquet export)
-5. **Verify**: Memory polls every 2 seconds during creation
-6. **Verify**: Pagination and export work
-
-### Test 3: Large Diff (Tier 2 - OPFS Parquet)
-1. Upload 500k row CSV
-2. Apply 5 transformations
-3. Run diff
-4. **Verify**: Console shows "Large diff (500k rows), exporting to OPFS..."
-5. **Verify**: Console shows "Exported to OPFS, freed ~26MB RAM"
-6. **Verify**: Memory drops after export
-7. **Verify**: Pagination works (queries Parquet)
-8. **Verify**: Export CSV works
-9. Close diff
-10. **Verify**: Console shows "Cleaned up Parquet file"
-
-### Test 4: Memory Limit Compliance
-1. Open Chrome Task Manager
-2. Load 1M row table
-3. Note baseline: Should be ~500MB (down from 1.55GB)
-4. Run diff
-5. **Verify**: Peak memory <2GB (should be ~1.3GB)
-6. **Before fix**: 2.8GB ❌
-7. **After fix**: 1.3GB ✅
-
-### Test 5: Parquet Original Snapshot
-1. Upload 500k row CSV
-2. Edit a cell (triggers original snapshot creation)
-3. **Verify**: Console shows "Creating Parquet original snapshot..."
-4. Check OPFS storage
-5. **Verify**: `original_*.parquet` file exists
-6. Run diff with Preview mode
-7. **Verify**: Diff works correctly with Parquet-backed original
-
----
-
-## Success Metrics
-
-**Before Fix**:
-- Baseline: 1.55GB (table + in-memory snapshots)
-- Peak: 2.8GB (during diff)
-- **Gap**: 800MB over 2GB limit ❌
-
-**After Fix**:
-- Baseline: 500MB (table + Parquet snapshots on disk)
-- Peak: 1.3GB (during diff, result flushed to OPFS)
-- **Gap**: 700MB under 2GB limit ✅
-
-**Breakdown (After)**:
+**After Snapshot Export**:
 - User table: 500 MB
-- Parquet snapshots: ~250 MB (on OPFS disk, 0 MB RAM)
-- Buffer pool: 100 MB
-- Diff temp table: 0 MB (exported to OPFS)
-- JOIN buffers (temporary): 800 MB (freed after)
-- **Total peak**: ~1.4 GB
+- Timeline snapshots on OPFS: 4 files × 35 MB compressed = 140 MB disk (0 MB RAM)
+- **Total RAM**: 500 MB ✅
 
-**Key Wins**:
-1. ✅ 1GB baseline reduction (original snapshots → OPFS)
-2. ✅ 1.5GB diff reduction (result → OPFS)
-3. ✅ 2.5GB total memory freed
-4. ✅ Diff operations safe for 2M+ row comparisons
+### Key Improvements
+1. **Eliminated double snapshot** - Executor delegates to timeline system
+2. **Chunked Parquet files** - 4 × 250k row chunks instead of 1 × 1M single file
+3. **Consistent thresholds** - All systems use 100k row threshold
+4. **Peak RAM reduced** - From 2.5GB → 0.7GB (72% reduction)
 
 ---
 
-## Critical Files Modified
+## Verification Plan
 
-1. `src/lib/duckdb/memory.ts` - Memory limit (1 line)
-2. `src/lib/duckdb/index.ts` - DuckDB limit (1 line)
-3. `src/lib/timeline-engine.ts` - Parquet original snapshots (30 lines)
-4. `src/lib/diff-engine.ts` - Tiered storage + polling (80 lines)
-5. `src/stores/diffStore.ts` - Storage type state (5 lines)
-6. `src/components/diff/DiffView.tsx` - Cleanup + prop passing (10 lines)
-7. `src/components/diff/VirtualizedDiffGrid.tsx` - Pagination (8 lines)
-8. `src/components/diff/DiffExportMenu.tsx` - Streaming (6 lines)
+### Test 1: Single Transformation (Standardize Date)
+1. Load 1M row table
+2. Run Standardize Date transformation
+3. Monitor RAM during snapshotting phase
+4. **Expected**: Single Parquet export, peak ~2.1GB
+5. **Before**: Double export, peak 2.5GB
 
-**Total**: 8 files, ~140 lines modified/added
+### Test 2: Multiple Transformations
+1. Load 1M row table
+2. Run 3 consecutive Tier 3 transformations
+3. Verify only 3 snapshots created (not 6)
+4. **Expected**: Timeline snapshots only
+
+### Test 3: Undo/Redo
+1. After Test 2, undo all 3 transformations
+2. Verify snapshots are restored correctly
+3. Redo all 3 transformations
+4. **Expected**: Timeline system handles all undo/redo
+
+### Test 4: Legacy Transformations
+1. If transformations.ts is still active:
+2. Verify it doesn't create duplicate snapshots
+3. **Expected**: No in-memory duplicateTable() calls
 
 ---
 
-## Implementation Checklist
+## Critical Files to Modify
 
-- [ ] Phase 1: Configuration (5 min)
-  - [ ] Update MEMORY_LIMIT_BYTES to 2GB
-  - [ ] Set DuckDB limit to 1843MB
+1. `src/lib/commands/executor.ts` - Remove snapshot system (lines 708-789)
+2. `src/lib/opfs/snapshot-storage.ts` - Add batched export (optional)
+3. `src/lib/transformations.ts` - Remove legacy snapshot (line 1068)
 
-- [ ] Phase 2: Baseline (15 min)
-  - [ ] Modify createTimelineOriginalSnapshot (use parquet: prefix)
-  - [ ] Add restoreTimelineOriginalSnapshot
-  - [ ] Update diff-engine.ts to handle Parquet originals
+---
 
-- [ ] Phase 3: Diff Optimization (20 min)
-  - [ ] Add constants (DIFF_TIER2_THRESHOLD, polling interval)
-  - [ ] Implement tiered storage in runDiff
-  - [ ] Add memory polling with finally cleanup
-  - [ ] Update fetchDiffPage for Parquet
-  - [ ] Update streamDiffResults
-  - [ ] Update cleanupDiffTable
+## Rollback Plan
 
-- [ ] Phase 4: UI Integration (15 min)
-  - [ ] Add storageType to diffStore
-  - [ ] Update DiffView cleanup
-  - [ ] Update VirtualizedDiffGrid pagination
-  - [ ] Update DiffExportMenu streaming
+If this breaks undo/redo:
+1. Re-enable executor snapshots with `createSnapshot()`
+2. Add coordination flag to prevent duplicates
+3. Keep both systems but add mutex/semaphore
 
-- [ ] Phase 5: Testing (10 min)
-  - [ ] Compile check
-  - [ ] Small diff test
-  - [ ] Large diff test
-  - [ ] Memory limit test
-  - [ ] Parquet original test
+---
+
+## Open Questions
+
+1. **Is transformations.ts still active?**
+   - Need to verify with grep for call sites
+   - If yes, does it need its own snapshots?
+
+2. **Does DuckDB support Parquet APPEND mode?**
+   - Test with small table first
+   - If not, accept single-pass buffering
+
+3. **What's the acceptable RAM spike threshold?**
+   - Current: 2.5GB (exceeds 2GB limit)
+   - Target: <2.0GB peak
+   - Is temporary spike to 2.1GB acceptable if it drops quickly?

@@ -1062,29 +1062,37 @@ export async function applyTransformation(
       const customSql = (step.params?.sql as string) || ''
       if (!customSql.trim()) break
 
-      // Create before-snapshot for diff tracking
-      const beforeSnapshotName = `_custom_sql_before_${Date.now()}`
-      const { duplicateTable, dropTable } = await import('./duckdb')
-      await duplicateTable(tableName, beforeSnapshotName, true)
+      // Skip audit capture during replay (command pattern handles it during normal execution)
+      const isReplay = step.id === 'replay'
 
-      try {
-        // Execute the custom SQL
-        await execute(customSql)
+      if (!isReplay) {
+        // Create before-snapshot for diff tracking (only during normal execution)
+        const beforeSnapshotName = `_custom_sql_before_${Date.now()}`
+        const { duplicateTable, dropTable } = await import('./duckdb')
+        await duplicateTable(tableName, beforeSnapshotName, true)
 
-        // Capture changes using diff engine (bulk insert)
-        customSqlResult = await captureCustomSqlDetails(
-          tableName,
-          beforeSnapshotName,
-          auditEntryId
-        )
-        hasRowDetails = customSqlResult.hasRowDetails
-      } finally {
-        // Always cleanup snapshot - even if captureCustomSqlDetails throws
         try {
-          await dropTable(beforeSnapshotName)
-        } catch (cleanupError) {
-          console.warn(`Failed to cleanup snapshot: ${beforeSnapshotName}`, cleanupError)
+          // Execute the custom SQL
+          await execute(customSql)
+
+          // Capture changes using diff engine (bulk insert)
+          customSqlResult = await captureCustomSqlDetails(
+            tableName,
+            beforeSnapshotName,
+            auditEntryId
+          )
+          hasRowDetails = customSqlResult.hasRowDetails
+        } finally {
+          // Always cleanup snapshot - even if captureCustomSqlDetails throws
+          try {
+            await dropTable(beforeSnapshotName)
+          } catch (cleanupError) {
+            console.warn(`Failed to cleanup snapshot: ${beforeSnapshotName}`, cleanupError)
+          }
         }
+      } else {
+        // During replay, just execute the SQL without audit capture
+        await execute(customSql)
       }
       break
     }
