@@ -137,7 +137,7 @@ export function IngestionWizard({
     const fields = parseLine(line, effectiveDelimiter)
 
     return (
-      <span className="inline-flex items-baseline">
+      <span className="inline-flex items-start flex-wrap gap-x-0">
         {fields.map((field, idx) => {
           const color = rainbowColors[idx % rainbowColors.length]
           const isLast = idx === fields.length - 1
@@ -269,7 +269,7 @@ export function IngestionWizard({
                     Detected {headerColumns.length} columns from row {headerRow}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
                   {headerColumns.slice(0, 20).map((col, i) => {
                     const color = rainbowColors[i % rainbowColors.length]
                     return (
@@ -281,7 +281,8 @@ export function IngestionWizard({
                           border: `1px solid ${color}40`,
                           animationDelay: `${i * 30}ms`
                         }}
-                        className="px-3 py-1.5 text-sm rounded-lg font-medium animate-in"
+                        className="px-3 py-1.5 text-sm rounded-lg font-medium animate-in truncate max-w-[200px]"
+                        title={col || '(empty)'}
                       >
                         {col || `(empty)`}
                       </span>
@@ -316,7 +317,7 @@ export function IngestionWizard({
                         <span className="w-12 text-right pr-4 text-muted-foreground select-none shrink-0 text-xs">
                           {lineNum}
                         </span>
-                        <div className="flex-1 text-sm leading-relaxed">
+                        <div className="flex-1 text-sm leading-relaxed overflow-x-auto">
                           {renderRainbowLine(line, isHeader)}
                         </div>
                       </div>
