@@ -16,7 +16,9 @@ interface DiffState {
   // Key columns (shared between modes)
   keyColumns: string[]
   // Diff results - now stored in temp table for scalability
-  diffTableName: string | null   // Temp table reference
+  diffTableName: string | null   // Temp table reference (narrow metadata table)
+  sourceTableName: string        // Source table (A/original) for JOIN during pagination
+  targetTableName: string        // Target table (B/current) for JOIN during pagination
   totalDiffRows: number          // Total non-unchanged rows
   allColumns: string[]           // For grid columns
   keyOrderBy: string             // For consistent ordering
@@ -38,6 +40,8 @@ interface DiffActions {
   setKeyColumns: (columns: string[]) => void
   setDiffConfig: (config: {
     diffTableName: string
+    sourceTableName: string
+    targetTableName: string
     totalDiffRows: number
     allColumns: string[]
     keyOrderBy: string
@@ -60,6 +64,8 @@ const initialState: DiffState = {
   previewTableId: null,
   keyColumns: [],
   diffTableName: null,
+  sourceTableName: '',
+  targetTableName: '',
   totalDiffRows: 0,
   allColumns: [],
   keyOrderBy: '',
@@ -79,6 +85,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     mode,
     // Clear results when switching modes
     diffTableName: null,
+    sourceTableName: '',
+    targetTableName: '',
     totalDiffRows: 0,
     allColumns: [],
     keyOrderBy: '',
@@ -93,6 +101,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   setKeyColumns: (columns) => set({ keyColumns: columns }),
   setDiffConfig: (config) => set({
     diffTableName: config.diffTableName,
+    sourceTableName: config.sourceTableName,
+    targetTableName: config.targetTableName,
     totalDiffRows: config.totalDiffRows,
     allColumns: config.allColumns,
     keyOrderBy: config.keyOrderBy,
@@ -105,6 +115,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   setBlindMode: (enabled) => set({ blindMode: enabled }),
   clearResults: () => set({
     diffTableName: null,
+    sourceTableName: '',
+    targetTableName: '',
     totalDiffRows: 0,
     allColumns: [],
     keyOrderBy: '',
