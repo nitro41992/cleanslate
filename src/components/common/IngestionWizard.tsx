@@ -132,26 +132,30 @@ export function IngestionWizard({
     onOpenChange(false)
   }
 
-  // Render a line with rainbow-colored columns
+  // Render a line with rainbow-colored columns (VS Code style)
   const renderRainbowLine = (line: string, isHeader: boolean) => {
     const fields = parseLine(line, effectiveDelimiter)
 
     return (
-      <span className="inline-flex flex-wrap gap-1">
+      <span className="inline-flex items-baseline">
         {fields.map((field, idx) => {
           const color = rainbowColors[idx % rainbowColors.length]
+          const isLast = idx === fields.length - 1
           return (
-            <span
-              key={idx}
-              style={{
-                color,
-                fontWeight: isHeader ? 600 : 400,
-                backgroundColor: `${color}15`,
-                padding: '2px 6px',
-                borderRadius: '4px',
-              }}
-            >
-              {field || '(empty)'}
+            <span key={idx} className="inline-flex items-baseline">
+              <span
+                style={{
+                  color,
+                  fontWeight: isHeader ? 600 : 400,
+                }}
+              >
+                {field || '(empty)'}
+              </span>
+              {!isLast && (
+                <span className="text-muted-foreground/30 mx-1">
+                  {effectiveDelimiter === '\t' ? '→' : effectiveDelimiter}
+                </span>
+              )}
             </span>
           )
         })}
