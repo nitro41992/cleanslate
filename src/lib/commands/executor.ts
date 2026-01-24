@@ -183,11 +183,26 @@ export class CommandExecutor implements ICommandExecutor {
       const tier = getUndoTier(command.type)
       const needsSnapshot = requiresSnapshot(command.type)
 
-      // Step 3: Pre-snapshot for Tier 3
+      // Step 2.5: Batching decision for large operations (>500k rows)
+      // MOVED FROM Step 3.75 - needed for snapshot decision
+      const shouldBatch = ctx.table.rowCount > 500_000
+      const batchSize = 50_000
+
+      if (shouldBatch) {
+        console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
+      }
+
+      // Step 3: Pre-snapshot for Tier 3 OR batched Tier 1
       let snapshotMetadata: SnapshotMetadata | undefined
-      if (needsSnapshot && !skipTimeline) {
+      const needsSnapshotForBatchedTier1 = tier === 1 && shouldBatch
+      if ((needsSnapshot || needsSnapshotForBatchedTier1) && !skipTimeline) {
         progress('snapshotting', 20, 'Creating backup snapshot...')
         snapshotMetadata = await this.createSnapshot(ctx)
+
+        // Log why snapshot was created (diagnostic)
+        if (needsSnapshotForBatchedTier1) {
+          console.log(`[Executor] Created snapshot for batched Tier 1 operation (fallback undo strategy)`)
+        }
 
         // If this is the first snapshot for this table, set it as originalSnapshotName
         // so the Diff View can compare against original state
@@ -222,14 +237,6 @@ export class CommandExecutor implements ICommandExecutor {
         } catch (err) {
           console.warn('[EXECUTOR] Failed to capture pre-execution row details:', err)
         }
-      }
-
-      // Step 3.75: Batching decision for large operations (>500k rows)
-      const shouldBatch = ctx.table.rowCount > 500_000
-      const batchSize = 50_000
-
-      if (shouldBatch) {
-        console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
       }
 
       // Inject batching metadata into context
