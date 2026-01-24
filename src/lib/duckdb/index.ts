@@ -129,12 +129,32 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   // All done in a single connection to avoid "Missing DB manager" errors
   const isTestEnv = typeof navigator !== 'undefined' &&
                     navigator.userAgent.includes('Playwright')
-  const memoryLimit = isTestEnv ? '256MB' : '3GB'
+  const memoryLimit = isTestEnv ? '256MB' : '2GB'  // Realistic browser limit with ~900MB overhead
 
   const initConn = await db.connect()
 
   // Set memory limit
   await initConn.query(`SET memory_limit = '${memoryLimit}'`)
+
+  // Reduce thread count to minimize memory overhead per thread
+  // NOTE: DuckDB-WASM may not support thread configuration (compiled without threads)
+  // Wrap in try-catch to prevent initialization failure
+  try {
+    await initConn.query(`SET threads = 2`)
+    console.log('[DuckDB] Thread count set to 2 for browser optimization')
+  } catch (err) {
+    // Silently ignore - WASM build doesn't support thread configuration
+    console.log('[DuckDB] Thread configuration not supported in WASM build (expected)')
+  }
+
+  // Set temporary directory for large operations (spilling to disk)
+  // CRITICAL: Only enable for write-access OPFS mode
+  // Read-only tabs (secondary tabs) should NOT set temp_directory to avoid conflicts
+  // NOTE: DuckDB-WASM 1.32.0 accepts this setting but doesn't use it for spilling yet
+  if (isPersistent && !isReadOnly) {
+    await initConn.query(`SET temp_directory = 'opfs://cleanslate_temp.db'`)
+    // Removed log to avoid confusion - feature not working in WASM yet
+  }
 
   // Enable compression (both OPFS and in-memory benefit)
   await initConn.query(`PRAGMA enable_object_cache=true`)

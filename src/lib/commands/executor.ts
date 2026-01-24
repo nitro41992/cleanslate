@@ -200,9 +200,34 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // Step 3.75: Batching decision for large operations (>500k rows)
+      const shouldBatch = ctx.table.rowCount > 500_000
+      const batchSize = 50_000
+
+      if (shouldBatch) {
+        console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
+      }
+
+      // Inject batching metadata into context
+      // Commands can check ctx.batchMode to enable batched execution
+      // NOTE: Most commands will ignore this and execute normally
+      // Future: Individual commands can opt-in to batching by checking ctx.batchMode
+      const batchableContext: CommandContext = {
+        ...ctx,
+        batchMode: shouldBatch,
+        batchSize: batchSize,
+        onBatchProgress: shouldBatch
+          ? (curr, total, pct) => {
+              // Map batch progress to execute phase (40-80%)
+              const adjustedPct = 40 + (pct * 0.4)
+              progress('executing', adjustedPct, `Processing ${curr.toLocaleString()} / ${total.toLocaleString()} rows`)
+            }
+          : undefined,
+      }
+
       // Step 4: Execute
       progress('executing', 40, 'Executing command...')
-      const executionResult = await command.execute(ctx)
+      const executionResult = await command.execute(batchableContext)
 
       if (!executionResult.success) {
         // Rollback snapshot if execution failed

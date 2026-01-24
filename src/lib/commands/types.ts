@@ -76,6 +76,14 @@ export interface CommandContext {
   columnVersions: Map<string, ColumnVersionInfo>
   /** Timeline ID for this table */
   timelineId?: string
+
+  // Batching support (optional - injected by executor for large operations)
+  /** If true, command should use batching for large operations */
+  batchMode?: boolean
+  /** Batch size (default: 50000) */
+  batchSize?: number
+  /** Progress callback for batched operations */
+  onBatchProgress?: (current: number, total: number, percent: number) => void
 }
 
 /**

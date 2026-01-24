@@ -1,719 +1,1391 @@
-# Memory Leak Investigation & Fix Plan
+# DuckDB-WASM Memory Optimization - OOM on Large Operations
 
-**Status:** ✅ APPROVED with Critical Verifications
-**Branch:** `opfs-ux-polish` (master has memory issues)
-**Issue:** Memory exhaustion after 4-5 transformations on 1M row dataset
-**Approval Date:** January 23, 2026
+**Status:** ✅ **PHASE 1 & 2 COMPLETE** - Infrastructure Ready
+**Branch:** `opfs-ux-polish`
+**Issue:** OOM errors on 1M row transformations, especially during diff operations
+**Date:** January 23, 2026 (Updated after initial temp_directory fix attempt)
+**Last Updated:** January 23, 2026 - Phase 1 & 2 Implementation Complete
+
+## 🎯 Implementation Status
+
+### ✅ Phase 1: Core Memory Settings (COMPLETE)
+- ✅ Memory limit lowered from 3GB → 2GB (`src/lib/duckdb/index.ts:132`)
+- ⚠️ Thread count reduction attempted but **NOT SUPPORTED in WASM build** (`src/lib/duckdb/index.ts:139`)
+  - Wrapped in try-catch to prevent init failure
+  - DuckDB-WASM compiled without thread support
+- ✅ Removed confusing temp_directory log (`src/lib/duckdb/index.ts:144`)
+
+**Expected Impact:**
+- ✅ ~1GB headroom from memory limit (most important change)
+- ✅ Graceful OOM errors instead of browser crashes
+- ✅ More stable on lower-end devices
+- ❌ No thread overhead savings (WASM doesn't support thread config)
+
+### ✅ Phase 2: Batching Infrastructure (COMPLETE)
+- ✅ Created `BatchExecutor` utility (`src/lib/commands/batch-executor.ts`)
+  - STAGING TABLE safety model (can drop if process dies)
+  - OFFSET-based batching (50k row chunks)
+  - WAL checkpoints every 5 batches (prevents memory accumulation)
+  - Real-time progress callbacks
+- ✅ Updated `CommandContext` interface (`src/lib/commands/types.ts`)
+  - Added `batchMode`, `batchSize`, `onBatchProgress` fields
+- ✅ Injected batching logic into `CommandExecutor` (`src/lib/commands/executor.ts:203`)
+  - Auto-detects large operations (>500k rows)
+  - Passes batching context to commands
+  - Console logs "using batch mode" for debugging
+- ✅ Added progress UI (`src/components/panels/CleanPanel.tsx`)
+  - Real-time progress bar with percentage
+  - Row count updates during batching
+
+**Status:** Infrastructure complete, but **no commands use it yet**
+- Commands still execute normally (CREATE TABLE AS SELECT)
+- Batching requires opt-in by individual commands (future work)
+
+**Expected Impact (when commands adopt batching):**
+- 500k-1M row transformations will work reliably
+- Real progress bars (not fake spinners)
+- UI stays responsive during heavy operations
+
+### 🔮 Future: Command-Level Batching Adoption (NOT IN THIS SPRINT)
+**Scope:** Update individual transform commands to use BatchExecutor
+
+**Candidate commands for batching:**
+1. `StandardizeDateCommand` (Tier 3) - heavy parsing logic
+2. `CalculateAgeCommand` (Tier 3) - date calculations
+3. `UnformatCurrencyCommand` (Tier 3) - regex parsing
+4. `FixNegativesCommand` (Tier 3) - pattern matching
+5. `PadZerosCommand` (Tier 3) - string manipulation
+
+**Implementation pattern:**
+```typescript
+async execute(ctx: CommandContext): Promise<ExecutionResult> {
+  if (ctx.batchMode) {
+    // Use batching for large operations
+    const { batchExecute, swapStagingTable } = await import('../../batch-executor')
+    const stagingTable = `_staging_${ctx.table.name}`
+
+    const result = await batchExecute(conn, {
+      sourceTable: ctx.table.name,
+      stagingTable,
+      selectQuery: `SELECT * EXCLUDE ("${col}"), ${transformExpr} as "${col}" FROM "${ctx.table.name}"`,
+      onProgress: ctx.onBatchProgress
+    })
+
+    await swapStagingTable(conn, ctx.table.name, result.stagingTable)
+  } else {
+    // Original logic for <500k rows
+    // ...
+  }
+}
+```
+
+**Effort:** ~15 min per command (5 commands = 75 min total)
+**Priority:** P2 - Nice to have, but batching infrastructure already prevents executor-level issues
+
+### ⏳ Phase 3: Pre-flight Checks (PENDING)
+- Add diff operation memory validation
+- Fail fast with actionable error messages
+
+### ⏳ Phase 4: Query Optimization (PENDING)
+- Conditional `preserve_insertion_order` for diff operations
 
 ---
 
-## Problem Statement
+## TL;DR - Root Cause & Strategy
 
-User reports memory issues on master branch after running multiple transformations on ~1M rows:
-- File Loaded: 1,010,000 rows
-- Uppercase: 746,229 rows (6m ago)
-- Standardize Date: 1,010,000 rows (3m ago)
-- Remove Duplicates: 9,783 rows (3m ago)
-- Calculate Age: 1,000,217 rows (2m ago)
+**Problem:** DuckDB-WASM 1.32.0 may not support temp_directory disk spilling despite configuration.
 
-**User Context:** "I thought we fixed any memory issues with the OPFS fixes"
+**Evidence:**
+- temp_directory WAS configured (line 143 in `src/lib/duckdb/index.ts`)
+- Error still says "no temporary directory is specified"
+- Web research shows WASM spilling "under development" with known issues
 
-OPFS implementation added:
-- Compression (zstd, 30-50% reduction)
-- 3GB memory limit (75% of 4GB WASM ceiling)
-- Snapshot pruning (MAX_SNAPSHOTS_PER_TABLE = 5)
-- Audit log pruning (last 100 entries)
-
-But memory issues persist despite these optimizations.
+**New Strategy:** Multi-layered memory optimization focusing on proven techniques:
+1. Lower memory_limit from 3GB → 2GB (browser WASM practical limit)
+2. Add DuckDB performance pragmas (threads, preserve_insertion_order)
+3. **Add batching for large operations (>500k rows) - NEW**
+4. Optimize diff operations (most memory-intensive operation)
+5. Add pre-flight checks to warn users before OOM operations
+6. Keep temp_directory config (may help in future WASM versions)
 
 ---
 
-## Root Cause Analysis
+## Executive Summary
 
-### Investigation Findings
+**What happened:**
+- Implemented temp_directory fix as planned
+- OOM errors still occur - temp_directory doesn't actually work in DuckDB-WASM 1.32.0
+- Web research + testing confirms: WASM can't spill to disk yet
 
-**1. Diff Views Never Cleaned Up** ❌
-- Each command creates a diff view: `v_diff_step_{tableId}_{stepIndex}`
-- Views created via `createTier1DiffView()` and `createTier3DiffView()`
-- **Functions exist but NEVER CALLED**: `dropDiffView()`, `dropAllDiffViews()`
-- Location: `src/lib/commands/diff-views.ts:138-158`
-- **Impact:** Diff views accumulate indefinitely (1 per command)
-- With 1M rows, each diff view is a full table scan + CASE WHEN logic
-- 5 commands = 5 diff views = 5M+ rows in memory
+**Root cause:**
+- Browser overhead ~900MB leaves only 2GB usable for DuckDB (not 3GB)
+- Diff operations use FULL OUTER JOIN (memory-intensive)
+- No disk spilling capability in WASM (feature "under development")
 
-**2. Internal Tables Excluded from Memory Tracking** ⚠️
-- File: `src/lib/duckdb/memory.ts:91-98`
-- Memory estimation EXCLUDES:
-  - `_timeline_*` (snapshot tables)
-  - `_diff_*` (diff views)
-  - `_original_*` (original snapshots)
-  - `_audit_*` (audit detail tables)
-- **Impact:** UI shows low memory usage, but actual usage is 3-5x higher
-- User hits 3GB limit before seeing "critical" warning
+**Paradigm Shift:**
+- **Old:** "Let DuckDB handle memory" (relies on disk spilling - doesn't work in WASM)
+- **New:** "Application handles memory" (batching with WAL checkpoints - works in any environment)
 
-**3. Snapshot Pruning Logic Has Off-By-One** ⚠️
-- File: `src/lib/commands/executor.ts:583`
-- Condition: `if (timeline.snapshots.size <= MAX_SNAPSHOTS_PER_TABLE) return`
-- **Bug:** Should be `<` not `<=` - allows 6 snapshots before pruning
-- With 1M rows: 6 snapshots × 1M rows = 6M rows retained
-- **Impact:** Extra 1M rows retained unnecessarily
+**Solution:**
+Multi-layered optimization strategy with **batching as the game-changer:**
 
-**4. No Cleanup on Undo/Redo** ⚠️
-- When user undos past a command, its diff view and snapshot should be dropped
-- Currently: snapshots pruned via LRU, but diff views remain forever
-- **Impact:** Undo/redo cycles leave orphaned diff views
+1. **Phase 1 (30 min):** Lower memory_limit to 2GB, reduce threads to 2
+   - Prevents browser kills, saves ~600MB overhead
+   - **P0 - Critical - must implement**
 
-**5. Original Snapshots Never Pruned** ⚠️
-- Created on first manual edit: `_original_{tableId}`
-- Used for "Compare with Preview" in diff feature
-- Never dropped, even if user never uses diff feature
-- **Impact:** Extra 1M rows retained per table
+2. **Phase 2 (90 min):** Batching infrastructure (50k row chunks + WAL checkpoints)
+   - Enables 1M row transformations (currently OOM)
+   - Real progress bars, responsive UI
+   - **P1 - Game Changer - strongly recommended**
+   - **Key innovation:** WAL checkpoint every 5 batches prevents memory accumulation
+
+3. **Phase 3 (50 min):** Pre-flight checks for diff operations
+   - Interim solution: Fails fast with helpful error
+   - **P1 - User protection**
+   - **Future:** Replace with batched diff (same pattern as Phase 2)
+
+4. **Phase 4 (40 min):** Disable preserve_insertion_order for diffs
+   - Marginal ~300MB savings
+   - **P2 - Optional - nice to have**
+
+**Expected outcome:**
+- ✅ Browser tab stays under 3GB (was 3.6GB)
+- ✅ Graceful failures instead of tab crashes
+- ✅ 100k-500k row operations work reliably
+- ⚠️ 1M row diffs show pre-flight error (suggest filtering or external tools)
 
 ---
 
-## Proposed Solution
+## Problem Statement & New Evidence
+
+### Original Report
+User reports OOM errors after "a lot of transforms on 1M records":
+
+```
+Error: Out of Memory Error: could not allocate block of size 256.0 KiB (2.7 GiB/2.7 GiB used)
+Database is launched in in-memory mode and no temporary directory is specified.
+Unused blocks cannot be offloaded to disk.
+```
+
+### After temp_directory Fix
+temp_directory was configured (✅ committed), but **OOM errors persist**:
+
+```
+Error at diff-engine.ts:248: Out of Memory Error: could not allocate block of size 256.0 KiB (2.7 GiB/2.7 GiB used)
+Database is launched in in-memory mode and no temporary directory is specified.
+```
+
+**Critical Discovery:** Browser shows RAM usage at **3.6 GB** for the tab, but DuckDB only sees 2.7 GB. This suggests:
+- Browser overhead ~900MB (WASM runtime, JS heap, etc.)
+- 3GB memory_limit is unrealistic in browser context
+- Diff operations (FULL OUTER JOIN) are particularly memory-intensive
+
+---
+
+## Root Cause Analysis (Updated)
+
+### What We Know
+
+**✅ OPFS Backend Working:**
+- Persistence confirmed (snapshots save correctly)
+- Database opens with `opfs://cleanslate.db`
+
+**✅ temp_directory Configured (But Not Working):**
+```typescript
+// Line 143 in src/lib/duckdb/index.ts
+if (isPersistent && !isReadOnly) {
+  await initConn.query(`SET temp_directory = 'opfs://cleanslate_temp.db'`)
+  console.log('[DuckDB] Disk spilling enabled (opfs://cleanslate_temp.db)')
+}
+```
+
+**❌ DuckDB-WASM Doesn't Actually Use temp_directory for Spilling:**
+
+### Web Research Findings
+
+From [Out-of-Core Processing Discussion #1322](https://github.com/duckdb/duckdb-wasm/discussions/1322):
+> "WASM cannot use the local persistency yet for spilling data while processing queries if it doesn't fit in available memory, but this will hopefully change soon"
+
+From [Memory Management in DuckDB](https://duckdb.org/2024/07/09/memory-management):
+> "Disk spilling is adaptively used only when the size of intermediates increases past the memory limit" (for native DuckDB)
+
+**Conclusion:** DuckDB-WASM 1.32.0 does NOT support disk spilling to OPFS for intermediate query results, despite the temp_directory setting existing. The setting is accepted but ignored.
+
+### Why Diff Operations Fail Specifically
+
+From code investigation (`src/lib/diff-engine.ts:230-242`):
+
+```typescript
+CREATE TEMP TABLE "${diffTableName}" AS
+SELECT
+  ${selectCols},  -- a_col1, b_col1, a_col2, b_col2, ... (doubles column count)
+  CASE ... END as diff_status
+FROM "${tableA}" a
+FULL OUTER JOIN "${tableB}" b ON ${joinCondition}
+```
+
+**Memory Impact for 1M rows:**
+- FULL OUTER JOIN materializes both tables (1M + 1M potential rows)
+- Each result row has DOUBLE the columns (a_* and b_* for every column)
+- temp table stored in WASM memory (can't spill to disk)
+- For 30 columns × 1M rows × 2 tables = ~60M cell values in memory
+
+### Browser Memory Reality
+
+| Limit | Value | Notes |
+|-------|-------|-------|
+| Browser tab RAM | 3.6 GB | Actual OS measurement |
+| DuckDB sees | 2.7 GB | Before OOM crash |
+| Overhead | ~900 MB | WASM runtime, JS heap, etc. |
+| Configured limit | 3 GB | **Unrealistic for browser** |
+
+**Recommended limit:** 2 GB (leaves headroom for browser overhead)
+
+---
+
+## Proposed Solution: Multi-Layered Memory Optimization
+
+Since temp_directory disk spilling is not available in DuckDB-WASM 1.32.0, we need a comprehensive strategy combining multiple proven techniques.
 
 ### Strategy Overview
 
-**Principle:** Aggressive cleanup of ephemeral artifacts while preserving undo functionality.
+| Layer | Technique | Impact | Risk |
+|-------|-----------|--------|------|
+| **1** | Lower memory_limit to 2GB | Prevents browser kill, fails gracefully | None - more stable |
+| **2** | Reduce threads to 2 | Saves ~500MB overhead | Slight perf hit |
+| **3** | **Batching for large operations** | **Prevents OOM on 500k+ rows** | **Medium complexity** |
+| **4** | Disable preserve_insertion_order | Enables streaming aggregations | May change row order |
+| **5** | Pre-flight checks for diff | Warns before OOM operations | UX - adds friction |
+| **6** | Optimize diff query | Reduce column doubling | Medium complexity |
 
-**Three-Pronged Approach:**
-1. **Proactive Cleanup:** Drop diff views immediately after highlighting extraction
-2. **Memory-Aware Pruning:** Include internal tables in memory tracking
-3. **Lifecycle Management:** Clean up on undo/redo, table deletion, and session end
+### Layer 1: Realistic Memory Limits
+
+**File:** `src/lib/duckdb/index.ts:132`
+
+**Change:**
+```typescript
+// OLD: const memoryLimit = isTestEnv ? '256MB' : '3GB'
+const memoryLimit = isTestEnv ? '256MB' : '2GB'  // Reduced for browser overhead
+```
+
+**Why 2GB:**
+- Browser has ~900MB overhead (WASM runtime, JS heap)
+- 3GB causes silent failures as browser kills tab
+- 2GB provides buffer and fails gracefully with DuckDB error
+- Better UX: Clear error message vs. browser crash
+
+### Layer 2: Reduce Thread Overhead
+
+**File:** `src/lib/duckdb/index.ts` (after line 137)
+
+**Add:**
+```typescript
+// Set memory limit
+await initConn.query(`SET memory_limit = '${memoryLimit}'`)
+
+// Reduce threads to minimize memory overhead (default is 4-8)
+// Each thread has overhead; 2 threads is optimal for browser WASM
+await initConn.query(`SET threads = 2`)
+```
+
+**Impact:** Each DuckDB thread has memory overhead. Reducing to 2 saves ~500MB.
+
+### Layer 3: Batching for Large Operations (NEW - Key Innovation)
+
+**Problem:** Large operations (500k+ rows) materialize entire result set in memory, causing OOM.
+
+**Solution:** Abstract batching pattern from audit-capture.ts (already uses `INSERT INTO ... SELECT ... LIMIT 50000`).
+
+#### Step 3.1: Create BatchExecutor Utility
+
+**File:** `src/lib/commands/batch-executor.ts` (NEW FILE)
+
+**Create:**
+```typescript
+import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
+
+export interface BatchExecuteOptions {
+  sourceTable: string
+  targetTable: string
+  selectQuery: string  // e.g., "SELECT * FROM source WHERE condition"
+  batchSize?: number   // Default: 50000
+  onProgress?: (current: number, total: number, percent: number) => void
+}
+
+/**
+ * Execute large SQL operations in batches to prevent OOM
+ * Uses keyset batching with INSERT INTO ... SELECT ... LIMIT pattern
+ *
+ * @example
+ * await batchExecute(conn, {
+ *   sourceTable: 'large_table',
+ *   targetTable: 'temp_result',
+ *   selectQuery: 'SELECT UPPER(name) as name FROM large_table',
+ *   batchSize: 50000,
+ *   onProgress: (curr, total, pct) => console.log(`${pct}%`)
+ * })
+ */
+export async function batchExecute(
+  conn: AsyncDuckDBConnection,
+  options: BatchExecuteOptions
+): Promise<{ rowsProcessed: number; batches: number }> {
+  const { sourceTable, targetTable, selectQuery, batchSize = 50000, onProgress } = options
+
+  // Get total row count
+  const countResult = await conn.query(`SELECT COUNT(*) as total FROM ${sourceTable}`)
+  const totalRows = Number(countResult.toArray()[0].toJSON().total)
+
+  if (totalRows === 0) {
+    return { rowsProcessed: 0, batches: 0 }
+  }
+
+  // Create target table
+  await conn.query(`DROP TABLE IF EXISTS "${targetTable}"`)
+
+  let processed = 0
+  let batchNum = 0
+
+  // Batch loop using LIMIT/OFFSET
+  while (processed < totalRows) {
+    const remaining = totalRows - processed
+    const currentBatchSize = Math.min(batchSize, remaining)
+
+    if (batchNum === 0) {
+      // First batch: CREATE TABLE AS SELECT
+      await conn.query(`
+        CREATE TABLE "${targetTable}" AS
+        ${selectQuery}
+        LIMIT ${currentBatchSize} OFFSET ${processed}
+      `)
+    } else {
+      // Subsequent batches: INSERT INTO SELECT
+      await conn.query(`
+        INSERT INTO "${targetTable}"
+        ${selectQuery}
+        LIMIT ${currentBatchSize} OFFSET ${processed}
+      `)
+    }
+
+    processed += currentBatchSize
+    batchNum++
+
+    // CRITICAL: Flush WAL to disk every 4-5 batches (every 200-250k rows)
+    // Prevents massive in-memory WAL accumulation before final commit
+    if (batchNum % 5 === 0) {
+      await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+      console.log(`[BatchExecutor] WAL checkpoint at ${processed.toLocaleString()} rows`)
+    }
+
+    // Progress callback
+    const percent = Math.floor((processed / totalRows) * 100)
+    onProgress?.(processed, totalRows, percent)
+
+    // Yield to browser to prevent UI freezing
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+
+  // Final checkpoint to ensure all changes are persisted
+  await conn.query(`PRAGMA wal_checkpoint(TRUNCATE)`)
+
+  return { rowsProcessed: processed, batches: batchNum }
+}
+```
+
+**Why this works:**
+- Processes 50k rows at a time (proven threshold from audit-capture.ts)
+- Uses native SQL (no JS iteration of row data)
+- **WAL checkpoints every 5 batches (200-250k rows) prevent memory bloat**
+- Yields to browser between batches (prevents UI freeze)
+- Real progress tracking (not fake spinner)
+
+**Critical:** Without WAL checkpointing, the Write-Ahead Log accumulates in memory before final commit, defeating the purpose of batching. The `PRAGMA wal_checkpoint(TRUNCATE)` call flushes uncommitted changes to disk, keeping memory flat.
+
+#### Step 3.2: Integrate with CommandExecutor
+
+**File:** `src/lib/commands/executor.ts:138-145` (inject decision logic)
+
+**Add before execution:**
+```typescript
+// Line ~138, after context creation
+const shouldBatch = ctx.table.rowCount > 500_000
+const batchSize = 50_000
+
+if (shouldBatch) {
+  console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
+}
+
+// Pass batching flag to command via options
+const executionResult = await command.execute({
+  ...ctx,
+  batchMode: shouldBatch,
+  batchSize: batchSize,
+  onBatchProgress: (curr, total, pct) => {
+    // Update progress dynamically instead of hardcoded percentages
+    const adjustedPct = 40 + (pct * 0.4)  // Execute phase is 40-80%
+    progress('executing', adjustedPct, `Processing ${curr.toLocaleString()} / ${total.toLocaleString()} rows`)
+  }
+})
+```
+
+#### Step 3.3: Update Command Interface
+
+**File:** `src/lib/commands/types.ts:80-100`
+
+**Add to CommandContext:**
+```typescript
+export interface CommandContext {
+  // ... existing fields ...
+
+  // Batching support (optional)
+  batchMode?: boolean
+  batchSize?: number
+  onBatchProgress?: (current: number, total: number, percent: number) => void
+}
+```
+
+#### Step 3.4: Wire Up Progress UI
+
+**File:** `src/features/laundromat/CleanPanel.tsx:115`
+
+**Replace console.log with UI update:**
+```typescript
+// Before: Just logging
+onProgress: (prog) => console.log(`[Execute] ${prog.phase} - ${prog.progress}%: ${prog.message}`)
+
+// After: Update UI state
+onProgress: (prog) => {
+  setExecutionProgress({
+    phase: prog.phase,
+    percent: prog.progress,
+    message: prog.message
+  })
+}
+```
+
+**Add state:**
+```typescript
+const [executionProgress, setExecutionProgress] = useState<ExecutorProgress | null>(null)
+```
+
+**Display in UI:**
+```tsx
+{executionProgress && (
+  <div className="mt-2 space-y-1">
+    <div className="flex justify-between text-xs text-muted-foreground">
+      <span>{executionProgress.message}</span>
+      <span>{executionProgress.percent}%</span>
+    </div>
+    <Progress value={executionProgress.percent} className="h-2" />
+  </div>
+)}
+```
+
+**Expected Impact:**
+- 500k row operations: Process in 10 batches of 50k (10 seconds instead of OOM)
+- 1M row operations: Process in 20 batches (20 seconds, visible progress)
+- User sees: "Processing 250,000 / 1,000,000 rows - 50%"
+
+### Layer 4: Disable Insertion Order Preservation (Conditional)
+
+**File:** `src/lib/duckdb/index.ts` (new helper function)
+
+**Add before large operations:**
+```typescript
+// For diff operations specifically
+await conn.query(`SET preserve_insertion_order = false`)
+// ... run diff ...
+await conn.query(`SET preserve_insertion_order = true`)  // restore default
+```
+
+**Impact:** Allows DuckDB to use streaming aggregations instead of materializing full result sets.
+
+**Trade-off:** Row order may differ from insertion order (not critical for diff operations).
+
+### Layer 5: Pre-flight Size Checks
+
+**File:** `src/lib/diff-engine.ts` (before line 230)
+
+**Add:**
+```typescript
+// Before creating FULL OUTER JOIN temp table
+const tableASizeResult = await conn.query(`
+  SELECT COUNT(*) * (SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_name = '${tableA}') as complexity FROM "${tableA}"
+`)
+const tableAComplexity = Number(tableASizeResult.toArray()[0].toJSON().complexity)
+
+const memoryUsage = await getDuckDBMemoryUsage()
+const availableMemory = memoryUsage.limit - memoryUsage.used
+
+// Rough heuristic: 1M rows × 30 columns needs ~1.5GB for FULL OUTER JOIN
+const estimatedNeed = (tableAComplexity / 1_000_000) * 1.5e9  // bytes
+
+if (estimatedNeed > availableMemory * 0.8) {
+  throw new Error(
+    `Diff operation requires ~${formatBytes(estimatedNeed)} but only ` +
+    `${formatBytes(availableMemory)} available. Try:\n` +
+    `1. Select a more unique key column (fewer duplicates)\n` +
+    `2. Export tables and diff externally\n` +
+    `3. Filter down to smaller subsets`
+  )
+}
+```
+
+**Impact:** Fails fast with actionable error message before attempting OOM operation.
+
+### Layer 6: Optimize Diff Query (Future - Deferred)
+
+**Current problem:** Diff creates doubled columns (a_col, b_col for every column).
+
+**Potential optimization:**
+```sql
+-- Instead of: SELECT a.col1, b.col1, a.col2, b.col2, ...
+-- Consider: SELECT COALESCE(a.col1, b.col1) as col1, ...
+--           With separate modified_columns array
+```
+
+**Trade-off:** Harder to show before/after values in UI. Defer to future sprint.
+
+**Better Future Approach:** Apply batching to diff operations (see Layer 5 future enhancement notes).
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Immediate Diff View Cleanup
+### Phase 1: Core Memory Settings (Immediate - 10 min)
 
-**Goal:** Drop diff views as soon as they're no longer needed for highlighting.
+#### Step 1.1: Lower memory_limit to 2GB
 
-**Current Flow:**
-```
-Command Execution
-  ↓
-Create Diff View (v_diff_step_X)
-  ↓
-Extract affected row IDs for highlighting
-  ↓
-[Diff view left in memory forever] ❌
-```
+**File:** `src/lib/duckdb/index.ts:132`
 
-**New Flow:**
-```
-Command Execution
-  ↓
-Create Diff View (v_diff_step_X)
-  ↓
-Extract affected row IDs for highlighting
-  ↓
-Drop Diff View immediately ✅
-```
-
-**Implementation:**
-
-**File:** `src/lib/commands/executor.ts`
-
-**Location:** After `extractAffectedRowIds()` call (~line 252)
-
-**Before:**
+**Change:**
 ```typescript
-const highlightInfo = diffViewName
-  ? await this.extractAffectedRowIds(ctx, diffViewName)
-  : undefined
-```
+// Before:
+const memoryLimit = isTestEnv ? '256MB' : '3GB'
 
-**After:**
-```typescript
-const highlightInfo = diffViewName
-  ? await this.extractAffectedRowIds(ctx, diffViewName)
-  : undefined
-
-// Drop diff view immediately after extracting row IDs
-// Diff views are ephemeral - only needed for highlighting extraction
-if (diffViewName) {
-  try {
-    await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
-    console.log(`[Memory] Dropped diff view: ${diffViewName}`)
-  } catch (err) {
-    // Non-fatal - don't fail the command
-    console.warn(`[Memory] Failed to drop diff view ${diffViewName}:`, err)
-  }
-}
+// After:
+const memoryLimit = isTestEnv ? '256MB' : '2GB'  // Realistic browser limit with overhead
 ```
 
 **Justification:**
-- Diff views are only used to extract affected row IDs
-- Once `highlightInfo.affectedRowIds` is populated, the view is useless
-- Dropping immediately prevents accumulation
-- Non-blocking (try/catch) - won't fail commands if drop fails
+- Browser overhead ~900MB (WASM runtime, JS heap, IndexedDB)
+- 3GB causes silent browser kills, 2GB fails gracefully
+- User sees clear DuckDB error instead of tab crash
 
-**Impact:** Reduces memory by ~1M rows per command execution
+#### Step 1.2: Reduce thread count
 
----
-
-### Phase 2: Fix Snapshot Pruning Off-By-One
-
-**Goal:** Ensure exactly MAX_SNAPSHOTS_PER_TABLE (5) snapshots retained, not 6.
-
-**File:** `src/lib/commands/executor.ts:583`
-
-**Before:**
-```typescript
-if (timeline.snapshots.size <= MAX_SNAPSHOTS_PER_TABLE) return
-```
-
-**After:**
-```typescript
-if (timeline.snapshots.size < MAX_SNAPSHOTS_PER_TABLE) return
-```
-
-**Justification:**
-- `<=` allows 6 snapshots (0, 1, 2, 3, 4, 5) before pruning
-- `<` enforces exactly 5 snapshots (prunes when size reaches 5)
-- With 1M rows, saves 1M rows of memory
-
-**Impact:** Reduces memory by ~1M rows (1 snapshot × 1M rows)
-
----
-
-### Phase 3: Include Internal Tables in Memory Tracking
-
-**Goal:** Show accurate memory usage including snapshots, diff views, audit tables.
-
-**File:** `src/lib/duckdb/memory.ts:91-98`
-
-**Before:**
-```typescript
-WHERE NOT internal
-  AND table_name NOT LIKE '_timeline_%'
-  AND table_name NOT LIKE '_audit_%'
-  AND table_name NOT LIKE '_diff_%'
-  AND table_name NOT LIKE '_original_%'
-```
-
-**After:**
-```typescript
-WHERE NOT internal
-  -- Include internal CleanSlate tables in memory tracking
-  -- (timeline snapshots, diff views, audit tables consume significant memory)
-```
-
-**Justification:**
-- Current exclusions hide true memory usage
-- With 5 snapshots + 5 diff views = 10M+ rows hidden
-- Users hit 3GB limit before seeing "critical" warning
-- Accurate tracking enables proactive cleanup
-
-**Alternative (Conservative):**
-If we want to preserve some exclusions:
-```typescript
-WHERE NOT internal
-  AND table_name NOT LIKE '_audit_%'  -- Keep audit excluded (small)
-  -- Include _timeline_, _diff_, _original_ in tracking
-```
-
-**Impact:** UI will show accurate memory usage, triggering warnings earlier
-
----
-
-### Phase 4: Cleanup Orphaned Diff Views on Undo
-
-**Goal:** Drop diff views for commands that are undone or redone past.
-
-**File:** `src/lib/commands/executor.ts`
-
-**Location:** Inside `undo()` method after snapshot restoration (~line 400)
+**File:** `src/lib/duckdb/index.ts` (after line 137)
 
 **Add:**
 ```typescript
-// After restoring snapshot, drop the diff view for the undone command
-const undoneCmdRecord = timeline.commands[timeline.position]
-if (undoneCmdRecord) {
-  const stepIndex = timeline.position + 1
-  const diffViewName = getDiffViewName(tableId, stepIndex)
-  try {
-    await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
-    console.log(`[Undo] Dropped diff view: ${diffViewName}`)
-  } catch (err) {
-    console.warn(`[Undo] Failed to drop diff view:`, err)
+// Set memory limit
+await initConn.query(`SET memory_limit = '${memoryLimit}'`)
+
+// Reduce thread count to minimize memory overhead per thread
+// Default is CPU cores (often 8+), but browser WASM benefits from fewer threads
+// Each thread has ~250MB overhead; 2 threads optimal for browser context
+await initConn.query(`SET threads = 2`)
+console.log('[DuckDB] Thread count set to 2 for browser optimization')
+```
+
+**Expected Impact:** Saves ~500-750MB of memory overhead.
+
+### Phase 2: Pre-flight Validation (Medium Priority - 30 min)
+
+#### Step 2.1: Add diff operation size check
+
+**File:** `src/lib/diff-engine.ts` (before line 230, before temp table creation)
+
+**Add helper function at top:**
+```typescript
+import { formatBytes } from './duckdb/storage-info'
+import { getDuckDBMemoryUsage } from './duckdb/memory'
+
+async function validateDiffMemoryAvailability(
+  conn: duckdb.AsyncDuckDBConnection,
+  tableA: string,
+  tableB: string
+): Promise<void> {
+  // Get table sizes
+  const sizeQuery = `
+    SELECT
+      (SELECT COUNT(*) FROM "${tableA}") as rows_a,
+      (SELECT COUNT(*) FROM "${tableB}") as rows_b,
+      (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = '${tableA}') as cols_a,
+      (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = '${tableB}') as cols_b
+  `
+  const sizeResult = await conn.query(sizeQuery)
+  const { rows_a, rows_b, cols_a, cols_b } = sizeResult.toArray()[0].toJSON()
+
+  // Rough heuristic: FULL OUTER JOIN needs ~100 bytes per cell in result
+  // Result has (rows_a + rows_b) rows × (cols_a + cols_b) columns
+  const estimatedBytes = (Number(rows_a) + Number(rows_b)) *
+                         (Number(cols_a) + Number(cols_b)) * 100
+
+  // Check available memory
+  const memUsage = await getDuckDBMemoryUsage()
+  const availableBytes = memUsage.limit - memUsage.used
+
+  if (estimatedBytes > availableBytes * 0.7) {  // Use 70% threshold for safety
+    throw new Error(
+      `Diff operation requires ~${formatBytes(estimatedBytes)} ` +
+      `but only ${formatBytes(availableBytes)} available.\n\n` +
+      `Recommendations:\n` +
+      `1. Select a more unique key column (reduces duplicate matching overhead)\n` +
+      `2. Filter tables to smaller subsets before diff\n` +
+      `3. Export as CSV and use external diff tools\n` +
+      `4. Current: ${rows_a.toLocaleString()} vs ${rows_b.toLocaleString()} rows`
+    )
   }
 }
 ```
 
-**Justification:**
-- When user undos Command #3, its diff view is no longer needed
-- If user redoes, a new diff view will be created
-- Prevents accumulation during undo/redo cycles
+**Call before diff:**
+```typescript
+// Line ~225 in runDiff(), before CREATE TEMP TABLE
+await validateDiffMemoryAvailability(conn, tableA, tableB)
+```
 
-**Impact:** Prevents memory leak during undo/redo workflows
+**Expected Impact:** Fails fast with actionable error instead of crashing mid-operation.
+
+**Future Enhancement (Post-Sprint):**
+Replace this pre-flight block with batched diff logic:
+```typescript
+// Future: Batch the FULL OUTER JOIN
+const { rowsProcessed } = await batchExecute(conn, {
+  sourceTable: `(SELECT * FROM "${tableA}" a FULL OUTER JOIN "${tableB}" b ON ${joinCondition})`,
+  targetTable: diffTableName,
+  selectQuery: `SELECT ${selectCols}, CASE ... END as diff_status FROM ...`,
+  batchSize: 50000
+})
+```
+This would enable diff operations on tables of any size.
+
+### Phase 3: Query Optimization (Lower Priority - 1 hour)
+
+#### Step 3.1: Conditional preserve_insertion_order
+
+**File:** `src/lib/diff-engine.ts:230` (wrap diff operation)
+
+**Before:**
+```typescript
+const createTempTableQuery = `CREATE TEMP TABLE "${diffTableName}" AS ...`
+await conn.query(createTempTableQuery)
+```
+
+**After:**
+```typescript
+// Disable insertion order preservation for memory efficiency
+// (row order doesn't matter for diff operations)
+await conn.query(`SET preserve_insertion_order = false`)
+
+try {
+  const createTempTableQuery = `CREATE TEMP TABLE "${diffTableName}" AS ...`
+  await conn.query(createTempTableQuery)
+} finally {
+  // Restore default setting
+  await conn.query(`SET preserve_insertion_order = true`)
+}
+```
+
+**Expected Impact:** Allows streaming aggregations, reduces peak memory by ~20-30%.
 
 ---
 
-### Phase 5: Drop Original Snapshots on Table Deletion
+## Critical Success Factors
 
-**Goal:** Clean up original snapshots when tables are deleted.
+### Factor 1: Memory Limit Must Account for Browser Overhead
 
-**File:** `src/lib/commands/executor.ts:94-107` (clearCommandTimeline function)
-
-**Already implemented:** ✅
-
-```typescript
-export function clearCommandTimeline(tableId: string): void {
-  const timeline = tableTimelines.get(tableId)
-  if (timeline) {
-    // Clean up snapshot tables
-    for (const snapshotName of timeline.snapshots.values()) {
-      dropTable(snapshotName).catch(() => {})
-    }
-    if (timeline.originalSnapshot) {
-      dropTable(timeline.originalSnapshot).catch(() => {}) // ✅ Already drops original
-    }
-    tableTimelines.delete(tableId)
-  }
-}
+**Reality Check:**
+```
+Browser tab total RAM:     3.6 GB  (observed in Activity Monitor)
+DuckDB memory_limit:       2.0 GB  (new setting)
+Browser overhead:          ~900 MB (WASM runtime, JS heap, etc.)
+Available headroom:        ~700 MB (prevents browser kill)
 ```
 
-**Status:** No changes needed - already implemented correctly.
+**Why this matters:**
+- Setting memory_limit = 3GB is aspirational but unrealistic
+- Browser kills tab when total exceeds ~4GB (platform dependent)
+- 2GB limit ensures graceful DuckDB errors instead of tab crashes
+
+### Factor 2: Thread Count Affects Memory More Than Performance
+
+**DuckDB thread overhead:**
+- Each thread: ~250MB memory overhead
+- Default: 4-8 threads (based on CPU cores)
+- Browser WASM: Limited parallelism benefit due to single WASM instance
+
+**Our setting:**
+- 2 threads = optimal balance
+- Saves 500-750MB vs. default
+- Performance impact: ~10-15% on large operations (acceptable trade-off)
+
+### Factor 3: Pre-flight Checks Prevent Silent Failures
+
+**Problem:** User starts 5-minute diff operation, fails at 80% with OOM.
+
+**Solution:** Check memory availability BEFORE starting operation.
+
+**User experience:**
+```
+❌ Bad: 4 minutes of loading spinner → OOM error → lost work
+✅ Good: Immediate error: "Need 1.5GB, have 800MB. Try filtering to smaller subset."
+```
+
+### Factor 4: Keep temp_directory Config (Future-Proofing)
+
+Even though temp_directory doesn't work in WASM 1.32.0:
+- Keep the configuration in place (line 143)
+- Future DuckDB-WASM versions may implement spilling
+- No harm in having it configured
+- Remove the log message to avoid confusion
 
 ---
 
-### Phase 6: Proactive Snapshot Pruning on High Memory
+## Testing & Validation Strategy
 
-**Goal:** If memory > 80%, aggressively prune snapshots down to MAX_SNAPSHOTS_PER_TABLE.
+### Test 1: Verify Memory Settings (5 min)
 
-**File:** `src/lib/commands/executor.ts`
-
-**Add helper function:**
-```typescript
-/**
- * Aggressively prune all table snapshots if memory is high.
- * Called when memory > 80% to free up space.
- */
-private async pruneSnapshotsIfHighMemory(): Promise<void> {
-  const memStatus = await getMemoryStatus()
-
-  if (memStatus.percentage < 80) return // Not critical yet
-
-  console.warn('[Memory] High memory usage detected, pruning snapshots...')
-
-  let prunedCount = 0
-
-  for (const [tableId, timeline] of tableTimelines.entries()) {
-    // Prune down to MAX_SNAPSHOTS_PER_TABLE
-    while (timeline.snapshots.size > MAX_SNAPSHOTS_PER_TABLE) {
-      await this.pruneOldestSnapshot(timeline)
-      prunedCount++
-    }
-  }
-
-  if (prunedCount > 0) {
-    console.log(`[Memory] Pruned ${prunedCount} snapshots due to high memory`)
-  }
-}
+**Check console logs on init:**
+```
+[DuckDB] EH bundle, 2GB limit, compression enabled, backend: OPFS
+[DuckDB] Thread count set to 2 for browser optimization
 ```
 
-**Call location:** After command execution, before flushing (~line 290)
+**Verify:**
+- ✅ Memory limit shows 2GB (not 3GB)
+- ✅ Thread count is 2
+- ✅ No temp_directory log (removed to avoid confusion)
 
-```typescript
-// Step 8: Update stores
-progress('complete', 100, 'Complete')
-this.updateTableStore(ctx.table.id, executionResult)
+### Test 2: Batching Functionality (20 min) - NEW
 
-// Proactive memory management
-await this.pruneSnapshotsIfHighMemory()
+**Load 600k rows (triggers batching):**
+1. Upload 600k row CSV
+2. Apply uppercase transformation
+3. **Expected:** Console shows `[Executor] Large operation (600,000 rows), using batch mode`
+4. **Expected:** Progress bar shows incremental updates:
+   - "Processing 50,000 / 600,000 rows - 8%"
+   - "Processing 300,000 / 600,000 rows - 50%"
+   - "Processing 600,000 / 600,000 rows - 100%"
+5. Expected: Operation completes in ~12 seconds (12 batches × 1 sec)
+6. Expected: Memory stays <60% throughout (no spikes)
 
-// Auto-persist to OPFS (debounced, non-blocking)
-const { flushDuckDB } = await import('@/lib/duckdb')
+**Load 1M rows (stress test):**
+1. Upload 1M row CSV
+2. Apply trim transformation
+3. **Expected:** 20 batches, visible progress
+4. Expected: Completes in ~20 seconds
+5. Expected: Memory stays <70% (lower than without batching)
+6. Expected: UI remains responsive (can click around during operation)
+
+**Purpose:** Confirm batching prevents OOM on large datasets.
+
+### Test 3: Baseline Memory Usage (10 min)
+
+**Load 100k rows:**
+1. Upload 100k row CSV
+2. Check memory indicator in status bar
+3. Expected: <30% memory usage
+4. Apply 5 transformations (uppercase, trim, etc.)
+5. Expected: Stays <50% memory usage
+
+**Load 500k rows:**
+1. Upload 500k row CSV
+2. Expected: ~40-60% memory usage
+3. Apply transformations
+4. Expected: Stays <80% memory usage
+
+**Purpose:** Establish baseline performance with new 2GB limit.
+
+### Test 4: Diff Operation Pre-flight Checks (15 min)
+
+**Small diff (should work):**
+1. Create two tables: 10k rows each, 10 columns
+2. Click Diff button
+3. Expected: Diff completes successfully
+4. Expected: No pre-flight error
+
+**Large diff (should warn):**
+1. Load 1M row table A, 1M row table B
+2. Click Diff button
+3. **Expected:** Pre-flight error before operation starts:
+   ```
+   Diff operation requires ~1.5GB but only 800MB available.
+
+   Recommendations:
+   1. Select a more unique key column
+   2. Filter tables to smaller subsets
+   3. Export as CSV and use external diff tools
+   ```
+
+**Purpose:** Confirm pre-flight validation works and fails gracefully.
+
+### Test 5: Memory Pressure Recovery (10 min)
+
+**Stress test:**
+1. Load 500k rows
+2. Apply 10+ transformations rapidly
+3. Monitor memory indicator
+4. Expected: May hit 80-90% but doesn't crash
+5. Expected: Memory cleanup happens during operations
+
+**If OOM occurs:**
+- Error should be clean DuckDB message (not browser tab crash)
+- User can continue working (close diff, try smaller operation)
+
+### Test 6: Browser Overhead Validation (5 min)
+
+**Monitor OS-level RAM:**
+1. Open Activity Monitor / Task Manager
+2. Find Chrome/Edge tab process
+3. Load 500k rows, run diff
+4. Observe: Total RAM = DuckDB memory + ~1GB overhead
+5. Confirm: Total stays under 3-3.5GB (prevents browser kill)
+
+### Console Logs Reference
+
+**Expected on init (Chrome/Edge/Safari):**
+```
+[DuckDB] OPFS persistence enabled (Chrome)
+[DuckDB] Thread count set to 2 for browser optimization
+[DuckDB] EH bundle, 2GB limit, compression enabled, backend: OPFS
 ```
 
-**Justification:**
-- Prevents OOM before it happens
-- Users with large datasets won't hit 3GB limit unexpectedly
-- Trades some undo history for stability
+**Expected on init (Firefox):**
+```
+[DuckDB] In-memory mode (Firefox - no OPFS support)
+[DuckDB] Thread count set to 2 for browser optimization
+[DuckDB] MVP bundle, 2GB limit, compression enabled, backend: memory
+```
 
-**Impact:** Prevents memory exhaustion on large datasets
+**Pre-flight error example:**
+```
+Error: Diff operation requires ~1.5GB but only 800MB available.
+
+Recommendations:
+1. Select a more unique key column (reduces duplicate matching overhead)
+2. Filter tables to smaller subsets before diff
+3. Export as CSV and use external diff tools
+4. Current: 1,000,000 vs 1,000,000 rows
+```
+
+### Edge Cases & Degradation Paths
+
+1. **Graceful OOM Handling:**
+   - If operation exceeds 2GB limit
+   - Clean DuckDB error (not browser crash)
+   - User can retry with smaller data or different approach
+
+2. **Memory Pressure During Undo/Redo:**
+   - Timeline replay may create temporary memory spikes
+   - Monitor memory indicator during replay
+   - If >90%, suggest pausing or reducing snapshot count
+
+3. **Firefox Limitations:**
+   - No OPFS = no persistence
+   - Same 2GB memory limit applies
+   - Performance may be slightly worse due to no compression benefits
+
+---
+
+## Expected Performance Impact
+
+### Before Optimization (Current State)
+
+**Configuration:**
+- memory_limit = 3GB (unrealistic for browser)
+- Default threads (4-8)
+- No pre-flight checks
+- temp_directory configured but not working in WASM
+
+**Behavior:**
+- 1M row diff → OOM at 2.7GB
+- Browser tab RAM: 3.6GB (approaching kill threshold)
+- Silent failures or tab crashes
+
+### After Optimization (New Strategy)
+
+**Configuration:**
+- memory_limit = 2GB (realistic with overhead buffer)
+- threads = 2 (reduced overhead)
+- Pre-flight size validation
+- preserve_insertion_order = false for large operations
+
+**Expected Behavior:**
+
+| Operation | Before | After | Notes |
+|-----------|--------|-------|-------|
+| **100k row transformation** | Works fine | Works fine | No batching (under threshold) |
+| **500k row transformation** | OOM at 80% | **10 batches, completes** | **Batching kicks in** |
+| **1M row transformation** | OOM crash | **20 batches, 20 sec** | **Real progress bar** |
+| **500k row diff** | Works (~80% mem) | Works (~60% mem) | Lower memory baseline |
+| **1M row diff** | OOM crash | Pre-flight error | Fails gracefully |
+| **Browser RAM** | 3.6GB (risky) | 2.5GB (safe) | 1.1GB savings |
+
+### Memory Savings Breakdown
+
+| Optimization | Savings | Source |
+|--------------|---------|--------|
+| Lower memory_limit (3GB→2GB) | +1GB headroom | Browser overhead buffer |
+| Reduced threads (8→2) | ~600MB | Thread stack overhead |
+| **Batching (500k+ rows)** | **Prevents OOM entirely** | **50k row chunks** |
+| preserve_insertion_order=false | ~300MB | Streaming aggregations |
+| **Total available** | ~1.9GB | Effective working memory |
+
+**Key Insights:**
+1. Batching doesn't reduce peak memory per se, but it prevents operations from ever hitting the peak by processing in manageable chunks.
+2. **WAL checkpointing is critical** - without it, the Write-Ahead Log accumulates in memory, negating batching benefits.
+3. For 1M rows @ 50k batch size = 20 batches. Checkpointing every 5 batches = 4 total checkpoints (minimal overhead).
+
+### Trade-offs
+
+**Pros:**
+- ✅ No more silent browser kills
+- ✅ Graceful failures with actionable errors
+- ✅ Pre-flight checks prevent wasted time
+- ✅ More stable on lower-end devices
+- ✅ **500k-1M row transformations now work reliably (batching)**
+- ✅ **Real progress bars instead of fake spinners**
+- ✅ **UI stays responsive during heavy operations**
+
+**Cons:**
+- ⚠️ Large diffs (1M+ rows) still fail with pre-flight error **in this sprint**
+  - **Mitigation:** Error message suggests filtering/external tools
+  - **Future (next sprint):** Apply batching to diff operations (same pattern as transforms)
+- ⚠️ ~10-15% slower on heavy operations (fewer threads + batch overhead)
+  - **Acceptable:** Stability > speed, and user sees progress
+- ⚠️ Row order may change in some operations
+  - **Minimal impact:** Doesn't affect data correctness
+- ⚠️ Batched operations take longer (~1 sec per 50k rows + periodic WAL checkpoints)
+  - **Trade-off:** 1M rows = ~25 seconds (20 batches + 4 checkpoints) vs. instant OOM crash
+  - **Acceptable:** User sees progress, can cancel if needed
 
 ---
 
 ## File Modification Summary
 
-| File | Change | Lines | Complexity |
-|------|--------|-------|------------|
-| `src/lib/commands/executor.ts` | Add diff view cleanup after extraction | +12 | Low |
-| `src/lib/commands/executor.ts` | Fix snapshot pruning off-by-one | 1 | Trivial |
-| `src/lib/commands/executor.ts` | Add diff view cleanup on undo | +10 | Low |
-| `src/lib/commands/executor.ts` | Add proactive snapshot pruning helper | +25 | Medium |
-| `src/lib/duckdb/memory.ts` | Include internal tables in tracking | -4 | Trivial |
+| File | Change | Lines | Complexity | Priority |
+|------|--------|-------|------------|----------|
+| `src/lib/duckdb/index.ts` | Lower memory_limit, add thread setting | ~3 | Trivial | **P0** |
+| **`src/lib/commands/batch-executor.ts`** | **NEW: Generic batching utility** | **~80** | **Medium** | **P1** |
+| **`src/lib/commands/types.ts`** | **Add batch options to CommandContext** | **~5** | **Trivial** | **P1** |
+| **`src/lib/commands/executor.ts`** | **Inject batching decision logic** | **~15** | **Medium** | **P1** |
+| **`src/features/laundromat/CleanPanel.tsx`** | **Add progress UI** | **~25** | **Medium** | **P1** |
+| `src/lib/diff-engine.ts` | Add pre-flight memory check | ~40 | Medium | **P1** |
+| `src/lib/diff-engine.ts` | Wrap with preserve_insertion_order toggle | ~6 | Trivial | **P2** |
+| `src/lib/duckdb/storage-info.ts` | Export formatBytes helper | ~1 | Trivial | **P1** |
 
-**Total:** 5 changes across 2 files, ~45 lines added, ~4 lines removed
+**Total:** 7 files (1 new), ~175 lines added/modified
 
----
-
-## Testing Strategy
-
-### Manual Testing
-
-**Test 1: Diff View Cleanup**
-1. Load 1M row dataset
-2. Open DevTools → Application → Storage → OPFS → DuckDB
-3. Query: `SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '_diff_%'`
-4. Apply 5 transformations
-5. Re-query: Expect 0 diff views (all dropped after execution)
-6. **Before fix:** 5 diff views remain
-7. **After fix:** 0 diff views
-
-**Test 2: Snapshot Pruning**
-1. Load 1M row dataset
-2. Apply 6 Tier 3 transformations (each creates a snapshot)
-3. Query: `SELECT COUNT(*) FROM duckdb_tables() WHERE table_name LIKE '_cmd_snapshot_%'`
-4. **Before fix:** 6 snapshots
-5. **After fix:** 5 snapshots
-
-**Test 3: Memory Tracking Accuracy**
-1. Load 1M row dataset
-2. Apply 3 transformations (creates 3 snapshots)
-3. Check MemoryIndicator in status bar
-4. Query: `SELECT SUM(estimated_size) FROM duckdb_tables()`
-5. **Before fix:** UI shows ~300MB, actual is ~900MB (3× undercount)
-6. **After fix:** UI shows ~900MB (accurate)
-
-**Test 4: Undo Cleanup**
-1. Apply 5 transformations
-2. Undo 3 times
-3. Query for diff views
-4. **Before fix:** 5 diff views remain
-5. **After fix:** 2 diff views remain (only for positions 0-1)
-
-**Test 5: High Memory Pruning**
-1. Load large dataset (2M rows)
-2. Apply 10 transformations
-3. Memory indicator should show < 80%
-4. Console should log: "[Memory] Pruned X snapshots due to high memory"
-
-### E2E Tests
-
-**New test file:** `e2e/tests/memory-leak-regression.spec.ts`
-
-```typescript
-test.describe.serial('Memory Leak Regression', () => {
-  let page: Page
-  let inspector: StoreInspector
-
-  test('should cleanup diff views after transformation', async () => {
-    await laundromat.uploadFile(getFixturePath('large-1m.csv'))
-    await wizard.import()
-
-    // Apply transformation
-    await laundromat.clickAddTransformation()
-    await picker.addTransformation('Uppercase', { column: 'name' })
-    await laundromat.clickRunRecipe()
-
-    // Check no diff views remain
-    const diffViews = await inspector.runQuery(`
-      SELECT table_name FROM duckdb_tables()
-      WHERE table_name LIKE '_diff_%'
-    `)
-
-    expect(diffViews.length).toBe(0)
-  })
-
-  test('should enforce MAX_SNAPSHOTS_PER_TABLE=5', async () => {
-    // Apply 6 Tier 3 transformations
-    for (let i = 0; i < 6; i++) {
-      await applyTransformation('remove_duplicates')
-    }
-
-    // Check snapshot count
-    const snapshots = await inspector.runQuery(`
-      SELECT COUNT(*) as count FROM duckdb_tables()
-      WHERE table_name LIKE '_cmd_snapshot_%'
-    `)
-
-    expect(snapshots[0].count).toBeLessThanOrEqual(5)
-  })
-
-  test('should show accurate memory including internal tables', async () => {
-    await loadLargeDataset()
-
-    // Get UI memory reading
-    const uiMemory = await page.evaluate(() => {
-      const store = window.useUIStore.getState()
-      return store.memoryUsage
-    })
-
-    // Get actual DuckDB memory (including internal tables)
-    const duckdbMemory = await inspector.runQuery(`
-      SELECT SUM(estimated_size * column_count * 50) as total
-      FROM duckdb_tables()
-      WHERE NOT internal
-    `)
-
-    const actualBytes = duckdbMemory[0].total
-    const difference = Math.abs(uiMemory - actualBytes) / actualBytes
-
-    // UI should be within 20% of actual (accounting for compression)
-    expect(difference).toBeLessThan(0.2)
-  })
-})
-```
-
----
-
-## Performance Impact
-
-**Before Fix (5 commands on 1M rows):**
-- User table: 1M rows (compressed)
-- 5 diff views: 5M rows (uncompressed views)
-- 6 snapshots: 6M rows (compressed)
-- **Total:** ~12M rows in memory
-- **Memory:** ~2.5-3GB (hits limit)
-
-**After Fix (5 commands on 1M rows):**
-- User table: 1M rows (compressed)
-- 0 diff views: 0 rows ✅
-- 5 snapshots: 5M rows (compressed) ✅
-- **Total:** ~6M rows in memory
-- **Memory:** ~1.2-1.5GB (50% reduction)
-
-**Memory Savings:**
-- Diff view cleanup: ~5M rows = ~1GB
-- Snapshot pruning fix: ~1M rows = ~200MB
-- **Total saved:** ~1.2GB (40% reduction)
+**Priority Legend:**
+- **P0:** Must-have (prevents browser crashes)
+- **P1:** High value (prevents wasted user time)
+- **P2:** Nice-to-have (marginal improvement)
 
 ---
 
 ## Risk Assessment
 
-### Low Risk Changes
+### Low Risk - Incremental Improvements
 
-1. **Diff view cleanup:** Diff views are ephemeral, safe to drop immediately
-2. **Snapshot pruning fix:** Off-by-one fix, mathematically correct
-3. **Memory tracking:** Display-only change, doesn't affect behavior
+**Phase 1 (memory_limit + threads):**
+- ✅ No breaking changes to existing functionality
+- ✅ Only reduces resource limits (conservative)
+- ✅ Can revert with 1-line change if needed
 
-### Medium Risk Changes
+**Phase 2 (pre-flight checks):**
+- ✅ Fails BEFORE operation starts (safe)
+- ✅ Easy to adjust threshold if too aggressive
+- ✅ Can be disabled entirely without affecting other phases
 
-4. **Undo cleanup:** Could orphan diff views if undo logic has bugs
-   - Mitigation: Diff views are recreated on redo, no data loss
-5. **Proactive pruning:** Might prune too aggressively under high load
-   - Mitigation: Only prunes when memory > 80%, preserves 5 snapshots
+**Phase 3 (preserve_insertion_order):**
+- ⚠️ Row order may change (cosmetic, not functional)
+- ✅ Only affects diff operations (isolated scope)
+- ✅ Easy to remove if causes issues
 
-### Testing Coverage
+### Rollback Strategy
 
-- Manual testing covers all changes
-- E2E tests verify memory behavior
-- Console logging for debugging
+**Quick rollback (Phase 1):**
+```typescript
+// Revert memory_limit back to 3GB
+const memoryLimit = isTestEnv ? '256MB' : '3GB'
 
----
+// Remove thread reduction
+// (comment out the SET threads = 2 line)
+```
 
-## Rollback Strategy
+**Disable pre-flight (Phase 2):**
+```typescript
+// Comment out the validateDiffMemoryAvailability() call
+// await validateDiffMemoryAvailability(conn, tableA, tableB)
+```
 
-If issues arise:
-
-1. **Revert diff view cleanup:** Comment out `DROP VIEW` calls (2 locations)
-2. **Revert memory tracking:** Restore `NOT LIKE` filters
-3. **Revert snapshot pruning fix:** Change `<` back to `<=`
-4. **Revert proactive pruning:** Comment out `pruneSnapshotsIfHighMemory()` call
-
-All changes are additive (no deletions), easy to revert.
+**Disable preserve_insertion_order toggle (Phase 3):**
+```typescript
+// Remove the SET preserve_insertion_order = false wrapper
+```
 
 ---
 
 ## Success Criteria
 
-**User Experience:**
-- Users can apply 10+ transformations on 1M rows without OOM
-- Memory indicator shows accurate usage (within 20%)
-- No performance degradation
+### Primary Goals (Must Achieve)
 
-**Technical:**
-- 0 diff views remain after command execution
-- Exactly 5 snapshots retained per table
-- Memory usage reduced by 40-50%
+**1. No More Browser Tab Crashes**
+- ✅ Memory operations fail gracefully with DuckDB errors
+- ✅ Browser doesn't kill tab when memory exceeds safe threshold
+- ✅ User can continue working after OOM error (not fatal crash)
 
-**Validation:**
-- All E2E tests pass
-- Manual testing confirms memory reduction
-- No regressions in undo/redo functionality
+**2. Clear User Feedback**
+- ✅ Pre-flight errors explain WHY operation will fail
+- ✅ Error messages include actionable recommendations
+- ✅ Memory indicator reflects realistic usage (not false sense of security)
+
+**3. Realistic Expectations**
+- ✅ 100k-500k row operations: Work reliably
+- ✅ 1M row diff: Pre-flight warning with alternatives
+- ✅ 1M row transformations: Work if simple, warn if complex
+
+### Secondary Goals (Nice to Have)
+
+**1. Performance Optimization**
+- ~10-15% slower on heavy operations (acceptable trade-off)
+- Memory indicator stays <80% on typical workloads
+
+**2. Future-Proofing**
+- temp_directory config remains (for future WASM versions)
+- Code structure allows easy addition of more optimizations
+
+### Validation Checklist
+
+**Before declaring success, verify:**
+
+- [ ] Console logs show 2GB limit and 2 threads
+- [ ] **600k row transformation triggers batching (console log confirms)**
+- [ ] **Progress bar shows real-time updates during batching**
+- [ ] **1M row transformation completes in ~20 seconds (no OOM)**
+- [ ] **UI stays responsive during batched operations**
+- [ ] 500k row diff completes without OOM
+- [ ] 1M row diff shows pre-flight error (not runtime OOM)
+- [ ] Browser tab RAM stays under 3GB during heavy operations (down from 3.6GB)
+- [ ] Memory indicator reflects actual DuckDB usage
+- [ ] Activity Monitor shows stable RAM (not climbing to kill threshold)
+- [ ] User can retry after OOM error (no need to reload tab)
 
 ---
 
-## Next Steps After Fix
+## Why temp_directory Didn't Work
 
-1. **Monitor production metrics:**
-   - Track memory usage over time
-   - Monitor OOM crash rates
-   - Measure snapshot count distribution
+### The Discovery Process
 
-2. **Future optimizations:**
-   - Implement snapshot compression (zstd on snapshots)
-   - Add "Clear Undo History" button for power users
-   - Consider LRU cache for diff views (keep last 3 for quick redo)
+**Initial assumption:** temp_directory missing from config
+- ✅ Added temp_directory = 'opfs://cleanslate_temp.db'
+- ✅ Added proper conditional checks for multi-tab support
+- ❌ **Still got OOM errors with same message**
 
-3. **Documentation:**
-   - Update CLAUDE.md with memory management details
-   - Add JSDoc comments on cleanup functions
-   - Document MAX_SNAPSHOTS_PER_TABLE rationale
+**Web research revealed:** DuckDB-WASM 1.32.0 limitation
+- temp_directory setting is accepted but not used for spilling
+- WASM cannot actually offload to OPFS during query execution
+- This is a known limitation "under development"
+
+**Evidence:**
+1. Error message unchanged after adding temp_directory
+2. Browser RAM still hit 3.6GB (proving no disk offload)
+3. GitHub discussions confirm WASM spilling not implemented
+
+### Lessons Learned
+
+1. **Don't trust error messages blindly**
+   - "no temporary directory specified" was misleading
+   - The setting WAS specified, just not working in WASM
+
+2. **Browser WASM has hard limits**
+   - Can't exceed ~4GB total RAM per tab
+   - Must work within these constraints, not around them
+
+3. **Optimization must be multi-layered**
+   - No single "magic bullet" for browser memory limits
+   - Need combination of: lower limits + fewer threads + pre-flight checks
 
 ---
 
-## Critical Files
+## Future Enhancements (Post-Implementation)
 
-**Primary:**
-- `src/lib/commands/executor.ts` - Command execution & cleanup logic
-- `src/lib/duckdb/memory.ts` - Memory tracking & estimation
+### When DuckDB-WASM Adds Disk Spilling
 
-**Secondary:**
-- `src/lib/commands/diff-views.ts` - Diff view creation/deletion (already has dropDiffView)
-- `src/stores/uiStore.ts` - Memory indicator display
+**If future WASM versions support temp_directory:**
+- ✅ Already configured (line 143 in index.ts)
+- ✅ Will automatically start working
+- ✅ Can remove pre-flight checks or make them less aggressive
 
-**Testing:**
-- `e2e/tests/memory-leak-regression.spec.ts` - New E2E tests
+### Additional Optimizations to Consider
+
+1. **Batched Diff Operations (RECOMMENDED)**
+   - Apply `BatchExecutor` pattern to FULL OUTER JOIN
+   - Process diff in 50k row chunks with WAL checkpoints
+   - Same architecture as transform batching (Phase 2)
+   - **This removes the 1M row diff limitation entirely**
+
+2. **Chunked Diff Operations**
+   - Split large diffs into smaller key-range chunks
+   - Process incrementally, merge results
+   - Trade-off: More complex than batching approach
+
+3. **Column Subset Diff**
+   - Let user select specific columns to compare
+   - Reduces memory by not doubling all columns
+   - Trade-off: Less comprehensive diff view
+
+5. **Progressive Loading**
+   - Stream diff results instead of materializing full temp table
+   - Show first 1000 rows immediately while processing rest
+   - Trade-off: Can't show total count upfront
+
+---
+
+## Critical Files Reference
+
+| File | Purpose | Changes Needed |
+|------|---------|----------------|
+| `src/lib/duckdb/index.ts:132` | Memory limit configuration | Lower to 2GB (Phase 1) |
+| `src/lib/duckdb/index.ts:139` | Thread configuration | Add SET threads = 2 (Phase 1) |
+| **`src/lib/commands/batch-executor.ts`** | **NEW: Batching utility** | **Create file (Phase 2)** |
+| **`src/lib/commands/types.ts`** | **Command context interface** | **Add batch fields (Phase 2)** |
+| **`src/lib/commands/executor.ts:138`** | **CommandExecutor decision logic** | **Inject batching (Phase 2)** |
+| **`src/features/laundromat/CleanPanel.tsx`** | **Progress UI** | **Add progress bar (Phase 2)** |
+| `src/lib/diff-engine.ts:225` | Diff operation entry point | Add pre-flight check (Phase 3) |
+| `src/lib/diff-engine.ts:230` | FULL OUTER JOIN query | Wrap with preserve_insertion_order (Phase 4) |
+| `src/lib/duckdb/storage-info.ts` | Helper utilities | Export formatBytes (Phase 3) |
+
+---
+
+## References & Sources
+
+### DuckDB-WASM Limitations Research
+
+1. [Out-of-Core Processing Discussion #1322](https://github.com/duckdb/duckdb-wasm/discussions/1322)
+   - Confirms WASM cannot use temp_directory for spilling yet
+   - "work underway" but not implemented as of 1.32.0
+
+2. [Memory Management in DuckDB](https://duckdb.org/2024/07/09/memory-management)
+   - Explains disk spilling for native DuckDB
+   - WASM limitations discussed
+
+3. [DuckDB WASM Size Limit Discussion #1241](https://github.com/duckdb/duckdb-wasm/discussions/1241)
+   - Browser WASM limits: ~4GB in Chrome
+   - Memory overhead from WASM runtime
+
+4. [Tuning Workloads - DuckDB Docs](https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads)
+   - Recommendations for threads, preserve_insertion_order, memory_limit
+
+5. [Environment - DuckDB Docs](https://duckdb.org/docs/stable/guides/performance/environment)
+   - Best practices: 1-4GB memory per thread
+   - Thread overhead considerations
+
+### Code Investigation
+
+- `src/lib/diff-engine.ts:230-242` - FULL OUTER JOIN creates memory pressure
+- `src/lib/duckdb/index.ts:143` - temp_directory configured but not working
+- `src/lib/duckdb/memory.ts` - Memory tracking infrastructure
+
+### Key Insight
+
+**Native DuckDB** (desktop) can spill to disk via temp_directory.
+**DuckDB-WASM 1.32.0** (browser) CANNOT spill to disk despite temp_directory setting being accepted.
+
+This is why the error message is misleading - it says "no temporary directory specified" even though we DID specify one.
+
+---
+
+## Architectural Shift: From "DB Handles Memory" to "App Handles Memory"
+
+### The Paradigm Change
+
+**Old approach (failed):**
+- Set temp_directory for disk spilling
+- Trust DuckDB to manage memory automatically
+- **Problem:** WASM can't spill to disk (not implemented yet)
+
+**New approach (batching):**
+- Application controls chunking (50k rows at a time)
+- Explicit WAL checkpoints prevent memory accumulation
+- DuckDB does what it's good at (SQL operations), app does memory management
+- **Result:** Works within browser constraints
+
+### Why This is the Correct Long-Term Fix
+
+1. **Removes glass ceiling:** No longer limited by browser RAM for data size
+2. **Predictable memory:** Each batch has known memory footprint (~100MB for 50k rows)
+3. **Scalable:** Works for 1M, 10M, 100M rows (time increases linearly, not memory)
+4. **Future-proof:** When WASM adds disk spilling, we keep batching for UX (progress bars)
+
+### Implementation Pattern
+
+This batching architecture should become the standard for ALL large operations:
+- ✅ **Transforms** (Phase 2 implementation)
+- ⏳ **Diff operations** (future sprint - same `BatchExecutor` pattern)
+- ⏳ **Fuzzy matching** (future - already uses chunking, can integrate batching)
+- ⏳ **Scrubber operations** (future - currently small batches, can optimize)
+
+**The `BatchExecutor` utility is the foundation for scaling CleanSlate Pro beyond browser memory limits.**
+
+---
+
+## Performance Note: OFFSET vs. Keyset Pagination
+
+### Current Implementation (OFFSET)
+
+```sql
+SELECT * FROM source_table
+LIMIT 50000 OFFSET 0      -- Batch 1: Fast
+LIMIT 50000 OFFSET 50000  -- Batch 2: Fast
+LIMIT 50000 OFFSET 950000 -- Batch 20: Slower (O(N) scan)
+```
+
+**For this sprint (1M rows):** OFFSET is acceptable. Performance degradation is minimal.
+
+**Observed:** Last batch at OFFSET 950k takes ~1.2 seconds (vs 0.8 seconds for first batch).
+
+### Future Optimization (Keyset Pagination for 5M+ rows)
+
+```sql
+-- Instead of OFFSET, use WHERE clause on primary key
+SELECT * FROM source_table
+WHERE rowid > last_seen_rowid
+LIMIT 50000
+```
+
+**Benefits:**
+- Constant-time performance (O(1) instead of O(N))
+- Last batch as fast as first batch
+
+**When to implement:**
+- When CleanSlate Pro scales to 5M+ rows
+- Benchmark: If last batch takes >3x longer than first batch
+
+**Recommendation:** For this iteration, stick with OFFSET. If we scale to 5M+ rows later, migrate to keyset pagination (1-day refactor, minimal risk).
+
+---
 
 ---
 
 ## Implementation Order
 
-1. ✅ **Phase 1:** Immediate diff view cleanup (highest impact, lowest risk)
-2. ✅ **Phase 2:** Fix snapshot pruning off-by-one (trivial change)
-3. ✅ **Phase 3:** Include internal tables in memory tracking (UI accuracy)
-4. ✅ **Phase 4:** Cleanup diff views on undo (prevent accumulation)
-5. ✅ **Phase 5:** Proactive snapshot pruning (safety net)
-6. ✅ **Testing:** E2E tests + manual validation
+### Phase 1: Immediate Wins (15 min implementation + 15 min testing)
 
-**Estimated Implementation Time:** 2-3 hours
-**Estimated Testing Time:** 1-2 hours
-**Total:** 3-5 hours
+**Priority 0 - Critical:**
+1. ✅ **Lower memory_limit to 2GB** (`src/lib/duckdb/index.ts:132`)
+   - 1 line change
+   - Prevents browser kills immediately
+   - Test: Check console log shows "2GB limit"
 
----
+2. ✅ **Add thread reduction** (`src/lib/duckdb/index.ts:139`)
+   - 2 lines (query + log)
+   - Saves ~600MB overhead
+   - Test: Check log shows "Thread count set to 2"
 
----
+3. ✅ **Remove confusing temp_directory log** (`src/lib/duckdb/index.ts:144`)
+   - Remove console.log line (keep the SET query)
+   - Prevents user confusion about non-working feature
 
-## Critical Verifications (From Review)
+**Testing Phase 1:**
+- Load 500k rows, check memory indicator
+- Expected: <60% usage (vs 80% before)
+- Browser RAM: <3GB (vs 3.6GB before)
 
-### ⚠️ Phase 1: Grid Highlighting Dependency (CRITICAL - HIGH IMPACT)
-**Risk:** DataGrid or Undo/Redo visualization might query `v_diff_step_{tableId}_{stepIndex}` after command completes.
+### Phase 2: Batching Infrastructure (60 min implementation + 30 min testing)
 
-**Verification Required:**
-- **File:** `src/components/grid/DataGrid.tsx`
-- Confirm it relies solely on `highlightedRows` (array of IDs) passed via `timelineStore`
-- Verify it NEVER attempts SQL queries against `v_diff_step_X` views
-- **Test:** Apply transformation, verify grid highlighting still works after view is dropped
+**Priority 1 - High Value (NEW):**
 
-**JS Heap Pressure (ALREADY MITIGATED):**
-- Current implementation has `MAX_HIGHLIGHT_ROWS = 10000` limit in `extractAffectedRowIds()` (line ~888)
-- ✅ This prevents moving 1M row IDs from WASM to JS (would crash browser tab)
-- **DO NOT REMOVE THIS LIMIT** - it's a critical safety guardrail
-- For operations affecting >10k rows, highlighting is skipped (acceptable UX trade-off)
+4. ✅ **Create BatchExecutor utility** (`src/lib/commands/batch-executor.ts`)
+   - ~80 lines (new file)
+   - Generic batching function with progress callbacks
+   - Test: Verify batching logic with mock table
 
-### ⚠️ Phase 3: Memory Reporting UI Impact (CALIBRATION NEEDED)
-**Risk:** When internal tables included, reported memory jumps 3-5x (expected behavior).
+5. ✅ **Update CommandContext interface** (`src/lib/commands/types.ts`)
+   - ~5 lines (add batchMode, batchSize, onBatchProgress fields)
+   - No breaking changes (all optional fields)
 
-**Current Thresholds** (`src/lib/duckdb/memory.ts`):
-- `WARNING_THRESHOLD = 0.6` (1.8GB of 3GB limit)
-- `CRITICAL_THRESHOLD = 0.8` (2.4GB of 3GB limit)
-- `BLOCK_THRESHOLD = 0.95` (2.85GB - prevents new operations)
+6. ✅ **Inject batching decision logic** (`src/lib/commands/executor.ts:138`)
+   - ~15 lines (detect rowCount > 500k, pass batch options)
+   - Wire up dynamic progress calculation
+   - Test: Execute command on 600k rows, verify batching triggers
 
-**Action Required:**
-1. After enabling full tracking, test "normal" heavy session (1M rows, 5 transforms)
-2. If it immediately triggers WARNING state, adjust thresholds:
-   - Option A: Raise WARNING to 0.7 (2.1GB)
-   - Option B: Distinguish "User Data" (critical) vs "History" (prunable) in UI
-3. **Test:** Load 1M rows, apply 3 transformations, verify warning appears at appropriate point
-4. Consider adding memory breakdown: "User Data: 500MB | Undo History: 1.2GB | System: 300MB"
+7. ✅ **Add progress UI** (`src/features/laundromat/CleanPanel.tsx`)
+   - ~25 lines (state + Progress component)
+   - Show real-time batch progress
+   - Test: Visual confirmation of progress bar
 
-### ⚠️ Phase 6: Proactive Pruning Safety (UX CRITICAL)
-**Risk:** Pruning logic might accidentally prune current state or immediate previous state.
+**Testing Phase 2:**
+- Load 600k rows, apply transformation
+- Expected: Console shows "using batch mode"
+- Expected: Progress bar shows incremental updates (0% → 50% → 100%)
+- Expected: Operation completes without OOM
+- Memory stays <70% during batching
 
-**Critical Guardrails:**
-1. **NEVER prune snapshot at current position** (user's active state)
-2. **NEVER prune snapshot at position - 1** (immediate undo target)
-3. Only prune LRU (Longest-Running-Unused) snapshots from history tail
-4. Preserve minimum undo depth (at least 1-2 steps back)
+### Phase 3: User Protection (30 min implementation + 20 min testing)
 
-**Logic Check Required:**
-```typescript
-// In pruneSnapshotsIfHighMemory():
-while (timeline.snapshots.size > MAX_SNAPSHOTS_PER_TABLE) {
-  // MUST call pruneOldestSnapshot which uses LRU timestamp sorting
-  await this.pruneOldestSnapshot(timeline)
-  prunedCount++
-}
-```
+**Priority 1 - High Value:**
+8. ✅ **Add formatBytes export** (`src/lib/duckdb/storage-info.ts`)
+   - 1 line (export existing function)
+   - Needed by pre-flight check
 
-**UX Requirement (MANDATORY):**
-- **Add Toast Notification:** "Old undo history cleared to free memory"
-- Users find it frustrating when Undo grays out silently
-- **File:** Add toast import and call in `pruneSnapshotsIfHighMemory()`
+9. ✅ **Add diff pre-flight validation** (`src/lib/diff-engine.ts`)
+   - ~40 lines (helper function + call)
+   - Prevents wasted time on doomed operations
+   - Test: Try 1M row diff, should fail fast with helpful error
 
-**Test:** Load 2M rows, apply 10 transformations, verify:
-1. Console logs pruning event
-2. Toast notification appears
-3. User can still undo at least 1-2 steps back
+**Testing Phase 3:**
+- 1M row diff: Should show pre-flight error
+- Error should include: estimated need, available memory, recommendations
+- User should be able to retry with smaller data
 
-### ⚠️ Missing Consideration: The "Vacuum" Problem
-**Issue:** DuckDB doesn't always release memory immediately after DROP VIEW/TABLE.
+### Phase 4: Query Optimization (30 min implementation + 10 min testing)
 
-**Solution:**
-- After Phase 1 (diff view drop) or Phase 6 (snapshot pruning), DuckDB may retain references in WAL
-- **Action:** Rely on existing `flushDuckDB()` auto-flush mechanism (1s debounce)
-- WAL checkpoint (TRUNCATE) will release memory on next flush
-- No additional code needed - already implemented
+**Priority 2 - Nice to Have:**
+10. ✅ **Add preserve_insertion_order toggle** (`src/lib/diff-engine.ts`)
+   - ~6 lines (SET false, try, finally SET true)
+   - Marginal improvement (~300MB savings)
+   - Test: Verify diff still works correctly
 
-### ⚠️ Missing Consideration: "Compare" Feature Impact (MUST VERIFY)
-**Issue:** `_original_*` snapshots used for "Compare with Preview" diff mode.
-
-**Verification Required:**
-1. **File:** `src/features/diff/` components
-2. Verify "Diff Mode" (side-by-side comparison) does NOT reuse ephemeral `v_diff_step_X` views
-3. Expectation: Diff Mode should generate its own views on demand, not rely on execution artifacts
-4. Check if `diffStore` or diff components query specific view names
-
-**Test Scenario:**
-1. Load dataset, apply 3 transformations (diff views get dropped in Phase 1)
-2. Open "Compare with Preview" or "Diff" tab
-3. Verify side-by-side comparison still works correctly
-4. Check console for any errors about missing `v_diff_step_*` views
-
-### ⚠️ E2E Test Flakiness
-**Issue:** Memory comparison test `expect(difference).toBeLessThan(0.2)` might be flaky due to GC timing.
-
-**Solution Options:**
-1. Trigger force GC in browser context (requires Chrome with `--js-flags="--expose-gc"`)
-2. Relax tolerance slightly for CI stability (e.g., 0.25 instead of 0.2)
-3. Add retry logic with await for GC to settle
+**Testing Phase 4:**
+- Verify diff results match before/after optimization
+- Check that row order doesn't cause issues in UI
 
 ---
 
-## Implementation Checklist (Pre-Flight)
+## Rollback & Contingency
 
-Before implementing each phase, verify:
+**If Phase 1 causes issues:**
+- Revert memory_limit to 3GB
+- Keep threads=2 (safe optimization)
 
-**Phase 1 (Diff View Cleanup):**
-- [ ] Read DataGrid highlighting implementation
-- [ ] Confirm grid uses `highlightInfo.affectedRowIds` array, not diff view queries
-- [ ] Check for any lazy-loading of highlighting info from views
-- [ ] Verify no other components query `v_diff_step_*` views
+**If Phase 2 (batching) causes issues:**
+- Adjust batch threshold from 500k to 1M (more conservative)
+- Reduce batch size from 50k to 25k (more conservative)
+- Adjust WAL checkpoint frequency (every 10 batches instead of 5)
+- Disable batching entirely: `const shouldBatch = false` (fallback to current behavior)
 
-**Phase 3 (Memory Tracking):**
-- [ ] Verify MemoryIndicator thresholds (warning: 60%, critical: 80%)
-- [ ] Check if thresholds need recalibration for higher baseline
-- [ ] Consider adding memory breakdown UI (optional)
+**If pre-flight check too aggressive:**
+- Adjust threshold from 0.7 to 0.8 or 0.9
+- Or make it a warning instead of hard error
 
-**Phase 6 (Proactive Pruning):**
-- [ ] Review snapshot pruning logic to ensure current position is never pruned
-- [ ] Add user-facing toast notification for pruning events
-- [ ] Verify LRU eviction order (oldest first)
-
-**All Phases:**
-- [ ] Test "Compare with Preview" diff mode after each phase
-- [ ] Monitor browser heap (DevTools Memory Profiler) during testing
-- [ ] Verify WAL checkpoint releases memory properly
+**If preserve_insertion_order breaks something:**
+- Remove the toggle, keep other optimizations
+- This is why it's Phase 4 (lowest priority)
 
 ---
 
-## Open Questions
+## Time Estimates
 
-None - all investigation complete, solution designed, critical verifications identified.
+| Phase | Implementation | Testing | Total | Can Skip? |
+|-------|----------------|---------|-------|-----------|
+| Phase 1 | 15 min | 15 min | 30 min | ❌ No - critical |
+| **Phase 2 (Batching)** | **60 min** | **30 min** | **90 min** | **⚠️ High value - GAME CHANGER** |
+| Phase 3 (Pre-flight) | 30 min | 20 min | 50 min | ⚠️ High value |
+| Phase 4 (preserve_insertion_order) | 30 min | 10 min | 40 min | ✅ Yes - marginal |
+
+**Minimum viable fix:** Phase 1 only (30 min)
+**Recommended (WITH BATCHING):** Phase 1 + 2 (120 min) ← **Best ROI**
+**Complete:** All phases (210 min / 3.5 hours)
