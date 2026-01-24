@@ -72,6 +72,13 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   db = new duckdb.AsyncDuckDB(logger, worker)
   await db.instantiate(bundle.mainModule)
 
+  // Expose DuckDB to window for console debugging
+  if (typeof window !== 'undefined') {
+    // @ts-ignore - Expose for console debugging
+    window.__db = db
+    console.log('🔧 DuckDB exposed as window.__db for debugging')
+  }
+
   // 3. Open with OPFS or in-memory based on browser capabilities
   try {
     if (caps.hasOPFS && caps.supportsAccessHandle) {
