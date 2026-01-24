@@ -37,6 +37,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     tableB,
     keyColumns,
     diffTableName,
+    sourceTableName,
+    targetTableName,
     totalDiffRows,
     allColumns,
     keyOrderBy,
@@ -149,6 +151,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
 
       setDiffConfig({
         diffTableName: config.diffTableName,
+        sourceTableName: config.sourceTableName,
+        targetTableName: config.targetTableName,
         totalDiffRows: config.totalDiffRows,
         allColumns: config.allColumns,
         keyOrderBy: config.keyOrderBy,
@@ -259,6 +263,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               {/* Export Menu */}
               <DiffExportMenu
                 diffTableName={diffTableName}
+                sourceTableName={sourceTableName}
+                targetTableName={targetTableName}
                 keyOrderBy={keyOrderBy}
                 summary={summary}
                 allColumns={allColumns}
@@ -357,6 +363,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               <div className="flex-1 min-h-0">
                 <VirtualizedDiffGrid
                   diffTableName={diffTableName}
+                  sourceTableName={sourceTableName}
+                  targetTableName={targetTableName}
                   totalRows={totalDiffRows}
                   allColumns={allColumns}
                   keyColumns={keyColumns}

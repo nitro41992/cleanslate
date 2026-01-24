@@ -13,6 +13,8 @@ import { toast } from 'sonner'
 
 interface DiffExportMenuProps {
   diffTableName: string
+  sourceTableName: string
+  targetTableName: string
   keyOrderBy: string
   summary: DiffSummary
   allColumns: string[]
@@ -25,6 +27,8 @@ interface DiffExportMenuProps {
 
 export function DiffExportMenu({
   diffTableName,
+  sourceTableName,
+  targetTableName,
   keyOrderBy,
   summary,
   allColumns,
@@ -47,7 +51,7 @@ export function DiffExportMenu({
 
       // Stream chunks
       let exportedCount = 0
-      for await (const chunk of streamDiffResults(diffTableName, keyOrderBy)) {
+      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy)) {
         for (const row of chunk) {
           const line = formatRowAsCSV(row, allColumns, keyColumns)
           csvLines.push(line)
@@ -88,7 +92,7 @@ export function DiffExportMenu({
       }> = []
 
       // Stream chunks
-      for await (const chunk of streamDiffResults(diffTableName, keyOrderBy)) {
+      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy)) {
         for (const row of chunk) {
           const status = row.diff_status
           const rowA: Record<string, unknown> = {}
@@ -157,7 +161,7 @@ export function DiffExportMenu({
 
       // Only copy first 100 rows for clipboard
       let count = 0
-      outer: for await (const chunk of streamDiffResults(diffTableName, keyOrderBy, 100)) {
+      outer: for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, keyOrderBy, 100)) {
         for (const row of chunk) {
           if (count >= 100) break outer
 
