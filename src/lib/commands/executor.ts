@@ -28,7 +28,7 @@ import type {
 } from './types'
 import { buildCommandContext, refreshTableContext } from './context'
 import { createColumnVersionManager, type ColumnVersionStore } from './column-versions'
-import { getUndoTier, requiresSnapshot, createCommand } from './registry'
+import { getUndoTier, requiresSnapshot, createCommand, getCommandMetadata } from './registry'
 import {
   createTier1DiffView,
   createTier3DiffView,
@@ -239,8 +239,11 @@ export class CommandExecutor implements ICommandExecutor {
       // Step 3.5: Pre-capture row details for Tier 2/3 (BEFORE transformation)
       // Tier 2/3 transforms modify data in-place, so we must capture "before" values now
       // Tier 1 uses __base columns, so it captures AFTER execution
+      // OPTIMIZATION: Some commands (like standardize) store mappings instead of row-level changes
       const preGeneratedAuditEntryId = `audit_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-      if (!skipAudit && tier !== 1) {
+      const shouldCapturePreExecution = getCommandMetadata(command.type)?.capturePreExecution ?? (tier !== 1)
+
+      if (!skipAudit && shouldCapturePreExecution) {
         try {
           await this.capturePreExecutionDetails(ctx, command, preGeneratedAuditEntryId)
         } catch (err) {
@@ -356,8 +359,11 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // Step 6: Diff view
+      // OPTIMIZATION: Some commands (like standardize) don't need diff highlighting
       let diffViewName: string | undefined
-      if (!skipDiffView) {
+      const shouldCreateDiffView = getCommandMetadata(command.type)?.createDiffView ?? (tier >= 2)
+
+      if (!skipDiffView && shouldCreateDiffView) {
         progress('diffing', 70, 'Creating diff view...')
         const rowPredicate = await command.getAffectedRowsPredicate(updatedCtx)
         const affectedColumn = (command.params as { column?: string })?.column || null
@@ -389,7 +395,11 @@ export class CommandExecutor implements ICommandExecutor {
       // Step 6.5: VACUUM after large operations to reclaim dead row space
       // When DuckDB updates rows, it marks old versions as "dead" but keeps them in memory
       // VACUUM forces cleanup of these dead rows, reducing RAM from ~2.2GB to ~1.5GB
-      if (tier === 3 || ctx.table.rowCount > 100_000) {
+      // OPTIMIZATION: Skip for UPDATE-only operations (standardize) - they don't create significant dead rows
+      const isDestructiveOp = requiresSnapshot(command.type)
+      const shouldVacuum = (tier === 3 && isDestructiveOp) || ctx.table.rowCount > 100_000
+
+      if (shouldVacuum) {
         try {
           const vacuumStart = performance.now()
           await ctx.db.execute('VACUUM')
