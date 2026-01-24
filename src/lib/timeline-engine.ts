@@ -22,7 +22,11 @@ import {
 import { applyTransformation, EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
 import { applyStandardization } from '@/lib/standardizer-engine'
 import { useTimelineStore } from '@/stores/timelineStore'
-import { exportTableToParquet, importTableFromParquet } from '@/lib/opfs/snapshot-storage'
+import {
+  exportTableToParquet,
+  importTableFromParquet,
+  checkSnapshotFileExists,
+} from '@/lib/opfs/snapshot-storage'
 import type {
   TimelineCommand,
   TimelineParams,
@@ -635,12 +639,29 @@ export async function initializeTimeline(
     })
     // Verify the original snapshot exists, create if missing
     if (existing.originalSnapshotName) {
-      const exists = await tableExists(existing.originalSnapshotName)
-      console.log('[INIT_TIMELINE] Original snapshot exists:', exists)
+      // Check if original snapshot still exists (handle both Parquet and in-memory)
+      let exists = false
+      const snapshotName = existing.originalSnapshotName
+
+      if (snapshotName.startsWith('parquet:')) {
+        // Check OPFS using helper (maintains abstraction)
+        const snapshotId = snapshotName.replace('parquet:', '')
+        exists = await checkSnapshotFileExists(snapshotId)
+      } else {
+        // Check DuckDB for in-memory table
+        exists = await tableExists(snapshotName)
+      }
+
+      console.log(
+        '[INIT_TIMELINE] Original snapshot exists:',
+        exists,
+        `(type: ${snapshotName.startsWith('parquet:') ? 'Parquet' : 'table'})`
+      )
+
       if (!exists) {
         console.log('[INIT_TIMELINE] Creating missing original snapshot...')
-        const snapshotName = await createTimelineOriginalSnapshot(tableName, existing.id)
-        store.updateTimelineOriginalSnapshot(tableId, snapshotName)
+        const newSnapshotName = await createTimelineOriginalSnapshot(tableName, existing.id)
+        store.updateTimelineOriginalSnapshot(tableId, newSnapshotName)
       }
     } else {
       // No original snapshot name set, create one
