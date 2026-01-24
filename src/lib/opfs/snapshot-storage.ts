@@ -72,11 +72,13 @@ export async function exportTableToParquet(
 
     while (offset < rowCount) {
       const fileName = `${snapshotId}_part_${partIndex}.parquet`
-      const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+      // CRITICAL: DuckDB prepends 'tmp_' to Parquet files during write
+      const tmpFileName = `tmp_${fileName}`
+      const fileHandle = await snapshotsDir.getFileHandle(tmpFileName, { create: true })
 
-      // Register file handle for this chunk
+      // Register file handle with tmp_ prefix that DuckDB actually uses
       await db.registerFileHandle(
-        fileName,
+        tmpFileName,
         fileHandle,
         duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
         true
@@ -96,9 +98,19 @@ export async function exportTableToParquet(
 
         // CRITICAL: Flush DuckDB write buffers to OPFS before unregistering
         await db.flushFiles()
+
+        // Rename tmp file to final name (DuckDB can't do this through registered handles)
+        const finalFileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+        const tmpFile = await fileHandle.getFile()
+        const writable = await finalFileHandle.createWritable()
+        await writable.write(await tmpFile.arrayBuffer())
+        await writable.close()
+
+        // Delete tmp file
+        await snapshotsDir.removeEntry(tmpFileName)
       } finally {
-        // Unregister file handle after write (always cleanup to prevent leaks)
-        await db.dropFile(fileName)
+        // Unregister tmp file handle after write (always cleanup to prevent leaks)
+        await db.dropFile(tmpFileName)
       }
 
       offset += batchSize
@@ -110,10 +122,12 @@ export async function exportTableToParquet(
   } else {
     // Small table - single file export
     const fileName = `${snapshotId}.parquet`
-    const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+    // CRITICAL: DuckDB prepends 'tmp_' to Parquet files during write
+    const tmpFileName = `tmp_${fileName}`
+    const fileHandle = await snapshotsDir.getFileHandle(tmpFileName, { create: true })
 
     await db.registerFileHandle(
-      fileName,
+      tmpFileName,
       fileHandle,
       duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
       true
@@ -130,9 +144,19 @@ export async function exportTableToParquet(
 
       // CRITICAL: Flush DuckDB write buffers to OPFS before unregistering
       await db.flushFiles()
+
+      // Rename tmp file to final name (DuckDB can't do this through registered handles)
+      const finalFileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
+      const tmpFile = await fileHandle.getFile()
+      const writable = await finalFileHandle.createWritable()
+      await writable.write(await tmpFile.arrayBuffer())
+      await writable.close()
+
+      // Delete tmp file
+      await snapshotsDir.removeEntry(tmpFileName)
     } finally {
-      // Unregister file handle after write (always cleanup to prevent leaks)
-      await db.dropFile(fileName)
+      // Unregister tmp file handle after write (always cleanup to prevent leaks)
+      await db.dropFile(tmpFileName)
     }
 
     console.log(`[Snapshot] Exported to ${fileName}`)
