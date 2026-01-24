@@ -66,7 +66,8 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
   const bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
   const worker = new Worker(bundle.mainWorker!)
-  const logger = new duckdb.ConsoleLogger()
+  // Use VoidLogger to silence noisy query logs - our diagnostic logging is more useful
+  const logger = new duckdb.VoidLogger()
 
   db = new duckdb.AsyncDuckDB(logger, worker)
   await db.instantiate(bundle.mainModule)
@@ -138,13 +139,11 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
 
   // Reduce thread count to minimize memory overhead per thread
   // NOTE: DuckDB-WASM may not support thread configuration (compiled without threads)
-  // Wrap in try-catch to prevent initialization failure
+  // Silently skip - this is expected and doesn't affect functionality
   try {
     await initConn.query(`SET threads = 2`)
-    console.log('[DuckDB] Thread count set to 2 for browser optimization')
   } catch (err) {
-    // Silently ignore - WASM build doesn't support thread configuration
-    console.log('[DuckDB] Thread configuration not supported in WASM build (expected)')
+    // Silently ignore - WASM build doesn't support thread configuration (expected)
   }
 
   // Set temporary directory for large operations (spilling to disk)

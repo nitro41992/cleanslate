@@ -46,7 +46,11 @@ import {
 import { getBaseColumnName } from './column-versions'
 import type { TimelineCommandType } from '@/types'
 import { toast } from '@/hooks/use-toast'
-import { getMemoryStatus } from '@/lib/duckdb/memory'
+import {
+  getMemoryStatus,
+  getDuckDBMemoryUsage,
+  getEstimatedTableSizes,
+} from '@/lib/duckdb/memory'
 import {
   exportTableToParquet,
   importTableFromParquet,
@@ -245,6 +249,10 @@ export class CommandExecutor implements ICommandExecutor {
           : undefined,
       }
 
+      // Step 3.9: Capture memory state before execution (diagnostic)
+      const memBefore = await getDuckDBMemoryUsage()
+      const tablesBefore = await getEstimatedTableSizes()
+
       // Step 4: Execute
       progress('executing', 40, 'Executing command...')
       const executionResult = await command.execute(batchableContext)
@@ -261,8 +269,52 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // Step 4.3: Memory diagnostic logging (after execution)
+      const memAfter = await getDuckDBMemoryUsage()
+      const tablesAfter = await getEstimatedTableSizes()
+
+      const memoryDelta = memAfter.totalBytes - memBefore.totalBytes
+      const tableCountDelta = tablesAfter.length - tablesBefore.length
+
+      // Calculate per-tag deltas
+      const tagDeltas = Object.keys(memAfter.byTag).map(tag => {
+        const afterMem = memAfter.byTag[tag]?.memoryBytes || 0
+        const beforeMem = memBefore.byTag[tag]?.memoryBytes || 0
+        return {
+          tag,
+          delta: afterMem - beforeMem,
+          before: beforeMem,
+          after: afterMem,
+        }
+      }).filter(t => t.delta !== 0) // Only show tags with changes
+
+      console.log('[Memory Diagnostic]', {
+        command: command.type,
+        tier,
+        memoryDelta: `${(memoryDelta / 1024 / 1024).toFixed(2)} MB`,
+        tableCountDelta,
+        totalBefore: `${(memBefore.totalBytes / 1024 / 1024).toFixed(2)} MB`,
+        totalAfter: `${(memAfter.totalBytes / 1024 / 1024).toFixed(2)} MB`,
+        byTagDelta: tagDeltas.map(t => ({
+          tag: t.tag,
+          delta: `${(t.delta / 1024 / 1024).toFixed(2)} MB`,
+          before: `${(t.before / 1024 / 1024).toFixed(2)} MB`,
+          after: `${(t.after / 1024 / 1024).toFixed(2)} MB`,
+        })),
+      })
+
       // Refresh context with new schema
       const updatedCtx = await refreshTableContext(ctx)
+
+      // Step 4.5: CHECKPOINT after Tier 3 to flush WAL and release buffer pool
+      if (tier === 3) {
+        try {
+          await ctx.db.execute('CHECKPOINT')
+          console.log('[Memory] Checkpointed after Tier 3 operation')
+        } catch (err) {
+          console.warn('[Memory] CHECKPOINT failed (non-fatal):', err)
+        }
+      }
 
       // Step 5: Audit logging
       let auditInfo
@@ -707,6 +759,15 @@ export class CommandExecutor implements ICommandExecutor {
         // Delete based on storage type
         if (snapshot.storageType === 'table' && snapshot.tableName) {
           await dropTable(snapshot.tableName).catch(() => {})
+
+          // VACUUM to reclaim freed space
+          try {
+            const conn = await getConnection()
+            await conn.query('VACUUM')
+            console.log('[Memory] VACUUM after snapshot pruning')
+          } catch (err) {
+            console.warn('[Memory] VACUUM failed (non-fatal):', err)
+          }
         } else if (snapshot.storageType === 'parquet') {
           await deleteParquetSnapshot(snapshot.id)
         }
@@ -809,16 +870,21 @@ export class CommandExecutor implements ICommandExecutor {
       if (tier === 3 && snapshot) {
         // Tier 3 with snapshot - can show deleted/added rows
         // For Parquet snapshots, we can't use them in diff views (must be in-memory)
-        // Fall back to Tier 1 diff view for Parquet snapshots
+        // Skip diff view creation for Parquet snapshots (highlighting still works via affectedRowIds)
         if (snapshot.storageType === 'table' && snapshot.tableName) {
           return await createTier3DiffView(ctx, { ...config, snapshotTable: snapshot.tableName })
         } else {
-          // Parquet snapshot - use Tier 1 diff view (predicate-based)
-          return await createTier1DiffView(ctx, config)
+          // Parquet snapshot - skip diff view (can't reference Parquet in SQL)
+          console.log('[Diff] Skipping diff view for Parquet snapshot (highlighting via row IDs)')
+          return undefined
         }
-      } else {
-        // Tier 1/2 - show modified rows based on predicate
+      } else if (tier === 1) {
+        // Tier 1 - show modified rows using __base columns
         return await createTier1DiffView(ctx, config)
+      } else {
+        // Tier 2 - show modified rows based on predicate (no __base columns)
+        // For now, skip diff view for Tier 2 (can add predicate-based view later)
+        return undefined
       }
     } catch {
       // Diff view creation is non-critical, don't fail the command

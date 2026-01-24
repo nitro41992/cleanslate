@@ -321,7 +321,13 @@ export function createColumnVersionManager(
             await db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
 
             // Check if we need to materialize (expression stack too large)
-            if (versionInfo.expressionStack.length >= COLUMN_MATERIALIZATION_THRESHOLD) {
+            // For large tables (>500k rows), materialize earlier to reduce overhead
+            const countResult = await db.query<{ count: bigint }>(`SELECT COUNT(*) as count FROM ${quoteTable(tableName)}`)
+            const rowCount = Number(countResult[0].count)
+            const threshold = rowCount > 500_000 ? 5 : COLUMN_MATERIALIZATION_THRESHOLD
+
+            if (versionInfo.expressionStack.length >= threshold) {
+              console.log(`[Column Versions] Materializing column "${column}" (${versionInfo.expressionStack.length} transforms, ${rowCount.toLocaleString()} rows)`)
               await materializeColumn(db, tableName, column, versionInfo)
             }
 

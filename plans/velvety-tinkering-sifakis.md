@@ -1,640 +1,428 @@
-# Cold Storage Snapshots: Parquet-Based Undo History
+# RAM Accumulation Investigation: DuckDB-WASM Memory Retention
 
-**Status:** 🎯 ARCHITECTURE UPGRADE - READY TO IMPLEMENT
+**Status:** 🔍 DIAGNOSIS - Post-Parquet Implementation
 **Branch:** `opfs-ux-polish`
 **Date:** January 23, 2026
 
 ## Problem Statement
 
-After successful batching implementation, 1M row datasets work but consume 2.7GB RAM due to in-memory snapshot tables:
+Despite implementing Parquet cold storage snapshots (reducing snapshot RAM from 1.5GB → 5MB), RAM still accumulates to **2.1GB** after just 2 "Standardize Date" operations on a 1M row dataset.
 
-- Base table: ~1.5GB (1M rows × 30 cols)
-- Snapshot 1: ~1.5GB (Pad Zeros)
-- Snapshot 2: ~1.5GB (Standardize Date)
-- Snapshot 3: ~1.5GB (Standardize Date)
+**Expected:**
+- Base table: ~1.5GB
+- 2 Parquet snapshots: ~10MB (2 × 5MB)
+- **Total: ~1.5GB**
 
-**Issue:** Snapshots stored as DuckDB tables (`_cmd_snapshot_...`) live in active memory, limiting scale.
-
-**Solution:** Move snapshots from **RAM (hot storage)** to **OPFS Disk (cold storage)** using Parquet files.
-
----
-
-## Architecture Change: Hot → Cold Snapshot Storage
-
-### Current (Hot Storage)
-```typescript
-// In executor.ts
-private async createSnapshot(ctx: CommandContext): Promise<string> {
-  const snapshotName = `_cmd_snapshot_${ctx.table.id}_${Date.now()}`
-  await duplicateTable(ctx.table.name, snapshotName, true)  // Lives in RAM
-  return snapshotName
-}
-```
-
-**Cost:** ~1.5GB RAM per snapshot
-
-### New (Cold Storage)
-```typescript
-private async createSnapshot(ctx: CommandContext): Promise<SnapshotMetadata> {
-  const snapshotId = `snapshot_${ctx.table.id}_${Date.now()}`
-
-  // For large tables (>500k), use Parquet cold storage
-  if (ctx.table.rowCount > 500_000) {
-    const parquetPath = `snapshots/${snapshotId}.parquet`
-
-    // Export to Parquet in OPFS
-    await this.exportTableToParquet(ctx.table.name, parquetPath)
-
-    return {
-      storageType: 'parquet',
-      path: parquetPath,
-      id: snapshotId
-    }
-  }
-
-  // For small tables (<500k), use in-memory table (fast undo)
-  const snapshotName = `_cmd_snapshot_${ctx.table.id}_${Date.now()}`
-  await duplicateTable(ctx.table.name, snapshotName, true)
-
-  return {
-    storageType: 'table',
-    tableName: snapshotName,
-    id: snapshotId
-  }
-}
-```
-
-**Cost:** ~5MB OPFS disk per snapshot (compressed Parquet)
-
-**Benefit:** **500x memory reduction** (1.5GB → 5MB)
+**Actual:**
+- **RAM usage: 2.1GB** (600MB excess)
 
 ---
 
-## Implementation Plan
+## Root Cause Analysis
 
-### Step 1: Add Snapshot Metadata Types
+### Finding 1: DuckDB-WASM Known Memory Retention Issue
 
-**File:** `src/lib/commands/executor.ts` (top of file)
+**Source:** [GitHub Issue #1904](https://github.com/duckdb/duckdb-wasm/issues/1904) (Oct 2024)
+
+> "Memory usage remains high after executing a query and is not released, even after performing additional operations... It seems that DuckDB frees the memory, but the WASM worker does not."
+
+**Impact:** DuckDB properly frees memory internally, but the **WASM worker heap doesn't shrink**, causing browser-reported RAM to stay elevated.
+
+### Finding 2: Column Versioning Expression Chains
+
+**Location:** `src/lib/commands/column-versions.ts`
+
+For Tier 1 transforms (trim, lowercase, uppercase, etc.), columns are versioned with expression chaining:
+```typescript
+// After 2 transforms on "DateField":
+DateField = STANDARDIZE_DATE(STANDARDIZE_DATE(DateField__base))
+```
+
+Each expression layer may allocate temporary memory during query execution that isn't released by WASM.
+
+### Finding 3: DuckDB Buffer Pool Accumulation
+
+**Location:** `src/lib/duckdb/memory.ts` line 61
 
 ```typescript
-// Add after MAX_SNAPSHOTS_PER_TABLE constant (~line 55)
+SELECT * FROM duckdb_memory()  // Shows memory by component tag
+```
 
-/**
- * Snapshot storage types
- * - table: In-memory DuckDB table (fast undo, high RAM)
- * - parquet: OPFS Parquet file (slow undo, low RAM)
- */
-type SnapshotStorageType = 'table' | 'parquet'
+DuckDB's buffer pool caches data pages in memory. Even after CHECKPOINT, the WASM heap may not shrink because:
+1. WASM linear memory only grows, never shrinks (by design)
+2. DuckDB marks blocks as free but WASM doesn't release to browser
 
-/**
- * Metadata for a snapshot, tracking its storage location
- */
-interface SnapshotMetadata {
-  id: string
-  storageType: SnapshotStorageType
-  tableName?: string  // For 'table' storage
-  path?: string       // For 'parquet' storage
-}
+### Finding 4: Diff Views Already Protected
 
-// Update TableCommandTimeline interface (line 65)
-interface TableCommandTimeline {
-  commands: TimelineCommandRecord[]
-  position: number
-  snapshots: Map<number, SnapshotMetadata>  // Changed from Map<number, string>
-  snapshotTimestamps: Map<number, number>
-  originalSnapshot?: SnapshotMetadata       // Changed from string
+**Status:** ✅ No Issue
+
+Diff views are properly dropped immediately after use (executor.ts:303-311).
+
+### Finding 5: Audit Details Already Pruned
+
+**Status:** ✅ No Issue
+
+Audit log pruned to 100 entries on initialization.
+
+---
+
+## Diagnostic Plan
+
+### Phase 1: Memory Profiling
+
+**Goal:** Identify exact source of 600MB excess RAM
+
+**Actions:**
+1. **Query `duckdb_memory()` before/after each operation**
+   - Track memory by component (buffer_manager, column_data, etc.)
+   - Identify which tag accumulates 600MB
+
+2. **Query `duckdb_tables()` to list all tables**
+   - Check for orphaned staging tables, diff views, or snapshot tables
+   - Verify Parquet snapshots aren't duplicating as in-memory tables
+
+3. **Log column versioning state**
+   - Check if expression chains are creating excessive temporary allocations
+   - Monitor `__base` column accumulation
+
+**Implementation:**
+```typescript
+// Add diagnostic logging in executor.ts after command execution:
+const memBefore = await getDuckDBMemoryUsage()
+const tablesBefore = await getEstimatedTableSizes()
+
+// ... execute command ...
+
+const memAfter = await getDuckDBMemoryUsage()
+const tablesAfter = await getEstimatedTableSizes()
+
+console.log('[Memory Diagnostic]', {
+  memoryDelta: memAfter.totalBytes - memBefore.totalBytes,
+  tableCountDelta: tablesAfter.length - tablesBefore.length,
+  byTagDelta: Object.keys(memAfter.byTag).map(tag => ({
+    tag,
+    delta: memAfter.byTag[tag].memoryBytes - (memBefore.byTag[tag]?.memoryBytes || 0)
+  }))
+})
+```
+
+---
+
+### Phase 2: Aggressive Memory Reclamation Strategy
+
+**Goal:** Force DuckDB to release memory where possible
+
+#### Strategy A: Aggressive Checkpointing
+
+**Current:** CHECKPOINT every 5 batches (250k rows)
+
+**Proposed:** CHECKPOINT after every Tier 3 operation
+
+```typescript
+// In executor.ts after Tier 3 command execution:
+if (tier === 3) {
+  const conn = await getConnection()
+  await conn.query('CHECKPOINT')
+  console.log('[Memory] Checkpointed after Tier 3 operation')
 }
 ```
 
-### Step 2: Add Parquet Export/Import Utilities
+**Rationale:** Flushes WAL and potentially releases buffer pool pages
 
-**New File:** `src/lib/opfs/snapshot-storage.ts`
+#### Strategy B: Force Column Materialization Earlier
+
+**Current:** Materialize after 10 Tier 1 transforms
+
+**Proposed:** Materialize after 5 transforms for large tables (>500k rows)
 
 ```typescript
-/**
- * OPFS Parquet Snapshot Storage
- *
- * Provides cold storage for large table snapshots using Parquet compression.
- * Reduces RAM usage from ~1.5GB (in-memory table) to ~5MB (compressed file).
- *
- * CRITICAL: Uses DuckDB's opfs:// protocol to write directly to OPFS disk,
- * bypassing JavaScript heap entirely. This prevents OOM crashes.
- */
+// In column-versions.ts:
+const threshold = ctx.table.rowCount > 500_000 ? 5 : 10
 
-import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
+if (versionInfo.expressionStack.length >= threshold) {
+  await materializeColumn(...)
+}
+```
 
-/**
- * Export a table to Parquet file in OPFS
- *
- * Uses DuckDB's COPY TO with opfs:// protocol for direct disk writes.
- * Data never touches JavaScript heap - flows from WASM to OPFS disk.
- *
- * @param conn - Active DuckDB connection (for transaction consistency)
- * @param tableName - Source table to export
- * @param snapshotId - Unique snapshot identifier (e.g., "snapshot_abc_1234567890")
- *
- * Performance: ~2-3 seconds for 1M rows (includes compression)
- */
-export async function exportTableToParquet(
-  conn: AsyncDuckDBConnection,
-  tableName: string,
-  snapshotId: string
-): Promise<void> {
-  const parquetPath = `opfs://cleanslate/snapshots/${snapshotId}.parquet`
+**Rationale:** Reduces expression chain complexity, preventing deep temporary allocations
 
-  console.log(`[Snapshot] Exporting ${tableName} to OPFS...`)
+#### Strategy C: Manual VACUUM After Snapshot Pruning
 
-  // Direct write to OPFS - data stays in WASM layer
-  // ZSTD compression: ~10x reduction (1.5GB → 150MB)
+**Location:** executor.ts `pruneOldestSnapshot()`
+
+```typescript
+// After dropping snapshot table:
+await dropTable(snapshot.tableName!)
+await conn.query('VACUUM')  // Force reclaim freed space
+```
+
+**Rationale:** VACUUM reclaims space from deleted tables
+
+#### Strategy D: Clear Result Sets Explicitly
+
+**Issue:** Query results may hold references in WASM
+
+**Proposed:** Explicitly drop large result sets
+
+```typescript
+// After capturing audit details:
+const result = await conn.query(`SELECT ...`)
+const data = result.toArray()
+// Process data...
+result = null  // Clear reference
+```
+
+---
+
+### Phase 3: Alternative - Streaming Operations
+
+**Goal:** Avoid loading full result sets into memory
+
+#### Streaming Audit Capture (DEPRECATED - SEE WARNING)
+
+**⚠️ CRITICAL WARNING:** Do NOT pull data into JavaScript memory only to insert it back. This doubles memory pressure (DuckDB RAM + JS Heap).
+
+**WRONG Approach (Memory Inefficient):**
+```typescript
+// ❌ BAD: Materializes data in JS heap
+const chunk = await conn.query(`SELECT ... LIMIT 10000 OFFSET ${offset}`)
+const data = chunk.toArray()  // ❌ Loads into JS memory
+// Insert data back...
+```
+
+**CORRECT Approach (Pure SQL):**
+```typescript
+// ✅ GOOD: Data never touches JS heap
+for (let offset = 0; offset < totalRows; offset += CHUNK_SIZE) {
   await conn.query(`
-    COPY "${tableName}" TO '${parquetPath}'
-    (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-  `)
-
-  console.log(`[Snapshot] Exported to ${parquetPath}`)
-}
-
-/**
- * Import a table from Parquet file in OPFS
- *
- * Uses DuckDB's read_parquet() to load directly from OPFS.
- * Data never touches JavaScript heap - flows from OPFS disk to WASM.
- *
- * @param conn - Active DuckDB connection (for transaction consistency)
- * @param snapshotId - Unique snapshot identifier
- * @param targetTableName - Name for the restored table
- *
- * Performance: ~2-5 seconds for 1M rows (includes decompression)
- */
-export async function importTableFromParquet(
-  conn: AsyncDuckDBConnection,
-  snapshotId: string,
-  targetTableName: string
-): Promise<void> {
-  const parquetPath = `opfs://cleanslate/snapshots/${snapshotId}.parquet`
-
-  console.log(`[Snapshot] Importing from ${parquetPath}...`)
-
-  // Create table from Parquet - direct read from OPFS
-  await conn.query(`
-    CREATE OR REPLACE TABLE "${targetTableName}" AS
-    SELECT * FROM read_parquet('${parquetPath}')
-  `)
-
-  console.log(`[Snapshot] Restored ${targetTableName} from OPFS`)
-}
-
-/**
- * Delete a Parquet snapshot from OPFS
- *
- * Uses File System Access API to directly remove file.
- */
-export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
-  try {
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    await snapshotsDir.removeEntry(`${snapshotId}.parquet`)
-
-    console.log(`[Snapshot] Deleted ${snapshotId}.parquet`)
-  } catch (err) {
-    console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
-  }
-}
-
-/**
- * List all Parquet snapshots in OPFS
- */
-export async function listParquetSnapshots(): Promise<string[]> {
-  try {
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    const entries: string[] = []
-
-    for await (const [name, _handle] of (snapshotsDir as any).entries()) {
-      if (name.endsWith('.parquet')) {
-        entries.push(name.replace('.parquet', ''))
-      }
-    }
-
-    return entries
-  } catch {
-    return []
-  }
-}
-```
-
-**Key Implementation Details:**
-
-1. **Direct OPFS Protocol:** `opfs://cleanslate/snapshots/` path writes directly to OPFS without JavaScript intermediary
-2. **Connection Parameter:** Accepts `AsyncDuckDBConnection` to ensure transaction consistency (critical for undo/redo)
-3. **No JavaScript Heap Usage:** Data flows WASM → OPFS (export) and OPFS → WASM (import), never through JS heap
-4. **Compression:** ZSTD provides ~10x reduction (1.5GB → 150MB) with fast decompression
-
-**Prerequisites:**
-- DuckDB initialized with OPFS support (already done in app)
-- OPFS directory `cleanslate/snapshots/` created on first use (auto-created by DuckDB)
-
-### Step 3: Modify `createSnapshot()`
-
-**File:** `src/lib/commands/executor.ts` (line 627)
-
-**Current:**
-```typescript
-private async createSnapshot(ctx: CommandContext): Promise<string> {
-  const snapshotName = `_cmd_snapshot_${ctx.table.id}_${Date.now()}`
-  await duplicateTable(ctx.table.name, snapshotName, true)
-  return snapshotName
-}
-```
-
-**New:**
-```typescript
-private async createSnapshot(ctx: CommandContext): Promise<SnapshotMetadata> {
-  const timestamp = Date.now()
-  const snapshotId = `snapshot_${ctx.table.id}_${timestamp}`
-
-  // For large tables (>500k rows), use Parquet cold storage
-  if (ctx.table.rowCount > 500_000) {
-    console.log(`[Snapshot] Creating Parquet snapshot for ${ctx.table.rowCount.toLocaleString()} rows...`)
-
-    await exportTableToParquet(ctx.table.name, snapshotId)
-
-    return {
-      id: snapshotId,
-      storageType: 'parquet',
-      path: `${snapshotId}.parquet`
-    }
-  }
-
-  // For small tables (<500k rows), use in-memory table (fast undo)
-  const snapshotName = `_cmd_snapshot_${ctx.table.id}_${timestamp}`
-  await duplicateTable(ctx.table.name, snapshotName, true)
-
-  return {
-    id: snapshotId,
-    storageType: 'table',
-    tableName: snapshotName
-  }
-}
-```
-
-### Step 4: Modify `restoreFromSnapshot()`
-
-**File:** `src/lib/commands/executor.ts` (line 702)
-
-**Current:**
-```typescript
-private async restoreFromSnapshot(
-  tableName: string,
-  snapshotName: string
-): Promise<void> {
-  const exists = await tableExists(snapshotName)
-  if (!exists) {
-    throw new Error(`Snapshot ${snapshotName} not found`)
-  }
-
-  // Drop current table and duplicate from snapshot
-  await dropTable(tableName)
-  await duplicateTable(snapshotName, tableName, true)
-}
-```
-
-**New:**
-```typescript
-private async restoreFromSnapshot(
-  tableName: string,
-  snapshot: SnapshotMetadata
-): Promise<void> {
-  if (snapshot.storageType === 'table') {
-    // Hot storage: Instant restore from in-memory table
-    const exists = await tableExists(snapshot.tableName!)
-    if (!exists) {
-      throw new Error(`Snapshot table ${snapshot.tableName} not found`)
-    }
-
-    await dropTable(tableName)
-    await duplicateTable(snapshot.tableName!, tableName, true)
-
-  } else if (snapshot.storageType === 'parquet') {
-    // Cold storage: Restore from OPFS Parquet file
-    console.log(`[Snapshot] Restoring from Parquet: ${snapshot.path}`)
-
-    await dropTable(tableName)
-    await importTableFromParquet(snapshot.id, tableName)
-
-    console.log(`[Snapshot] Restored ${tableName} from cold storage`)
-  } else {
-    throw new Error(`Unknown snapshot storage type: ${snapshot.storageType}`)
-  }
-}
-```
-
-### Step 5: Modify `pruneOldestSnapshot()`
-
-**File:** `src/lib/commands/executor.ts` (line 637)
-
-**Current:**
-```typescript
-private async pruneOldestSnapshot(timeline: TableCommandTimeline): Promise<void> {
-  if (timeline.snapshots.size < MAX_SNAPSHOTS_PER_TABLE) return
-
-  // Find oldest by timestamp
-  let oldestPosition = -1
-  let oldestTimestamp = Infinity
-
-  for (const [pos, ts] of timeline.snapshotTimestamps) {
-    if (ts < oldestTimestamp) {
-      oldestTimestamp = ts
-      oldestPosition = pos
-    }
-  }
-
-  if (oldestPosition >= 0) {
-    const snapshotName = timeline.snapshots.get(oldestPosition)
-    if (snapshotName) {
-      // Drop the snapshot table
-      await dropTable(snapshotName).catch(() => {})
-      timeline.snapshots.delete(oldestPosition)
-      timeline.snapshotTimestamps.delete(oldestPosition)
-
-      // Mark the command as undoDisabled
-      const command = timeline.commands[oldestPosition]
-      if (command) {
-        command.undoDisabled = true
-      }
-    }
-  }
-}
-```
-
-**New:**
-```typescript
-private async pruneOldestSnapshot(timeline: TableCommandTimeline): Promise<void> {
-  if (timeline.snapshots.size < MAX_SNAPSHOTS_PER_TABLE) return
-
-  // Find oldest by timestamp
-  let oldestPosition = -1
-  let oldestTimestamp = Infinity
-
-  for (const [pos, ts] of timeline.snapshotTimestamps) {
-    if (ts < oldestTimestamp) {
-      oldestTimestamp = ts
-      oldestPosition = pos
-    }
-  }
-
-  if (oldestPosition >= 0) {
-    const snapshot = timeline.snapshots.get(oldestPosition)
-    if (snapshot) {
-      // Delete based on storage type
-      if (snapshot.storageType === 'table') {
-        await dropTable(snapshot.tableName!).catch(() => {})
-      } else if (snapshot.storageType === 'parquet') {
-        await deleteParquetSnapshot(snapshot.id)
-      }
-
-      timeline.snapshots.delete(oldestPosition)
-      timeline.snapshotTimestamps.delete(oldestPosition)
-
-      // Mark the command as undoDisabled
-      const command = timeline.commands[oldestPosition]
-      if (command) {
-        command.undoDisabled = true
-      }
-    }
-  }
-}
-```
-
-### Step 6: Update All Callsites
-
-**Files to update:**
-1. `executor.ts` line 171 - `snapshotTableName = await this.createSnapshot(ctx)` → `const snapshotMetadata = await this.createSnapshot(ctx)`
-2. `executor.ts` line 235 - `await this.restoreFromSnapshot(ctx.table.name, snapshotTableName)` → `await this.restoreFromSnapshot(ctx.table.name, snapshotMetadata)`
-3. `executor.ts` line 308 - Update `recordTimelineCommand()` signature to accept `SnapshotMetadata`
-4. `executor.ts` line 443 - `await this.restoreFromSnapshot(ctx.table.name, commandRecord.snapshotTable)` → Accept metadata
-5. Update all references to `timeline.originalSnapshot` from `string` to `SnapshotMetadata`
-
-### Step 7: Fix Undo for Batched Tier 1 Commands
-
-**File:** `src/lib/commands/executor.ts` (line 418)
-
-**Add snapshot fallback for batched commands:**
-
-```typescript
-case 1:
-  // Tier 1: Column versioning undo OR snapshot if batched
-  if (commandRecord.backupColumn && commandRecord.affectedColumns?.[0]) {
-    const versionStore: ColumnVersionStore = { versions: ctx.columnVersions }
-    const versionManager = createColumnVersionManager(ctx.db, versionStore)
-    const result = await versionManager.undoVersion(
-      ctx.table.name,
-      commandRecord.affectedColumns[0]
+    INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value)
+    SELECT
+      gen_random_uuid(),
+      '${auditEntryId}',
+      ROW_NUMBER() OVER () + ${offset},
+      '${columnName}',
+      previous_value,
+      new_value
+    FROM (
+      SELECT ... FROM table
+      WHERE ...
+      LIMIT ${CHUNK_SIZE} OFFSET ${offset}
     )
-    if (!result.success) {
-      return { success: false, error: result.error }
-    }
-  } else if (commandRecord.snapshotTable) {
-    // Fallback to snapshot if no backup column (batched execution)
-    // Large batched operations use Parquet cold storage
-    await this.restoreFromSnapshot(ctx.table.name, commandRecord.snapshotTable)
-  } else {
-    return {
-      success: false,
-      error: 'Undo unavailable: No backup column or snapshot found'
-    }
-  }
-  break
-```
-
-### Step 8: Fix Diff NaN Error
-
-**File:** `src/lib/diff-engine.ts` (line 115)
-
-**Replace:**
-```typescript
-// Check available memory (70% threshold for safety)
-const memStatus = await getMemoryStatus()
-const availableBytes = memStatus.limitBytes - memStatus.usedBytes
-const threshold = availableBytes * 0.7
-```
-
-**With:**
-```typescript
-// Use 2GB fallback to avoid NaN errors from memory detection
-const FALLBACK_LIMIT_BYTES = 2 * 1024 * 1024 * 1024 // 2GB
-let availableBytes = FALLBACK_LIMIT_BYTES
-
-try {
-  const memStatus = await getMemoryStatus()
-  if (memStatus.limitBytes > 0 && !isNaN(memStatus.limitBytes)) {
-    availableBytes = Math.max(
-      memStatus.limitBytes - memStatus.usedBytes,
-      FALLBACK_LIMIT_BYTES * 0.3 // Minimum 600MB available
-    )
-  }
-} catch (err) {
-  console.warn('[Diff] Memory status unavailable, using 2GB fallback:', err)
+  `)
 }
-
-const threshold = availableBytes * 0.7
 ```
+
+**Verdict:** Tier 1 reduction (50k → 10k) likely makes streaming unnecessary. Only implement if diagnostic logging shows audit queries are the bottleneck.
 
 ---
 
-## Critical Blocker: DuckDB Virtual Filesystem Access
+### Phase 4: WASM Worker Recreation (Nuclear Option)
 
-The Parquet export/import approach requires accessing DuckDB-WASM's virtual filesystem to:
-1. Export table to `/tmp/snapshot.parquet` in virtual FS
-2. Read the Parquet bytes from virtual FS
-3. Write bytes to OPFS
-4. Reverse for import: Read from OPFS → Write to virtual FS → Load table
+**Goal:** Force WASM heap reset by recreating worker
 
-**Investigation needed:**
-- Does DuckDB-WASM expose a filesystem API (e.g., `db.fs.readFile()`)?
-- Can we use `COPY TO` with OPFS paths directly?
-- Alternative: Export via `SELECT * FROM table` and manually write Parquet (complex)
+**When:** After Tier 3 operations on large tables (>500k rows)
 
-**Fallback if no FS access:**
-- Use CSV export instead of Parquet (larger files, ~500MB vs 150MB)
-- Still achieves cold storage goal (disk vs RAM)
+```typescript
+// In executor.ts after Tier 3 command:
+if (ctx.table.rowCount > 500_000) {
+  // Flush to OPFS first
+  await flushDuckDB(true)  // immediate
+
+  // Recreate DuckDB connection (drops WASM worker)
+  await recreateDuckDBConnection()
+
+  console.log('[Memory] Recreated WASM worker to release memory')
+}
+```
+
+**Implementation:**
+```typescript
+// In duckdb/index.ts:
+export async function recreateDuckDBConnection(): Promise<void> {
+  if (conn) {
+    await conn.close()
+    conn = null
+  }
+
+  // New connection will create new WASM worker with fresh heap
+  conn = await db!.connect()
+}
+```
+
+**Risk:** High - may cause data loss if not flushed properly
+
+---
+
+## Sources (Web Research)
+
+- [Memory not released in DuckDB-WASM after query execution · Issue #1904](https://github.com/duckdb/duckdb-wasm/issues/1904)
+- [Memory Management in DuckDB](https://duckdb.org/2024/07/09/memory-management)
+- [Out-of-Core Processing · DuckDB-WASM Discussion #1322](https://github.com/duckdb/duckdb-wasm/discussions/1322)
+
+---
+
+## Recommended Approach
+
+### Tier 1: Low-Risk Improvements (Implement First)
+
+1. ✅ **Reduce audit detail threshold: 50,000 → 10,000 rows**
+   - Location: `audit-capture.ts:24` - Change `ROW_DETAIL_THRESHOLD`
+   - **Impact:** 80% reduction in audit query processing overhead
+   - **Storage:** ~5-10MB saved (only stores modified column, not all 30)
+   - **CPU/RAM during query:** Significant reduction (fewer rows to materialize/insert)
+   - **No functional loss:** Export already limits to 10k rows (AuditDetailModal.tsx:122)
+
+2. ✅ **Add memory diagnostic logging** - Identify exact source via `duckdb_memory()`
+   - **CRITICAL:** Do not skip - confirms which component (buffer_manager, column_data) is accumulating
+
+3. ✅ **CHECKPOINT after Tier 3 operations** - Flush WAL immediately
+4. ✅ **Reduce column materialization threshold** for large tables (10 → 5)
+5. ✅ **VACUUM after snapshot pruning** - Reclaim freed space
+
+### Tier 2: Medium-Risk Optimizations (If Tier 1 Insufficient)
+
+5. ⚠️ **Stream audit capture in chunks** - Reduce peak memory
+6. ⚠️ **Clear large result sets explicitly** - Force GC hints
+
+### Tier 3: High-Risk Nuclear Option (Last Resort)
+
+7. 🚨 **WASM worker recreation** - Force heap reset (data loss risk)
+
+---
+
+## Expected Outcomes (Revised - Conservative Estimate)
+
+**After Tier 1 Improvements:**
+- **Audit threshold reduction (50k → 10k):** 80% less query processing overhead
+  - **Storage:** ~10-20MB saved (only stores modified column, not all 30)
+  - **Processing:** Fewer rows to materialize during `INSERT INTO SELECT` = less WASM heap expansion
+  - **Verdict:** The processing overhead reduction is the real win, not just storage
+- CHECKPOINT after Tier 3: May reduce WAL buffer accumulation (~50-100MB)
+- Earlier materialization: May reduce expression chain overhead (~50-100MB)
+- VACUUM after pruning: May reclaim freed table space (~20-50MB)
+
+**Total Expected Reduction:** 120-220MB → **Target RAM: 1.88-1.98GB** (down from 2.1GB)
+
+**Breakdown for 2 "Standardize Date" operations:**
+- Before: 2.1GB total
+- Base table: 1.5GB (unchanged)
+- 2 Parquet snapshots: ~10MB (unchanged)
+- **Audit captures (storage):** ~10-20MB (only modified column, 2 ops)
+- **Buffer pool / WAL accumulation:** ~500-600MB (the actual culprit)
+
+**Key Insight:** WASM heap doesn't shrink, so even temporary allocations (buffer pool, expression evaluation) expand it. Tier 1 fixes minimize those temporary spikes.
+
+**Limitation:** WASM heap retention is architectural. We can minimize growth but can't force shrinkage without recreating the worker.
 
 ---
 
 ## Verification Plan
 
-### Test 1: Small Table (<500k rows) - Should Use Hot Storage
+### Test 1: Diagnostic Logging
 
-1. Load 100k row CSV
-2. Run Tier 3 transformation (creates snapshot)
-3. Verify: Console shows "Creating in-memory snapshot" (not Parquet)
-4. Click Undo
-5. Verify: Instant undo (<100ms)
+1. Enable memory diagnostic logging in executor.ts
+2. Run 2 Standardize Date operations on 1M row dataset
+3. Capture console logs showing:
+   - Memory by tag before/after
+   - Table count before/after
+   - Delta breakdown
 
-### Test 2: Large Table (>500k rows) - Should Use Cold Storage
+### Test 2: With Tier 1 Improvements
 
-1. Load 1M row CSV
-2. Run 3 Tier 3 transformations (Pad Zeros, Standardize Date ×2)
-3. Verify: Console shows "Creating Parquet snapshot for 1,010,000 rows"
-4. Check RAM usage: Should be **<1GB** (vs 2.7GB before)
-5. Click Undo (3 times)
-6. Verify: Each undo takes 2-5 seconds (loading from disk)
-7. Verify: Data reverts correctly
-8. Verify: No "undefined column" errors
+1. Implement CHECKPOINT, materialization threshold, VACUUM
+2. Run same 2 operations
+3. Compare RAM usage vs baseline (2.1GB)
+4. Target: <1.9GB
 
-### Test 3: Diff After Undo
+### Test 3: Stress Test (10 Operations)
 
-1. After Test 2, click Diff button
-2. Verify: No NaN errors
-3. Verify: Diff completes successfully
-
-### Expected Console Logs
-
-```
-[Executor] Large operation (1,010,000 rows), using batch mode
-[Snapshot] Creating Parquet snapshot for 1,010,000 rows...
-[Snapshot] Exported to OPFS: snapshot_abc123_1234567890.parquet (142MB)
-[Executor] Undo: Restoring from Parquet snapshot...
-[Snapshot] Restoring from Parquet: snapshot_abc123_1234567890.parquet
-[Snapshot] Restored my_table from cold storage (2.3s)
-```
+1. Run 10 Tier 3 operations in sequence
+2. Monitor RAM growth rate
+3. Verify snapshot pruning activates
+4. Ensure RAM plateaus (not linear growth)
 
 ---
 
-## Files to Create/Modify
+## Files to Modify
 
-### New Files
-1. **`src/lib/opfs/snapshot-storage.ts`** (~200 lines)
-   - `exportTableToParquet()`
-   - `importTableFromParquet()`
-   - `deleteParquetSnapshot()`
-   - Virtual FS access helpers
+### Tier 1 (Required - Low Risk)
 
-### Modified Files
-1. **`src/lib/commands/executor.ts`**
-   - Add `SnapshotMetadata` types (~15 lines)
-   - Modify `createSnapshot()` (~25 lines)
-   - Modify `restoreFromSnapshot()` (~20 lines)
-   - Modify `pruneOldestSnapshot()` (~10 lines)
-   - Fix Tier 1 undo fallback (~10 lines)
-   - Update callsites (~10 lines)
-   - **Total:** ~90 lines changed
+1. **src/lib/commands/audit-capture.ts** ⭐ **CRITICAL - BIGGEST IMPACT**
+   - Change `ROW_DETAIL_THRESHOLD` from 50,000 → 10,000 (1 line)
+   - Update comment to reflect new threshold
+   - **Expected savings:** ~400MB for 2 operations
 
-2. **`src/lib/diff-engine.ts`**
-   - Fix NaN error with fallback (~15 lines)
+2. **src/lib/commands/executor.ts**
+   - Add memory diagnostic logging (~30 lines)
+   - Add CHECKPOINT after Tier 3 execution (~5 lines)
+   - Add VACUUM after snapshot pruning (~2 lines)
 
-**Total:** 1 new file + 2 modified files, ~300 lines
+3. **src/lib/commands/column-versions.ts**
+   - Reduce materialization threshold for large tables (>500k: 10 → 5) (~5 lines)
 
----
+**Tier 1 Total:** 3 files, ~45 lines
 
-## Performance Impact
+### Tier 2 (Optional - If Tier 1 Insufficient)
 
-### Memory Reduction
-| Dataset | Before (Hot Storage) | After (Cold Storage) | Savings |
-|---------|---------------------|----------------------|---------|
-| 1M rows × 30 cols | 2.7GB RAM | **<1GB RAM** | **1.7GB** |
-| 3 snapshots | 4.5GB RAM | **<1GB RAM** | **3.5GB** |
+4. **src/lib/audit-capture.ts**
+   - Implement streaming audit capture (~50 lines)
 
-### Undo Speed Trade-off
-| Storage Type | Undo Time | Memory Cost |
-|--------------|-----------|-------------|
-| Hot (in-memory table) | <100ms | 1.5GB |
-| Cold (OPFS Parquet) | 2-5 seconds | 5MB |
+### Tier 3 (Nuclear Option - Last Resort)
 
-**Acceptable trade-off:** For datasets >500k rows, 2-5 second undo is reasonable to enable unlimited scale.
+5. **src/lib/duckdb/index.ts**
+   - Implement recreateDuckDBConnection() (~20 lines)
 
 ---
 
 ## Risk Assessment
 
-### High Risk
-- **DuckDB virtual FS access** - May not be exposed by DuckDB-WASM
-  - **Mitigation:** Use CSV export fallback if Parquet not feasible
+### Tier 1: Very Low Risk
+- Diagnostic logging: Read-only queries
+- CHECKPOINT: Safe, standard DuckDB operation
+- VACUUM: Safe after table deletion
+- Materialization threshold: Already tested pattern
 
-### Medium Risk
-- **Parquet write performance** - May be slower than expected
-  - **Mitigation:** Show progress indicator during snapshot creation
+### Tier 2: Low-Medium Risk
+- Streaming audit: More complex, may slow down operations
+- Explicit GC hints: May not work, no downside
 
-### Low Risk
-- **OPFS browser compatibility** - Already used elsewhere in app
-- **Type signature changes** - Confined to executor.ts
+### Tier 3: High Risk
+- Worker recreation: Data loss if OPFS flush fails
+- Only use if Tier 1/2 insufficient
 
 ---
 
-## Rollback Plan
+## Open Questions
 
-If critical issues arise:
-1. Revert to `string` snapshot type (remove `SnapshotMetadata`)
-2. Keep hot storage only (in-memory tables)
-3. Restore old `createSnapshot()` / `restoreFromSnapshot()` implementations
+1. **Which duckdb_memory() tag is accumulating?**
+   - Need diagnostic logging to identify
 
-**Fast rollback:** All changes confined to 2 files, single commit.
+2. **Are Parquet snapshots accidentally duplicated as in-memory tables?**
+   - Check via `duckdb_tables()` query
+
+3. **Is the 600MB from expression chain temporary allocations?**
+   - Monitor before/after column versioning operations
+
+4. **Can we force WASM heap compaction without worker recreation?**
+   - Research WASM linear memory compaction techniques
 
 ---
 
 ## Next Steps
 
-1. **Investigate DuckDB-WASM virtual filesystem API** (30 min)
-   - Check DuckDB-WASM documentation
-   - Test if `COPY TO '/tmp/file.parquet'` works
-   - Determine if we can read bytes from virtual FS
+**Phase 1: Diagnosis (30 min)**
+1. Implement memory diagnostic logging
+2. Run test scenario
+3. Identify exact source of 600MB
 
-2. **Implement snapshot-storage.ts** (2 hours)
-   - Export/import functions
-   - OPFS file management
-   - Error handling
+**Phase 2: Implement Tier 1 Fixes (1 hour)**
+4. Add CHECKPOINT after Tier 3
+5. Reduce materialization threshold
+6. Add VACUUM after pruning
 
-3. **Update executor.ts** (2 hours)
-   - Modify snapshot methods
-   - Update type signatures
-   - Fix callsites
+**Phase 3: Verification (30 min)**
+7. Test with 1M row dataset
+8. Verify RAM reduction
+9. Stress test with 10 operations
 
-4. **Testing** (2 hours)
-   - Verify hot/cold storage decision
-   - Test undo on 1M rows
-   - Validate memory usage
-   - Test diff functionality
-
-**Total Estimate:** 6-8 hours implementation + testing
+**Total Time:** 2 hours
