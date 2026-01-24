@@ -698,12 +698,16 @@ export async function duplicateTable(
       CREATE TABLE "${targetName}" AS
       SELECT gen_random_uuid() as "${CS_ID_COLUMN}", ${userCols.join(', ')}
       FROM "${sourceName}"
+      ORDER BY "${CS_ID_COLUMN}"
     `)
   } else {
     // Preserve _cs_id values (for timeline snapshots) or source has no _cs_id
+    // ORDER BY ensures deterministic row ordering for snapshot consistency
+    const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
     await connection.query(`
       CREATE TABLE "${targetName}" AS
       SELECT * FROM "${sourceName}"
+      ${orderClause}
     `)
   }
 

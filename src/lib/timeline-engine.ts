@@ -81,9 +81,8 @@ export async function createTimelineOriginalSnapshot(
     const conn = await getConnection()
     const snapshotId = `original_${timelineId}`
 
-    // Export to OPFS Parquet
+    // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
     await exportTableToParquet(db, conn, tableName, snapshotId)
-    await db.dropFile(`${snapshotId}.parquet`)  // Critical: release handle
 
     // Return special prefix to signal Parquet storage (keeps store type as string)
     return `parquet:${snapshotId}`
@@ -148,9 +147,8 @@ export async function createStepSnapshot(
     const conn = await getConnection()
     const snapshotId = `snapshot_${timelineId}_${stepIndex}`
 
-    // Export to OPFS Parquet
+    // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
     await exportTableToParquet(db, conn, tableName, snapshotId)
-    await db.dropFile(`${snapshotId}.parquet`)  // Critical: release handle
 
     // Register in store with parquet: prefix
     const tableId = findTableIdByTimeline(timelineId)
