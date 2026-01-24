@@ -345,3 +345,55 @@ export async function listParquetSnapshots(): Promise<string[]> {
     return []
   }
 }
+
+/**
+ * Scans the snapshots directory and deletes any 0-byte (corrupt) files.
+ * This is a self-healing step to recover from failed writes or browser crashes.
+ *
+ * Common causes of 0-byte files:
+ * - Browser crash during Parquet export
+ * - OPFS permission denied mid-write
+ * - Out of disk quota during write
+ *
+ * Call this once at application startup to ensure clean state.
+ */
+export async function cleanupCorruptSnapshots(): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory()
+
+    // Use 'create: false' to avoid creating the dir if it doesn't exist
+    let appDir: FileSystemDirectoryHandle
+    try {
+      appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    } catch {
+      return // Directory doesn't exist, nothing to clean
+    }
+
+    let snapshotsDir: FileSystemDirectoryHandle
+    try {
+      snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    } catch {
+      return // Snapshots directory doesn't exist, nothing to clean
+    }
+
+    let deletedCount = 0
+
+    // Iterate over all files in the snapshots directory
+    for await (const [name, handle] of snapshotsDir.entries()) {
+      if (handle.kind === 'file' && name.endsWith('.parquet')) {
+        const file = await handle.getFile()
+        if (file.size === 0) {
+          console.warn(`[Snapshot] Found corrupt 0-byte file: ${name}. Deleting...`)
+          await snapshotsDir.removeEntry(name)
+          deletedCount++
+        }
+      }
+    }
+
+    if (deletedCount > 0) {
+      console.log(`[Snapshot] Cleanup complete. Removed ${deletedCount} corrupt file(s).`)
+    }
+  } catch (error) {
+    console.warn('[Snapshot] Failed to run corrupt file cleanup:', error)
+  }
+}

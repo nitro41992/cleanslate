@@ -188,6 +188,18 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       // Cleanup temp table if we imported from Parquet
       if (tempOriginalTableName) {
         await dropTable(tempOriginalTableName)
+
+        // VACUUM to immediately reclaim RAM from dropped temp table
+        // Without this, dead rows stay in memory (~1.5GB for 1M row table)
+        try {
+          const { execute } = await import('@/lib/duckdb')
+          const vacuumStart = performance.now()
+          await execute('VACUUM')
+          const vacuumTime = performance.now() - vacuumStart
+          console.log(`[Diff] VACUUM after temp table drop completed in ${vacuumTime.toFixed(0)}ms`)
+        } catch (err) {
+          console.warn('[Diff] VACUUM failed (non-fatal):', err)
+        }
       }
       setIsComparing(false)
     }
@@ -197,6 +209,20 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     // Cleanup current temp table
     if (diffTableName) {
       await cleanupDiffTable(diffTableName, storageType || 'memory')
+
+      // VACUUM to reclaim RAM from dropped diff table
+      // Without this, dead rows stay in memory (can be 100s of MB for large diffs)
+      if (storageType === 'memory') {
+        try {
+          const { execute } = await import('@/lib/duckdb')
+          const vacuumStart = performance.now()
+          await execute('VACUUM')
+          const vacuumTime = performance.now() - vacuumStart
+          console.log(`[Diff] VACUUM after cleanup completed in ${vacuumTime.toFixed(0)}ms`)
+        } catch (err) {
+          console.warn('[Diff] VACUUM failed (non-fatal):', err)
+        }
+      }
     }
     clearResults()
     setKeyColumns([])
@@ -206,6 +232,20 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     // Cleanup temp table on close
     if (diffTableName) {
       await cleanupDiffTable(diffTableName, storageType || 'memory')
+
+      // VACUUM to reclaim RAM from dropped diff table
+      // Without this, dead rows stay in memory (can be 100s of MB for large diffs)
+      if (storageType === 'memory') {
+        try {
+          const { execute } = await import('@/lib/duckdb')
+          const vacuumStart = performance.now()
+          await execute('VACUUM')
+          const vacuumTime = performance.now() - vacuumStart
+          console.log(`[Diff] VACUUM after cleanup completed in ${vacuumTime.toFixed(0)}ms`)
+        } catch (err) {
+          console.warn('[Diff] VACUUM failed (non-fatal):', err)
+        }
+      }
     }
     reset()
     onClose()

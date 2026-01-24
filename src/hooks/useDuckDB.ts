@@ -36,6 +36,14 @@ export function useDuckDB() {
       .then(async () => {
         setIsReady(true)
 
+        // Cleanup any corrupt snapshot files from failed exports
+        try {
+          const { cleanupCorruptSnapshots } = await import('@/lib/opfs/snapshot-storage')
+          await cleanupCorruptSnapshots()
+        } catch (e) {
+          console.warn('[DuckDB] Failed to run snapshot cleanup:', e)
+        }
+
         // Show persistence status
         const isPersistent = isDuckDBPersistent()
         const isReadOnly = isDuckDBReadOnly()
