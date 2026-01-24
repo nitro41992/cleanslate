@@ -192,39 +192,63 @@ export class CommandExecutor implements ICommandExecutor {
         console.log(`[Executor] Large operation (${ctx.table.rowCount.toLocaleString()} rows), using batch mode`)
       }
 
-      // Step 3: Pre-snapshot for Tier 3 OR batched Tier 1
+      // Step 3: Pre-snapshot for Tier 3 OR batched Tier 1 (delegated to timeline system)
       let snapshotMetadata: SnapshotMetadata | undefined
       const needsSnapshotForBatchedTier1 = tier === 1 && shouldBatch
       if ((needsSnapshot || needsSnapshotForBatchedTier1) && !skipTimeline) {
         progress('snapshotting', 20, 'Creating backup snapshot...')
-        snapshotMetadata = await this.createSnapshot(ctx)
 
         // Log why snapshot was created (diagnostic)
         if (needsSnapshotForBatchedTier1) {
           console.log(`[Executor] Created snapshot for batched Tier 1 operation (fallback undo strategy)`)
         }
 
-        // If this is the first snapshot for this table, set it as originalSnapshotName
-        // so the Diff View can compare against original state
+        // Get or create timeline
         const timelineStoreState = useTimelineStore.getState()
         let existingTimeline = timelineStoreState.getTimeline(tableId)
 
-        // For legacy timelineStore, use table name if available, otherwise snapshot ID
-        const legacySnapshotName = snapshotMetadata.storageType === 'table'
-          ? snapshotMetadata.tableName!
-          : snapshotMetadata.id
-
         // Create timeline if it doesn't exist yet
         if (!existingTimeline) {
-          timelineStoreState.createTimeline(tableId, ctx.table.name, legacySnapshotName)
+          // Create with empty snapshot name initially
+          const { initializeTimeline } = await import('@/lib/timeline-engine')
+          const timelineId = await initializeTimeline(tableId, ctx.table.name)
           existingTimeline = timelineStoreState.getTimeline(tableId)
         } else if (!existingTimeline.originalSnapshotName) {
           // Timeline exists but no original snapshot set yet
-          timelineStoreState.updateTimelineOriginalSnapshot(tableId, legacySnapshotName)
+          const { createTimelineOriginalSnapshot } = await import('@/lib/timeline-engine')
+          const snapshotName = await createTimelineOriginalSnapshot(ctx.table.name, existingTimeline.id)
+          timelineStoreState.updateTimelineOriginalSnapshot(tableId, snapshotName)
         }
 
-        // Prune oldest snapshot if over limit
-        await this.pruneOldestSnapshot(getTimeline(tableId))
+        // Call timeline engine's createStepSnapshot for Parquet-backed snapshots
+        // This creates a snapshot of the CURRENT state (before the new command is applied)
+        const { createStepSnapshot } = await import('@/lib/timeline-engine')
+        const timeline = getTimeline(tableId)
+        const stepIndex = timeline.position + 1  // Position after this command will execute
+
+        const snapshotName = await createStepSnapshot(
+          ctx.table.name,
+          existingTimeline!.id,
+          stepIndex
+        )
+
+        // Convert to SnapshotMetadata format for executor use
+        if (snapshotName.startsWith('parquet:')) {
+          const snapshotId = snapshotName.replace('parquet:', '')
+          snapshotMetadata = {
+            id: snapshotId,
+            storageType: 'parquet',
+            path: `${snapshotId}.parquet`
+          }
+        } else {
+          snapshotMetadata = {
+            id: `step_${stepIndex}`,
+            storageType: 'table',
+            tableName: snapshotName
+          }
+        }
+
+        console.log('[Memory] Step snapshot created via timeline system:', snapshotMetadata)
       }
 
       // Step 3.5: Pre-capture row details for Tier 2/3 (BEFORE transformation)
@@ -730,117 +754,24 @@ export class CommandExecutor implements ICommandExecutor {
 
   // ===== PRIVATE METHODS =====
 
-  private async createSnapshot(ctx: CommandContext): Promise<SnapshotMetadata> {
-    const timestamp = Date.now()
-    const snapshotId = `snapshot_${ctx.table.id}_${timestamp}`
-
-    // For large tables (>500k rows), use Parquet cold storage
-    if (ctx.table.rowCount > 500_000) {
-      console.log(`[Snapshot] Creating Parquet snapshot for ${ctx.table.rowCount.toLocaleString()} rows...`)
-
-      const db = await initDuckDB()
-      const conn = await getConnection()
-      await exportTableToParquet(db, conn, ctx.table.name, snapshotId)
-
-      return {
-        id: snapshotId,
-        storageType: 'parquet',
-        path: `${snapshotId}.parquet`
-      }
-    }
-
-    // For small tables (<500k rows), use in-memory table (fast undo)
-    const snapshotName = `_cmd_snapshot_${ctx.table.id}_${timestamp}`
-    await duplicateTable(ctx.table.name, snapshotName, true)
-
-    return {
-      id: snapshotId,
-      storageType: 'table',
-      tableName: snapshotName
-    }
-  }
-
-  /**
-   * Prune oldest snapshot if over limit (LRU eviction).
-   * Marks the corresponding command as undoDisabled.
-   */
-  private async pruneOldestSnapshot(timeline: TableCommandTimeline): Promise<void> {
-    if (timeline.snapshots.size < MAX_SNAPSHOTS_PER_TABLE) return
-
-    // Find oldest by timestamp
-    let oldestPosition = -1
-    let oldestTimestamp = Infinity
-
-    for (const [pos, ts] of timeline.snapshotTimestamps) {
-      if (ts < oldestTimestamp) {
-        oldestTimestamp = ts
-        oldestPosition = pos
-      }
-    }
-
-    if (oldestPosition >= 0) {
-      const snapshot = timeline.snapshots.get(oldestPosition)
-      if (snapshot) {
-        // Delete based on storage type
-        if (snapshot.storageType === 'table' && snapshot.tableName) {
-          await dropTable(snapshot.tableName).catch(() => {})
-
-          // VACUUM to reclaim freed space
-          try {
-            const conn = await getConnection()
-            await conn.query('VACUUM')
-            console.log('[Memory] VACUUM after snapshot pruning')
-          } catch (err) {
-            console.warn('[Memory] VACUUM failed (non-fatal):', err)
-          }
-        } else if (snapshot.storageType === 'parquet') {
-          await deleteParquetSnapshot(snapshot.id)
-        }
-
-        timeline.snapshots.delete(oldestPosition)
-        timeline.snapshotTimestamps.delete(oldestPosition)
-
-        // Mark the command as undoDisabled
-        const command = timeline.commands[oldestPosition]
-        if (command) {
-          command.undoDisabled = true
-        }
-      }
-    }
-  }
-
   /**
    * Aggressively prune snapshots across all tables if memory usage > 80%.
    * Called after command execution to prevent OOM on large datasets.
    * Shows toast notification to inform user that old undo history was cleared.
+   *
+   * NOTE: Snapshot pruning now delegated to timeline system.
+   * This method is kept for future memory management enhancements.
    */
   private async pruneSnapshotsIfHighMemory(): Promise<void> {
     const memStatus = await getMemoryStatus()
 
     if (memStatus.percentage < 80) return // Not critical yet
 
-    console.warn('[Memory] High memory usage detected, pruning snapshots...')
+    console.warn('[Memory] High memory usage detected (>80%)')
 
-    let prunedCount = 0
-
-    for (const [_tableId, timeline] of tableTimelines.entries()) {
-      // Prune down to MAX_SNAPSHOTS_PER_TABLE
-      while (timeline.snapshots.size > MAX_SNAPSHOTS_PER_TABLE) {
-        await this.pruneOldestSnapshot(timeline)
-        prunedCount++
-      }
-    }
-
-    if (prunedCount > 0) {
-      console.log(`[Memory] Pruned ${prunedCount} snapshots due to high memory`)
-
-      // Notify user that undo history was cleared
-      toast({
-        title: 'Memory Optimization',
-        description: `Old undo history cleared to free memory (${prunedCount} snapshot${prunedCount > 1 ? 's' : ''} removed)`,
-        variant: 'default',
-      })
-    }
+    // Timeline system manages snapshots via timelineStore
+    // Future enhancement: Could trigger timeline snapshot pruning here if needed
+    // For now, rely on timeline system's built-in snapshot management
   }
 
   private async restoreFromSnapshot(
