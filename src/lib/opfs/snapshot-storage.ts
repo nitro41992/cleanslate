@@ -10,6 +10,7 @@
 
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import * as duckdb from '@duckdb/duckdb-wasm'
+import { CS_ID_COLUMN } from '@/lib/duckdb'
 
 /**
  * Ensure the snapshots directory exists in OPFS
@@ -82,10 +83,12 @@ export async function exportTableToParquet(
       )
 
       // Export chunk (only buffers batchSize rows)
+      // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
       try {
         await conn.query(`
           COPY (
             SELECT * FROM "${tableName}"
+            ORDER BY "${CS_ID_COLUMN}"
             LIMIT ${batchSize} OFFSET ${offset}
           ) TO '${fileName}'
           (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
