@@ -18,7 +18,8 @@ import { useDiffStore } from '@/stores/diffStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
 import { runDiff, cleanupDiffTable } from '@/lib/diff-engine'
-import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
+import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists, dropTable } from '@/lib/duckdb'
+import { restoreTimelineOriginalSnapshot } from '@/lib/timeline-engine'
 import { toast } from 'sonner'
 
 interface DiffViewProps {
@@ -45,6 +46,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     summary,
     newColumns,
     removedColumns,
+    storageType,
     isComparing,
     blindMode,
     setMode,
@@ -83,20 +85,21 @@ export function DiffView({ open, onClose }: DiffViewProps) {
   useEffect(() => {
     return () => {
       if (diffTableName) {
-        cleanupDiffTable(diffTableName)
+        cleanupDiffTable(diffTableName, storageType || 'memory')
       }
     }
-  }, [diffTableName])
+  }, [diffTableName, storageType])
 
   const handleRunDiff = useCallback(async () => {
     if (keyColumns.length === 0) return
 
     // Cleanup previous temp table if exists
     if (diffTableName) {
-      await cleanupDiffTable(diffTableName)
+      await cleanupDiffTable(diffTableName, storageType || 'memory')
     }
 
     setIsComparing(true)
+    let tempOriginalTableName: string | null = null
     try {
       let sourceTableName: string
       let targetTableName: string
@@ -117,11 +120,22 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           // Check for timeline-based snapshot
           const timeline = getTimeline(activeTableInfo.id)
           if (timeline?.originalSnapshotName) {
-            const timelineSnapshotExists = await tableExists(timeline.originalSnapshotName)
-            if (timelineSnapshotExists) {
-              sourceTableName = timeline.originalSnapshotName
+            const originalSnapshotName = timeline.originalSnapshotName
+
+            // Handle Parquet-backed original snapshots
+            if (originalSnapshotName.startsWith('parquet:')) {
+              // Import from Parquet to temp table for diff
+              tempOriginalTableName = `_temp_diff_original_${Date.now()}`
+              await restoreTimelineOriginalSnapshot(tempOriginalTableName, originalSnapshotName)
+              sourceTableName = tempOriginalTableName
             } else {
-              throw new Error('No original snapshot found for comparison')
+              // Use in-memory snapshot directly
+              const timelineSnapshotExists = await tableExists(originalSnapshotName)
+              if (timelineSnapshotExists) {
+                sourceTableName = originalSnapshotName
+              } else {
+                throw new Error('No original snapshot found for comparison')
+              }
             }
           } else {
             throw new Error('No original snapshot found for comparison')
@@ -159,6 +173,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         summary: config.summary,
         newColumns: config.newColumns,
         removedColumns: config.removedColumns,
+        storageType: config.storageType,
       })
 
       toast.success('Comparison Complete', {
@@ -170,6 +185,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         description: error instanceof Error ? error.message : 'An error occurred',
       })
     } finally {
+      // Cleanup temp table if we imported from Parquet
+      if (tempOriginalTableName) {
+        await dropTable(tempOriginalTableName)
+      }
       setIsComparing(false)
     }
   }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, setIsComparing, setDiffConfig, getTimeline])
@@ -177,20 +196,20 @@ export function DiffView({ open, onClose }: DiffViewProps) {
   const handleNewComparison = useCallback(async () => {
     // Cleanup current temp table
     if (diffTableName) {
-      await cleanupDiffTable(diffTableName)
+      await cleanupDiffTable(diffTableName, storageType || 'memory')
     }
     clearResults()
     setKeyColumns([])
-  }, [diffTableName, clearResults, setKeyColumns])
+  }, [diffTableName, storageType, clearResults, setKeyColumns])
 
   const handleClose = useCallback(async () => {
     // Cleanup temp table on close
     if (diffTableName) {
-      await cleanupDiffTable(diffTableName)
+      await cleanupDiffTable(diffTableName, storageType || 'memory')
     }
     reset()
     onClose()
-  }, [diffTableName, reset, onClose])
+  }, [diffTableName, storageType, reset, onClose])
 
   if (!open) return null
 
@@ -274,6 +293,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                 tableAName={mode === 'compare-preview' ? activeTableInfo?.name || '' : tableAInfo?.name || ''}
                 tableBName={mode === 'compare-preview' ? activeTableInfo?.name || '' : tableBInfo?.name || ''}
                 totalRows={totalDiffRows}
+                storageType={storageType || 'memory'}
               />
 
               {/* New Comparison Button */}
@@ -374,6 +394,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                   blindMode={blindMode}
                   newColumns={newColumns}
                   removedColumns={removedColumns}
+                  storageType={storageType || 'memory'}
                 />
               </div>
 

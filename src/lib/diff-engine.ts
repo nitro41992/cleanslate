@@ -1,8 +1,16 @@
-import { query, execute, tableExists, isInternalColumn, getConnection } from '@/lib/duckdb'
+import { query, execute, tableExists, isInternalColumn, getConnection, initDuckDB } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
+import * as duckdb from '@duckdb/duckdb-wasm'
 import { formatBytes } from './duckdb/storage-info'
 import { getMemoryStatus } from './duckdb/memory'
+import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot-storage'
+
+// Tiered diff storage: <100k in-memory, ≥100k OPFS Parquet
+export const DIFF_TIER2_THRESHOLD = 100_000
+
+// Memory polling during diff creation (2-second intervals)
+export const DIFF_MEMORY_POLL_INTERVAL_MS = 2000
 
 /**
  * STRICT type compatibility check for DuckDB.
@@ -73,6 +81,8 @@ export interface DiffConfig {
   newColumns: string[]
   /** Columns that exist in table B (target/current) but not in table A (source/original) */
   removedColumns: string[]
+  /** Storage type: 'memory' for in-memory temp table, 'parquet' for OPFS-backed diff */
+  storageType: 'memory' | 'parquet'
 }
 
 /**
@@ -148,6 +158,27 @@ export async function runDiff(
   keyColumns: string[]
 ): Promise<DiffConfig> {
   return withDuckDBLock(async () => {
+    // Start memory polling (2-second intervals)
+    let pollCount = 0
+    const memoryPollInterval = setInterval(async () => {
+      try {
+        const status = await getMemoryStatus()
+        pollCount++
+        console.log(
+          `[Diff] Memory poll #${pollCount}: ${formatBytes(status.usedBytes)} / ` +
+          `${formatBytes(status.limitBytes)} (${status.percentage.toFixed(1)}%)`
+        )
+
+        // Warn if critical
+        if (status.percentage > 90) {
+          console.warn('[Diff] CRITICAL: Memory usage >90% during diff creation!')
+        }
+      } catch (err) {
+        console.warn('[Diff] Memory poll failed (non-fatal):', err)
+      }
+    }, DIFF_MEMORY_POLL_INTERVAL_MS)
+
+    try {
     // Validate tables exist before running queries
     const [tableAExists, tableBExists] = await Promise.all([
       tableExists(tableA),
@@ -366,6 +397,28 @@ export async function runDiff(
     // Note: Column-level changes are shown separately in a banner
     const totalDiffRows = summary.added + summary.removed + summary.modified
 
+    // Phase 4: Tiered storage - export large diffs to OPFS
+    let storageType: 'memory' | 'parquet' = 'memory'
+
+    if (totalDiffRows >= DIFF_TIER2_THRESHOLD) {
+      console.log(`[Diff] Large diff (${totalDiffRows.toLocaleString()} rows), exporting to OPFS...`)
+
+      const db = await initDuckDB()
+      const conn = await getConnection()
+
+      // Export narrow temp table to Parquet
+      await exportTableToParquet(db, conn, diffTableName, diffTableName)
+
+      // Drop file handle (critical for cleanup)
+      await db.dropFile(`${diffTableName}.parquet`)
+
+      // Drop in-memory temp table (free RAM immediately)
+      await execute(`DROP TABLE "${diffTableName}"`)
+
+      storageType = 'parquet'
+      console.log(`[Diff] Exported to OPFS, freed ~${formatBytes(totalDiffRows * 58)} RAM`)
+    }
+
     return {
       diffTableName,
       sourceTableName: tableA,
@@ -377,6 +430,12 @@ export async function runDiff(
       keyOrderBy,
       newColumns,
       removedColumns,
+      storageType,
+    }
+    } finally {
+      // CRITICAL: Always clear interval, even on error
+      clearInterval(memoryPollInterval)
+      console.log(`[Diff] Completed with ${pollCount} memory polls`)
     }
   })
 }
@@ -406,7 +465,8 @@ export async function fetchDiffPage(
   removedColumns: string[],
   offset: number,
   limit: number = 500,
-  keyOrderBy: string
+  keyOrderBy: string,
+  storageType: 'memory' | 'parquet' = 'memory'
 ): Promise<DiffRow[]> {
   // Build select columns: a_col and b_col for each column
   // CRITICAL: Handle new/removed columns by selecting NULL for missing sides
@@ -423,8 +483,45 @@ export async function fetchDiffPage(
     })
     .join(', ')
 
-  // JOIN back to original tables using row IDs
-  // Only fetch visible rows (500 at a time) to minimize memory usage
+  // Handle Parquet-backed diffs
+  if (storageType === 'parquet') {
+    const db = await initDuckDB()
+
+    // Get OPFS file handle
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
+
+    // Register for this query only
+    await db.registerFileHandle(
+      `${tempTableName}.parquet`,
+      fileHandle,
+      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+      false  // read-only
+    )
+
+    try {
+      // Query Parquet file directly with pagination
+      return query<DiffRow>(`
+        SELECT
+          d.diff_status,
+          d.row_id,
+          ${selectCols}
+        FROM read_parquet('${tempTableName}.parquet') d
+        LEFT JOIN "${sourceTableName}" a ON d.a_row_id = a."_cs_id"
+        LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+        WHERE d.diff_status IN ('added', 'removed', 'modified')
+        ORDER BY d.diff_status, ${keyOrderBy}
+        LIMIT ${limit} OFFSET ${offset}
+      `)
+    } finally {
+      // CRITICAL: Unregister after query
+      await db.dropFile(`${tempTableName}.parquet`)
+    }
+  }
+
+  // Original in-memory path (unchanged)
   return query<DiffRow>(`
     SELECT
       d.diff_status,
@@ -443,12 +540,23 @@ export async function fetchDiffPage(
  * Clean up the temp diff table.
  * Note: If user crashes/reloads, temp table dies automatically (DuckDB WASM memory is volatile).
  */
-export async function cleanupDiffTable(tableName: string): Promise<void> {
+export async function cleanupDiffTable(
+  tableName: string,
+  storageType: 'memory' | 'parquet' = 'memory'
+): Promise<void> {
   try {
+    // Always try to drop in-memory table
     await execute(`DROP TABLE IF EXISTS "${tableName}"`)
+
+    // If Parquet-backed, delete OPFS file
+    if (storageType === 'parquet') {
+      const db = await initDuckDB()
+      await db.dropFile(`${tableName}.parquet`)  // Unregister if active
+      await deleteParquetSnapshot(tableName)      // Delete from OPFS
+      console.log(`[Diff] Cleaned up Parquet file: ${tableName}.parquet`)
+    }
   } catch (error) {
-    // Ignore errors during cleanup (table might already be gone)
-    console.warn('Failed to cleanup diff table:', error)
+    console.warn('[Diff] Cleanup failed (non-fatal):', error)
   }
 }
 
@@ -464,7 +572,8 @@ export async function* streamDiffResults(
   newColumns: string[],
   removedColumns: string[],
   keyOrderBy: string,
-  chunkSize: number = 10000
+  chunkSize: number = 10000,
+  storageType: 'memory' | 'parquet' = 'memory'
 ): AsyncGenerator<DiffRow[], void, unknown> {
   let offset = 0
   while (true) {
@@ -477,7 +586,8 @@ export async function* streamDiffResults(
       removedColumns,
       offset,
       chunkSize,
-      keyOrderBy
+      keyOrderBy,
+      storageType
     )
     if (chunk.length === 0) break
     yield chunk

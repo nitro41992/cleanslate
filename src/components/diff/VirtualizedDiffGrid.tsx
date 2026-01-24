@@ -55,6 +55,7 @@ interface VirtualizedDiffGridProps {
   newColumns?: string[]
   /** Columns in B (current) but not A (original) - from diff engine's perspective */
   removedColumns?: string[]
+  storageType?: 'memory' | 'parquet'
 }
 
 const PAGE_SIZE = 500
@@ -70,6 +71,7 @@ export function VirtualizedDiffGrid({
   blindMode = false,
   newColumns = [],
   removedColumns = [],
+  storageType = 'memory',
 }: VirtualizedDiffGridProps) {
   const [data, setData] = useState<DiffRow[]>([])
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
@@ -133,7 +135,7 @@ export function VirtualizedDiffGrid({
     setData([])
     setLoadedRange({ start: 0, end: 0 })
 
-    fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, 0, PAGE_SIZE, keyOrderBy)
+    fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, 0, PAGE_SIZE, keyOrderBy, storageType)
       .then((rows) => {
         setData(rows)
         setLoadedRange({ start: 0, end: rows.length })
@@ -143,7 +145,7 @@ export function VirtualizedDiffGrid({
         console.error('Error loading diff data:', err)
         setIsLoading(false)
       })
-  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy])
+  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType])
 
   // Load more data on scroll
   const onVisibleRegionChanged = useCallback(
@@ -155,7 +157,7 @@ export function VirtualizedDiffGrid({
 
       if (needStart < loadedRange.start || needEnd > loadedRange.end) {
         try {
-          const newData = await fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, needStart, needEnd - needStart, keyOrderBy)
+          const newData = await fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, needStart, needEnd - needStart, keyOrderBy, storageType)
           setData(newData)
           setLoadedRange({ start: needStart, end: needStart + newData.length })
         } catch (err) {
@@ -163,7 +165,7 @@ export function VirtualizedDiffGrid({
         }
       }
     },
-    [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, loadedRange]
+    [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType, loadedRange]
   )
 
   const getCellContent = useCallback(

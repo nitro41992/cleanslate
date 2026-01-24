@@ -16,10 +16,13 @@ import {
   updateCellByRowId,
   CS_ID_COLUMN,
   getTableColumns,
+  initDuckDB,
+  getConnection,
 } from '@/lib/duckdb'
 import { applyTransformation, EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
 import { applyStandardization } from '@/lib/standardizer-engine'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { exportTableToParquet, importTableFromParquet } from '@/lib/opfs/snapshot-storage'
 import type {
   TimelineCommand,
   TimelineParams,
@@ -29,6 +32,12 @@ import type {
   BatchEditParams,
   ColumnInfo,
 } from '@/types'
+
+/**
+ * Threshold for using Parquet storage for original snapshots
+ * Tables with ≥100k rows use OPFS Parquet, smaller tables use in-memory duplicates
+ */
+const ORIGINAL_SNAPSHOT_THRESHOLD = 100_000
 
 /**
  * Naming convention for timeline snapshots
@@ -47,21 +56,70 @@ export function getTimelineOriginalName(timelineId: string): string {
 /**
  * Create the original snapshot for a table's timeline
  * This is called when a timeline is first created for a table
+ *
+ * Uses Parquet storage for large tables (≥100k rows) to reduce baseline RAM usage
+ * Returns special "parquet:" prefix for Parquet-backed snapshots
  */
 export async function createTimelineOriginalSnapshot(
   tableName: string,
   timelineId: string
 ): Promise<string> {
-  const snapshotName = getTimelineOriginalName(timelineId)
+  // Check row count to decide storage strategy
+  const countResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM "${tableName}"`
+  )
+  const rowCount = Number(countResult[0].count)
 
-  // Check if it already exists
-  const exists = await tableExists(snapshotName)
-  if (!exists) {
-    // Create snapshot preserving _cs_id values
-    await duplicateTable(tableName, snapshotName, true)
+  if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
+    console.log(`[Timeline] Creating Parquet original snapshot for ${rowCount.toLocaleString()} rows...`)
+
+    const db = await initDuckDB()
+    const conn = await getConnection()
+    const snapshotId = `original_${timelineId}`
+
+    // Export to OPFS Parquet
+    await exportTableToParquet(db, conn, tableName, snapshotId)
+    await db.dropFile(`${snapshotId}.parquet`)  // Critical: release handle
+
+    // Return special prefix to signal Parquet storage (keeps store type as string)
+    return `parquet:${snapshotId}`
   }
 
-  return snapshotName
+  // Small table - use in-memory duplicate (existing behavior)
+  const originalName = `_timeline_original_${timelineId}`
+  const exists = await tableExists(originalName)
+  if (!exists) {
+    await duplicateTable(tableName, originalName, true)
+  }
+  return originalName
+}
+
+/**
+ * Restore a table from a timeline original snapshot
+ * Handles both in-memory and Parquet-backed snapshots
+ */
+export async function restoreTimelineOriginalSnapshot(
+  tableName: string,
+  snapshotName: string
+): Promise<void> {
+  if (snapshotName.startsWith('parquet:')) {
+    // Extract snapshot ID from "parquet:original_abc123"
+    const snapshotId = snapshotName.replace('parquet:', '')
+
+    console.log(`[Timeline] Restoring from Parquet: ${snapshotId}`)
+    const db = await initDuckDB()
+    const conn = await getConnection()
+
+    // Drop current table
+    await dropTable(tableName)
+
+    // Import from OPFS
+    await importTableFromParquet(db, conn, snapshotId, tableName)
+  } else {
+    // In-memory snapshot (existing behavior)
+    await dropTable(tableName)
+    await duplicateTable(snapshotName, tableName, true)
+  }
 }
 
 /**

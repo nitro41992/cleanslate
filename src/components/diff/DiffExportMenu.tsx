@@ -25,6 +25,7 @@ interface DiffExportMenuProps {
   tableBName: string
   totalRows: number
   disabled?: boolean
+  storageType?: 'memory' | 'parquet'
 }
 
 export function DiffExportMenu({
@@ -41,6 +42,7 @@ export function DiffExportMenu({
   tableBName,
   totalRows,
   disabled = false,
+  storageType = 'memory',
 }: DiffExportMenuProps) {
   const [isExporting, setIsExporting] = useState(false)
 
@@ -55,7 +57,7 @@ export function DiffExportMenu({
 
       // Stream chunks
       let exportedCount = 0
-      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy)) {
+      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy, undefined, storageType)) {
         for (const row of chunk) {
           const line = formatRowAsCSV(row, allColumns, keyColumns)
           csvLines.push(line)
@@ -96,7 +98,7 @@ export function DiffExportMenu({
       }> = []
 
       // Stream chunks
-      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy)) {
+      for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy, undefined, storageType)) {
         for (const row of chunk) {
           const status = row.diff_status
           const rowA: Record<string, unknown> = {}
@@ -165,7 +167,7 @@ export function DiffExportMenu({
 
       // Only copy first 100 rows for clipboard
       let count = 0
-      outer: for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy, 100)) {
+      outer: for await (const chunk of streamDiffResults(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, keyOrderBy, 100, storageType)) {
         for (const row of chunk) {
           if (count >= 100) break outer
 
