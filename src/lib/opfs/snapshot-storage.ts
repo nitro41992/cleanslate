@@ -4,8 +4,9 @@
  * Provides cold storage for large table snapshots using Parquet compression.
  * Reduces RAM usage from ~1.5GB (in-memory table) to ~5MB (compressed file).
  *
- * CRITICAL: Registers OPFS file handles with DuckDB before writing.
- * Data flows directly from WASM to OPFS without touching JavaScript heap.
+ * CRITICAL: DuckDB-WASM creates Parquet files in-memory, not via registered file handles.
+ * Pattern: COPY TO → copyFileToBuffer() → write to OPFS → dropFile()
+ * See: https://github.com/duckdb/duckdb-wasm/discussions/1714
  */
 
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
@@ -30,18 +31,21 @@ export async function ensureSnapshotDir(): Promise<void> {
 /**
  * Export a table to Parquet file in OPFS
  *
- * Uses DuckDB's file handle registration for zero-copy writes.
- * Data never touches JavaScript heap - flows from WASM to OPFS disk.
+ * CRITICAL MEMORY SAFETY: Uses in-memory buffer pattern with chunking.
+ * - `COPY TO` creates in-memory virtual file in DuckDB-WASM
+ * - `copyFileToBuffer()` retrieves buffer from WASM heap → JS heap (~50MB per chunk)
+ * - Write buffer to OPFS using File System Access API
+ * - `dropFile()` cleans up virtual file
  *
- * For large tables (>250k rows), uses chunked files to reduce peak memory usage.
- * Each chunk is written separately, keeping RAM usage low.
+ * For tables >250k rows, uses chunked files to prevent JS heap OOM crashes.
+ * Each chunk is ~50MB compressed, written separately, and buffer is GC'd immediately.
  *
- * @param db - DuckDB instance (for file registration)
- * @param conn - Active DuckDB connection (for transaction consistency)
+ * @param db - DuckDB instance (for copyFileToBuffer/dropFile)
+ * @param conn - Active DuckDB connection (for COPY TO)
  * @param tableName - Source table to export
  * @param snapshotId - Unique snapshot identifier (e.g., "snapshot_abc_1234567890")
  *
- * Performance: ~2-3 seconds for 1M rows (includes compression)
+ * Performance: ~2-3 seconds for 1M rows (includes compression + OPFS write)
  */
 export async function exportTableToParquet(
   db: AsyncDuckDB,
@@ -61,7 +65,8 @@ export async function exportTableToParquet(
   const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
   const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
 
-  // For large tables (>250k rows), use chunked files to reduce peak memory
+  // CRITICAL: Always chunk for tables >250k rows to prevent JS heap OOM
+  // copyFileToBuffer() copies data to JS heap, so we must limit buffer size
   const CHUNK_THRESHOLD = 250_000
   if (rowCount > CHUNK_THRESHOLD) {
     console.log('[Snapshot] Using chunked Parquet export for large table')
@@ -71,47 +76,38 @@ export async function exportTableToParquet(
     let partIndex = 0
 
     while (offset < rowCount) {
-      const fileName = `${snapshotId}_part_${partIndex}.parquet`
-      // CRITICAL: DuckDB prepends 'tmp_' to Parquet files during write
-      const tmpFileName = `tmp_${fileName}`
-      const fileHandle = await snapshotsDir.getFileHandle(tmpFileName, { create: true })
+      const tempFileName = `temp_${snapshotId}_part_${partIndex}.parquet`
+      const finalFileName = `${snapshotId}_part_${partIndex}.parquet`
 
-      // Register file handle with tmp_ prefix that DuckDB actually uses
-      await db.registerFileHandle(
-        tmpFileName,
-        fileHandle,
-        duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-        true
-      )
-
-      // Export chunk (only buffers batchSize rows)
+      // 1. COPY TO in-memory file (DuckDB WASM memory)
       // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
-      try {
-        await conn.query(`
-          COPY (
-            SELECT * FROM "${tableName}"
-            ORDER BY "${CS_ID_COLUMN}"
-            LIMIT ${batchSize} OFFSET ${offset}
-          ) TO '${fileName}'
-          (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-        `)
+      await conn.query(`
+        COPY (
+          SELECT * FROM "${tableName}"
+          ORDER BY "${CS_ID_COLUMN}"
+          LIMIT ${batchSize} OFFSET ${offset}
+        ) TO '${tempFileName}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+      `)
 
-        // CRITICAL: Flush DuckDB write buffers to OPFS before unregistering
-        await db.flushFiles()
+      // 2. Retrieve buffer from WASM memory → JS heap (~50MB compressed)
+      const buffer = await db.copyFileToBuffer(tempFileName)
 
-        // Rename tmp file to final name (DuckDB can't do this through registered handles)
-        const finalFileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
-        const tmpFile = await fileHandle.getFile()
-        const writable = await finalFileHandle.createWritable()
-        await writable.write(await tmpFile.arrayBuffer())
-        await writable.close()
+      // 3. Write to OPFS (buffer cleared after write)
+      const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
+      const writable = await fileHandle.createWritable()
+      await writable.write(buffer)
+      await writable.close()
 
-        // Delete tmp file
-        await snapshotsDir.removeEntry(tmpFileName)
-      } finally {
-        // Unregister tmp file handle after write (always cleanup to prevent leaks)
-        await db.dropFile(tmpFileName)
+      // Verify file was written
+      const file = await fileHandle.getFile()
+      if (file.size === 0) {
+        throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
       }
+      console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
+
+      // 4. Cleanup virtual file in WASM
+      await db.dropFile(tempFileName)
 
       offset += batchSize
       partIndex++
@@ -120,46 +116,40 @@ export async function exportTableToParquet(
 
     console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
   } else {
-    // Small table - single file export
-    const fileName = `${snapshotId}.parquet`
-    // CRITICAL: DuckDB prepends 'tmp_' to Parquet files during write
-    const tmpFileName = `tmp_${fileName}`
-    const fileHandle = await snapshotsDir.getFileHandle(tmpFileName, { create: true })
+    // Single file export (ONLY safe for tables ≤250k rows)
+    // If rowCount == CHUNK_THRESHOLD, this path is safe (equality handled by > check above)
+    const tempFileName = `temp_${snapshotId}.parquet`
+    const finalFileName = `${snapshotId}.parquet`
 
-    await db.registerFileHandle(
-      tmpFileName,
-      fileHandle,
-      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-      true
-    )
+    // 1. COPY TO in-memory file
+    await conn.query(`
+      COPY (
+        SELECT * FROM "${tableName}"
+        ORDER BY "${CS_ID_COLUMN}"
+      ) TO '${tempFileName}'
+      (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+    `)
 
-    try {
-      await conn.query(`
-        COPY (
-          SELECT * FROM "${tableName}"
-          ORDER BY "${CS_ID_COLUMN}"
-        ) TO '${fileName}'
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-      `)
+    // 2. Retrieve buffer from WASM → JS heap (safe: <50MB)
+    const buffer = await db.copyFileToBuffer(tempFileName)
 
-      // CRITICAL: Flush DuckDB write buffers to OPFS before unregistering
-      await db.flushFiles()
+    // 3. Write to OPFS
+    const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
+    const writable = await fileHandle.createWritable()
+    await writable.write(buffer)
+    await writable.close()
 
-      // Rename tmp file to final name (DuckDB can't do this through registered handles)
-      const finalFileHandle = await snapshotsDir.getFileHandle(fileName, { create: true })
-      const tmpFile = await fileHandle.getFile()
-      const writable = await finalFileHandle.createWritable()
-      await writable.write(await tmpFile.arrayBuffer())
-      await writable.close()
-
-      // Delete tmp file
-      await snapshotsDir.removeEntry(tmpFileName)
-    } finally {
-      // Unregister tmp file handle after write (always cleanup to prevent leaks)
-      await db.dropFile(tmpFileName)
+    // Verify file was written
+    const file = await fileHandle.getFile()
+    if (file.size === 0) {
+      throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
     }
+    console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
 
-    console.log(`[Snapshot] Exported to ${fileName}`)
+    // 4. Cleanup virtual file
+    await db.dropFile(tempFileName)
+
+    console.log(`[Snapshot] Exported to ${finalFileName}`)
   }
 }
 
