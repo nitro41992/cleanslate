@@ -1025,12 +1025,21 @@ export class CommandExecutor implements ICommandExecutor {
     const escapedColumn = column.replace(/'/g, "''")
 
     // Check if base column exists (it should for Tier 1)
-    const colsResult = await ctx.db.query<{ column_name: string }>(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = '${ctx.table.name}' AND column_name = '${baseColumn}'
-    `)
+    // Use DESCRIBE to get actual column list (more reliable than information_schema)
+    let baseColumnExists = false
+    try {
+      const colsResult = await ctx.db.query<{ column_name: string }>(`
+        SELECT column_name
+        FROM (DESCRIBE "${ctx.table.name}")
+        WHERE column_name = '${baseColumn}'
+      `)
+      baseColumnExists = colsResult.length > 0
+    } catch (err) {
+      console.warn(`[EXECUTOR] Failed to check for base column ${baseColumn}:`, err)
+      return
+    }
 
-    if (colsResult.length === 0) {
+    if (!baseColumnExists) {
       console.warn(`[EXECUTOR] Base column ${baseColumn} not found, skipping audit capture`)
       return
     }
@@ -1052,7 +1061,18 @@ export class CommandExecutor implements ICommandExecutor {
       LIMIT 50000
     `
 
-    await ctx.db.execute(sql)
+    try {
+      await ctx.db.execute(sql)
+    } catch (err) {
+      // Log detailed error context for debugging
+      console.error(`[EXECUTOR] Failed to capture Tier 1 row details for column "${column}":`, {
+        error: err,
+        baseColumn,
+        table: ctx.table.name,
+        sql: sql.substring(0, 200) + '...' // First 200 chars of SQL
+      })
+      throw err // Re-throw so outer catch handler can log it
+    }
   }
 
   /**
