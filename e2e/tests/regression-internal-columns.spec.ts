@@ -25,6 +25,9 @@ test.describe.serial('Internal Column Filtering', () => {
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser }) => {
+    // Prevent DuckDB cold start timeout
+    test.setTimeout(60000)
+
     page = await browser.newPage()
 
     laundromat = new LaundromatPage(page)
