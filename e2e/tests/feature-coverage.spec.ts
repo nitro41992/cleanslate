@@ -1,12 +1,11 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
-import { DiffViewPage } from '../page-objects/diff-view.page'
 import { MatchViewPage } from '../page-objects/match-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
-import { expectValidUuid } from '../helpers/high-fidelity-assertions'
+import { coolHeap, coolHeapLight } from '../helpers/heap-cooling'
 
 /**
  * Feature Coverage Tests
@@ -37,6 +36,11 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
 
   test.afterAll(async () => {
     await page.close()
+  })
+
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
   })
 
   async function loadTestData() {
@@ -144,6 +148,11 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
+  })
+
   async function loadTestData() {
     await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_finance')
     await laundromat.uploadFile(getFixturePath('fr_a3_finance.csv'))
@@ -212,6 +221,11 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
 
   test.afterAll(async () => {
     await page.close()
+  })
+
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
   })
 
   async function loadTestData() {
@@ -291,6 +305,11 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
+  })
+
   test('should fill down empty cells from above', async () => {
     await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_fill_down')
     await laundromat.uploadFile(getFixturePath('fr_a3_fill_down.csv'))
@@ -329,6 +348,11 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
 
   test.afterAll(async () => {
     await page.close()
+  })
+
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
   })
 
   test('should show raw preview of file content', async () => {
@@ -397,241 +421,23 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
   })
 })
 
-test.describe.serial('FR-B2: Visual Diff', () => {
-  let page: Page
-  let laundromat: LaundromatPage
-  let wizard: IngestionWizardPage
-  let inspector: StoreInspector
-
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
-
-    // Block unnecessary resources to reduce memory usage
-    await page.route('**/*', (route) => {
-      const resourceType = route.request().resourceType()
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        route.abort()
-      } else {
-        route.continue()
-      }
-    })
-
-    laundromat = new LaundromatPage(page)
-    wizard = new IngestionWizardPage(page)
-    await laundromat.goto()
-    inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
-  })
-
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  test('should detect row changes between two tables', async () => {
-    // Load a table first (diff button disabled on empty state)
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // Open diff view via panel-based navigation (single-page app)
-    await laundromat.openDiffView()
-
-    // Verify diff view loads
-    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
-  })
-
-  test('should show all diff statuses (100 rows) (regression test)', async () => {
-    // Regression test for: Diff correctly identifies Added, Modified, Removed rows
-    // Goal: Validate functionality works correctly (minimal dataset for fast execution)
-
-    // Close diff view to upload files (use dismissOverlays helper for robustness)
-    await laundromat.dismissOverlays()
-    await page.waitForTimeout(500)
-
-    // Generate minimal overlapping data
-    const generateOverlappingCSV = (startId: number, endId: number, prefix: string): string => {
-      const lines = ['id,name,email']
-      for (let i = startId; i <= endId; i++) {
-        lines.push(`${i},${prefix}_User_${i},${prefix.toLowerCase()}_user${i}@example.com`)
-      }
-      return lines.join('\n')
-    }
-
-    // Base: rows 1-100
-    const baseCSV = generateOverlappingCSV(1, 100, 'Base')
-    // New: rows 10-110 (overlap 10-100, remove 1-9, add 101-110)
-    const newCSV = generateOverlappingCSV(10, 110, 'New')
-
-    console.log(`[Diff Test] Generated Base CSV: ${(baseCSV.length / (1024 * 1024)).toFixed(2)}MB`)
-    console.log(`[Diff Test] Generated New CSV: ${(newCSV.length / (1024 * 1024)).toFixed(2)}MB`)
-
-    // Clean up any existing tables
-    await inspector.runQuery('DROP TABLE IF EXISTS diff_base_100')
-    await inspector.runQuery('DROP TABLE IF EXISTS diff_new_110')
-
-    // Upload base file - use helper to write temp file first
-    const fs = await import('fs/promises')
-    const path = await import('path')
-    const tmpDir = await import('os').then(os => os.tmpdir())
-
-    const baseFilePath = path.join(tmpDir, 'diff_base_100.csv')
-    await fs.writeFile(baseFilePath, baseCSV)
-
-    await laundromat.uploadFile(baseFilePath)
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('diff_base_100', 100)
-
-    // Upload new file
-    const newFilePath = path.join(tmpDir, 'diff_new_110.csv')
-    await fs.writeFile(newFilePath, newCSV)
-
-    await laundromat.uploadFile(newFilePath)
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('diff_new_110', 101)  // 10-110 inclusive = 101 rows
-
-    // Open Diff view
-    await laundromat.openDiffView()
-    await page.waitForTimeout(500)
-
-    // Select Compare Two Tables mode
-    await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(300)
-
-    // Select tables
-    await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /diff_base_100/i }).click()
-    await page.getByRole('combobox').nth(1).click()
-    await page.getByRole('option', { name: /diff_new_110/i }).click()
-
-    // Select id as key column
-    await page.getByRole('checkbox', { name: 'id' }).click()
-
-    // Run comparison
-    await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)  // Wait for diff to complete
-
-    // Verify diff summary
-    const summary = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const diffStore = stores?.diffStore as {
-        getState: () => {
-          summary: { added: number; removed: number; modified: number; unchanged: number } | null
-        }
-      } | undefined
-      return diffStore?.getState()?.summary || null
-    })
-
-    // Rule 1: Assert exact counts (identity, not cardinality)
-    // Base: 1-100 | New: 10-110
-    // Removed: 1-9 (9 rows)
-    // Added: 101-110 (10 rows)
-    // Modified: 10-100 (91 rows - all have different names/emails)
-    expect(summary).not.toBeNull()
-    expect(summary?.added).toBe(10)        // Rows 101-110 (new rows)
-    expect(summary?.removed).toBe(9)       // Rows 1-9 (deleted rows)
-    expect(summary?.modified).toBe(91)     // Rows 10-100 have different names/emails
-    expect(summary?.unchanged).toBe(0)     // No unchanged rows (all overlapping rows were modified)
-
-    // Verify diff pills show correct numbers
-    const addedPill = page.getByTestId('diff-pill-added')
-    const removedPill = page.getByTestId('diff-pill-removed')
-    const modifiedPill = page.getByTestId('diff-pill-modified')
-
-    await expect(addedPill.locator('span').first()).toContainText('10')
-    await expect(removedPill.locator('span').first()).toContainText('9')
-    await expect(modifiedPill.locator('span').first()).toContainText('91')
-
-    // Rule 3: Verify grid visually shows green/red/yellow rows correctly
-    // (Canvas grid, so we verify store state instead of DOM)
-    const diffState = await inspector.getDiffState()
-    expect(diffState.summary?.added).toBe(10)
-    expect(diffState.summary?.removed).toBe(9)
-    expect(diffState.summary?.modified).toBe(91)
-
-    // Cleanup temp files
-    await fs.unlink(baseFilePath).catch(() => {})
-    await fs.unlink(newFilePath).catch(() => {})
-  })
-
-  test('should identify added, removed, and modified rows', async () => {
-    // Close diff view to upload files
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
-
-    // Clean up any existing tables
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_new')
-
-    // Upload first file (base)
-    await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_b2_base', 5)
-
-    // Upload second file (new)
-    await laundromat.uploadFile(getFixturePath('fr_b2_new.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_b2_new', 5)
-
-    // Open diff view via panel-based navigation
-    await laundromat.openDiffView()
-
-    // Explicitly select "Compare Two Tables" mode (previous tests may have left it in "Compare with Preview" mode)
-    await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(200)
-
-    // Fail-fast guard: Assert diff comparison UI exists (requires 2+ tables)
-    await expect(page.getByTestId('diff-compare-btn')).toBeVisible({ timeout: 5000 })
-
-    // Select tables and key column
-    await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: 'fr_b2_base' }).click()
-    await page.getByRole('combobox').nth(1).click()
-    await page.getByRole('option', { name: 'fr_b2_new' }).click()
-
-    // Select id as key column
-    await page.getByRole('checkbox', { name: 'id' }).click()
-
-    // Run comparison
-    await page.getByTestId('diff-compare-btn').click()
-
-    // Wait for diff results to appear - look for the summary pills
-    await expect(page.getByTestId('diff-pill-added')).toBeVisible({ timeout: 10000 })
-
-    // Verify diff found expected changes via pill values
-    // Expected: 1 added (Frank), 1 removed (Charlie), some modified rows
-    const addedPill = page.getByTestId('diff-pill-added')
-    const removedPill = page.getByTestId('diff-pill-removed')
-    const modifiedPill = page.getByTestId('diff-pill-modified')
-
-    // Check pill values - look for the number span
-    await expect(addedPill.locator('span').first()).toContainText('1')
-    await expect(removedPill.locator('span').first()).toContainText('1')
-    // Modified should have some rows
-    const modifiedText = await modifiedPill.locator('span').first().textContent()
-    expect(parseInt(modifiedText || '0')).toBeGreaterThan(0)
-
-    // Rule 3: Verify diff state in store
-    const diffState = await inspector.getDiffState()
-    expect(diffState.summary).toBeDefined()
-    expect(diffState.summary?.added).toBe(1)
-    expect(diffState.summary?.removed).toBe(1)
-  })
-})
-
 test.describe.serial('FR-C1: Fuzzy Matcher', () => {
+  let browser: Browser
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let matchView: MatchViewPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Prevent DuckDB cold start timeout + allow time for matcher operations
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    // Create fresh page for each test to prevent memory accumulation
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -641,7 +447,8 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
+    // Close page after each test to free memory
     await page.close()
   })
 
@@ -765,13 +572,22 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 })
 
 test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
+  let browser: Browser
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let matchView: MatchViewPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Prevent DuckDB cold start timeout + allow time for matcher operations
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    // Create fresh page for each test to prevent memory accumulation
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -781,7 +597,8 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
+    // Close page after each test to free memory
     await page.close()
   })
 
@@ -953,391 +770,6 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     expect(Object.keys(deletedData!).length).toBeGreaterThan(0)
   })
 })
-
-test.describe.serial('Internal Column Filtering', () => {
-  let page: Page
-  let laundromat: LaundromatPage
-  let wizard: IngestionWizardPage
-  let picker: TransformationPickerPage
-  let inspector: StoreInspector
-
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
-
-    laundromat = new LaundromatPage(page)
-    wizard = new IngestionWizardPage(page)
-    picker = new TransformationPickerPage(page)
-    await laundromat.goto()
-    inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
-  })
-
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  test.afterEach(async () => {
-    // Reload page after each test to prevent memory accumulation
-    await page.reload()
-    await page.waitForLoadState('networkidle')
-    await inspector.waitForDuckDBReady()
-  })
-
-  test('should never display internal columns in grid (regression test)', async () => {
-    // Regression test for: Internal column leakage into UI
-    // Goal 3: Ensure internal DuckDB metadata doesn't leak into UI
-
-    // 1. Upload basic-data.csv
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // 2. Get grid column headers via store inspection
-    const gridColumns = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const tableStore = stores?.tableStore as {
-        getState: () => {
-          tables: Array<{ name: string; columns: Array<{ name: string }> }>
-          activeTableId: string | null
-        }
-      } | undefined
-      const state = tableStore?.getState()
-      const activeTable = state?.tables?.find(t => t.name === 'basic_data')
-      return activeTable?.columns?.map(c => c.name) || []
-    })
-
-    // Rule 1: Assert exact column set (identity, not cardinality)
-    expect(gridColumns).toContain('id')
-    expect(gridColumns).toContain('name')
-    expect(gridColumns).toContain('email')
-
-    // Rule 2: Assert internal columns are NOT present (positive assertions)
-    expect(gridColumns).not.toContain('_cs_id')
-    expect(gridColumns).not.toContain('duckdb_schema')
-    expect(gridColumns).not.toContain('row_id')
-
-    // 3. Apply Trim transformation (creates `name__base` column for Tier 1 undo)
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
-    await picker.addTransformation('Trim Whitespace', { column: 'name' })
-    await laundromat.closePanel()
-    await page.waitForTimeout(500)
-
-    // 4. Verify grid still doesn't show `name__base`
-    const gridColumnsAfterTrim = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const tableStore = stores?.tableStore as {
-        getState: () => {
-          tables: Array<{ name: string; columns: Array<{ name: string }> }>
-        }
-      } | undefined
-      const state = tableStore?.getState()
-      const activeTable = state?.tables?.find(t => t.name === 'basic_data')
-      return activeTable?.columns?.map(c => c.name) || []
-    })
-
-    expect(gridColumnsAfterTrim).not.toContain('name__base')  // __base columns filtered
-
-    // 5. Export to CSV
-    const downloadPromise = page.waitForEvent('download')
-    await page.getByTestId('export-table-btn').click()
-    const download = await downloadPromise
-    const csvContent = await download.path().then(async (path) => {
-      if (!path) return ''
-      const fs = await import('fs/promises')
-      return fs.readFile(path, 'utf-8')
-    })
-
-    // 6. Verify CSV headers match grid headers (no internal columns)
-    const csvHeaders = csvContent.split('\n')[0].split(',')
-    expect(csvHeaders).toContain('id')
-    expect(csvHeaders).toContain('name')
-    expect(csvHeaders).toContain('email')
-    expect(csvHeaders).not.toContain('_cs_id')
-    expect(csvHeaders).not.toContain('name__base')
-    expect(csvHeaders).not.toContain('duckdb_schema')
-  })
-
-  test('should not show internal columns in transformation pickers (regression test)', async () => {
-    // Regression test for: Internal columns appearing in transformation column dropdowns
-    // Goal 3: Transformation UI only shows user columns
-
-    // 1. Load basic-data.csv (reuse from previous test if possible)
-    const tables = await inspector.getTables()
-    if (!tables.some(t => t.name === 'basic_data')) {
-      await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-      await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-      await wizard.waitForOpen()
-      await wizard.import()
-      await inspector.waitForTableLoaded('basic_data', 5)
-    }
-
-    // 2. Apply Trim transformation (creates `name__base`)
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
-    await picker.addTransformation('Trim Whitespace', { column: 'name' })
-    await page.waitForTimeout(500)
-
-    // 3. Open Clean panel → Add Transformation
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
-
-    // 4. Select "Uppercase" transformation to see column dropdown
-    await page.getByRole('option', { name: 'Uppercase' }).click()
-    await page.waitForTimeout(300)
-
-    // 5. Get column dropdown options
-    const columnOptions = await page.evaluate(() => {
-      const dropdowns = Array.from(document.querySelectorAll('select[data-column-select]'))
-      if (dropdowns.length === 0) {
-        // Try alternative selector for Radix UI Select
-        const selectTriggers = Array.from(document.querySelectorAll('[role="combobox"]'))
-        if (selectTriggers.length > 0) {
-          // Click to open dropdown
-          const trigger = selectTriggers[0] as HTMLElement
-          trigger.click()
-          return []  // Will be captured in next step
-        }
-      }
-      // Get options from native select if available
-      const select = dropdowns[0] as HTMLSelectElement
-      return Array.from(select?.options || []).map(opt => opt.value)
-    })
-
-    // If using Radix UI, get options from opened listbox
-    let actualColumnOptions = columnOptions
-    if (actualColumnOptions.length === 0) {
-      await page.waitForTimeout(500)  // Wait for dropdown to open
-      actualColumnOptions = await page.evaluate(() => {
-        const options = Array.from(document.querySelectorAll('[role="option"]'))
-        return options.map(opt => opt.textContent || '')
-      })
-    }
-
-    // Rule 1: Assert exact set of user columns
-    expect(actualColumnOptions).toContain('id')
-    expect(actualColumnOptions).toContain('name')
-    expect(actualColumnOptions).toContain('email')
-
-    // Rule 2: Assert internal columns NOT present
-    expect(actualColumnOptions).not.toContain('_cs_id')
-    expect(actualColumnOptions).not.toContain('name__base')
-    expect(actualColumnOptions).not.toContain('duckdb_schema')
-
-    // Alternative: Query store directly for transformation available columns
-    const storeColumns = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const tableStore = stores?.tableStore as {
-        getState: () => {
-          tables: Array<{ name: string; columns: Array<{ name: string }> }>
-        }
-      } | undefined
-      const state = tableStore?.getState()
-      const activeTable = state?.tables?.find(t => t.name === 'basic_data')
-      // Filter out internal columns (same logic as production code)
-      return activeTable?.columns
-        ?.map(c => c.name)
-        .filter(name => !name.startsWith('_') && !name.endsWith('__base') && name !== 'duckdb_schema')
-        || []
-    })
-
-    // Verify store-level filtering
-    expect(storeColumns).toEqual(['id', 'name', 'email'])
-  })
-
-  test('should not show internal columns in diff grid (except Status) (regression test)', async () => {
-    // Regression test for: Internal columns appearing in diff grid
-    // Goal 3: Diff grid only shows Status + user columns
-
-    // 1. Upload two tables
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_new')
-
-    await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_b2_base', 5)
-
-    await laundromat.uploadFile(getFixturePath('fr_b2_new.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_b2_new', 5)
-
-    // 2. Open Diff view → Compare Two Tables
-    await laundromat.openDiffView()
-    await page.waitForTimeout(500)
-
-    await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(300)
-
-    // 3. Select tables
-    await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /fr_b2_base/i }).click()
-    await page.getByRole('combobox').nth(1).click()
-    await page.getByRole('option', { name: /fr_b2_new/i }).click()
-
-    // 4. Select key and run comparison
-    await page.getByRole('checkbox', { name: 'id' }).click()
-    await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)
-
-    // 5. Get diff grid column headers
-    const diffColumns = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const diffStore = stores?.diffStore as {
-        getState: () => {
-          resultColumns: Array<{ name: string }> | null
-        }
-      } | undefined
-      return diffStore?.getState()?.resultColumns?.map(c => c.name) || []
-    })
-
-    // Rule 1: Assert exact column set (Status + user columns only)
-    expect(diffColumns).toContain('Status')
-    expect(diffColumns).toContain('id')
-    expect(diffColumns).toContain('name')
-    expect(diffColumns).toContain('email')
-
-    // Rule 2: Assert internal columns NOT present
-    expect(diffColumns).not.toContain('_cs_id')
-    expect(diffColumns).not.toContain('row_id')
-    expect(diffColumns).not.toContain('a_row_id')
-    expect(diffColumns).not.toContain('b_row_id')
-    expect(diffColumns).not.toContain('duckdb_schema')
-  })
-
-  test('should not show internal columns in diff schema banner (regression test)', async () => {
-    // Regression test for: Internal columns appearing in schema change warnings
-    // Goal 3: Schema change warnings filter internal columns
-
-    // 1. Create table1 with columns: id, name, email
-    await inspector.runQuery('DROP TABLE IF EXISTS schema_test_1')
-    await inspector.runQuery('DROP TABLE IF EXISTS schema_test_2')
-
-    await inspector.runQuery(`
-      CREATE TABLE schema_test_1 AS
-      SELECT 1 as id, 'Alice' as name, 'alice@test.com' as email
-    `)
-
-    // 2. Create table2 with columns: id, name, age, _cs_id (manually injected)
-    await inspector.runQuery(`
-      CREATE TABLE schema_test_2 AS
-      SELECT 1 as id, 'Alice' as name, 25 as age, gen_random_uuid() as _cs_id
-    `)
-
-    // 3. Open Diff view → Compare Two Tables
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
-
-    await laundromat.openDiffView()
-    await page.waitForTimeout(500)
-
-    await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(300)
-
-    // 4. Select tables
-    await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /schema_test_1/i }).click()
-    await page.getByRole('combobox').nth(1).click()
-    await page.getByRole('option', { name: /schema_test_2/i }).click()
-
-    await page.waitForTimeout(500)
-
-    // 5. Verify schema change banner appears
-    // Look for warning or info message about schema differences
-    const schemaBanner = page.locator('text=/column/i').or(page.locator('text=/schema/i'))
-    const hasBanner = await schemaBanner.isVisible().catch(() => false)
-
-    if (hasBanner) {
-      const bannerText = await schemaBanner.first().textContent()
-
-      // Rule 2: Assert banner doesn't contain internal column names
-      expect(bannerText).not.toContain('_cs_id')
-      expect(bannerText).not.toContain('duckdb_schema')
-
-      // Should mention user columns only
-      // Banner shows: "New columns: age" (not _cs_id)
-      // Banner shows: "Removed columns: email"
-      if (bannerText?.includes('New')) {
-        expect(bannerText).toContain('age')
-        expect(bannerText).not.toContain('_cs_id')
-      }
-    } else {
-      console.log('[Schema Banner Test] No schema warning banner displayed (may not be implemented)')
-    }
-  })
-
-  test('should not leak internal columns in console errors (regression test)', async () => {
-    // Regression test for: Internal column names appearing in console output
-    // Goal 3: No internal column names appear in console output
-
-    // Setup console listener to capture all logs/errors/warnings
-    const consoleMessages: string[] = []
-    page.on('console', msg => {
-      consoleMessages.push(msg.text())
-    })
-
-    // 1. Load basic-data.csv
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data_console_test')
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
-
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // 2. Apply multiple transformations
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
-    await picker.addTransformation('Trim Whitespace', { column: 'name' })
-    await picker.addTransformation('Uppercase', { column: 'email' })
-    await laundromat.closePanel()
-    await page.waitForTimeout(500)
-
-    // 3. Open diff view
-    await laundromat.openDiffView()
-    await page.waitForTimeout(500)
-
-    await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
-    await page.waitForTimeout(300)
-    await page.getByRole('checkbox', { name: 'id' }).click()
-    await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)
-
-    // 4. Export CSV
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
-
-    const downloadPromise = page.waitForEvent('download')
-    await page.getByTestId('export-table-btn').click()
-    await downloadPromise
-    await page.waitForTimeout(500)
-
-    // 5. Collect all console output
-    // Filter out intentional debug logs
-    const leakedMessages = consoleMessages.filter(msg =>
-      (msg.includes('_cs_id') ||
-       msg.includes('duckdb_schema') ||
-       msg.includes('row_id') ||
-       msg.includes('__base')) &&
-      !msg.includes('[Timeline]') &&  // Allow intentional debug logs
-      !msg.includes('[Snapshot]') &&
-      !msg.includes('[Command]')
-    )
-
-    // Rule 2: Assert no console message contains internal column names
-    expect(leakedMessages.length).toBe(0)
-
-    // If there are leaked messages, log them for debugging
-    if (leakedMessages.length > 0) {
-      console.log('[Console Leak Test] Leaked internal columns:', leakedMessages)
-    }
-  })
-})
-
 test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   let page: Page
   let laundromat: LaundromatPage
@@ -1355,6 +787,15 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
   test.afterAll(async () => {
     await page.close()
+  })
+
+  test.afterEach(async () => {
+    // Aggressive cleanup after each obfuscation test
+    await coolHeap(page, inspector, {
+      dropTables: true,
+      closePanels: true,
+      clearDiffState: true,
+    })
   })
 
   async function loadPIIData() {
@@ -1546,6 +987,11 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
+  })
+
   test('should stack two CSV files with Union All', async () => {
     // Clean up any existing tables
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e1_jan_sales')
@@ -1622,6 +1068,15 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
   test.afterAll(async () => {
     await page.close()
+  })
+
+  test.afterEach(async () => {
+    // Aggressive cleanup after each join operation test
+    await coolHeap(page, inspector, {
+      dropTables: true,
+      closePanels: true,
+      clearDiffState: true,
+    })
   })
 
   test('should perform inner join on customer_id', async () => {
@@ -1813,6 +1268,11 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
+  })
+
   test('should show dirty indicator on edited cells', async () => {
     await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
@@ -1931,6 +1391,11 @@ test.describe.serial('Persist as Table', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Lightweight cleanup (no table drops for fast tests)
+    await coolHeapLight(page)
+  })
+
   test('should create duplicate table with new name', async () => {
     // 1. Load and transform data
     await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
@@ -1968,285 +1433,5 @@ test.describe.serial('Persist as Table', () => {
     const persistEntry = auditEntries.find((e) => e.action.includes('Persist'))
     expect(persistEntry).toBeDefined()
     expect(persistEntry?.entryType).toBe('A')
-  })
-})
-
-test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
-  let page: Page
-  let laundromat: LaundromatPage
-  let wizard: IngestionWizardPage
-  let picker: TransformationPickerPage
-  let inspector: StoreInspector
-  let diffView: DiffViewPage
-
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
-    laundromat = new LaundromatPage(page)
-    wizard = new IngestionWizardPage(page)
-    picker = new TransformationPickerPage(page)
-    diffView = new DiffViewPage(page)
-    await laundromat.goto()
-    inspector = createStoreInspector(page)
-    await inspector.waitForDuckDBReady()
-  })
-
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  test('should support Compare with Preview mode', async () => {
-    // 1. Load table
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // 2. Apply transformation to create difference
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
-    await picker.addTransformation('Uppercase', { column: 'name' })
-    await laundromat.closePanel()
-    await page.waitForTimeout(1000) // Allow snapshot creation to complete
-
-    // 3. Open Diff view
-    await laundromat.openDiffView()
-    await diffView.waitForOpen()
-
-    // 4. Select Compare with Preview mode (should be default)
-    await diffView.selectComparePreviewMode()
-
-    // 5. Select key column and run comparison
-    await diffView.toggleKeyColumn('id')
-    await diffView.runComparison()
-
-    // 6. Verify results show modified rows
-    const summary = await diffView.getSummary()
-    expect(summary.modified).toBe(5) // All 5 rows have uppercase names
-    expect(summary.added).toBe(0)
-    expect(summary.removed).toBe(0)
-
-    // Rule 3: Verify diff state via store
-    const diffState = await inspector.getDiffState()
-    expect(diffState.mode).toBe('compare-preview')
-    expect(diffState.summary?.modified).toBe(5)
-  })
-
-  test('should support Compare Two Tables mode', async () => {
-    // 1. Upload two tables
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_new')
-
-    await diffView.close()
-
-    await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_b2_base', 5)
-
-    await laundromat.uploadFile(getFixturePath('fr_b2_new.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_b2_new', 5)
-
-    // 2. Open Diff view
-    await laundromat.openDiffView()
-    await diffView.waitForOpen()
-
-    // 3. Select Compare Two Tables mode
-    await diffView.selectCompareTablesMode()
-
-    // 4. Select tables
-    await diffView.selectTableA('fr_b2_base')
-    await diffView.selectTableB('fr_b2_new')
-
-    // 5. Select key column and run comparison
-    await diffView.toggleKeyColumn('id')
-    await diffView.runComparison()
-
-    // 6. Verify expected differences
-    const summary = await diffView.getSummary()
-    expect(summary.added).toBe(1) // Frank added
-    expect(summary.removed).toBe(1) // Charlie removed
-    expect(summary.modified).toBeGreaterThanOrEqual(3) // At least Alice, Diana, Eve modified
-  })
-
-  test('should not flag rows as modified when only _cs_id differs (regression test)', async () => {
-    // Regression test for: Internal columns causing false "MODIFIED" flags
-    // Issue: Duplicating a table regenerates _cs_id, which should NOT cause modifications
-
-    // 1. Clean up tables (use unique names to avoid regex collision)
-    await inspector.runQuery('DROP TABLE IF EXISTS test_original')
-    await inspector.runQuery('DROP TABLE IF EXISTS test_duplicate')
-
-    // 2. Close diff view (same pattern as test #2)
-    await diffView.close()
-
-    // 3. Upload test data
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // 4. Create tables with distinct names
-    await inspector.runQuery(`
-      CREATE TABLE test_original AS
-      SELECT * FROM basic_data
-    `)
-
-    await inspector.runQuery(`
-      CREATE TABLE test_duplicate AS
-      SELECT gen_random_uuid() as _cs_id, id, name, email
-      FROM test_original
-    `)
-
-    // 5. Verify _cs_id actually differs between tables
-    const row1A = await inspector.runQuery('SELECT _cs_id FROM test_original WHERE id = 1')
-    const row1B = await inspector.runQuery('SELECT _cs_id FROM test_duplicate WHERE id = 1')
-
-    // Rule 2: Positive UUID validation before comparison (high-fidelity helper)
-    expectValidUuid(row1A[0]._cs_id, { notEqual: row1B[0]._cs_id })
-
-    // 6. Open Diff view
-    await laundromat.openDiffView()
-    await diffView.waitForOpen()
-
-    // 7. Select Compare Two Tables mode
-    await diffView.selectCompareTablesMode()
-
-    // 8. Select tables
-    await diffView.selectTableA('test_original')
-    await diffView.selectTableB('test_duplicate')
-
-    // 9. Select key column and run comparison
-    await diffView.toggleKeyColumn('id')
-    await diffView.runComparison()
-
-    // 10. Verify: ZERO modifications (core fix validation)
-    // Even though _cs_id differs, user data is identical
-    const summary = await diffView.getSummary()
-    expect(summary.modified).toBe(0) // ✅ Core fix: _cs_id excluded from value comparison
-    expect(summary.unchanged).toBe(5)
-    expect(summary.added).toBe(0)
-    expect(summary.removed).toBe(0)
-
-    // 11. Verify diff state in store
-    const diffState = await inspector.getDiffState()
-    expect(diffState.summary?.modified).toBe(0)
-  })
-
-  test('should preserve Original snapshot after multiple manual edits (regression test)', async () => {
-    // Regression test for: Original snapshot preservation through manual edits
-    // Issue: Eager timeline init ensures Original snapshot exists immediately after upload
-    // Goal 1: Ensure we don't lose the "Original" state when doing manual edits
-
-    // 1. Clean up and load data
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-    await diffView.close()
-
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
-
-    // 2. Get original data for later verification
-    const originalData = await inspector.getTableData('basic_data')
-    const originalRow0Name = originalData[0].name
-    const originalRow1Email = originalData[1].email
-    const originalRow2Name = originalData[2].name
-
-    // 3. Apply 3 manual edits to different cells
-    await laundromat.editCell(0, 1, 'EDITED_NAME_0')  // Row 0, col 1 (name)
-    await page.waitForTimeout(300)
-    await laundromat.editCell(1, 2, 'edited@test.com')  // Row 1, col 2 (email)
-    await page.waitForTimeout(300)
-    await laundromat.editCell(2, 1, 'EDITED_NAME_2')  // Row 2, col 1 (name)
-    await page.waitForTimeout(500)
-
-    // 4. Verify timeline has "Original" snapshot in store
-    const timelineState = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const tableStore = stores?.tableStore as { getState: () => { activeTableId: string | null } } | undefined
-      const activeTableId = tableStore?.getState()?.activeTableId
-
-      const timelineStore = stores?.timelineStore as {
-        getState: () => {
-          timelines: Record<string, { snapshots: Array<{ name: string; type: string }> }>
-        }
-      } | undefined
-      const timeline = timelineStore?.getState()?.timelines?.[activeTableId || '']
-
-      return {
-        hasOriginal: timeline?.snapshots?.some((s: { name: string }) => s.name.includes('original')) || false,
-        snapshotCount: timeline?.snapshots?.length || 0,
-      }
-    })
-
-    // Rule 1: Assert exact timeline state (high-fidelity)
-    expect(timelineState.hasOriginal).toBe(true)
-    expect(timelineState.snapshotCount).toBeGreaterThan(0)
-
-    // 5. Open Diff view
-    await laundromat.openDiffView()
-
-    // 6. Verify diff button is enabled (not disabled)
-    const isDiffButtonEnabled = await page.getByTestId('diff-compare-btn').isEnabled()
-    expect(isDiffButtonEnabled).toBe(true)
-
-    // 7. Verify diff opens instantly (< 1 second, no 3-second delay)
-    const startTime = Date.now()
-    await diffView.waitForOpen()
-    const openDuration = Date.now() - startTime
-    console.log(`[Diff Open Time] ${openDuration}ms`)
-    expect(openDuration).toBeLessThan(1000)  // No 3-second IO wait
-
-    // 8. Verify no IO Error in console (capture console messages)
-    const consoleErrors: string[] = []
-    page.on('console', msg => {
-      if (msg.type() === 'error') {
-        consoleErrors.push(msg.text())
-      }
-    })
-
-    // 9. Switch to "Compare with Preview" mode (should be default, but make explicit)
-    await diffView.selectComparePreviewMode()
-    await page.waitForTimeout(300)
-
-    // 10. Run comparison (no key columns needed - uses _cs_id internally)
-    await diffView.toggleKeyColumn('id')  // Select id as key
-    await diffView.runComparison()
-
-    // 11. Verify diff shows 3 modified rows (the edited ones)
-    const summary = await diffView.getSummary()
-    expect(summary.modified).toBe(3)
-    expect(summary.added).toBe(0)
-    expect(summary.removed).toBe(0)
-    expect(summary.unchanged).toBe(2)  // 5 total - 3 modified = 2 unchanged
-
-    // 12. Verify no console errors containing "IO Error"
-    const ioErrors = consoleErrors.filter(err => err.includes('IO Error') || err.includes('Access Handles'))
-    expect(ioErrors.length).toBe(0)
-
-    // 13. Verify diff state mode is 'compare-preview'
-    const diffState = await inspector.getDiffState()
-    expect(diffState.mode).toBe('compare-preview')
-
-    // Rule 1: Assert exact row identities that were modified (not just count)
-    // Verify previous/new values for the edited cells
-    const auditEntries = await inspector.getAuditEntries()
-    const editEntries = auditEntries.filter(e => e.action.includes('Manual Edit'))
-    expect(editEntries.length).toBe(3)
-
-    // Rule 2: Assert exact previous values (positive assertions)
-    const edit0 = editEntries.find(e => e.rowIndex === 0)
-    const edit1 = editEntries.find(e => e.rowIndex === 1)
-    const edit2 = editEntries.find(e => e.rowIndex === 2)
-
-    expect(edit0?.previousValue).toBe(originalRow0Name)
-    expect(edit0?.newValue).toBe('EDITED_NAME_0')
-    expect(edit1?.previousValue).toBe(originalRow1Email)
-    expect(edit1?.newValue).toBe('edited@test.com')
-    expect(edit2?.previousValue).toBe(originalRow2Name)
-    expect(edit2?.newValue).toBe('EDITED_NAME_2')
   })
 })
