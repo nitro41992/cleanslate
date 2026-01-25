@@ -69,7 +69,7 @@ export class TransformationPickerPage {
    */
   async selectColumn(columnName: string): Promise<void> {
     // Wait for column selector to be visible (renders after transformation selected)
-    const columnSelect = this.page.locator('[role="combobox"]').filter({ hasText: /Select column/ })
+    const columnSelect = this.page.getByTestId('column-selector')
     await columnSelect.waitFor({ state: 'visible', timeout: 10000 })
     await columnSelect.click()
 

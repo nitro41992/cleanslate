@@ -548,12 +548,8 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await page.click('[data-testid="toolbar-diff"]')
     await page.waitForSelector('[data-testid="diff-view"]', { timeout: 5000 })
 
-    // Select key column (id) - click the checkbox by targeting the label containing "id"
-    // The key column checkboxes have id="key-{column_name}"
-    const keyColumnCheckbox = page.locator('label').filter({ hasText: /^id$/ }).first()
-    await expect(keyColumnCheckbox).toBeVisible({ timeout: 3000 })
-    await keyColumnCheckbox.click()
-
+    // "Compare with Preview" mode (default) automatically matches rows by internal _cs_id
+    // No key column selection needed - just click "Run Comparison"
     // Click "Run Comparison" button
     await page.click('[data-testid="diff-compare-btn"]')
     await page.waitForTimeout(1000)

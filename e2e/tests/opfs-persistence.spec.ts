@@ -66,12 +66,16 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     expect(transformedData[0].name).toBe('ALICE')
     expect(transformedData[1].name).toBe('BOB')
 
-    // 5. Hard refresh page (should trigger OPFS restore)
-    await page.reload()
-    await inspector.waitForDuckDBReady()
-
-    // Wait a bit for auto-restore to complete
-    await page.waitForTimeout(1000)
+    // 5. Reload and poll for persistence (no fixed wait - returns as soon as ready)
+    await expect.poll(
+      async () => {
+        await page.reload()
+        await inspector.waitForDuckDBReady()
+        const tables = await inspector.getTables()
+        return tables.some(t => t.name === 'basic_data')
+      },
+      { timeout: 10000, message: 'Table not restored from OPFS' }
+    ).toBeTruthy()
 
     // 6. Verify data persisted (table should exist with transformed data)
     const tables = await inspector.getTables()
@@ -112,10 +116,16 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     let tables = await inspector.getTables()
     expect(tables.length).toBeGreaterThanOrEqual(2)
 
-    // Refresh page
-    await page.reload()
-    await inspector.waitForDuckDBReady()
-    await page.waitForTimeout(1000)
+    // Refresh page and poll for persistence
+    await expect.poll(
+      async () => {
+        await page.reload()
+        await inspector.waitForDuckDBReady()
+        const tbl = await inspector.getTables()
+        return tbl.some(t => t.name === 'basic_data') && tbl.some(t => t.name === 'with_duplicates')
+      },
+      { timeout: 10000, message: 'Tables not restored from OPFS' }
+    ).toBeTruthy()
 
     // Verify both tables restored (if OPFS supported)
     tables = await inspector.getTables()
@@ -147,10 +157,16 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     await picker.addTransformation('Uppercase', { column: 'name' })
     await picker.addTransformation('Trim Whitespace', { column: 'email' })
 
-    // Refresh page
-    await page.reload()
-    await inspector.waitForDuckDBReady()
-    await page.waitForTimeout(1000)
+    // Refresh page and poll for persistence
+    await expect.poll(
+      async () => {
+        await page.reload()
+        await inspector.waitForDuckDBReady()
+        const tbl = await inspector.getTables()
+        return tbl.some(t => t.name === 'basic_data')
+      },
+      { timeout: 10000, message: 'Table not restored from OPFS' }
+    ).toBeTruthy()
 
     // If OPFS supported, verify undo still works after refresh
     const tables = await inspector.getTables()
@@ -316,10 +332,9 @@ test.describe.serial('OPFS Persistence - Audit Log Pruning', () => {
     await picker.addTransformation('Uppercase', { column: 'name' })
     await picker.addTransformation('Lowercase', { column: 'email' })
 
-    // Refresh to trigger pruning
+    // Refresh to trigger pruning and poll for DuckDB ready
     await page.reload()
     await inspector.waitForDuckDBReady()
-    await page.waitForTimeout(1000)
 
     // Verify _audit_details table exists and has reasonable size
     try {

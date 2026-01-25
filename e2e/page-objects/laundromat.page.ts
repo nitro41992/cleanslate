@@ -104,15 +104,15 @@ export class LaundromatPage {
     // Wait for toggle button to be ready (in case UI is still settling)
     await toggleBtn.waitFor({ state: 'visible', timeout: 5000 })
 
-    // Check if sidebar is already open by looking for the audit log panel
-    const sidebarOpen = await this.page.locator('text=Audit Log').first().isVisible().catch(() => false)
+    // Check if sidebar is already open by looking for the audit sidebar testid
+    const sidebarOpen = await this.page.getByTestId('audit-sidebar').isVisible().catch(() => false)
     if (!sidebarOpen) {
       // Force click to bypass any potential overlay issues
       await toggleBtn.click({ force: true })
       // Wait for sidebar to open
       await this.page.waitForTimeout(500)
     }
-    await this.page.locator('.text-sm:has-text("Audit Log")').waitFor({ state: 'visible', timeout: 10000 })
+    await this.page.getByTestId('audit-sidebar').waitFor({ state: 'visible', timeout: 10000 })
   }
 
   /**

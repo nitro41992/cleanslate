@@ -87,7 +87,9 @@ export class DiffViewPage {
    * Toggle a key column for matching rows
    */
   async toggleKeyColumn(columnName: string): Promise<void> {
-    const checkbox = this.page.locator(`label:has-text("${columnName}")`)
+    // The checkbox has id="key-{column_name}" in DiffConfigPanel.tsx
+    const checkbox = this.page.locator(`#key-${columnName}`)
+    await checkbox.waitFor({ state: 'visible', timeout: 5000 })
     await checkbox.click()
   }
 

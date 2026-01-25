@@ -38,6 +38,24 @@ test.describe.serial('FR-F: Value Standardization', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Drop internal tables to prevent memory accumulation
+    try {
+      const internalTables = await inspector.runQuery(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name LIKE 'v_diff_%' OR table_name LIKE '_timeline_%'
+      `)
+      for (const t of internalTables) {
+        await inspector.runQuery(`DROP TABLE IF EXISTS "${t.table_name}"`)
+      }
+    } catch {
+      // Ignore errors during cleanup
+    }
+    // Press Escape to close any open overlays
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+  })
+
   async function loadTestData() {
     // Reload page to clear any stale table entries in store
     await page.reload()
@@ -86,6 +104,21 @@ test.describe.serial('FR-F: Value Standardization', () => {
     // With fingerprint algorithm:
     // "John Smith", "JOHN SMITH", "john  smith" should cluster together (3 rows)
     // "Jane Doe", "Jane   Doe", "JANE DOE" should cluster together (3 rows)
+
+    // Wait for clusters to be computed (at least 3 clusters expected)
+    await expect.poll(
+      async () => {
+        const clusters = await page.evaluate(() => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> })
+            .__CLEANSLATE_STORES__
+          return (stores?.standardizerStore as any)?.getState?.().clusters || []
+        })
+        return clusters.length
+      },
+      { timeout: 10000, message: 'Clusters not computed' }
+    ).toBeGreaterThanOrEqual(3)
+
+    // Now get the full cluster data
     const clusterData = await page.evaluate(() => {
       const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> })
         .__CLEANSLATE_STORES__
@@ -385,6 +418,24 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Drop internal tables to prevent memory accumulation
+    try {
+      const internalTables = await inspector.runQuery(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name LIKE 'v_diff_%' OR table_name LIKE '_timeline_%'
+      `)
+      for (const t of internalTables) {
+        await inspector.runQuery(`DROP TABLE IF EXISTS "${t.table_name}"`)
+      }
+    } catch {
+      // Ignore errors during cleanup
+    }
+    // Press Escape to close any open overlays
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+  })
+
   async function loadTestData() {
     // Reload page to clear any stale state
     await page.reload()
@@ -430,11 +481,8 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     // Verify original snapshot is available
     await expect(page.locator('text=Original snapshot available')).toBeVisible({ timeout: 5000 })
 
-    // Select a key column (required for comparison)
-    await diffView.toggleKeyColumn('id')
-    await page.waitForTimeout(300)
-
-    // Verify compare button is now enabled
+    // "Compare with Preview" mode automatically matches by internal _cs_id
+    // No key column selection needed - verify compare button is enabled
     await expect(diffView.compareButton).toBeEnabled({ timeout: 5000 })
 
     // Run comparison

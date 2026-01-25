@@ -42,6 +42,24 @@ test.describe.serial('Internal Column Filtering', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Drop internal diff tables created during comparison to prevent memory accumulation
+    try {
+      const internalTables = await inspector.runQuery(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name LIKE 'v_diff_%' OR table_name LIKE '_timeline_%'
+      `)
+      for (const t of internalTables) {
+        await inspector.runQuery(`DROP TABLE IF EXISTS "${t.table_name}"`)
+      }
+    } catch {
+      // Ignore errors during cleanup
+    }
+    // Press Escape to close any open panels
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+  })
+
   test('should never display internal columns in grid (regression test)', async () => {
     // Regression test for: Internal column leakage into UI
     // Goal 3: Ensure internal DuckDB metadata doesn't leak into UI
@@ -127,36 +145,20 @@ test.describe.serial('Internal Column Filtering', () => {
     await picker.waitForOpen()
 
     // 4. Select "Uppercase" transformation to see column dropdown
-    await page.getByRole('option', { name: 'Uppercase' }).click()
+    // Use the page object method to select transformation (it uses button selector, not option)
+    await picker.selectTransformation('Uppercase')
+
+    // 5. Click column selector to open dropdown
+    const columnSelect = page.getByTestId('column-selector')
+    await columnSelect.waitFor({ state: 'visible', timeout: 5000 })
+    await columnSelect.click()
     await page.waitForTimeout(300)
 
-    // 5. Get column dropdown options
-    const columnOptions = await page.evaluate(() => {
-      const dropdowns = Array.from(document.querySelectorAll('select[data-column-select]'))
-      if (dropdowns.length === 0) {
-        // Try alternative selector for Radix UI Select
-        const selectTriggers = Array.from(document.querySelectorAll('[role="combobox"]'))
-        if (selectTriggers.length > 0) {
-          // Click to open dropdown
-          const trigger = selectTriggers[0] as HTMLElement
-          trigger.click()
-          return []  // Will be captured in next step
-        }
-      }
-      // Get options from native select if available
-      const select = dropdowns[0] as HTMLSelectElement
-      return Array.from(select?.options || []).map(opt => opt.value)
+    // 6. Get column dropdown options from opened listbox
+    const actualColumnOptions = await page.evaluate(() => {
+      const options = Array.from(document.querySelectorAll('[role="option"]'))
+      return options.map(opt => opt.textContent || '')
     })
-
-    // If using Radix UI, get options from opened listbox
-    let actualColumnOptions = columnOptions
-    if (actualColumnOptions.length === 0) {
-      await page.waitForTimeout(500)  // Wait for dropdown to open
-      actualColumnOptions = await page.evaluate(() => {
-        const options = Array.from(document.querySelectorAll('[role="option"]'))
-        return options.map(opt => opt.textContent || '')
-      })
-    }
 
     // Rule 1: Assert exact set of user columns
     expect(actualColumnOptions).toContain('id')
@@ -185,8 +187,8 @@ test.describe.serial('Internal Column Filtering', () => {
         || []
     })
 
-    // Verify store-level filtering
-    expect(storeColumns).toEqual(['id', 'name', 'email'])
+    // Verify store-level filtering (basic-data.csv has 4 columns)
+    expect(storeColumns).toEqual(['id', 'name', 'email', 'city'])
   })
 
   test('should not show internal columns in diff grid (except Status) (regression test)', async () => {
@@ -221,7 +223,8 @@ test.describe.serial('Internal Column Filtering', () => {
     await page.getByRole('option', { name: /fr_b2_new/i }).click()
 
     // 4. Select key and run comparison
-    await page.getByRole('checkbox', { name: 'id' }).click()
+    // Checkbox has id="key-{columnName}" in DiffConfigPanel.tsx
+    await page.locator('#key-id').click()
     await page.getByTestId('diff-compare-btn').click()
     await page.waitForTimeout(2000)
 
@@ -230,17 +233,18 @@ test.describe.serial('Internal Column Filtering', () => {
       const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
       const diffStore = stores?.diffStore as {
         getState: () => {
-          resultColumns: Array<{ name: string }> | null
+          allColumns: string[]
         }
       } | undefined
-      return diffStore?.getState()?.resultColumns?.map(c => c.name) || []
+      return diffStore?.getState()?.allColumns || []
     })
 
-    // Rule 1: Assert exact column set (Status + user columns only)
-    expect(diffColumns).toContain('Status')
+    // Rule 1: Assert exact column set (user columns only - Status is added by UI, not in store)
+    // fr_b2_base.csv has columns: id, name, department, salary
     expect(diffColumns).toContain('id')
     expect(diffColumns).toContain('name')
-    expect(diffColumns).toContain('email')
+    expect(diffColumns).toContain('department')
+    expect(diffColumns).toContain('salary')
 
     // Rule 2: Assert internal columns NOT present
     expect(diffColumns).not.toContain('_cs_id')

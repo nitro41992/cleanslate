@@ -399,7 +399,7 @@ export function CleanPanel() {
                     value={selectedColumn}
                     onValueChange={setSelectedColumn}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger data-testid="column-selector">
                       <SelectValue placeholder="Select column..." />
                     </SelectTrigger>
                     <SelectContent>

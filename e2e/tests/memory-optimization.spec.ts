@@ -49,6 +49,24 @@ test.describe.serial('Memory Optimization - Compression', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Drop internal diff tables created during comparison to prevent memory accumulation
+    try {
+      const internalTables = await inspector.runQuery(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name LIKE 'v_diff_%' OR table_name LIKE '_timeline_%'
+      `)
+      for (const t of internalTables) {
+        await inspector.runQuery(`DROP TABLE IF EXISTS "${t.table_name}"`)
+      }
+    } catch {
+      // Ignore errors during cleanup
+    }
+    // Press Escape to close any open panels
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+  })
+
   /**
    * Generate a large CSV file with realistic data
    * Creates 5k rows with 10 columns (~2MB file)
