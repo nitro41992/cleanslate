@@ -422,6 +422,12 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Reload page after each test to prevent memory accumulation in serial mode
+    await page.reload()
+    await page.waitForLoadState('networkidle')
+  })
+
   /**
    * Generate a large CSV file with realistic data
    * Creates rows with 10 columns

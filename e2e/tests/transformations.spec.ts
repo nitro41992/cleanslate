@@ -621,14 +621,11 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     expect(beforeData[0]._cs_id).toBeDefined()
     expect(beforeData[0]._cs_id).not.toBeNull()
 
-    // Store first occurrence _cs_id for each ID (these should be preserved)
+    // Store _cs_id values that should be preserved by dedup
+    // Use same DISTINCT ON logic that remove_duplicates uses
     const firstOccurrenceMap = new Map<number, string>()
-    const allRows = await inspector.runQuery('SELECT id, _cs_id FROM dedup_large_test ORDER BY id')
-    for (const row of allRows) {
-      const id = Number(row.id)
-      if (!firstOccurrenceMap.has(id)) {
-        firstOccurrenceMap.set(id, row._cs_id as string)
-      }
+    for (const row of beforeData) {
+      firstOccurrenceMap.set(Number(row.id), row._cs_id as string)
     }
 
     // 4. Run remove_duplicates transformation

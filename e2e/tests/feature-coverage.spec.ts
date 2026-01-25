@@ -427,6 +427,12 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Reload page after each test to prevent memory accumulation in serial mode
+    await page.reload()
+    await page.waitForLoadState('networkidle')
+  })
+
   test('should detect row changes between two tables', async () => {
     // Load a table first (diff button disabled on empty state)
     await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
