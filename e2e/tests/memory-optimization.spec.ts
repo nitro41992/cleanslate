@@ -139,7 +139,7 @@ test.describe.serial('Memory Optimization - Compression', () => {
           }
         }
         return null
-      } catch (err) {
+      } catch {
         return null
       }
     })
@@ -335,7 +335,7 @@ test.describe.serial('Memory Optimization - OPFS File Size', () => {
         const dbFileHandle = await opfsRoot.getFileHandle('cleanslate.db')
         const dbFile = await dbFileHandle.getFile()
         return dbFile.size
-      } catch (err) {
+      } catch {
         // File may not exist yet (fresh OPFS)
         return 0
       }
@@ -365,7 +365,7 @@ test.describe.serial('Memory Optimization - OPFS File Size', () => {
             ? ((estimate.usage / estimate.quota) * 100).toFixed(2)
             : 0
         }
-      } catch (err) {
+      } catch {
         return null
       }
     })
@@ -378,5 +378,355 @@ test.describe.serial('Memory Optimization - OPFS File Size', () => {
     } else {
       console.log('[Storage Quota] Not available in this browser')
     }
+  })
+})
+
+test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let picker: TransformationPickerPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+
+    // Block unnecessary resources to reduce memory usage
+    await page.route('**/*', (route) => {
+      const resourceType = route.request().resourceType()
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        route.abort()
+      } else {
+        route.continue()
+      }
+    })
+
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    picker = new TransformationPickerPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    // Clean up OPFS storage
+    await page.evaluate(async () => {
+      try {
+        const opfsRoot = await navigator.storage.getDirectory()
+        await opfsRoot.removeEntry('cleanslate.db')
+      } catch (err) {
+        console.log('[Test Cleanup] Could not delete cleanslate.db:', err)
+      }
+    })
+    await page.close()
+  })
+
+  /**
+   * Generate a large CSV file with realistic data
+   * Creates rows with 10 columns
+   */
+  async function generateLargeCSV(rowCount: number): Promise<string> {
+    const headers = [
+      'id',
+      'name',
+      'email',
+      'company',
+      'address',
+      'city',
+      'state',
+      'zip',
+      'phone',
+      'notes'
+    ]
+
+    const lines = [headers.join(',')]
+
+    for (let i = 0; i < rowCount; i++) {
+      const row = [
+        i + 1,
+        `User ${i + 1}`,
+        `user${i}@example.com`,
+        `Company ${i % 100}`,
+        `${i} Main Street`,
+        `City ${i % 50}`,
+        `ST${i % 50}`,
+        String(10000 + i).padStart(5, '0'),
+        `555-${String(i).padStart(4, '0')}`,
+        `This is a sample note with some repeated text to test compression efficiency. Row ${i}.`
+      ]
+      lines.push(row.join(','))
+    }
+
+    return lines.join('\n')
+  }
+
+  test('should load chunked Parquet snapshots in diff without errors (5k rows)', async () => {
+    // Regression test for: Chunked Parquet file loading in diff
+    // Issues fixed:
+    // - "IO Error: No files found that match the pattern"
+    // - "Binder Error: column duckdb_schema does not exist"
+    // - "Access Handles cannot be created" (file locking)
+    // Goal 2: Ensure system handles realistic files correctly (5k rows optimal for browser stability)
+
+    // Increase timeout for dataset operations
+    test.setTimeout(90000) // 90 seconds
+
+    // Setup console error listener
+    const consoleErrors: string[] = []
+    page.on('console', msg => {
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text())
+      }
+    })
+
+    // 1. Generate CSV (5k rows, realistic columns)
+    const csvContent = await generateLargeCSV(5000)
+    const csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
+    console.log(`[Chunked Parquet Test] Generated CSV: ${csvSizeMB}MB (5k rows, 10 columns)`)
+
+    // 2. Upload and import
+    await inspector.runQuery('DROP TABLE IF EXISTS large_dataset_5k')
+
+    // Write to temp file and upload using helper
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const tmpDir = await import('os').then(os => os.tmpdir())
+    const testFilePath = path.join(tmpDir, 'large_dataset_5k.csv')
+    await fs.writeFile(testFilePath, csvContent)
+
+    await laundromat.uploadFile(testFilePath)
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('large_dataset_5k', 5000)
+
+    // Cleanup temp file
+    await fs.unlink(testFilePath).catch(() => {})
+
+    // 3. Verify OPFS contains chunked Parquet files
+    const opfsFiles = await page.evaluate(async () => {
+      try {
+        const opfsRoot = await navigator.storage.getDirectory()
+        const files: string[] = []
+        // @ts-expect-error - AsyncIterator not in types
+        for await (const entry of opfsRoot.values()) {
+          files.push(entry.name)
+        }
+        return files.filter(f => f.includes('original') && f.includes('.parquet'))
+      } catch {
+        return []
+      }
+    })
+
+    console.log(`[Chunked Parquet Test] OPFS snapshot files:`, opfsFiles)
+    // May have chunked files like original_*_part_0.parquet, _part_1.parquet, etc.
+    // Or single snapshot file depending on size threshold
+
+    // 4. Apply transformation (e.g., Uppercase on column)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
+    await page.waitForTimeout(2000)  // Allow transformation to complete
+
+    // 5. Open Diff view → Compare with Preview
+    await laundromat.openDiffView()
+    await page.waitForTimeout(500)
+
+    // Select Compare with Preview mode
+    await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
+    await page.waitForTimeout(300)
+
+    // Select id as key column
+    await page.getByRole('checkbox', { name: 'id' }).click()
+
+    // 6. Run comparison
+    await page.getByTestId('diff-compare-btn').click()
+
+    // Wait for comparison to complete
+    await page.waitForTimeout(3000)
+
+    // 7. Verify diff loads without errors
+    // Rule 2: Assert NO console errors (positive assertion)
+    const ioErrors = consoleErrors.filter(err =>
+      err.includes('IO Error') ||
+      err.includes('Binder Error') ||
+      err.includes('Access Handles') ||
+      err.includes('duckdb_schema')
+    )
+    expect(ioErrors.length).toBe(0)
+
+    // 8. Verify diff shows 5k "MODIFIED" rows
+    const diffSummary = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      const diffStore = stores?.diffStore as {
+        getState: () => {
+          summary: { added: number; removed: number; modified: number; unchanged: number } | null
+        }
+      } | undefined
+      return diffStore?.getState()?.summary || null
+    })
+
+    // Rule 1: Assert exact count (identity, not cardinality)
+    expect(diffSummary).not.toBeNull()
+    expect(diffSummary?.modified).toBe(5000)
+    expect(diffSummary?.added).toBe(0)
+    expect(diffSummary?.removed).toBe(0)
+
+    // 9. Test pagination (scroll through diff grid)
+    // Scroll to bottom of grid
+    await page.evaluate(() => {
+      const grid = document.querySelector('[data-testid="diff-grid"]')
+      if (grid) {
+        grid.scrollTop = grid.scrollHeight
+      }
+    })
+    await page.waitForTimeout(1000)
+
+    // Scroll back to top
+    await page.evaluate(() => {
+      const grid = document.querySelector('[data-testid="diff-grid"]')
+      if (grid) {
+        grid.scrollTop = 0
+      }
+    })
+    await page.waitForTimeout(1000)
+
+    // 10. Verify pagination doesn't throw file locking errors
+    const paginationErrors = consoleErrors.filter(err =>
+      err.includes('Access Handles') ||
+      err.includes('file locking') ||
+      err.includes('OPFS')
+    )
+    expect(paginationErrors.length).toBe(0)
+
+    // 11. Export diff to CSV
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByTestId('diff-export-btn').click()
+    await page.waitForTimeout(500)
+    const download = await downloadPromise
+
+    // 12. Verify export completes without Binder Error (ORDER BY detection works)
+    const exportErrors = consoleErrors.filter(err =>
+      err.includes('Binder Error') ||
+      err.includes('ORDER BY')
+    )
+    expect(exportErrors.length).toBe(0)
+
+    // Verify export file has 5k rows + header
+    const csvPath = await download.path()
+    if (csvPath) {
+      const fs = await import('fs/promises')
+      const exportContent = await fs.readFile(csvPath, 'utf-8')
+      const lineCount = exportContent.split('\n').length
+      // Should have ~5k lines (may vary by 1-2 due to empty lines)
+      expect(lineCount).toBeGreaterThan(4998)
+      expect(lineCount).toBeLessThan(5003)
+    }
+  })
+
+  test('should prevent file locking errors on diff pagination (regression test)', async () => {
+    // Regression test for: OPFS file locking on pagination
+    // Issue: Diff pagination was re-registering Parquet files, causing "Access Handles cannot be created"
+    // Goal 2: Ensure system handles realistic files correctly (5k rows optimal for browser stability)
+
+    // Increase timeout for dataset operations
+    test.setTimeout(90000) // 90 seconds
+
+    // Setup console error listener
+    const consoleErrors: string[] = []
+    page.on('console', msg => {
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text())
+      }
+    })
+
+    // 1. Generate CSV (5k rows)
+    const csvContent = await generateLargeCSV(5000)
+
+    // 2. Upload, apply transformation
+    await inspector.runQuery('DROP TABLE IF EXISTS large_dataset_5k_pagination')
+
+    // Write to temp file and upload using helper
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const tmpDir = await import('os').then(os => os.tmpdir())
+    const testFilePath = path.join(tmpDir, 'large_dataset_5k_pagination.csv')
+    await fs.writeFile(testFilePath, csvContent)
+
+    await laundromat.uploadFile(testFilePath)
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('large_dataset_5k_pagination', 5000)
+
+    // Cleanup temp file
+    await fs.unlink(testFilePath).catch(() => {})
+
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Lowercase', { column: 'email' })
+    await laundromat.closePanel()
+    await page.waitForTimeout(2000)
+
+    // 3. Open Diff view → Compare with Preview
+    await laundromat.openDiffView()
+    await page.waitForTimeout(500)
+
+    await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
+    await page.waitForTimeout(300)
+    await page.getByRole('checkbox', { name: 'id' }).click()
+
+    // 4. Run comparison (creates diff result table with chunked Parquet)
+    await page.getByTestId('diff-compare-btn').click()
+    await page.waitForTimeout(3000)
+
+    // 5. Scroll to bottom of diff grid (triggers pagination)
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => {
+        const grid = document.querySelector('[data-testid="diff-grid"]')
+        if (grid) {
+          grid.scrollTop = grid.scrollHeight
+        }
+      })
+      await page.waitForTimeout(500)
+
+      // Scroll back to top
+      await page.evaluate(() => {
+        const grid = document.querySelector('[data-testid="diff-grid"]')
+        if (grid) {
+          grid.scrollTop = 0
+        }
+      })
+      await page.waitForTimeout(500)
+    }
+
+    // 6. Verify no console errors: "Access Handles cannot be created"
+    const fileLockingErrors = consoleErrors.filter(err =>
+      err.includes('Access Handles') ||
+      err.includes('file locking') ||
+      err.includes('OPFS')
+    )
+    expect(fileLockingErrors.length).toBe(0)
+
+    // 7. Close diff view
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(500)
+
+    // 8. Re-open diff view (should not throw file locking errors)
+    await laundromat.openDiffView()
+    await page.waitForTimeout(500)
+
+    await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
+    await page.waitForTimeout(300)
+    await page.getByRole('checkbox', { name: 'id' }).click()
+    await page.getByTestId('diff-compare-btn').click()
+    await page.waitForTimeout(3000)
+
+    // 9. Verify no file locking errors on re-open
+    const reopenErrors = consoleErrors.filter(err =>
+      err.includes('Access Handles') ||
+      err.includes('file locking')
+    )
+    expect(reopenErrors.length).toBe(0)
   })
 })

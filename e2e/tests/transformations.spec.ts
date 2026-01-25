@@ -521,3 +521,157 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
     expect(data[3].name).toBe('say hello') // Not replaced (contains, not exact)
   })
 })
+
+test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)', () => {
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let picker: TransformationPickerPage
+  let inspector: StoreInspector
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+
+    // Block unnecessary resources to reduce memory usage
+    await page.route('**/*', (route) => {
+      const resourceType = route.request().resourceType()
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        route.abort()
+      } else {
+        route.continue()
+      }
+    })
+
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    picker = new TransformationPickerPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  /**
+   * Generate CSV with duplicates for testing remove_duplicates
+   * Creates rows where some IDs repeat (duplicates)
+   */
+  async function generateDuplicatesCSV(totalRows: number, uniqueRows: number): Promise<string> {
+    const lines = ['id,name,email']
+
+    // Generate unique rows first
+    for (let i = 1; i <= uniqueRows; i++) {
+      lines.push(`${i},User ${i},user${i}@example.com`)
+    }
+
+    // Add duplicates by repeating some rows
+    const duplicatesToAdd = totalRows - uniqueRows
+    for (let i = 0; i < duplicatesToAdd; i++) {
+      const originalId = (i % uniqueRows) + 1
+      lines.push(`${originalId},User ${originalId},user${originalId}@example.com`)
+    }
+
+    return lines.join('\n')
+  }
+
+  test('should preserve _cs_id lineage through remove_duplicates (5k rows, 1.5k unique)', async () => {
+    // Regression test for: _cs_id lineage preservation in remove_duplicates
+    // Issue: remove_duplicates must use FIRST(_cs_id) to maintain row identity for diff matching
+    // Goal 2: Ensure system handles realistic files correctly (5k rows optimal for browser stability)
+
+    // Increase timeout for dataset operations
+    test.setTimeout(90000) // 90 seconds
+
+    // 1. Generate CSV with duplicates (5k rows, 1.5k unique after dedup)
+    const csvContent = await generateDuplicatesCSV(5000, 1500)
+    const csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
+    console.log(`[_cs_id Lineage Test] Generated CSV: ${csvSizeMB}MB (5k rows, 1.5k unique)`)
+
+    // 2. Upload and import - write to temp file first
+    await inspector.runQuery('DROP TABLE IF EXISTS dedup_large_test')
+
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const tmpDir = await import('os').then(os => os.tmpdir())
+    const testFilePath = path.join(tmpDir, 'dedup_large_test.csv')
+    await fs.writeFile(testFilePath, csvContent)
+
+    await laundromat.uploadFile(testFilePath)
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('dedup_large_test', 5000)
+
+    // Cleanup temp file
+    await fs.unlink(testFilePath).catch(() => {})
+
+    // 3. Query _cs_id values before transformation (sample first 10 unique IDs)
+    const beforeData = await inspector.runQuery(`
+      SELECT id, _cs_id
+      FROM (
+        SELECT DISTINCT ON (id) id, _cs_id
+        FROM dedup_large_test
+        WHERE id <= 10
+        ORDER BY id
+      ) AS unique_ids
+      ORDER BY id
+    `)
+    console.log('[_cs_id Lineage Test] Sample _cs_id before dedup:', beforeData.slice(0, 3))
+
+    // Rule 1: Assert we have actual _cs_id values (not null)
+    expect(beforeData.length).toBe(10)
+    expect(beforeData[0]._cs_id).toBeDefined()
+    expect(beforeData[0]._cs_id).not.toBeNull()
+
+    // Store first occurrence _cs_id for each ID (these should be preserved)
+    const firstOccurrenceMap = new Map<number, string>()
+    const allRows = await inspector.runQuery('SELECT id, _cs_id FROM dedup_large_test ORDER BY id')
+    for (const row of allRows) {
+      const id = Number(row.id)
+      if (!firstOccurrenceMap.has(id)) {
+        firstOccurrenceMap.set(id, row._cs_id as string)
+      }
+    }
+
+    // 4. Run remove_duplicates transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Remove Duplicates')
+    await laundromat.closePanel()
+    await page.waitForTimeout(1000)  // Allow dedup to complete
+
+    // 5. Query _cs_id values after transformation
+    const afterData = await inspector.runQuery(`
+      SELECT id, _cs_id
+      FROM dedup_large_test
+      ORDER BY id
+      LIMIT 10
+    `)
+    console.log('[_cs_id Lineage Test] Sample _cs_id after dedup:', afterData.slice(0, 3))
+
+    // 6. Verify remaining rows have SAME _cs_id as before (FIRST aggregation preserved them)
+    // Rule 1: Assert identity, not just cardinality
+    for (const afterRow of afterData) {
+      const id = Number(afterRow.id)
+      const expectedCsId = firstOccurrenceMap.get(id)
+      expect(afterRow._cs_id).toBe(expectedCsId)
+    }
+
+    // 7. Verify total row count is 1500 (dedup worked)
+    const countResult = await inspector.runQuery('SELECT COUNT(*) as cnt FROM dedup_large_test')
+    const finalCount = Number(countResult[0].cnt)
+    expect(finalCount).toBe(1500)
+
+    // 8. Verify _cs_id preservation was successful (core regression test)
+    // The fact that we got here with matching _cs_id values proves:
+    // - remove_duplicates used FIRST(_cs_id) aggregation
+    // - Row identity is maintained for diff matching
+    // - No new rows were created (would have new _cs_ids)
+
+    // This test validates the fix for the regression where remove_duplicates
+    // was not preserving _cs_id, causing diff to show ADDED rows instead of REMOVED
+
+    console.log('[_cs_id Lineage Test] ✅ _cs_id preservation verified - lineage maintained through dedup')
+  })
+})

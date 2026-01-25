@@ -18,8 +18,10 @@ npm run preview   # Preview production build locally
 ```
 
 ## Rules to Follow
+### General
 - **Always push the plan with your commits**
 - **Dont create .md files in the root folder unless ecplicitly asked to.**
+- **If you are creating E2E Tests, make sure they are passing tests. If not, work with me to figure out if the issue is the implementation or the intent of the test itself.**
 
 ## Architecture
 
