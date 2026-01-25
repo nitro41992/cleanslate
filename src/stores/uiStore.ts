@@ -13,6 +13,7 @@ interface UIState {
   memoryLevel: MemoryLevel
   busyCount: number  // Reference counter for nested DuckDB locks
   loadingMessage: string | null  // Dynamic loading message for file imports
+  skipNextGridReload: boolean  // Flag to skip next DataGrid reload (e.g., after diff close)
 }
 
 interface UIActions {
@@ -30,6 +31,8 @@ interface UIActions {
   decrementBusy: () => void
   /** Set dynamic loading message for file imports */
   setLoadingMessage: (message: string | null) => void
+  /** Set flag to skip next DataGrid reload (e.g., after diff close) */
+  setSkipNextGridReload: (skip: boolean) => void
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -41,6 +44,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   memoryLevel: 'normal',
   busyCount: 0,
   loadingMessage: null,
+  skipNextGridReload: false,
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
@@ -87,4 +91,5 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   incrementBusy: () => set((state) => ({ busyCount: state.busyCount + 1 })),
   decrementBusy: () => set((state) => ({ busyCount: Math.max(0, state.busyCount - 1) })),
   setLoadingMessage: (message) => set({ loadingMessage: message }),
+  setSkipNextGridReload: (skip) => set({ skipNextGridReload: skip }),
 }))

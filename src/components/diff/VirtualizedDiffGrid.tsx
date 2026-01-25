@@ -9,7 +9,7 @@ import DataGridLib, {
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchDiffPage, getModifiedColumns, type DiffRow } from '@/lib/diff-engine'
+import { fetchDiffPage, type DiffRow } from '@/lib/diff-engine'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -87,6 +87,33 @@ export function VirtualizedDiffGrid({
   // We swap the names here to match user expectations in the UI:
   const userNewColumns = removedColumns    // columns added to current (e.g., 'age' from Calculate Age)
   const userRemovedColumns = newColumns    // columns removed from current
+
+  // Pre-compute Sets for O(1) lookups (performance optimization)
+  const keyColumnsSet = useMemo(() => new Set(keyColumns), [keyColumns])
+  const userNewColumnsSet = useMemo(() => new Set(userNewColumns), [userNewColumns])
+  const userRemovedColumnsSet = useMemo(() => new Set(userRemovedColumns), [userRemovedColumns])
+
+  // Pre-compute modified columns for all loaded rows (performance optimization)
+  // This replaces ~60,000 per-cell getModifiedColumns() calls with O(1) lookups
+  const modifiedColumnsCache = useMemo(() => {
+    const cache = new Map<string, Set<string>>()
+    for (const row of data) {
+      if (row.diff_status === 'modified') {
+        const modCols = new Set<string>()
+        for (const col of allColumns) {
+          // Skip key columns and new/removed columns
+          if (keyColumnsSet.has(col) || userNewColumnsSet.has(col) || userRemovedColumnsSet.has(col)) continue
+          const valA = row[`a_${col}`]
+          const valB = row[`b_${col}`]
+          if (String(valA ?? '') !== String(valB ?? '')) {
+            modCols.add(col)
+          }
+        }
+        cache.set(row.row_id as string, modCols)
+      }
+    }
+    return cache
+  }, [data, allColumns, keyColumnsSet, userNewColumnsSet, userRemovedColumnsSet])
 
   // Build grid columns: Status (if not blind mode) + all data columns
   const gridColumns: GridColumn[] = useMemo(() => {
@@ -222,17 +249,17 @@ export function VirtualizedDiffGrid({
       } else if (status === 'removed') {
         // Row exists in A (original) only - show original value
         displayValue = strA
-      } else if (userNewColumns.includes(colName)) {
+      } else if (userNewColumnsSet.has(colName)) {
         // New column (in B/current) - show current value (this is added data)
         displayValue = strB
-      } else if (userRemovedColumns.includes(colName)) {
+      } else if (userRemovedColumnsSet.has(colName)) {
         // Removed column (in A/original) - show original value (this is removed data)
         displayValue = strA
       } else {
         // Modified or unchanged - show A→B for modified columns
-        // Pass engine perspective to getModifiedColumns (it uses those names internally)
-        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, userRemovedColumns, userNewColumns)
-        if (modifiedCols.includes(colName)) {
+        // Use cached modified columns for O(1) lookup
+        const rowModifiedCols = modifiedColumnsCache.get(rowData.row_id as string)
+        if (rowModifiedCols?.has(colName)) {
           displayValue = `${strA} → ${strB}`
         } else {
           // Show current value for unchanged columns
@@ -248,7 +275,7 @@ export function VirtualizedDiffGrid({
         readonly: true,
       }
     },
-    [data, allColumns, keyColumns, userNewColumns, userRemovedColumns, loadedRange.start, blindMode]
+    [data, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache]
   )
 
   // Custom cell drawing for modified cells (show A→B with styling)
@@ -282,14 +309,14 @@ export function VirtualizedDiffGrid({
       const colName = allColumns[colIndex]
       const status = rowData.diff_status
 
-      // Use user perspective for column classification
+      // Use user perspective for column classification (O(1) Set lookups)
       // userNewColumns = columns added to current (in B)
       // userRemovedColumns = columns removed from current (in A only)
-      const isUserNewColumn = userNewColumns.includes(colName)
-      const isUserRemovedColumn = userRemovedColumns.includes(colName)
-      // Check if this specific column was modified (pass engine perspective to getModifiedColumns)
-      const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, userRemovedColumns, userNewColumns)
-      const isModified = status === 'modified' && modifiedCols.includes(colName)
+      const isUserNewColumn = userNewColumnsSet.has(colName)
+      const isUserRemovedColumn = userRemovedColumnsSet.has(colName)
+      // Check if this specific column was modified (use cached modified columns)
+      const rowModifiedCols = modifiedColumnsCache.get(rowData.row_id as string)
+      const isModified = status === 'modified' && (rowModifiedCols?.has(colName) ?? false)
 
       // Handle new columns (in B/current) - show with green styling
       if (isUserNewColumn && status !== 'removed') {
@@ -391,7 +418,7 @@ export function VirtualizedDiffGrid({
         draw()
       }
     },
-    [data, allColumns, keyColumns, userNewColumns, userRemovedColumns, loadedRange.start, blindMode]
+    [data, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache]
   )
 
   // Row theme based on diff status
@@ -413,9 +440,9 @@ export function VirtualizedDiffGrid({
       if (status === 'modified') {
         // Check if any SHARED columns were actually modified
         // If only new/removed columns have changes, don't show yellow row background
-        // Pass engine perspective to getModifiedColumns (swapped from user perspective)
-        const modifiedCols = getModifiedColumns(rowData, allColumns, keyColumns, userRemovedColumns, userNewColumns)
-        if (modifiedCols.length === 0) {
+        // Use cached modified columns for O(1) lookup
+        const rowModifiedCols = modifiedColumnsCache.get(rowData.row_id as string)
+        if (!rowModifiedCols || rowModifiedCols.size === 0) {
           // Only new/removed columns changed - no row-level highlight
           return undefined
         }
@@ -423,7 +450,7 @@ export function VirtualizedDiffGrid({
       }
       return undefined
     },
-    [data, loadedRange.start, blindMode, allColumns, keyColumns, userNewColumns, userRemovedColumns]
+    [data, loadedRange.start, blindMode, modifiedColumnsCache]
   )
 
   if (isLoading) {

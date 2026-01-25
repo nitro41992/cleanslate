@@ -159,6 +159,15 @@ export function DataGrid({
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
   useEffect(() => {
     console.log('[DATAGRID] useEffect triggered', { tableName, columnCount: columns.length, rowCount, dataVersion, isReplaying })
+
+    // Check and consume skip flag (e.g., after diff close to prevent unnecessary reload)
+    const shouldSkip = useUIStore.getState().skipNextGridReload
+    if (shouldSkip) {
+      useUIStore.getState().setSkipNextGridReload(false)
+      console.log('[DATAGRID] Skipping fetch - skipNextGridReload flag was set')
+      return
+    }
+
     if (!tableName || columns.length === 0) {
       console.log('[DATAGRID] Early return - no tableName or columns')
       return
