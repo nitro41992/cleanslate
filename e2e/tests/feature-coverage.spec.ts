@@ -596,8 +596,12 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await matchView.applyMerges()
 
     // Wait for match panel to fully close and UI to stabilize
-    await page.waitForTimeout(1000)
+    await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
+    await page.waitForTimeout(1000) // Wait for toast auto-dismiss
+    await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
     await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(1000) // Additional stabilization
 
     // Open audit sidebar to verify the merge was logged
     await laundromat.openAuditSidebar()
@@ -1153,6 +1157,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
+  // Standard timeout - cleanup is now lightweight
+  test.setTimeout(60000)
+
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
@@ -1167,12 +1174,8 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test.afterEach(async () => {
-    // Aggressive cleanup after each join operation test
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-    })
+    // Lightweight cleanup - tests already drop their own tables
+    await coolHeapLight(page)
   })
 
   test('should perform inner join on customer_id', async () => {
@@ -1239,10 +1242,6 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test('should perform left join preserving unmatched orders', async () => {
-    // Wait for cleanup to fully stabilize
-    await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(1000)
-
     // Drop existing tables from previous test
     await inspector.runQuery('DROP TABLE IF EXISTS join_result')
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
@@ -1252,13 +1251,13 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('fr_e2_orders', 6, 60000) // Increased timeout to 60s
+    await inspector.waitForTableLoaded('fr_e2_orders', 6)
 
     // Upload customers file
     await laundromat.uploadFile(getFixturePath('fr_e2_customers.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('fr_e2_customers', 4, 60000) // Increased timeout to 60s
+    await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
     // Wait for any transitions to settle before opening panel
     await page.waitForTimeout(500)
