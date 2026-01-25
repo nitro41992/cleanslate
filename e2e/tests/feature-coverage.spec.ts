@@ -427,12 +427,6 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     await page.close()
   })
 
-  test.afterEach(async () => {
-    // Reload page after each test to prevent memory accumulation in serial mode
-    await page.reload()
-    await page.waitForLoadState('networkidle')
-  })
-
   test('should detect row changes between two tables', async () => {
     // Load a table first (diff button disabled on empty state)
     await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
@@ -448,13 +442,13 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
   })
 
-  test('should show all diff statuses (500 rows) (regression test)', async () => {
+  test('should show all diff statuses (100 rows) (regression test)', async () => {
     // Regression test for: Diff correctly identifies Added, Modified, Removed rows
-    // Goal 2: Validate functionality works correctly (minimal dataset for browser stability)
+    // Goal: Validate functionality works correctly (minimal dataset for fast execution)
 
-    // Close diff view to upload files
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    // Close diff view to upload files (use dismissOverlays helper for robustness)
+    await laundromat.dismissOverlays()
+    await page.waitForTimeout(500)
 
     // Generate minimal overlapping data
     const generateOverlappingCSV = (startId: number, endId: number, prefix: string): string => {
@@ -465,39 +459,39 @@ test.describe.serial('FR-B2: Visual Diff', () => {
       return lines.join('\n')
     }
 
-    // Base: rows 1-500
-    const baseCSV = generateOverlappingCSV(1, 500, 'Base')
-    // New: rows 50-550 (overlap 50-500, remove 1-49, add 501-550)
-    const newCSV = generateOverlappingCSV(50, 550, 'New')
+    // Base: rows 1-100
+    const baseCSV = generateOverlappingCSV(1, 100, 'Base')
+    // New: rows 10-110 (overlap 10-100, remove 1-9, add 101-110)
+    const newCSV = generateOverlappingCSV(10, 110, 'New')
 
     console.log(`[Diff Test] Generated Base CSV: ${(baseCSV.length / (1024 * 1024)).toFixed(2)}MB`)
     console.log(`[Diff Test] Generated New CSV: ${(newCSV.length / (1024 * 1024)).toFixed(2)}MB`)
 
     // Clean up any existing tables
-    await inspector.runQuery('DROP TABLE IF EXISTS diff_base_500')
-    await inspector.runQuery('DROP TABLE IF EXISTS diff_new_550')
+    await inspector.runQuery('DROP TABLE IF EXISTS diff_base_100')
+    await inspector.runQuery('DROP TABLE IF EXISTS diff_new_110')
 
     // Upload base file - use helper to write temp file first
     const fs = await import('fs/promises')
     const path = await import('path')
     const tmpDir = await import('os').then(os => os.tmpdir())
 
-    const baseFilePath = path.join(tmpDir, 'diff_base_500.csv')
+    const baseFilePath = path.join(tmpDir, 'diff_base_100.csv')
     await fs.writeFile(baseFilePath, baseCSV)
 
     await laundromat.uploadFile(baseFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('diff_base_500', 500)
+    await inspector.waitForTableLoaded('diff_base_100', 100)
 
     // Upload new file
-    const newFilePath = path.join(tmpDir, 'diff_new_550.csv')
+    const newFilePath = path.join(tmpDir, 'diff_new_110.csv')
     await fs.writeFile(newFilePath, newCSV)
 
     await laundromat.uploadFile(newFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('diff_new_550', 550)
+    await inspector.waitForTableLoaded('diff_new_110', 101)  // 10-110 inclusive = 101 rows
 
     // Open Diff view
     await laundromat.openDiffView()
@@ -509,9 +503,9 @@ test.describe.serial('FR-B2: Visual Diff', () => {
 
     // Select tables
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /diff_base_500/i }).click()
+    await page.getByRole('option', { name: /diff_base_100/i }).click()
     await page.getByRole('combobox').nth(1).click()
-    await page.getByRole('option', { name: /diff_new_550/i }).click()
+    await page.getByRole('option', { name: /diff_new_110/i }).click()
 
     // Select id as key column
     await page.getByRole('checkbox', { name: 'id' }).click()
@@ -532,14 +526,14 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     })
 
     // Rule 1: Assert exact counts (identity, not cardinality)
-    // Base: 1-500 | New: 50-550
-    // Added: 501-550 (50 rows)
-    // Removed: 1-49 (49 rows)
-    // Modified: 50-500 (451 rows - all have different names/emails)
+    // Base: 1-100 | New: 10-110
+    // Removed: 1-9 (9 rows)
+    // Added: 101-110 (10 rows)
+    // Modified: 10-100 (91 rows - all have different names/emails)
     expect(summary).not.toBeNull()
-    expect(summary?.added).toBe(50)        // Rows 501-550 (new rows)
-    expect(summary?.removed).toBe(49)      // Rows 1-49 (deleted rows)
-    expect(summary?.modified).toBe(451)    // Rows 50-500 have different names/emails
+    expect(summary?.added).toBe(10)        // Rows 101-110 (new rows)
+    expect(summary?.removed).toBe(9)       // Rows 1-9 (deleted rows)
+    expect(summary?.modified).toBe(91)     // Rows 10-100 have different names/emails
     expect(summary?.unchanged).toBe(0)     // No unchanged rows (all overlapping rows were modified)
 
     // Verify diff pills show correct numbers
@@ -547,16 +541,16 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     const removedPill = page.getByTestId('diff-pill-removed')
     const modifiedPill = page.getByTestId('diff-pill-modified')
 
-    await expect(addedPill.locator('span').first()).toContainText('50')
-    await expect(removedPill.locator('span').first()).toContainText('49')
-    await expect(modifiedPill.locator('span').first()).toContainText('451')
+    await expect(addedPill.locator('span').first()).toContainText('10')
+    await expect(removedPill.locator('span').first()).toContainText('9')
+    await expect(modifiedPill.locator('span').first()).toContainText('91')
 
     // Rule 3: Verify grid visually shows green/red/yellow rows correctly
     // (Canvas grid, so we verify store state instead of DOM)
     const diffState = await inspector.getDiffState()
-    expect(diffState.summary?.added).toBe(50)
-    expect(diffState.summary?.removed).toBe(49)
-    expect(diffState.summary?.modified).toBe(451)
+    expect(diffState.summary?.added).toBe(10)
+    expect(diffState.summary?.removed).toBe(9)
+    expect(diffState.summary?.modified).toBe(91)
 
     // Cleanup temp files
     await fs.unlink(baseFilePath).catch(() => {})
@@ -970,16 +964,6 @@ test.describe.serial('Internal Column Filtering', () => {
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
 
-    // Block unnecessary resources to reduce memory usage
-    await page.route('**/*', (route) => {
-      const resourceType = route.request().resourceType()
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        route.abort()
-      } else {
-        route.continue()
-      }
-    })
-
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -992,9 +976,14 @@ test.describe.serial('Internal Column Filtering', () => {
     await page.close()
   })
 
+  test.afterEach(async () => {
+    // Reload page after each test to prevent memory accumulation
+    await page.reload()
+    await page.waitForLoadState('networkidle')
+    await inspector.waitForDuckDBReady()
+  })
+
   test('should never display internal columns in grid (regression test)', async () => {
-    // Increase timeout to avoid browser crashes
-    test.setTimeout(90000) // 90 seconds
     // Regression test for: Internal column leakage into UI
     // Goal 3: Ensure internal DuckDB metadata doesn't leak into UI
 

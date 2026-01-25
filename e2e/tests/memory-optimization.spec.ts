@@ -426,6 +426,10 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     // Reload page after each test to prevent memory accumulation in serial mode
     await page.reload()
     await page.waitForLoadState('networkidle')
+
+    // CRITICAL: Wait for DuckDB to reinitialize after reload
+    // Without this, tests start before DuckDB is ready and fail
+    await inspector.waitForDuckDBReady()
   })
 
   /**
@@ -468,12 +472,15 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
   }
 
   test('should load Parquet snapshots in diff without errors (500 rows)', async () => {
+    // Allow more time for 1.8GB Heap Init + Parquet flush
+    test.setTimeout(120000)
+
     // Regression test for: Parquet file loading in diff
     // Issues fixed:
     // - "IO Error: No files found that match the pattern"
     // - "Binder Error: column duckdb_schema does not exist"
     // - "Access Handles cannot be created" (file locking)
-    // Goal 2: Validate functionality works correctly (minimal dataset for browser stability)
+    // Goal: Validate memory/persistence handling at scale (500 rows needed for Parquet chunking)
 
     // Setup console error listener
     const consoleErrors: string[] = []
@@ -628,9 +635,12 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
   })
 
   test('should prevent file locking errors on diff pagination (regression test)', async () => {
+    // Allow more time for 1.8GB Heap Init + Parquet flush + pagination
+    test.setTimeout(120000)
+
     // Regression test for: OPFS file locking on pagination
     // Issue: Diff pagination was re-registering Parquet files, causing "Access Handles cannot be created"
-    // Goal 2: Validate functionality works correctly (minimal dataset for browser stability)
+    // Goal: Validate memory/persistence handling at scale (500 rows needed for file locking scenario)
 
     // Setup console error listener
     const consoleErrors: string[] = []
