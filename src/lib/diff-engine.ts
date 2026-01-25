@@ -351,9 +351,19 @@ export async function runDiff(
       const parquetColumns = await query<{ column_name: string; column_type: string }>(
         `SELECT name AS column_name, type AS column_type FROM parquet_schema('${globPattern}')`
       )
-      colsAAll = parquetColumns.map(c => ({
-        column_name: c.column_name,
-        data_type: c.column_type
+      // CRITICAL FIX: Deduplicate columns by name for chunked Parquet files
+      // parquet_schema() with glob returns all columns from all files, creating duplicates
+      // Example: 5 chunks × 30 columns = 150 duplicate columns
+      // We only need the unique column names and their types
+      const uniqueColumns = new Map<string, string>()
+      for (const col of parquetColumns) {
+        if (!uniqueColumns.has(col.column_name)) {
+          uniqueColumns.set(col.column_name, col.column_type)
+        }
+      }
+      colsAAll = Array.from(uniqueColumns.entries()).map(([column_name, data_type]) => ({
+        column_name,
+        data_type
       }))
     } else {
       colsAAll = await query<{ column_name: string; data_type: string }>(
@@ -367,6 +377,14 @@ export async function runDiff(
     // Filter internal columns early to reduce memory overhead
     const colsA = colsAAll.filter(c => !isInternalColumn(c.column_name))
     const colsB = colsBAll.filter(c => !isInternalColumn(c.column_name))
+
+    // DIAGNOSTIC: Log column types for both tables
+    console.log('[Diff] Column types comparison:', {
+      tableA: tableA,
+      tableB: tableB,
+      colsATypes: colsA.map(c => ({ name: c.column_name, type: c.data_type })),
+      colsBTypes: colsB.map(c => ({ name: c.column_name, type: c.data_type }))
+    })
 
     // Build type maps for quick lookup
     const typeMapA = new Map(colsA.map((c) => [c.column_name, c.data_type]))
@@ -463,9 +481,29 @@ export async function runDiff(
     // A row is "modified" ONLY if shared column values differ.
     // This prevents misleading counts like "100k modified" when Calculate Age
     // adds a column - that's a structural change, not a value modification.
+    //
+    // TYPE-AWARE COMPARISON FIX: When column types differ (e.g., DATE vs VARCHAR),
+    // we need to compare actual types, not just VARCHAR representations.
+    // Example: DATE '2023-12-07' and VARCHAR '2023-12-07' have same VARCHAR repr
+    // but different types - this should be detected as a modification.
     const sharedColModificationExpr = valueColumns.length > 0
       ? valueColumns
-          .map((c) => `CAST(a."${c}" AS VARCHAR) IS DISTINCT FROM CAST(b."${c}" AS VARCHAR)`)
+          .map((c) => {
+            const typeA = typeMapA.get(c) || 'VARCHAR'
+            const typeB = typeMapB.get(c) || 'VARCHAR'
+
+            if (typesCompatible(typeA, typeB)) {
+              // Same type family - compare VARCHAR representations
+              return `CAST(a."${c}" AS VARCHAR) IS DISTINCT FROM CAST(b."${c}" AS VARCHAR)`
+            } else {
+              // Different type families (e.g., DATE vs VARCHAR, INTEGER vs VARCHAR)
+              // Mark as modified if EITHER:
+              // 1. The VARCHAR representations differ, OR
+              // 2. The types differ (detected by comparing typeof())
+              // This ensures DATE->VARCHAR conversions are detected as modifications
+              return `(CAST(a."${c}" AS VARCHAR) IS DISTINCT FROM CAST(b."${c}" AS VARCHAR) OR typeof(a."${c}") != typeof(b."${c}"))`
+            }
+          })
           .join(' OR ')
       : 'FALSE'
 
@@ -480,6 +518,52 @@ export async function runDiff(
       valueColumnsList: valueColumns,
       diffMode
     })
+
+    // DIAGNOSTIC: Sample values from both tables for the first row
+    try {
+      const sampleA = await query<Record<string, unknown>>(`
+        SELECT * FROM ${sourceTableExpr} LIMIT 1
+      `)
+      const sampleB = await query<Record<string, unknown>>(`
+        SELECT * FROM "${tableB}" LIMIT 1
+      `)
+      console.log('[Diff] Sample row comparison:', {
+        sourceTable: tableA,
+        targetTable: tableB,
+        sampleA: sampleA[0],
+        sampleB: sampleB[0]
+      })
+
+      // DIAGNOSTIC: Count total rows from Parquet source
+      const countA = await query<{ count: number }>(`
+        SELECT COUNT(*) as count FROM ${sourceTableExpr}
+      `)
+      const countB = await query<{ count: number }>(`
+        SELECT COUNT(*) as count FROM "${tableB}"
+      `)
+      console.log('[Diff] Row counts:', {
+        parquetRows: Number(countA[0].count),
+        currentTableRows: Number(countB[0].count)
+      })
+
+      // DIAGNOSTIC: Compare SAME row from both sources
+      const csId = sampleB[0]._cs_id
+      const sameRowA = await query<Record<string, unknown>>(`
+        SELECT * FROM ${sourceTableExpr} WHERE "_cs_id" = '${csId}' LIMIT 1
+      `)
+      const sameRowB = await query<Record<string, unknown>>(`
+        SELECT * FROM "${tableB}" WHERE "_cs_id" = '${csId}' LIMIT 1
+      `)
+      console.log('[Diff] Same row comparison (_cs_id: ' + csId + '):', {
+        parquetRow: sameRowA[0],
+        currentRow: sameRowB[0],
+        submissionDateMatch: sameRowA[0]?.SubmissionDate === sameRowB[0]?.SubmissionDate,
+        submissionDateParquet: sameRowA[0]?.SubmissionDate,
+        submissionDateCurrent: sameRowB[0]?.SubmissionDate
+      })
+    } catch (err) {
+      console.warn('[Diff] Could not fetch sample rows:', err)
+    }
 
     // Phase 1: Create NARROW temp table with ONLY metadata (JOIN executes once)
     // CRITICAL OPTIMIZATION: Store only row IDs + status, NOT all column values
@@ -517,15 +601,25 @@ export async function runDiff(
         END as diff_status
       `
 
+    // Add ROW_NUMBER to preserve original table order for sorting
+    // Use table B (current) order as primary, fall back to table A (original) for removed rows
     const createTempTableQuery = `
       CREATE TEMP TABLE "${diffTableName}" AS
+      WITH
+        a_numbered AS (
+          SELECT *, ROW_NUMBER() OVER () as _row_num FROM ${sourceTableExpr}
+        ),
+        b_numbered AS (
+          SELECT *, ROW_NUMBER() OVER () as _row_num FROM "${tableB}"
+        )
       SELECT
         COALESCE(a."_cs_id", b."_cs_id") as row_id,
         a."_cs_id" as a_row_id,
         b."_cs_id" as b_row_id,
+        COALESCE(b._row_num, a._row_num + 1000000000) as sort_key,
         ${diffCaseLogic}
-      FROM ${sourceTableExpr} a
-      FULL OUTER JOIN "${tableB}" b ON ${diffJoinCondition}
+      FROM a_numbered a
+      FULL OUTER JOIN b_numbered b ON ${diffJoinCondition.replace(/\ba\./g, 'a.').replace(/\bb\./g, 'b.')}
     `
 
     try {
@@ -607,6 +701,36 @@ export async function runDiff(
       sourceTable: tableA,
       targetTable: tableB
     })
+
+    // DIAGNOSTIC: Sample the actual diff results to see what changed
+    if (totalDiffRows > 0) {
+      try {
+        const diffSample = await query<Record<string, unknown>>(`
+          SELECT * FROM "${diffTableName}"
+          WHERE diff_status = 'modified'
+          LIMIT 5
+        `)
+        console.log('[Diff] Sample modified row IDs:', diffSample.map(r => r.row_id))
+
+        // Get actual data for one modified row
+        if (diffSample.length > 0) {
+          const rowId = diffSample[0].row_id
+          const dataA = await query<Record<string, unknown>>(`
+            SELECT * FROM ${sourceTableExpr} WHERE "_cs_id" = '${rowId}' LIMIT 1
+          `)
+          const dataB = await query<Record<string, unknown>>(`
+            SELECT * FROM "${tableB}" WHERE "_cs_id" = '${rowId}' LIMIT 1
+          `)
+          console.log('[Diff] Modified row data comparison:', {
+            rowId,
+            dataA: dataA[0],
+            dataB: dataB[0]
+          })
+        }
+      } catch (err) {
+        console.warn('[Diff] Could not sample diff results:', err)
+      }
+    }
 
     // Phase 4: Tiered storage - export large diffs to OPFS
     let storageType: 'memory' | 'parquet' = 'memory'
@@ -770,14 +894,12 @@ export async function fetchDiffPage(
           LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
           LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
-          ORDER BY d.diff_status, ${keyOrderBy}
+          ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
         `)
 
-        // Unregister all chunk files
-        for (let i = 0; i < partIndex; i++) {
-          await db.dropFile(`${tempTableName}_part_${i}.parquet`)
-        }
+        // NOTE: Do NOT unregister files here - they're needed for subsequent pagination
+        // Files are cleaned up in cleanupDiffTable() when diff view closes
 
         return result
       } else {
@@ -815,7 +937,7 @@ export async function fetchDiffPage(
           LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
           LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
-          ORDER BY d.diff_status, ${keyOrderBy}
+          ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
         `)
 
@@ -838,7 +960,7 @@ export async function fetchDiffPage(
     LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
     LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
     WHERE d.diff_status IN ('added', 'removed', 'modified')
-    ORDER BY d.diff_status, ${keyOrderBy}
+    ORDER BY d.sort_key
     LIMIT ${limit} OFFSET ${offset}
   `)
 }

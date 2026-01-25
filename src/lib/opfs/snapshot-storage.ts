@@ -30,7 +30,8 @@ export async function ensureSnapshotDir(): Promise<void> {
 
 /**
  * Detect the correct ORDER BY column for deterministic export
- * Regular tables use _cs_id, diff tables use row_id
+ * Diff tables use sort_key (preserves original row order)
+ * Regular tables use _cs_id
  * Uses raw connection to avoid mutex reentrancy (caller holds mutex)
  */
 async function getOrderByColumn(
@@ -39,6 +40,18 @@ async function getOrderByColumn(
 ): Promise<string> {
   try {
     // Use raw connection.query() - NOT mutex-wrapped
+    // Check for sort_key first (diff tables with row ordering)
+    const sortKeyResult = await conn.query(`
+      SELECT column_name
+      FROM (DESCRIBE "${tableName}")
+      WHERE column_name = 'sort_key'
+    `)
+
+    if (sortKeyResult.numRows > 0) {
+      return 'sort_key'  // Use sort_key for diff tables (preserves original order)
+    }
+
+    // Check for _cs_id (regular tables)
     const result = await conn.query(`
       SELECT column_name
       FROM (DESCRIBE "${tableName}")
@@ -49,7 +62,7 @@ async function getOrderByColumn(
       return CS_ID_COLUMN  // Use _cs_id if it exists
     }
 
-    // Fallback: Check for row_id (used by diff tables)
+    // Fallback: Check for row_id (old diff tables)
     const rowIdResult = await conn.query(`
       SELECT column_name
       FROM (DESCRIBE "${tableName}")
@@ -57,7 +70,7 @@ async function getOrderByColumn(
     `)
 
     if (rowIdResult.numRows > 0) {
-      return 'row_id'  // Use row_id for diff tables
+      return 'row_id'  // Use row_id for old diff tables
     }
 
     // No suitable column found - skip ORDER BY

@@ -38,6 +38,18 @@ import type {
 } from '@/types'
 
 /**
+ * Mutex to prevent concurrent timeline initialization for the same tableId.
+ *
+ * This is critical because:
+ * 1. React Strict Mode can cause double-renders, triggering duplicate calls
+ * 2. Vite HMR can remount components while Parquet export is in progress
+ * 3. Concurrent calls writing to the same Parquet files causes corruption
+ *
+ * The mutex tracks in-flight Promises so subsequent calls wait for the first to complete.
+ */
+const initializationInFlight = new Map<string, Promise<string>>()
+
+/**
  * Threshold for using Parquet storage for original snapshots
  * Tables with ≥100k rows use OPFS Parquet, smaller tables use in-memory duplicates
  */
@@ -93,11 +105,29 @@ export async function listSnapshotTables(): Promise<string[]> {
  *
  * Uses Parquet storage for large tables (≥100k rows) to reduce baseline RAM usage
  * Returns special "parquet:" prefix for Parquet-backed snapshots
+ *
+ * IMPORTANT: Uses tableName (sanitized) for snapshot naming for cross-session resilience.
+ * This allows detecting existing snapshots even after page reload or HMR.
  */
 export async function createTimelineOriginalSnapshot(
   tableName: string,
-  timelineId: string
+  _timelineId: string,
+  _tableId?: string
 ): Promise<string> {
+  // Use sanitized tableName for snapshot naming (survives page reloads)
+  // This ensures the same file loaded twice uses the same snapshot
+  // Note: timelineId and tableId params kept for backwards compatibility but unused
+  const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+  const snapshotId = `original_${sanitizedTableName}`
+
+  // IDEMPOTENCY CHECK: If Parquet files already exist, reuse them
+  // This prevents HMR/Strict Mode/page reloads from overwriting snapshots with modified data
+  const existingSnapshot = await checkSnapshotFileExists(snapshotId)
+  if (existingSnapshot) {
+    console.log(`[Timeline] Original snapshot already exists, reusing: parquet:${snapshotId}`)
+    return `parquet:${snapshotId}`
+  }
+
   // Check row count to decide storage strategy
   const countResult = await query<{ count: number }>(
     `SELECT COUNT(*) as count FROM "${tableName}"`
@@ -109,7 +139,6 @@ export async function createTimelineOriginalSnapshot(
 
     const db = await initDuckDB()
     const conn = await getConnection()
-    const snapshotId = `original_${timelineId}`
 
     // Export to OPFS Parquet using direct call (no wrapper needed)
     await exportTableToParquet(db, conn, tableName, snapshotId)
@@ -121,7 +150,6 @@ export async function createTimelineOriginalSnapshot(
   // Small table - export to Parquet like large tables do
   // OPTIMIZATION: Export active table directly (no duplicate needed)
   // DuckDB handles read consistency, so no risk of corruption during export
-  const snapshotId = `original_${timelineId}`
 
   try {
     // Export active table directly to OPFS Parquet
@@ -142,7 +170,7 @@ export async function createTimelineOriginalSnapshot(
     // On export failure, fall back to in-memory duplicate
     console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
 
-    const tempSnapshotName = `_timeline_original_${timelineId}`
+    const tempSnapshotName = `_timeline_original_${sanitizedTableName}`
     await duplicateTable(tableName, tempSnapshotName, true)
 
     // Return the in-memory table name instead of Parquet reference
@@ -445,7 +473,7 @@ export async function replayToPosition(
       // Try to create the original snapshot from current table state
       // This is a recovery path for timelines created before proper snapshot handling
       console.warn('[REPLAY] Timeline has no original snapshot, creating one now')
-      snapshotTableName = await createTimelineOriginalSnapshot(tableName, timeline.id)
+      snapshotTableName = await createTimelineOriginalSnapshot(tableName, timeline.id, tableId)
       store.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
     }
 
@@ -457,7 +485,7 @@ export async function replayToPosition(
     if (!snapshotExists) {
       // Last resort: try to create snapshot from current table
       console.warn('[REPLAY] Snapshot not found, creating from current state (THIS IS BAD - will capture modified data)')
-      snapshotTableName = await createTimelineOriginalSnapshot(tableName, timeline.id)
+      snapshotTableName = await createTimelineOriginalSnapshot(tableName, timeline.id, tableId)
       store.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
     }
 
@@ -599,17 +627,33 @@ export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
-  if (!timeline) return
-
   const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
 
-  // Drop original snapshot
+  // Try to delete by tableName-based snapshot (current naming scheme)
+  // This handles cases where the timeline store was reset but OPFS files still exist
+  if (timeline?.tableName) {
+    try {
+      const sanitizedTableName = timeline.tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      await deleteParquetSnapshot(`original_${sanitizedTableName}`)
+      console.log(`[Timeline] Deleted Parquet snapshot by tableName: original_${sanitizedTableName}`)
+    } catch (e) {
+      // Expected if file doesn't exist
+    }
+  }
+
+  if (!timeline) return
+
+  // Drop original snapshot (using stored name, may use old naming schemes)
   try {
     if (timeline.originalSnapshotName.startsWith('parquet:')) {
       const snapshotId = timeline.originalSnapshotName.replace('parquet:', '')
-      await deleteParquetSnapshot(snapshotId)
-      console.log(`[Timeline] Deleted Parquet original snapshot: ${snapshotId}`)
-    } else {
+      const sanitizedTableName = timeline.tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      // Skip if it's the tableName-based snapshot (already deleted above)
+      if (snapshotId !== `original_${sanitizedTableName}`) {
+        await deleteParquetSnapshot(snapshotId)
+        console.log(`[Timeline] Deleted Parquet original snapshot: ${snapshotId}`)
+      }
+    } else if (timeline.originalSnapshotName) {
       await dropTable(timeline.originalSnapshotName)
     }
   } catch (e) {
@@ -699,6 +743,35 @@ export async function initializeTimeline(
   tableName: string
 ): Promise<string> {
   console.log('[INIT_TIMELINE] initializeTimeline called', { tableId, tableName })
+
+  // MUTEX: Check if initialization is already in flight for this tableId
+  // This prevents race conditions from React Strict Mode double-renders or HMR remounts
+  const existingPromise = initializationInFlight.get(tableId)
+  if (existingPromise) {
+    console.log('[INIT_TIMELINE] Initialization already in flight, waiting...', { tableId })
+    return existingPromise
+  }
+
+  // Create and store the promise BEFORE any async operations
+  // This ensures subsequent calls will wait for this one
+  const initPromise = initializeTimelineInternal(tableId, tableName)
+  initializationInFlight.set(tableId, initPromise)
+
+  try {
+    return await initPromise
+  } finally {
+    // Clean up the mutex entry after completion (success or failure)
+    initializationInFlight.delete(tableId)
+  }
+}
+
+/**
+ * Internal implementation of timeline initialization (called by mutex wrapper)
+ */
+async function initializeTimelineInternal(
+  tableId: string,
+  tableName: string
+): Promise<string> {
   const store = useTimelineStore.getState()
 
   // Check if timeline already exists
@@ -741,19 +814,38 @@ export async function initializeTimeline(
     } else {
       // No original snapshot name set, create one
       console.log('[INIT_TIMELINE] No original snapshot name, creating one...')
-      const snapshotName = await createTimelineOriginalSnapshot(tableName, existing.id)
+      const snapshotName = await createTimelineOriginalSnapshot(tableName, existing.id, tableId)
       store.updateTimelineOriginalSnapshot(tableId, snapshotName)
     }
     return existing.id
+  }
+
+  // CRITICAL: Check for existing Parquet snapshot using tableName BEFORE creating new timeline
+  // This handles page reloads and HMR scenarios where the timeline store was reset but OPFS files still exist
+  // Using sanitized tableName ensures same file loaded twice uses same snapshot
+  const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+  const potentialSnapshotId = `original_${sanitizedTableName}`
+  const existingParquetSnapshot = await checkSnapshotFileExists(potentialSnapshotId)
+  if (existingParquetSnapshot) {
+    // SIMPLIFIED APPROACH: For now, always delete existing snapshots on timeline init
+    // This ensures _cs_id values always match (fresh snapshot from current table)
+    // Trade-off: Loses original state on page reload, but prevents stale snapshot bugs
+    //
+    // TODO: Implement metadata-based validation (store first N _cs_id values in a sidecar file)
+    // to enable safe snapshot reuse without complex Parquet queries
+    console.log('[INIT_TIMELINE] Found existing Parquet snapshot, deleting to ensure fresh state:', potentialSnapshotId)
+    const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+    await deleteParquetSnapshot(potentialSnapshotId)
+    // Fall through to create new snapshot below
   }
 
   console.log('[INIT_TIMELINE] Creating new timeline...')
   // Create timeline with a temporary empty snapshot name
   const timelineId = store.createTimeline(tableId, tableName, '')
 
-  // Create original snapshot
+  // Create original snapshot using tableName for cross-session resilience
   console.log('[INIT_TIMELINE] Creating original snapshot...')
-  const originalSnapshotName = await createTimelineOriginalSnapshot(tableName, timelineId)
+  const originalSnapshotName = await createTimelineOriginalSnapshot(tableName, timelineId, tableId)
   console.log('[INIT_TIMELINE] Original snapshot created:', originalSnapshotName)
 
   // Update timeline with the actual snapshot name using proper store method
