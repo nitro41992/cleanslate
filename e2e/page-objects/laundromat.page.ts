@@ -100,19 +100,36 @@ export class LaundromatPage {
    * Open the audit sidebar (replaces old tab-based approach)
    */
   async openAuditSidebar(): Promise<void> {
+    await this.dismissOverlays()
     const toggleBtn = this.page.getByTestId('toggle-audit-sidebar')
-    // Wait for toggle button to be ready (in case UI is still settling)
-    await toggleBtn.waitFor({ state: 'visible', timeout: 5000 })
+    const sidebar = this.page.getByTestId('audit-sidebar')
 
-    // Check if sidebar is already open by looking for the audit sidebar testid
-    const sidebarOpen = await this.page.getByTestId('audit-sidebar').isVisible().catch(() => false)
-    if (!sidebarOpen) {
-      // Force click to bypass any potential overlay issues
-      await toggleBtn.click({ force: true })
-      // Wait for sidebar to open
-      await this.page.waitForTimeout(500)
+    // Wait for toggle button to be ready (in case UI is still settling after applyMerges)
+    await toggleBtn.waitFor({ state: 'visible', timeout: 10000 })
+
+    // Check if sidebar is already open
+    const sidebarOpen = await sidebar.isVisible().catch(() => false)
+    if (sidebarOpen) {
+      return
     }
-    await this.page.getByTestId('audit-sidebar').waitFor({ state: 'visible', timeout: 10000 })
+
+    // Try clicking the toggle button with retries
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await toggleBtn.click({ force: true })
+      await this.page.waitForTimeout(500)
+
+      // Check if sidebar opened
+      const opened = await sidebar.isVisible().catch(() => false)
+      if (opened) {
+        break
+      }
+
+      // If not opened, dismiss overlays and retry
+      await this.page.keyboard.press('Escape')
+      await this.page.waitForTimeout(300)
+    }
+
+    await sidebar.waitFor({ state: 'visible', timeout: 15000 })
   }
 
   /**

@@ -1365,6 +1365,18 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     await coolHeapLight(page)
   })
 
+  async function loadTestData() {
+    // IMPORTANT: Reload to ensure clean state - prevents getting stuck in previous screen
+    await page.reload()
+    await inspector.waitForDuckDBReady()
+
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
+    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+  }
+
   test('should show dirty indicator on edited cells', async () => {
     await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
@@ -1387,12 +1399,8 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
   })
 
   test('should commit cell edit and record in audit log', async () => {
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
-    // 1. Load data
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+    // Load data using helper to ensure clean state
+    await loadTestData()
 
     // Fail-fast guard: Verify editStore has recordEdit function exposed
     const hasEditStore = await page.evaluate(() => {
@@ -1425,11 +1433,8 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
   })
 
   test('should undo/redo cell edits', async () => {
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
-    await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+    // Load data using helper to ensure clean state
+    await loadTestData()
 
     // Fail-fast guard: Verify editStore has undo/redo functions exposed via getState()
     const hasUndoRedo = await page.evaluate(() => {

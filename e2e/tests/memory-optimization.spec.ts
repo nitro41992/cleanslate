@@ -400,13 +400,17 @@ test.describe.serial('Memory Optimization - OPFS File Size', () => {
 })
 
 test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
+  // Allow more time for 1.8GB Heap Init + Parquet flush operations
+  test.setTimeout(120000)
+
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
+    // Create fresh page for each test to prevent memory accumulation
     page = await browser.newPage()
 
     // Block unnecessary resources to reduce memory usage
@@ -419,16 +423,18 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
       }
     })
 
+    // CRITICAL: Re-instantiate ALL page objects with the NEW page
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-    await laundromat.goto()
     inspector = createStoreInspector(page)
+
+    await laundromat.goto()
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    // Clean up OPFS storage
+  test.afterEach(async () => {
+    // Clean up OPFS storage and close page to force garbage collection
     await page.evaluate(async () => {
       try {
         const opfsRoot = await navigator.storage.getDirectory()
@@ -438,16 +444,6 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
       }
     })
     await page.close()
-  })
-
-  test.afterEach(async () => {
-    // Reload page after each test to prevent memory accumulation in serial mode
-    await page.reload()
-    await page.waitForLoadState('networkidle')
-
-    // CRITICAL: Wait for DuckDB to reinitialize after reload
-    // Without this, tests start before DuckDB is ready and fail
-    await inspector.waitForDuckDBReady()
   })
 
   /**
@@ -490,8 +486,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
   }
 
   test('should load Parquet snapshots in diff without errors (500 rows)', async () => {
-    // Allow more time for 1.8GB Heap Init + Parquet flush
-    test.setTimeout(120000)
+    // Timeout is set at describe level (120000ms)
 
     // Regression test for: Parquet file loading in diff
     // Issues fixed:
@@ -653,8 +648,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
   })
 
   test('should prevent file locking errors on diff pagination (regression test)', async () => {
-    // Allow more time for 1.8GB Heap Init + Parquet flush + pagination
-    test.setTimeout(120000)
+    // Timeout is set at describe level (120000ms)
 
     // Regression test for: OPFS file locking on pagination
     // Issue: Diff pagination was re-registering Parquet files, causing "Access Handles cannot be created"

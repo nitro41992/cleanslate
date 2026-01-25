@@ -51,20 +51,20 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
-    // 2. Get initial data
+    // 2. Get initial data (CSV order: John Doe, Jane Smith, Bob Johnson, Alice Brown, Charlie Wilson)
     const initialData = await inspector.getTableData('basic_data')
     expect(initialData.length).toBe(5)
-    expect(initialData[0].name).toBe('Alice')
+    expect(initialData[0].name).toBe('John Doe')
 
     // 3. Apply transformation to modify data
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
 
-    // 4. Verify transformation applied
+    // 4. Verify transformation applied (uppercase on CSV order)
     const transformedData = await inspector.getTableData('basic_data')
-    expect(transformedData[0].name).toBe('ALICE')
-    expect(transformedData[1].name).toBe('BOB')
+    expect(transformedData[0].name).toBe('JOHN DOE')
+    expect(transformedData[1].name).toBe('JANE SMITH')
 
     // 5. Reload and poll for persistence (no fixed wait - returns as soon as ready)
     await expect.poll(
@@ -86,7 +86,7 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
       expect(restoredTable.rowCount).toBe(5)
 
       const restoredData = await inspector.getTableData('basic_data')
-      expect(restoredData[0].name).toBe('ALICE') // Uppercase transformation persisted
+      expect(restoredData[0].name).toBe('JOHN DOE') // Uppercase transformation persisted
       expect(restoredData.length).toBe(5)
     } else {
       // OPFS may not be supported in test environment (e.g., Firefox, headless mode)
