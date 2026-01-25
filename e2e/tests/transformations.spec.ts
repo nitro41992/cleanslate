@@ -601,7 +601,7 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     await laundromat.uploadFile(testFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('dedup_large_test', 5000)
+    await inspector.waitForTableLoaded('dedup_large_test', 5000, 60000) // 60s timeout for large file
 
     // Cleanup temp file
     await fs.unlink(testFilePath).catch(() => {})

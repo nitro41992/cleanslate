@@ -147,7 +147,7 @@ export function createStoreInspector(page: Page): StoreInspector {
       )
     },
 
-    async waitForTableLoaded(tableName: string, expectedRowCount?: number): Promise<void> {
+    async waitForTableLoaded(tableName: string, expectedRowCount?: number, timeout: number = 30000): Promise<void> {
       await page.waitForFunction(
         ({ tableName, expectedRowCount }) => {
           const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
@@ -160,7 +160,7 @@ export function createStoreInspector(page: Page): StoreInspector {
           return true
         },
         { tableName, expectedRowCount },
-        { timeout: 30000 }
+        { timeout }
       )
     },
 

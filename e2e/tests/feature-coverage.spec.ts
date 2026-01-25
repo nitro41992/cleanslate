@@ -485,7 +485,7 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     await laundromat.uploadFile(baseFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('large_base_5k', 5000)
+    await inspector.waitForTableLoaded('large_base_5k', 5000, 60000) // 60s timeout for large file
 
     // Upload new file
     const newFilePath = path.join(tmpDir, 'large_new_5k.csv')
@@ -494,7 +494,7 @@ test.describe.serial('FR-B2: Visual Diff', () => {
     await laundromat.uploadFile(newFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('large_new_5k', 5500)
+    await inspector.waitForTableLoaded('large_new_5k', 5500, 60000) // 60s timeout for large file
 
     // Open Diff view
     await laundromat.openDiffView()

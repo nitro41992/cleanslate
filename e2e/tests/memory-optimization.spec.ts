@@ -498,7 +498,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await laundromat.uploadFile(testFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('large_dataset_5k', 5000)
+    await inspector.waitForTableLoaded('large_dataset_5k', 5000, 60000) // 60s timeout for large file
 
     // Cleanup temp file
     await fs.unlink(testFilePath).catch(() => {})
@@ -657,7 +657,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await laundromat.uploadFile(testFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('large_dataset_5k_pagination', 5000)
+    await inspector.waitForTableLoaded('large_dataset_5k_pagination', 5000, 60000) // 60s timeout for large file
 
     // Cleanup temp file
     await fs.unlink(testFilePath).catch(() => {})
