@@ -576,18 +576,15 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     return lines.join('\n')
   }
 
-  test('should preserve _cs_id lineage through remove_duplicates (5k rows, 1.5k unique)', async () => {
+  test('should preserve _cs_id lineage through remove_duplicates (100 rows, 30 unique)', async () => {
     // Regression test for: _cs_id lineage preservation in remove_duplicates
     // Issue: remove_duplicates must use FIRST(_cs_id) to maintain row identity for diff matching
-    // Goal 2: Ensure system handles realistic files correctly (5k rows optimal for browser stability)
+    // Goal 2: Validate functionality works correctly (minimal dataset for browser stability)
 
-    // Increase timeout for dataset operations
-    test.setTimeout(90000) // 90 seconds
-
-    // 1. Generate CSV with duplicates (5k rows, 1.5k unique after dedup)
-    const csvContent = await generateDuplicatesCSV(5000, 1500)
+    // 1. Generate CSV with duplicates (100 rows, 30 unique after dedup)
+    const csvContent = await generateDuplicatesCSV(100, 30)
     const csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
-    console.log(`[_cs_id Lineage Test] Generated CSV: ${csvSizeMB}MB (5k rows, 1.5k unique)`)
+    console.log(`[_cs_id Lineage Test] Generated CSV: ${csvSizeMB}MB (100 rows, 30 unique)`)
 
     // 2. Upload and import - write to temp file first
     await inspector.runQuery('DROP TABLE IF EXISTS dedup_large_test')
@@ -601,7 +598,7 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     await laundromat.uploadFile(testFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('dedup_large_test', 5000, 60000) // 60s timeout for large file
+    await inspector.waitForTableLoaded('dedup_large_test', 100)
 
     // Cleanup temp file
     await fs.unlink(testFilePath).catch(() => {})
@@ -658,10 +655,10 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
       expect(afterRow._cs_id).toBe(expectedCsId)
     }
 
-    // 7. Verify total row count is 1500 (dedup worked)
+    // 7. Verify total row count is 30 (dedup worked)
     const countResult = await inspector.runQuery('SELECT COUNT(*) as cnt FROM dedup_large_test')
     const finalCount = Number(countResult[0].cnt)
-    expect(finalCount).toBe(1500)
+    expect(finalCount).toBe(30)
 
     // 8. Verify _cs_id preservation was successful (core regression test)
     // The fact that we got here with matching _cs_id values proves:

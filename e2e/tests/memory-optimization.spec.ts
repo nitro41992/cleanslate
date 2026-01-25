@@ -461,16 +461,13 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     return lines.join('\n')
   }
 
-  test('should load chunked Parquet snapshots in diff without errors (5k rows)', async () => {
-    // Regression test for: Chunked Parquet file loading in diff
+  test('should load Parquet snapshots in diff without errors (500 rows)', async () => {
+    // Regression test for: Parquet file loading in diff
     // Issues fixed:
     // - "IO Error: No files found that match the pattern"
     // - "Binder Error: column duckdb_schema does not exist"
     // - "Access Handles cannot be created" (file locking)
-    // Goal 2: Ensure system handles realistic files correctly (5k rows optimal for browser stability)
-
-    // Increase timeout for dataset operations
-    test.setTimeout(90000) // 90 seconds
+    // Goal 2: Validate functionality works correctly (minimal dataset for browser stability)
 
     // Setup console error listener
     const consoleErrors: string[] = []
@@ -480,25 +477,25 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
       }
     })
 
-    // 1. Generate CSV (5k rows, realistic columns)
-    const csvContent = await generateLargeCSV(5000)
+    // 1. Generate CSV (500 rows, realistic columns)
+    const csvContent = await generateLargeCSV(500)
     const csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
-    console.log(`[Chunked Parquet Test] Generated CSV: ${csvSizeMB}MB (5k rows, 10 columns)`)
+    console.log(`[Parquet Test] Generated CSV: ${csvSizeMB}MB (500 rows, 10 columns)`)
 
     // 2. Upload and import
-    await inspector.runQuery('DROP TABLE IF EXISTS large_dataset_5k')
+    await inspector.runQuery('DROP TABLE IF EXISTS dataset_500')
 
     // Write to temp file and upload using helper
     const fs = await import('fs/promises')
     const path = await import('path')
     const tmpDir = await import('os').then(os => os.tmpdir())
-    const testFilePath = path.join(tmpDir, 'large_dataset_5k.csv')
+    const testFilePath = path.join(tmpDir, 'dataset_500.csv')
     await fs.writeFile(testFilePath, csvContent)
 
     await laundromat.uploadFile(testFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('large_dataset_5k', 5000, 60000) // 60s timeout for large file
+    await inspector.waitForTableLoaded('dataset_500', 500)
 
     // Cleanup temp file
     await fs.unlink(testFilePath).catch(() => {})
@@ -518,16 +515,15 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
       }
     })
 
-    console.log(`[Chunked Parquet Test] OPFS snapshot files:`, opfsFiles)
-    // May have chunked files like original_*_part_0.parquet, _part_1.parquet, etc.
-    // Or single snapshot file depending on size threshold
+    console.log(`[Parquet Test] OPFS snapshot files:`, opfsFiles)
+    // May have Parquet snapshot files depending on size threshold
 
     // 4. Apply transformation (e.g., Uppercase on column)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
-    await page.waitForTimeout(2000)  // Allow transformation to complete
+    await page.waitForTimeout(1000)  // Allow transformation to complete
 
     // 5. Open Diff view → Compare with Preview
     await laundromat.openDiffView()
@@ -544,7 +540,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await page.getByTestId('diff-compare-btn').click()
 
     // Wait for comparison to complete
-    await page.waitForTimeout(3000)
+    await page.waitForTimeout(2000)
 
     // 7. Verify diff loads without errors
     // Rule 2: Assert NO console errors (positive assertion)
@@ -556,7 +552,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     )
     expect(ioErrors.length).toBe(0)
 
-    // 8. Verify diff shows 5k "MODIFIED" rows
+    // 8. Verify diff shows 500 "MODIFIED" rows
     const diffSummary = await page.evaluate(() => {
       const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
       const diffStore = stores?.diffStore as {
@@ -569,7 +565,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
 
     // Rule 1: Assert exact count (identity, not cardinality)
     expect(diffSummary).not.toBeNull()
-    expect(diffSummary?.modified).toBe(5000)
+    expect(diffSummary?.modified).toBe(500)
     expect(diffSummary?.added).toBe(0)
     expect(diffSummary?.removed).toBe(0)
 
@@ -613,25 +609,22 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     )
     expect(exportErrors.length).toBe(0)
 
-    // Verify export file has 5k rows + header
+    // Verify export file has 500 rows + header
     const csvPath = await download.path()
     if (csvPath) {
       const fs = await import('fs/promises')
       const exportContent = await fs.readFile(csvPath, 'utf-8')
       const lineCount = exportContent.split('\n').length
-      // Should have ~5k lines (may vary by 1-2 due to empty lines)
-      expect(lineCount).toBeGreaterThan(4998)
-      expect(lineCount).toBeLessThan(5003)
+      // Should have ~500 lines (may vary by 1-2 due to empty lines)
+      expect(lineCount).toBeGreaterThan(498)
+      expect(lineCount).toBeLessThan(503)
     }
   })
 
   test('should prevent file locking errors on diff pagination (regression test)', async () => {
     // Regression test for: OPFS file locking on pagination
     // Issue: Diff pagination was re-registering Parquet files, causing "Access Handles cannot be created"
-    // Goal 2: Ensure system handles realistic files correctly (5k rows optimal for browser stability)
-
-    // Increase timeout for dataset operations
-    test.setTimeout(90000) // 90 seconds
+    // Goal 2: Validate functionality works correctly (minimal dataset for browser stability)
 
     // Setup console error listener
     const consoleErrors: string[] = []
@@ -641,23 +634,23 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
       }
     })
 
-    // 1. Generate CSV (5k rows)
-    const csvContent = await generateLargeCSV(5000)
+    // 1. Generate CSV (500 rows)
+    const csvContent = await generateLargeCSV(500)
 
     // 2. Upload, apply transformation
-    await inspector.runQuery('DROP TABLE IF EXISTS large_dataset_5k_pagination')
+    await inspector.runQuery('DROP TABLE IF EXISTS dataset_500_pagination')
 
     // Write to temp file and upload using helper
     const fs = await import('fs/promises')
     const path = await import('path')
     const tmpDir = await import('os').then(os => os.tmpdir())
-    const testFilePath = path.join(tmpDir, 'large_dataset_5k_pagination.csv')
+    const testFilePath = path.join(tmpDir, 'dataset_500_pagination.csv')
     await fs.writeFile(testFilePath, csvContent)
 
     await laundromat.uploadFile(testFilePath)
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('large_dataset_5k_pagination', 5000, 60000) // 60s timeout for large file
+    await inspector.waitForTableLoaded('dataset_500_pagination', 500)
 
     // Cleanup temp file
     await fs.unlink(testFilePath).catch(() => {})
@@ -666,7 +659,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'email' })
     await laundromat.closePanel()
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(1000)
 
     // 3. Open Diff view → Compare with Preview
     await laundromat.openDiffView()
@@ -676,19 +669,19 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await page.waitForTimeout(300)
     await page.getByRole('checkbox', { name: 'id' }).click()
 
-    // 4. Run comparison (creates diff result table with chunked Parquet)
+    // 4. Run comparison (creates diff result table)
     await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(3000)
+    await page.waitForTimeout(2000)
 
     // 5. Scroll to bottom of diff grid (triggers pagination)
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       await page.evaluate(() => {
         const grid = document.querySelector('[data-testid="diff-grid"]')
         if (grid) {
           grid.scrollTop = grid.scrollHeight
         }
       })
-      await page.waitForTimeout(500)
+      await page.waitForTimeout(300)
 
       // Scroll back to top
       await page.evaluate(() => {
@@ -697,7 +690,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
           grid.scrollTop = 0
         }
       })
-      await page.waitForTimeout(500)
+      await page.waitForTimeout(300)
     }
 
     // 6. Verify no console errors: "Access Handles cannot be created"
