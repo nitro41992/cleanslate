@@ -54,7 +54,7 @@ export interface StoreInspector {
   getTableData: (tableName: string, limit?: number) => Promise<Record<string, unknown>[]>
   getAuditEntries: (tableId?: string) => Promise<AuditEntry[]>
   waitForDuckDBReady: () => Promise<void>
-  waitForTableLoaded: (tableName: string, expectedRowCount?: number) => Promise<void>
+  waitForTableLoaded: (tableName: string, expectedRowCount?: number, timeout?: number) => Promise<void>
   /**
    * Execute arbitrary SQL query against DuckDB for verification.
    * Use this to verify join results, counts, or any SQL-level assertions.
