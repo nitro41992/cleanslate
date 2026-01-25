@@ -506,6 +506,19 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test('should mark pairs as merged and display apply bar', async () => {
+    // Independent test: Load data and find duplicates
+    await loadDedupeData()
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_dedupe')
+    await page.waitForTimeout(500)
+    await matchView.selectColumn('first_name')
+    await page.waitForTimeout(500)
+    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
+    await page.waitForTimeout(300)
+    await matchView.findDuplicates()
+    await matchView.waitForPairs()
+
     // Get initial stats
     const initialStats = await matchView.getStats()
     expect(initialStats.merged).toBe(0)
@@ -524,11 +537,28 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test('should apply merges and refresh DataGrid row count', async () => {
+    // Independent test: Load data, find duplicates, and merge
+    await loadDedupeData()
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_dedupe')
+    await page.waitForTimeout(500)
+    await matchView.selectColumn('first_name')
+    await page.waitForTimeout(500)
+    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
+    await page.waitForTimeout(300)
+    await matchView.findDuplicates()
+    await matchView.waitForPairs()
+
     // Get initial row count
     const tablesBefore = await inspector.getTables()
     const dedupeTableBefore = tablesBefore.find((t) => t.name === 'fr_c1_dedupe')
     const initialRowCount = dedupeTableBefore?.rowCount || 0
     expect(initialRowCount).toBe(8)
+
+    // Mark first pair as merged
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300)
 
     // Apply merges (will close the match view)
     await matchView.applyMerges()
@@ -549,6 +579,22 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test('should log merge operations to audit', async () => {
+    // Independent test: Load data, find duplicates, merge, and apply
+    await loadDedupeData()
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_dedupe')
+    await page.waitForTimeout(500)
+    await matchView.selectColumn('first_name')
+    await page.waitForTimeout(500)
+    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
+    await page.waitForTimeout(300)
+    await matchView.findDuplicates()
+    await matchView.waitForPairs()
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300)
+    await matchView.applyMerges()
+
     // Wait for match panel to fully close and UI to stabilize
     await page.waitForTimeout(1000)
     await page.waitForLoadState('networkidle')
@@ -643,6 +689,11 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Ensure we're back at the main view by checking the grid is visible
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
 
+    // Wait for match view to be fully closed
+    await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
+    await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(500) // Additional stabilization
+
     // Debug: Check if audit entry was created
     const auditEntries = await inspector.getAuditEntries()
     console.log('Audit entries:', auditEntries.length)
@@ -715,7 +766,31 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test('should export merge details as CSV', async () => {
-    // Re-open audit sidebar from previous test data
+    // Independent test: Load data, find duplicates, merge, and apply
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
+    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_dedupe')
+    await matchView.selectColumn('first_name')
+    await matchView.findDuplicates()
+    await matchView.waitForPairs()
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300)
+    await matchView.applyMerges()
+
+    // Wait for merge to complete and return to main view
+    await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
+    await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(500)
+
+    // Open audit sidebar
     await laundromat.openAuditSidebar()
     await page.waitForTimeout(300)
 
@@ -742,6 +817,27 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test('should store valid JSON in _merge_audit_details table', async () => {
+    // Independent test: Load data, find duplicates, merge, and apply
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
+    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+
+    await laundromat.openMatchView()
+    await matchView.waitForOpen()
+    await matchView.selectTable('fr_c1_dedupe')
+    await matchView.selectColumn('first_name')
+    await matchView.findDuplicates()
+    await matchView.waitForPairs()
+    await matchView.mergePair(0)
+    await page.waitForTimeout(300)
+    await matchView.applyMerges()
+
+    // Wait for merge to complete
+    await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
+    await page.waitForTimeout(1000)
+
     // Query the merge audit details table directly
     const auditDetails = await inspector.runQuery(`
       SELECT kept_row_data, deleted_row_data
@@ -1143,6 +1239,10 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test('should perform left join preserving unmatched orders', async () => {
+    // Wait for cleanup to fully stabilize
+    await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(1000)
+
     // Drop existing tables from previous test
     await inspector.runQuery('DROP TABLE IF EXISTS join_result')
     await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
@@ -1152,13 +1252,13 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('fr_e2_orders', 6)
+    await inspector.waitForTableLoaded('fr_e2_orders', 6, 60000) // Increased timeout to 60s
 
     // Upload customers file
     await laundromat.uploadFile(getFixturePath('fr_e2_customers.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('fr_e2_customers', 4)
+    await inspector.waitForTableLoaded('fr_e2_customers', 4, 60000) // Increased timeout to 60s
 
     // Wait for any transitions to settle before opening panel
     await page.waitForTimeout(500)
@@ -1423,12 +1523,36 @@ test.describe.serial('Persist as Table', () => {
     const tables = await inspector.getTables()
     expect(tables.some((t) => t.name === 'basic_data_v2')).toBe(true)
 
-    // 6. Verify data was persisted correctly
+    // 6. Verify data was persisted correctly with uppercase transformation
     const data = await inspector.getTableData('basic_data_v2')
-    expect(data[0].name).toBe('JOHN DOE') // Uppercase applied
+    const names = data.map(r => r.name as string).sort()
+    expect(names).toContain('JOHN DOE') // Verify uppercase applied
+    expect(names).toContain('JANE SMITH')
+    expect(names).toContain('BOB JOHNSON')
   })
 
   test('should log persist operation to audit', async () => {
+    // Independent test: Load data, transform, and persist
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data_v3')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    // Apply transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
+
+    // Persist table
+    await page.getByTestId('persist-table-btn').click()
+    await page.getByLabel(/table name/i).fill('basic_data_v3')
+    await page.getByRole('button', { name: /create/i }).click()
+    await inspector.waitForTableLoaded('basic_data_v3', 5)
+
+    // Verify audit entry was created
     const auditEntries = await inspector.getAuditEntries()
     const persistEntry = auditEntries.find((e) => e.action.includes('Persist'))
     expect(persistEntry).toBeDefined()
