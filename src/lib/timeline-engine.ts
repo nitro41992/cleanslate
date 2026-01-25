@@ -111,7 +111,7 @@ export async function createTimelineOriginalSnapshot(
     const conn = await getConnection()
     const snapshotId = `original_${timelineId}`
 
-    // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
+    // Export to OPFS Parquet using direct call (no wrapper needed)
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
     // Return special prefix to signal Parquet storage (keeps store type as string)
@@ -121,8 +121,6 @@ export async function createTimelineOriginalSnapshot(
   // Small table - export to Parquet like large tables do
   // OPTIMIZATION: Export active table directly (no duplicate needed)
   // DuckDB handles read consistency, so no risk of corruption during export
-  const db = await initDuckDB()
-  const conn = await getConnection()
   const snapshotId = `original_${timelineId}`
 
   try {
@@ -131,6 +129,8 @@ export async function createTimelineOriginalSnapshot(
     // 1. DuckDB uses MVCC (multi-version concurrency control)
     // 2. Export reads from a consistent snapshot of the table
     // 3. No temporary RAM allocation needed (saves ~150MB for small tables)
+    const db = await initDuckDB()
+    const conn = await getConnection()
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
     console.log(`[Timeline] Exported original snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
@@ -732,9 +732,11 @@ export async function initializeTimeline(
       )
 
       if (!exists) {
-        console.log('[INIT_TIMELINE] Creating missing original snapshot...')
-        const newSnapshotName = await createTimelineOriginalSnapshot(tableName, existing.id)
-        store.updateTimelineOriginalSnapshot(tableId, newSnapshotName)
+        console.error('[INIT_TIMELINE] CRITICAL: Original snapshot file missing!', snapshotName)
+        console.error('[INIT_TIMELINE] This may indicate a cleanup bug or storage corruption')
+        console.error('[INIT_TIMELINE] Timeline has', existing.commands.length, 'commands - diff functionality may be compromised')
+        // DO NOT recreate from current state - that would destroy diff accuracy
+        // The snapshot name stays in timeline for reference, but diffs will fail with clear error
       }
     } else {
       // No original snapshot name set, create one

@@ -123,31 +123,24 @@ export function useDuckDB() {
           nullable: true,
         }))
 
-        // Generate tableId BEFORE adding to store so we can create snapshot first
+        // Generate tableId BEFORE adding to store so we can create timeline/snapshot first
         const tableId = generateId()
 
-        // 🟢 Eagerly initialize timeline to create baseline snapshot
-        // This creates the original Parquet snapshot NOW instead of on first edit
-        // For large tables (≥100k rows), this adds ~3s but the grid won't show until ready
+        // Create timeline with original snapshot BEFORE grid rendering
+        // This ensures first edit is instant (snapshot already exists)
+        // Progress indicator shown via setLoadingMessage
+        setLoadingMessage('Creating snapshot...')
         try {
-          console.log('[Import] Eagerly initializing timeline snapshot...')
-
-          // Update loading message based on table size
-          if (result.rowCount >= 100000) {
-            setLoadingMessage(`Preparing for edits (${result.rowCount.toLocaleString()} rows)...`)
-          } else {
-            setLoadingMessage('Preparing for edits...')
-          }
-
           const { initializeTimeline } = await import('@/lib/timeline-engine')
           await initializeTimeline(tableId, tableName)
-          console.log('[Import] Timeline snapshot created successfully')
+          console.log('[Import] Timeline initialized with snapshot')
         } catch (error) {
-          // Non-fatal - timeline will be created on first transformation if this fails
-          console.warn('[Import] Failed to eagerly initialize timeline:', error)
+          console.warn('[Import] Failed to create timeline/snapshot:', error)
+          // Non-fatal - timeline will be created on first edit (old behavior)
         }
 
         // NOW add to store - this triggers grid rendering
+        setLoadingMessage('Rendering grid...')
         addTable(tableName, columns, result.rowCount, tableId)
 
         // Build details string with settings info for CSV

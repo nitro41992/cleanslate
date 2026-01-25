@@ -10,6 +10,8 @@ import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot
 const registeredParquetSnapshots = new Set<string>()
 // Track which diff tables are currently registered (for chunked diff results)
 const registeredDiffTables = new Set<string>()
+// Track in-progress registrations to prevent concurrent registration attempts
+const pendingDiffRegistrations = new Map<string, Promise<void>>()
 
 /**
  * Resolve a table reference to a SQL expression, with robust Parquet handling.
@@ -467,6 +469,18 @@ export async function runDiff(
           .join(' OR ')
       : 'FALSE'
 
+    // DIAGNOSTIC: Log diff detection details
+    console.log('[Diff] Modification detection:', {
+      allColumns: allColumns.length,
+      sharedColumns: sharedColumns.length,
+      valueColumns: valueColumns.length,
+      keyColumns,
+      newColumns,
+      removedColumns,
+      valueColumnsList: valueColumns,
+      diffMode
+    })
+
     // Phase 1: Create NARROW temp table with ONLY metadata (JOIN executes once)
     // CRITICAL OPTIMIZATION: Store only row IDs + status, NOT all column values
     // This reduces memory from ~12 GB to ~26 MB for 1M x 1M rows!
@@ -586,6 +600,14 @@ export async function runDiff(
     // Note: Column-level changes are shown separately in a banner
     const totalDiffRows = summary.added + summary.removed + summary.modified
 
+    // DIAGNOSTIC: Log final summary
+    console.log('[Diff] Summary:', {
+      ...summary,
+      totalDiffRows,
+      sourceTable: tableA,
+      targetTable: tableB
+    })
+
     // Phase 4: Tiered storage - export large diffs to OPFS
     let storageType: 'memory' | 'parquet' = 'memory'
 
@@ -691,6 +713,11 @@ export async function fetchDiffPage(
       isChunked = false
     }
 
+    // Wait for any pending registration to complete (prevents concurrent registration)
+    if (pendingDiffRegistrations.has(tempTableName)) {
+      await pendingDiffRegistrations.get(tempTableName)
+    }
+
     // Skip registration if already done (prevents OPFS file locking errors on pagination)
     const needsRegistration = !registeredDiffTables.has(tempTableName)
 
@@ -701,28 +728,36 @@ export async function fetchDiffPage(
         const fileHandles: FileSystemFileHandle[] = []
 
         if (needsRegistration) {
-          while (true) {
-            try {
-              const fileName = `${tempTableName}_part_${partIndex}.parquet`
-              const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-              fileHandles.push(fileHandle)
+          // Create registration promise to block concurrent attempts
+          const registrationPromise = (async () => {
+            while (true) {
+              try {
+                const fileName = `${tempTableName}_part_${partIndex}.parquet`
+                const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+                fileHandles.push(fileHandle)
 
-              await db.registerFileHandle(
-                fileName,
-                fileHandle,
-                duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-                false  // read-only
-              )
+                await db.registerFileHandle(
+                  fileName,
+                  fileHandle,
+                  duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+                  false  // read-only
+                )
 
-              partIndex++
-            } catch {
-              break // No more chunks
+                partIndex++
+              } catch {
+                break // No more chunks
+              }
             }
-          }
 
-          // Mark as registered after successful registration
-          registeredDiffTables.add(tempTableName)
-          console.log(`[Diff] Registered ${partIndex} diff table chunks: ${tempTableName}`)
+            // Mark as registered after successful registration
+            registeredDiffTables.add(tempTableName)
+            console.log(`[Diff] Registered ${partIndex} diff table chunks: ${tempTableName}`)
+          })()
+
+          // Track and wait for registration
+          pendingDiffRegistrations.set(tempTableName, registrationPromise)
+          await registrationPromise
+          pendingDiffRegistrations.delete(tempTableName)
         }
 
         // Query all chunks with glob pattern
@@ -748,18 +783,26 @@ export async function fetchDiffPage(
       } else {
         // Single file - register only once
         if (needsRegistration) {
-          const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
+          // Create registration promise to block concurrent attempts
+          const registrationPromise = (async () => {
+            const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
 
-          await db.registerFileHandle(
-            `${tempTableName}.parquet`,
-            fileHandle,
-            duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-            false  // read-only
-          )
+            await db.registerFileHandle(
+              `${tempTableName}.parquet`,
+              fileHandle,
+              duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+              false  // read-only
+            )
 
-          // Mark as registered after successful registration
-          registeredDiffTables.add(tempTableName)
-          console.log(`[Diff] Registered diff table: ${tempTableName}`)
+            // Mark as registered after successful registration
+            registeredDiffTables.add(tempTableName)
+            console.log(`[Diff] Registered diff table: ${tempTableName}`)
+          })()
+
+          // Track and wait for registration
+          pendingDiffRegistrations.set(tempTableName, registrationPromise)
+          await registrationPromise
+          pendingDiffRegistrations.delete(tempTableName)
         }
 
         // Query Parquet file directly with pagination
@@ -807,20 +850,31 @@ export async function fetchDiffPage(
 /**
  * Unregister source snapshot files from DuckDB after diff completes.
  * This cleans up file handles registered by resolveTableRef.
+ *
+ * CRITICAL: Original snapshots (original_*) should NEVER be unregistered.
+ * They are permanent and needed for future diffs. Only temp snapshots should be cleaned.
  */
 export async function cleanupDiffSourceFiles(sourceTableName: string): Promise<void> {
   if (!sourceTableName.startsWith('parquet:')) {
     return // Not a Parquet source, nothing to cleanup
   }
 
+  const snapshotId = sourceTableName.replace('parquet:', '')
+
+  // CRITICAL: Never cleanup original snapshots - they're permanent and needed for future diffs
+  if (snapshotId.startsWith('original_')) {
+    console.log(`[Diff] Skipping cleanup for original snapshot: ${snapshotId}`)
+    return
+  }
+
+  // Only cleanup temp snapshots (snapshot_*, etc.)
   try {
     const db = await initDuckDB()
-    const snapshotId = sourceTableName.replace('parquet:', '')
 
     // Try to unregister single file
     try {
       await db.dropFile(`${snapshotId}.parquet`)
-      console.log(`[Diff] Unregistered source file: ${snapshotId}.parquet`)
+      console.log(`[Diff] Unregistered temp source file: ${snapshotId}.parquet`)
     } catch {
       // Might be chunked, try chunks
     }
@@ -837,7 +891,7 @@ export async function cleanupDiffSourceFiles(sourceTableName: string): Promise<v
     }
 
     if (partIndex > 0) {
-      console.log(`[Diff] Unregistered ${partIndex} source file chunks for: ${snapshotId}`)
+      console.log(`[Diff] Unregistered ${partIndex} temp source file chunks for: ${snapshotId}`)
     }
 
     // Remove from registered set

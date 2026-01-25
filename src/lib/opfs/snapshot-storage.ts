@@ -31,13 +31,14 @@ export async function ensureSnapshotDir(): Promise<void> {
 /**
  * Detect the correct ORDER BY column for deterministic export
  * Regular tables use _cs_id, diff tables use row_id
+ * Uses raw connection to avoid mutex reentrancy (caller holds mutex)
  */
 async function getOrderByColumn(
   conn: AsyncDuckDBConnection,
   tableName: string
 ): Promise<string> {
   try {
-    // Check if _cs_id column exists
+    // Use raw connection.query() - NOT mutex-wrapped
     const result = await conn.query(`
       SELECT column_name
       FROM (DESCRIBE "${tableName}")
@@ -142,6 +143,11 @@ export async function exportTableToParquet(
       await writable.write(buffer)
       await writable.close()
 
+      // CRITICAL: Small delay to ensure file handle is fully released
+      // Without this, immediate registration for reading can fail with:
+      // "Access Handles cannot be created if there is another open Access Handle"
+      await new Promise(resolve => setTimeout(resolve, 10))
+
       // Verify file was written
       const file = await fileHandle.getFile()
       if (file.size === 0) {
@@ -185,6 +191,11 @@ export async function exportTableToParquet(
     const writable = await fileHandle.createWritable()
     await writable.write(buffer)
     await writable.close()
+
+    // CRITICAL: Small delay to ensure file handle is fully released
+    // Without this, immediate registration for reading can fail with:
+    // "Access Handles cannot be created if there is another open Access Handle"
+    await new Promise(resolve => setTimeout(resolve, 10))
 
     // Verify file was written
     const file = await fileHandle.getFile()

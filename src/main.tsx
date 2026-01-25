@@ -56,13 +56,15 @@ if (import.meta.env.DEV) {
     ;(window as Window & { __CLEANSLATE_FUZZY_MATCHER__?: typeof fuzzyMatcher }).__CLEANSLATE_FUZZY_MATCHER__ = fuzzyMatcher
   })
 
-  import('./lib/duckdb').then(({ query, initDuckDB }) => {
-    ;(window as Window & { __CLEANSLATE_DUCKDB__?: { query: typeof query; isReady: boolean } }).__CLEANSLATE_DUCKDB__ = {
+  import('./lib/duckdb').then(({ query, initDuckDB, resetConnection, checkConnectionHealth }) => {
+    ;(window as Window & { __CLEANSLATE_DUCKDB__?: { query: typeof query; isReady: boolean; resetConnection: typeof resetConnection; checkConnectionHealth: typeof checkConnectionHealth } }).__CLEANSLATE_DUCKDB__ = {
       query,
+      resetConnection,
+      checkConnectionHealth,
       isReady: false,
     }
     initDuckDB().then(() => {
-      ;(window as Window & { __CLEANSLATE_DUCKDB__?: { query: typeof query; isReady: boolean } }).__CLEANSLATE_DUCKDB__!.isReady = true
+      ;(window as Window & { __CLEANSLATE_DUCKDB__?: { query: typeof query; isReady: boolean; resetConnection: typeof resetConnection; checkConnectionHealth: typeof checkConnectionHealth } }).__CLEANSLATE_DUCKDB__!.isReady = true
     })
   })
 }

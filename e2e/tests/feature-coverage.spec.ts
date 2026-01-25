@@ -1174,17 +1174,14 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test.afterEach(async () => {
-    // Lightweight cleanup - tests already drop their own tables
+    // Lightweight cleanup - close panels only
+    // Tables are recreated by each test via CREATE OR REPLACE
     await coolHeapLight(page)
   })
 
   test('should perform inner join on customer_id', async () => {
-    // Clean up any existing tables
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_customers')
-    await inspector.runQuery('DROP TABLE IF EXISTS join_result')
-
     // Upload orders file (page is already on laundromat from beforeAll)
+    // CREATE OR REPLACE TABLE will handle any existing tables
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -1242,12 +1239,8 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
   })
 
   test('should perform left join preserving unmatched orders', async () => {
-    // Drop existing tables from previous test
-    await inspector.runQuery('DROP TABLE IF EXISTS join_result')
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_orders')
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_e2_customers')
-
     // Upload orders file
+    // CREATE OR REPLACE TABLE will handle any existing tables from previous test
     await laundromat.uploadFile(getFixturePath('fr_e2_orders.csv'))
     await wizard.waitForOpen()
     await wizard.import()

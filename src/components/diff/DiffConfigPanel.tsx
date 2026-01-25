@@ -30,6 +30,7 @@ interface DiffConfigPanelProps {
   // Compare Preview mode
   activeTableId: string | null
   activeTableName: string | null
+  activeTableDataVersion: number | null
   // Shared
   keyColumns: string[]
   isComparing: boolean
@@ -47,6 +48,7 @@ export function DiffConfigPanel({
   onTableBChange,
   activeTableId,
   activeTableName,
+  activeTableDataVersion,
   keyColumns,
   isComparing,
   onKeyColumnsChange,
@@ -91,7 +93,7 @@ export function DiffConfigPanel({
         .then(setHasSnapshot)
         .finally(() => setCheckingSnapshot(false))
     }
-  }, [mode, activeTableId, activeTableName, getTimeline])
+  }, [mode, activeTableId, activeTableName, activeTableDataVersion, getTimeline])
 
   // Get table info for selected tables
   const tableAInfo = tables.find((t) => t.id === tableA)

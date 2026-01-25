@@ -29,6 +29,8 @@ export interface HeapCoolingOptions {
   pruneAudit?: boolean
   /** Audit log entry count threshold for pruning (default: 100) */
   auditThreshold?: number
+  /** Reset DuckDB connection if unhealthy (for critical test boundaries) */
+  resetConnection?: boolean
 }
 
 /**
@@ -61,6 +63,7 @@ export async function coolHeap(
     clearTimelineState = false, // Disabled by default (too aggressive)
     pruneAudit = true,
     auditThreshold = 100,
+    resetConnection = false, // Disabled by default (only for critical boundaries)
   } = options
 
   // 1. Drop all tables (frees DuckDB memory)
@@ -145,6 +148,19 @@ export async function coolHeap(
       }
     } catch (error) {
       console.warn('[coolHeap] Failed to prune audit log:', error)
+    }
+  }
+
+  // 6. Reset connection if unhealthy (for critical test boundaries)
+  if (resetConnection) {
+    try {
+      const isHealthy = await inspector.checkConnectionHealth()
+      if (!isHealthy) {
+        console.warn('[coolHeap] Connection unhealthy, resetting...')
+        await inspector.resetDuckDBConnection()
+      }
+    } catch (error) {
+      console.warn('[coolHeap] Failed to reset connection:', error)
     }
   }
 }

@@ -78,6 +78,14 @@ export interface StoreInspector {
    * Get timeline highlight state (for visual highlighting verification)
    */
   getTimelineHighlight: () => Promise<TimelineHighlightState>
+  /**
+   * Reset DuckDB connection (for test cleanup or error recovery)
+   */
+  resetDuckDBConnection: () => Promise<void>
+  /**
+   * Check if DuckDB connection is healthy
+   */
+  checkConnectionHealth: () => Promise<boolean>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -240,6 +248,26 @@ export function createStoreInspector(page: Page): StoreInspector {
           columnCount: highlight?.highlightedColumns?.size || 0,
           diffMode: highlight?.diffMode || 'none',
         }
+      })
+    },
+
+    async resetDuckDBConnection(): Promise<void> {
+      return page.evaluate(async () => {
+        const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: any }).__CLEANSLATE_DUCKDB__
+        if (!duckdb?.resetConnection) {
+          throw new Error('resetConnection not available')
+        }
+        return duckdb.resetConnection()
+      })
+    },
+
+    async checkConnectionHealth(): Promise<boolean> {
+      return page.evaluate(async () => {
+        const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: any }).__CLEANSLATE_DUCKDB__
+        if (!duckdb?.checkConnectionHealth) {
+          throw new Error('checkConnectionHealth not available')
+        }
+        return duckdb.checkConnectionHealth()
       })
     },
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import { X, ArrowLeft, EyeOff, AlertTriangle, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -63,46 +63,48 @@ export function DiffView({ open, onClose }: DiffViewProps) {
   const tableBInfo = tables.find((t) => t.id === tableB)
   const activeTableInfo = tables.find((t) => t.id === activeTableId)
   const decrementBusy = useUIStore((s) => s.decrementBusy)
+  const [isClosing, setIsClosing] = useState(false)
+
+  // Track latest values for cleanup (avoid stale closure in unmount)
+  const diffTableNameRef = useRef(diffTableName)
+  const sourceTableNameRef = useRef(sourceTableName)
+  const storageTypeRef = useRef(storageType)
+
+  // Update refs when values change
+  useEffect(() => {
+    diffTableNameRef.current = diffTableName
+    sourceTableNameRef.current = sourceTableName
+    storageTypeRef.current = storageType
+  }, [diffTableName, sourceTableName, storageType])
 
   // Safety net: decrement busy counter on unmount in case operation was interrupted
   useEffect(() => {
     return () => decrementBusy()
   }, [decrementBusy])
 
-  // Handle escape key to close
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) {
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
-
   // Cleanup temp table and source files when component unmounts
+  // CRITICAL: Empty deps array - only run on unmount, NOT when values change
+  // If cleanup runs on dep change, it deletes Parquet files while grid is still reading them
+  // Use refs to access latest values without triggering cleanup on change
   useEffect(() => {
     return () => {
-      if (diffTableName) {
-        cleanupDiffTable(diffTableName, storageType || 'memory')
+      const currentDiffTableName = diffTableNameRef.current
+      const currentSourceTableName = sourceTableNameRef.current
+      const currentStorageType = storageTypeRef.current
+
+      if (currentDiffTableName) {
+        cleanupDiffTable(currentDiffTableName, currentStorageType || 'memory')
       }
-      if (sourceTableName) {
-        cleanupDiffSourceFiles(sourceTableName)
+      if (currentSourceTableName) {
+        cleanupDiffSourceFiles(currentSourceTableName)
       }
     }
-  }, [diffTableName, sourceTableName, storageType])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleRunDiff = useCallback(async () => {
     // Only require key columns for two-tables mode (preview uses _cs_id internally)
     if (mode === 'compare-tables' && keyColumns.length === 0) return
-
-    // Cleanup previous temp table and source files if exists
-    if (diffTableName) {
-      await cleanupDiffTable(diffTableName, storageType || 'memory')
-    }
-    if (sourceTableName) {
-      await cleanupDiffSourceFiles(sourceTableName)
-    }
 
     setIsComparing(true)
     try {
@@ -160,6 +162,16 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       // - b.key IS NULL → 'removed' (row in A only = deleted from current)
       // - newColumns = columns in A but not B = columns REMOVED from current
       // - removedColumns = columns in B but not A = columns ADDED to current (user's "new columns")
+
+      // DIAGNOSTIC: Log what we're comparing
+      console.log('[Diff] Comparison details:', {
+        sourceTableName,
+        targetTableName,
+        mode,
+        keyColumns,
+        timestamp: new Date().toISOString()
+      })
+
       const config = await runDiff(
         sourceTableName,   // original snapshot (A) - may be "parquet:snapshot_abc"
         targetTableName,   // current table (B)
@@ -191,59 +203,116 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     } finally {
       setIsComparing(false)
     }
-  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, diffTableName, sourceTableName, storageType, setIsComparing, setDiffConfig, getTimeline])
+  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, setIsComparing, setDiffConfig, getTimeline])
 
   const handleNewComparison = useCallback(async () => {
-    // Cleanup current temp table and source files
-    if (diffTableName) {
-      await cleanupDiffTable(diffTableName, storageType || 'memory')
+    // Save old values for cleanup
+    const oldDiffTableName = diffTableName
+    const oldSourceTableName = sourceTableName
+    const oldStorageType = storageType
 
-      // VACUUM to reclaim RAM from dropped diff table
-      // Without this, dead rows stay in memory (can be 100s of MB for large diffs)
-      if (storageType === 'memory') {
-        try {
-          const { execute } = await import('@/lib/duckdb')
-          const vacuumStart = performance.now()
-          await execute('VACUUM')
-          const vacuumTime = performance.now() - vacuumStart
-          console.log(`[Diff] VACUUM after cleanup completed in ${vacuumTime.toFixed(0)}ms`)
-        } catch (err) {
-          console.warn('[Diff] VACUUM failed (non-fatal):', err)
-        }
-      }
-    }
-    if (sourceTableName) {
-      await cleanupDiffSourceFiles(sourceTableName)
-    }
+    // Clear results and reset UI
     clearResults()
     setKeyColumns([])
+
+    // Cleanup old files in background (after grid unmounts from clearResults)
+    // Use setTimeout to ensure React has processed the clearResults state update
+    setTimeout(async () => {
+      if (oldDiffTableName) {
+        await cleanupDiffTable(oldDiffTableName, oldStorageType || 'memory')
+
+        // VACUUM to reclaim RAM from dropped diff table
+        // Without this, dead rows stay in memory (can be 100s of MB for large diffs)
+        if (oldStorageType === 'memory') {
+          try {
+            const { execute } = await import('@/lib/duckdb')
+            const vacuumStart = performance.now()
+            await execute('VACUUM')
+            const vacuumTime = performance.now() - vacuumStart
+            console.log(`[Diff] VACUUM after cleanup completed in ${vacuumTime.toFixed(0)}ms`)
+          } catch (err) {
+            console.warn('[Diff] VACUUM failed (non-fatal):', err)
+          }
+        }
+      }
+      if (oldSourceTableName) {
+        await cleanupDiffSourceFiles(oldSourceTableName)
+      }
+    }, 0)
   }, [diffTableName, sourceTableName, storageType, clearResults, setKeyColumns])
 
   const handleClose = useCallback(async () => {
-    // Cleanup temp table and source files on close
-    if (diffTableName) {
-      await cleanupDiffTable(diffTableName, storageType || 'memory')
+    console.log('[DiffView] Closing...')
+    setIsClosing(true)
 
-      // VACUUM to reclaim RAM from dropped diff table
-      // Without this, dead rows stay in memory (can be 100s of MB for large diffs)
-      if (storageType === 'memory') {
+    // Force close after 5 seconds if cleanup hangs
+    const forceCloseTimeout = setTimeout(() => {
+      console.warn('[DiffView] Cleanup timeout, force closing')
+      setIsClosing(false)
+      reset()
+      onClose()
+    }, 5000)
+
+    try {
+      // Cleanup temp table (non-blocking)
+      if (diffTableName) {
         try {
-          const { execute } = await import('@/lib/duckdb')
-          const vacuumStart = performance.now()
-          await execute('VACUUM')
-          const vacuumTime = performance.now() - vacuumStart
-          console.log(`[Diff] VACUUM after cleanup completed in ${vacuumTime.toFixed(0)}ms`)
-        } catch (err) {
-          console.warn('[Diff] VACUUM failed (non-fatal):', err)
+          await cleanupDiffTable(diffTableName, storageType || 'memory')
+          console.log('[DiffView] Temp table cleaned up')
+
+          // VACUUM to reclaim RAM from dropped diff table
+          // Without this, dead rows stay in memory (can be 100s of MB for large diffs)
+          if (storageType === 'memory') {
+            try {
+              const { execute } = await import('@/lib/duckdb')
+              const vacuumStart = performance.now()
+              await execute('VACUUM')
+              const vacuumTime = performance.now() - vacuumStart
+              console.log(`[Diff] VACUUM after cleanup completed in ${vacuumTime.toFixed(0)}ms`)
+            } catch (err) {
+              console.warn('[Diff] VACUUM failed (non-fatal):', err)
+            }
+          }
+        } catch (error) {
+          console.warn('[DiffView] Failed to cleanup temp table:', error)
+          // Non-fatal: continue closing
         }
       }
+
+      // Cleanup source files (non-blocking)
+      if (sourceTableName) {
+        try {
+          await cleanupDiffSourceFiles(sourceTableName)
+          console.log('[DiffView] Source files cleaned up')
+        } catch (error) {
+          console.warn('[DiffView] Failed to cleanup source files:', error)
+          // Non-fatal: continue closing
+        }
+      }
+    } catch (error) {
+      console.error('[DiffView] Cleanup error:', error)
+      // Still close even if cleanup fails
+    } finally {
+      clearTimeout(forceCloseTimeout)
+      setIsClosing(false)
+      // ALWAYS reset and close, regardless of cleanup success
+      reset()
+      onClose()
+      console.log('[DiffView] Closed successfully')
     }
-    if (sourceTableName) {
-      await cleanupDiffSourceFiles(sourceTableName)
-    }
-    reset()
-    onClose()
   }, [diffTableName, sourceTableName, storageType, reset, onClose])
+
+  // Handle escape key to close
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && open && !isClosing) {
+        // Use handleClose to ensure cleanup runs
+        handleClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [open, isClosing, handleClose])
 
   if (!open) return null
 
@@ -254,6 +323,18 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm animate-in fade-in-0 duration-200"
       data-testid="diff-view"
     >
+      {/* Loading Overlay During Close */}
+      {isClosing && (
+        <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center">
+          <div className="bg-card border border-border rounded-lg p-6 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary border-t-transparent" />
+              <span className="text-sm text-muted-foreground">Closing diff view...</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="h-14 border-b border-border/50 bg-card/50 flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
@@ -261,6 +342,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
             variant="ghost"
             size="sm"
             onClick={handleClose}
+            disabled={isClosing}
             className="gap-2"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -370,6 +452,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               onTableBChange={setTableB}
               activeTableId={activeTableId}
               activeTableName={activeTableInfo?.name || null}
+              activeTableDataVersion={activeTableInfo?.dataVersion || null}
               keyColumns={keyColumns}
               isComparing={isComparing}
               onKeyColumnsChange={setKeyColumns}
