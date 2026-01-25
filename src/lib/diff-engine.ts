@@ -12,6 +12,9 @@ const registeredParquetSnapshots = new Set<string>()
 const registeredDiffTables = new Set<string>()
 // Track in-progress registrations to prevent concurrent registration attempts
 const pendingDiffRegistrations = new Map<string, Promise<void>>()
+// Cache resolved Parquet expressions to avoid OPFS access on every scroll
+// Key: snapshotId, Value: SQL expression (e.g., "read_parquet('snapshot.parquet')")
+const resolvedExpressionCache = new Map<string, string>()
 
 /**
  * Resolve a table reference to a SQL expression, with robust Parquet handling.
@@ -31,20 +34,15 @@ async function resolveTableRef(tableName: string): Promise<string> {
 
   // Skip registration if already done (prevents OPFS file locking errors)
   if (registeredParquetSnapshots.has(snapshotId)) {
-    console.log(`[Diff] Parquet snapshot ${snapshotId} already registered, skipping`)
-
-    // Check if chunked or single file to return correct expression
-    const db = await initDuckDB()
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-    try {
-      await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
-      return `read_parquet('${snapshotId}_part_*.parquet')`  // Chunked
-    } catch {
-      return `read_parquet('${snapshotId}.parquet')`  // Single file
+    // CRITICAL FIX: Return cached expression instead of re-checking OPFS
+    // This eliminates ~50ms+ OPFS latency per scroll page that caused stalling
+    const cachedExpr = resolvedExpressionCache.get(snapshotId)
+    if (cachedExpr) {
+      console.log(`[Diff] Using cached expression for ${snapshotId}`)
+      return cachedExpr
     }
+    // This shouldn't happen normally, but log if it does
+    console.warn(`[Diff] Snapshot ${snapshotId} registered but no cached expression, re-resolving...`)
   }
 
   // Helper to check OPFS file existence
@@ -79,11 +77,13 @@ async function resolveTableRef(tableName: string): Promise<string> {
       false // read-only
     )
 
-    // Mark as registered after successful registration
+    // Mark as registered and cache the expression for fast lookups during scroll
+    const expr = `read_parquet('${exactFile}')`
     registeredParquetSnapshots.add(snapshotId)
+    resolvedExpressionCache.set(snapshotId, expr)
 
-    console.log(`[Diff] Resolved ${tableName} to read_parquet('${exactFile}')`)
-    return `read_parquet('${exactFile}')`
+    console.log(`[Diff] Resolved ${tableName} to ${expr} (cached)`)
+    return expr
   }
 
   // CHECK 2: Try chunked pattern (for large tables >250k rows)
@@ -117,12 +117,13 @@ async function resolveTableRef(tableName: string): Promise<string> {
       }
     }
 
-    // Mark as registered after successful registration
+    // Mark as registered and cache the expression for fast lookups during scroll
+    const chunkExpr = `read_parquet('${snapshotId}_part_*.parquet')`
     registeredParquetSnapshots.add(snapshotId)
+    resolvedExpressionCache.set(snapshotId, chunkExpr)
 
-    const chunkPattern = `${snapshotId}_part_*.parquet`
-    console.log(`[Diff] Resolved ${tableName} to read_parquet('${chunkPattern}') with ${partIndex} chunks`)
-    return `read_parquet('${chunkPattern}')`
+    console.log(`[Diff] Resolved ${tableName} to ${chunkExpr} with ${partIndex} chunks (cached)`)
+    return chunkExpr
   }
 
   // CHECK 3: Snapshot file missing (deleted or corrupted)
@@ -1016,9 +1017,10 @@ export async function cleanupDiffSourceFiles(sourceTableName: string): Promise<v
       console.log(`[Diff] Unregistered ${partIndex} temp source file chunks for: ${snapshotId}`)
     }
 
-    // Remove from registered set
+    // Remove from registered set and expression cache
     registeredParquetSnapshots.delete(snapshotId)
-    console.log(`[Diff] Cleared registration state for ${snapshotId}`)
+    resolvedExpressionCache.delete(snapshotId)
+    console.log(`[Diff] Cleared registration state and cache for ${snapshotId}`)
   } catch (error) {
     console.warn('[Diff] Source file cleanup failed (non-fatal):', error)
   }

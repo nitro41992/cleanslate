@@ -78,6 +78,8 @@ export function VirtualizedDiffGrid({
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
+  // Prevent concurrent fetch requests during rapid scrolling
+  const fetchLockRef = useRef(false)
 
   // IMPORTANT: Perspective swap for display
   // The diff engine computes columns from tableA's perspective where A=original, B=current:
@@ -179,16 +181,22 @@ export function VirtualizedDiffGrid({
     async (range: Rectangle) => {
       if (!diffTableName || totalRows === 0) return
 
+      // Skip if a fetch is already in progress (prevents concurrent requests during rapid scroll)
+      if (fetchLockRef.current) return
+
       const needStart = Math.max(0, range.y - PAGE_SIZE)
       const needEnd = Math.min(totalRows, range.y + range.height + PAGE_SIZE)
 
       if (needStart < loadedRange.start || needEnd > loadedRange.end) {
+        fetchLockRef.current = true
         try {
           const newData = await fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, needStart, needEnd - needStart, keyOrderBy, storageType)
           setData(newData)
           setLoadedRange({ start: needStart, end: needStart + newData.length })
         } catch (err) {
           console.error('Error loading diff page:', err)
+        } finally {
+          fetchLockRef.current = false
         }
       }
     },
