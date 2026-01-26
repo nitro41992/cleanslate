@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { FileText } from 'lucide-react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { MobileBlocker } from '@/components/layout/MobileBlocker'
@@ -41,6 +41,7 @@ import { usePersistence } from '@/hooks/usePersistence'
 import { useBeforeUnload } from '@/hooks/useBeforeUnload'
 import { useUnifiedUndo } from '@/hooks/useUnifiedUndo'
 import { toast } from 'sonner'
+import { reorderColumns } from '@/lib/commands/utils/column-ordering'
 
 import type { CSVIngestionSettings } from '@/types'
 
@@ -51,6 +52,22 @@ function App() {
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
   const addTable = useTableStore((s) => s.addTable)
+
+  // Compute display columns in correct order using columnOrder from tableStore
+  const displayColumns = useMemo(() => {
+    if (!activeTable?.columns) {
+      return []
+    }
+
+    // If no columnOrder is set, use DuckDB order as-is (legacy/first load)
+    if (!activeTable.columnOrder) {
+      return activeTable.columns.map((c) => c.name)
+    }
+
+    // Reorder columns according to stored columnOrder
+    const reordered = reorderColumns(activeTable.columns, activeTable.columnOrder)
+    return reordered.map((c) => c.name)
+  }, [activeTable?.columns, activeTable?.columnOrder, activeTable?.dataVersion])
   const setActiveTable = useTableStore((s) => s.setActiveTable)
 
   const activePanel = usePreviewStore((s) => s.activePanel)
@@ -312,7 +329,7 @@ function App() {
                   <DataGrid
                     tableName={activeTable.name}
                     rowCount={activeTable.rowCount}
-                    columns={activeTable.columns.map((c) => c.name)}
+                    columns={displayColumns}
                     editable={true}
                     tableId={activeTable.id}
                     dataVersion={activeTable.dataVersion}

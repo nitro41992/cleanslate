@@ -175,6 +175,49 @@ test.describe('Column Order Preservation', () => {
     expect(afterRedo.map(c => c.name)).toEqual(orderAfterTransform)
   })
 
+  test('redo after standardize date preserves column position (user-reported bug)', async () => {
+    // Arrange: Load data with date columns in middle positions
+    await laundromat.uploadFile(getFixturePath('fr_a3_dates_split.csv'))
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_a3_dates_split', 5)
+
+    // Capture initial column order
+    const initialColumns = await inspector.getTableColumns('fr_a3_dates_split')
+    const initialOrder = initialColumns.map(c => c.name)
+    // Expected: ['id', 'full_name', 'birth_date', 'date_us', 'date_eu', 'address']
+    expect(initialOrder).toEqual(['id', 'full_name', 'birth_date', 'date_us', 'date_eu', 'address'])
+
+    // Act: Apply standardize date transformation on 'date_us' (4th column)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Standardize Date', {
+      column: 'date_us',
+      selectParams: { 'Target format': 'ISO (YYYY-MM-DD)' },
+    })
+    await laundromat.closePanel()
+
+    // Assert: Column order unchanged after transform (date_us should stay in position 4)
+    const afterTransform = await inspector.getTableColumns('fr_a3_dates_split')
+    const orderAfterTransform = afterTransform.map(c => c.name)
+    expect(orderAfterTransform).toEqual(initialOrder)
+
+    // Act: Undo
+    await laundromat.clickUndo()
+
+    // Assert: Column order restored after undo
+    const afterUndo = await inspector.getTableColumns('fr_a3_dates_split')
+    expect(afterUndo.map(c => c.name)).toEqual(initialOrder)
+
+    // Act: Redo (this is where the bug occurs - column moves to end)
+    await laundromat.clickRedo()
+
+    // Assert: Column order STILL unchanged (date_us should be 4th, NOT last)
+    // This is the KEY assertion - before the fix, date_us would move to the end
+    const afterRedo = await inspector.getTableColumns('fr_a3_dates_split')
+    const orderAfterRedo = afterRedo.map(c => c.name)
+    expect(orderAfterRedo).toEqual(initialOrder)
+  })
+
   test('chained transformations preserve column order', async () => {
     // Arrange
     await laundromat.uploadFile(getFixturePath('column-order-test.csv'))
