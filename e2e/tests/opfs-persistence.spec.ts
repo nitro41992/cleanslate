@@ -14,6 +14,22 @@ import { getFixturePath } from '../helpers/file-upload'
  * Note: These tests only run in Chromium (OPFS support). Firefox fallback is tested separately.
  */
 
+/**
+ * Check if the browser supports OPFS with sync access handles.
+ * Required for DuckDB OPFS persistence to work.
+ */
+async function checkOPFSSupport(page: Page): Promise<boolean> {
+  return await page.evaluate(async () => {
+    try {
+      if (typeof navigator.storage?.getDirectory !== 'function') return false
+      if (typeof FileSystemFileHandle !== 'undefined') {
+        return 'createSyncAccessHandle' in FileSystemFileHandle.prototype
+      }
+      return false
+    } catch { return false }
+  })
+}
+
 test.describe.serial('OPFS Persistence - Basic Functionality', () => {
   let page: Page
   let laundromat: LaundromatPage
@@ -23,6 +39,14 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
+    await page.goto('/')
+
+    const supportsOPFS = await checkOPFSSupport(page)
+    if (!supportsOPFS) {
+      test.skip(true, 'OPFS with sync access handles not supported')
+      return
+    }
+
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -32,6 +56,7 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
   })
 
   test.afterAll(async () => {
+    if (!page) return
     // Clean up OPFS storage after tests
     await page.evaluate(async () => {
       try {
@@ -84,18 +109,13 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     const tables = await inspector.getTables()
     const restoredTable = tables.find(t => t.name === 'basic_data')
 
-    if (restoredTable) {
-      // Table was restored
-      expect(restoredTable.rowCount).toBe(5)
+    // OPFS is confirmed supported (checked in beforeAll), so table must be restored
+    expect(restoredTable).toBeDefined()
+    expect(restoredTable!.rowCount).toBe(5)
 
-      const restoredData = await inspector.getTableData('basic_data')
-      expect(restoredData[0].name).toBe('JOHN DOE') // Uppercase transformation persisted
-      expect(restoredData.length).toBe(5)
-    } else {
-      // OPFS may not be supported in test environment (e.g., Firefox, headless mode)
-      // This is acceptable - log warning but don't fail test
-      console.log('[OPFS Test] Table not restored - likely in-memory mode')
-    }
+    const restoredData = await inspector.getTableData('basic_data')
+    expect(restoredData[0].name).toBe('JOHN DOE') // Uppercase transformation persisted
+    expect(restoredData.length).toBe(5)
   })
 
   test('should persist multiple tables', async () => {
@@ -133,17 +153,12 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
       { timeout: 10000, message: 'Tables not restored from OPFS' }
     ).toBeTruthy()
 
-    // Verify both tables restored (if OPFS supported)
+    // Verify both tables restored (OPFS is confirmed supported)
     tables = await inspector.getTables()
-    const hasBasicData = tables.some(t => t.name === 'basic_data')
-    const hasWithDuplicates = tables.some(t => t.name === 'with_duplicates')
-
-    if (hasBasicData && hasWithDuplicates) {
-      expect(tables.find(t => t.name === 'basic_data')?.rowCount).toBe(5)
-      expect(tables.find(t => t.name === 'with_duplicates')?.rowCount).toBe(7)
-    } else {
-      console.log('[OPFS Test] Tables not restored - in-memory mode')
-    }
+    expect(tables.some(t => t.name === 'basic_data')).toBe(true)
+    expect(tables.some(t => t.name === 'with_duplicates')).toBe(true)
+    expect(tables.find(t => t.name === 'basic_data')?.rowCount).toBe(5)
+    expect(tables.find(t => t.name === 'with_duplicates')?.rowCount).toBe(7)
   })
 
   test('should persist timeline snapshots for undo/redo', async () => {
@@ -177,22 +192,20 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
       { timeout: 10000, message: 'Table not restored from OPFS' }
     ).toBeTruthy()
 
-    // If OPFS supported, verify undo still works after refresh
+    // Verify table restored (OPFS is confirmed supported)
     const tables = await inspector.getTables()
-    if (tables.some(t => t.name === 'basic_data')) {
-      // Check that timeline snapshots exist in DuckDB
-      const snapshotTables = await inspector.runQuery(`
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_name LIKE '_timeline_snapshot_%'
-      `)
+    expect(tables.some(t => t.name === 'basic_data')).toBe(true)
 
-      // Timeline snapshots should persist in OPFS
-      // (Note: Exact count depends on tier strategy, just verify some exist)
-      if (snapshotTables.length > 0) {
-        console.log(`[OPFS Test] ${snapshotTables.length} timeline snapshots persisted`)
-      }
-    }
+    // Check that timeline snapshots exist in DuckDB
+    const snapshotTables = await inspector.runQuery(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_name LIKE '_timeline_snapshot_%'
+    `)
+
+    // Timeline snapshots should persist in OPFS
+    // (Note: Exact count depends on tier strategy, just log count)
+    console.log(`[OPFS Test] ${snapshotTables.length} timeline snapshots persisted`)
   })
 
   test('should show auto-save enabled message for OPFS-capable browsers', async () => {
@@ -200,30 +213,19 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     await page.reload()
     await inspector.waitForDuckDBReady()
 
-    // Check if browser supports OPFS
-    const isPersistent = await page.evaluate(() => {
-      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      if (!stores?.duckdb) return false
-
-      // Check if isDuckDBPersistent is available
-      return typeof navigator.storage?.getDirectory === 'function'
+    // In Chromium with OPFS support (confirmed in beforeAll), capture console logs
+    const logs: string[] = []
+    page.on('console', msg => {
+      if (msg.type() === 'log' && msg.text().includes('auto-save')) {
+        logs.push(msg.text())
+      }
     })
 
-    if (isPersistent) {
-      // In Chromium, should see auto-save message in console
-      const logs: string[] = []
-      page.on('console', msg => {
-        if (msg.type() === 'log' && msg.text().includes('auto-save')) {
-          logs.push(msg.text())
-        }
-      })
+    await page.reload()
+    await inspector.waitForDuckDBReady()
 
-      await page.reload()
-      await page.waitForTimeout(2000)
-
-      // Should have logged auto-save message
-      expect(logs.some(log => log.includes('auto-save') || log.includes('persistent'))).toBeTruthy()
-    }
+    // Should have logged auto-save message
+    expect(logs.some(log => log.includes('auto-save') || log.includes('persistent'))).toBeTruthy()
   })
 })
 
@@ -236,6 +238,14 @@ test.describe.serial('OPFS Persistence - Auto-Flush', () => {
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
+    await page.goto('/')
+
+    const supportsOPFS = await checkOPFSSupport(page)
+    if (!supportsOPFS) {
+      test.skip(true, 'OPFS with sync access handles not supported')
+      return
+    }
+
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -245,6 +255,7 @@ test.describe.serial('OPFS Persistence - Auto-Flush', () => {
   })
 
   test.afterAll(async () => {
+    if (!page) return
     // Clean up OPFS storage
     await page.evaluate(async () => {
       try {
@@ -304,6 +315,14 @@ test.describe.serial('OPFS Persistence - Audit Log Pruning', () => {
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
+    await page.goto('/')
+
+    const supportsOPFS = await checkOPFSSupport(page)
+    if (!supportsOPFS) {
+      test.skip(true, 'OPFS with sync access handles not supported')
+      return
+    }
+
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -313,6 +332,7 @@ test.describe.serial('OPFS Persistence - Audit Log Pruning', () => {
   })
 
   test.afterAll(async () => {
+    if (!page) return
     await page.evaluate(async () => {
       try {
         const opfsRoot = await navigator.storage.getDirectory()

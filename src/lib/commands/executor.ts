@@ -66,6 +66,24 @@ import {
 const MAX_SNAPSHOTS_PER_TABLE = 5
 
 /**
+ * Metrics for tracking fallback strategy usage.
+ * Helps diagnose which row ID extraction strategies are succeeding/failing.
+ */
+interface FallbackMetrics {
+  predicateSuccess: number
+  baseColumnSuccess: number
+  allRowsFallback: number
+  allStrategiesFailed: number
+}
+
+let fallbackMetrics: FallbackMetrics = {
+  predicateSuccess: 0,
+  baseColumnSuccess: 0,
+  allRowsFallback: 0,
+  allStrategiesFailed: 0,
+}
+
+/**
  * Timeout ID for auto-resetting persistence status from 'saved' to 'idle'
  * Cleared if a new operation starts during the countdown
  */
@@ -406,6 +424,10 @@ export class CommandExecutor implements ICommandExecutor {
                 WHERE ${predicate}
               `)
               affectedRowIds = result.map(r => String(r._cs_id))
+              if (affectedRowIds.length > 0) {
+                fallbackMetrics.predicateSuccess++
+                console.log(`[EXECUTOR] Strategy 1 (predicate) succeeded: ${affectedRowIds.length} rows`)
+              }
             }
           } catch (err) {
             console.warn('[EXECUTOR] Failed to extract affectedRowIds via predicate:', err)
@@ -422,6 +444,10 @@ export class CommandExecutor implements ICommandExecutor {
               LIMIT 10000
             `)
             affectedRowIds = result.map(r => String(r._cs_id))
+            if (affectedRowIds.length > 0) {
+              fallbackMetrics.baseColumnSuccess++
+              console.log(`[EXECUTOR] Strategy 2 (__base column) succeeded: ${affectedRowIds.length} rows`)
+            }
           } catch {
             // __base column may not exist for non-tier-1 commands
           }
@@ -435,10 +461,17 @@ export class CommandExecutor implements ICommandExecutor {
               SELECT _cs_id FROM "${updatedCtx.table.name}" LIMIT 10000
             `)
             affectedRowIds = result.map(r => String(r._cs_id))
-            console.log(`[EXECUTOR] Used all-rows fallback for affectedRowIds (${affectedRowIds.length} rows)`)
+            fallbackMetrics.allRowsFallback++
+            console.log(`[EXECUTOR] Strategy 3 (all-rows fallback) succeeded: ${affectedRowIds.length} rows`)
           } catch (err) {
+            fallbackMetrics.allStrategiesFailed++
             console.warn('[EXECUTOR] All fallback strategies failed for affectedRowIds:', err)
           }
+        }
+
+        // Track when all strategies fail
+        if (affectedRowIds.length === 0) {
+          fallbackMetrics.allStrategiesFailed++
         }
       }
 
@@ -812,6 +845,14 @@ export class CommandExecutor implements ICommandExecutor {
   getTimelinePosition(tableId: string): number {
     const timeline = tableTimelines.get(tableId)
     return timeline?.position ?? -1
+  }
+
+  /**
+   * Get fallback metrics for debugging row ID extraction strategies.
+   * Useful for diagnosing which strategies are succeeding/failing.
+   */
+  getFallbackMetrics(): FallbackMetrics {
+    return { ...fallbackMetrics }
   }
 
   // ===== PRIVATE METHODS =====
@@ -1273,4 +1314,10 @@ export function getCommandExecutor(): CommandExecutor {
 export function resetCommandExecutor(): void {
   executorInstance = null
   tableTimelines.clear()
+  fallbackMetrics = {
+    predicateSuccess: 0,
+    baseColumnSuccess: 0,
+    allRowsFallback: 0,
+    allStrategiesFailed: 0,
+  }
 }

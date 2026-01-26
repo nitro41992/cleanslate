@@ -25,14 +25,27 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-memory-intensive',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          args: [
+            '--js-flags=--max-old-space-size=4096',
+            '--enable-precise-memory-info',
+          ],
+        },
+      },
       // Limit workers for memory-intensive test files
       testMatch: /memory-optimization|opfs-persistence/,
       fullyParallel: false,
     },
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          args: ['--js-flags=--max-old-space-size=4096'],
+        },
+      },
       testIgnore: /memory-optimization|opfs-persistence/,
     },
   ],
