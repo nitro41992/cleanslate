@@ -134,21 +134,25 @@ export async function validateJoin(
   }
 
   // FR-E3: Check if key columns have leading/trailing whitespace
-  const wsCheckA = await query<{ has_whitespace: boolean }>(`
-    SELECT COUNT(*) > 0 as has_whitespace
-    FROM "${tableA}"
-    WHERE "${keyColumn}" != TRIM("${keyColumn}")
-  `)
-  const wsCheckB = await query<{ has_whitespace: boolean }>(`
-    SELECT COUNT(*) > 0 as has_whitespace
-    FROM "${tableB}"
-    WHERE "${keyColumn}" != TRIM("${keyColumn}")
-  `)
+  // Only check for text columns (VARCHAR)
+  const isTextColumn = typeA === 'VARCHAR' || typeA === 'TEXT'
+  if (isTextColumn) {
+    const wsCheckA = await query<{ has_whitespace: boolean }>(`
+      SELECT COUNT(*) > 0 as has_whitespace
+      FROM "${tableA}"
+      WHERE "${keyColumn}" != TRIM("${keyColumn}")
+    `)
+    const wsCheckB = await query<{ has_whitespace: boolean }>(`
+      SELECT COUNT(*) > 0 as has_whitespace
+      FROM "${tableB}"
+      WHERE "${keyColumn}" != TRIM("${keyColumn}")
+    `)
 
-  if (wsCheckA[0].has_whitespace || wsCheckB[0].has_whitespace) {
-    warnings.push(
-      'Key column has leading/trailing whitespace. Consider using "Auto-Clean Keys" before joining.'
-    )
+    if (wsCheckA[0].has_whitespace || wsCheckB[0].has_whitespace) {
+      warnings.push(
+        'Key column has leading/trailing whitespace. Consider using "Auto-Clean Keys" before joining.'
+      )
+    }
   }
 
   return {

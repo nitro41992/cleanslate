@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import consoleForward from 'vite-console-forward-plugin';
+import { consoleForwardPlugin } from 'vite-console-forward-plugin';
 export default defineConfig({
     plugins: [
         react(),
-        consoleForward(),
+        consoleForwardPlugin(),
     ],
     resolve: {
         alias: {

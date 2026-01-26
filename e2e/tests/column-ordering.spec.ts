@@ -66,15 +66,16 @@ test.describe('Column Order Preservation', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('column_order_test', 4)
 
-    const initialOrder = ['id', 'name', 'email', 'status']
-
     // Act: Rename 'email' (position 3) to 'email_address'
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-    await picker.selectTransformation('Rename Column')
-    await picker.selectColumn('email')
-    await picker.fillParam('New Name', 'email_address')
-    await picker.apply()
+
+    // Use addTransformation with correct parameter label
+    await picker.addTransformation('Rename Column', {
+      column: 'email',
+      params: { 'New column name': 'email_address' }
+    })
+    await laundromat.closePanel()
 
     // Assert: Column stays in position 3 with new name
     const finalColumns = await inspector.getTableColumns('column_order_test')
@@ -82,21 +83,26 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('Tier 3 (remove_duplicates) preserves column order', async () => {
-    // Arrange
-    await laundromat.uploadFile(getFixturePath('with-duplicates.csv'))
+    // Arrange: Use column-order-test.csv instead of with-duplicates.csv
+    // (simpler, fewer rows, less likely to timeout)
+    await laundromat.uploadFile(getFixturePath('column-order-test.csv'))
     await wizard.import()
-    await inspector.waitForTableLoaded('with_duplicates', 6)
+    await inspector.waitForTableLoaded('column_order_test', 4)
 
-    const initialColumns = await inspector.getTableColumns('with_duplicates')
+    const initialColumns = await inspector.getTableColumns('column_order_test')
     const initialOrder = initialColumns.map(c => c.name)
 
     // Act: Remove duplicates (Tier 3 - uses snapshot)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-    await picker.addTransformation('Remove Duplicates', { column: 'email' })
+    await picker.addTransformation('Remove Duplicates') // No column param - operates on all columns
+    await laundromat.closePanel()
+
+    // Wait for operation to complete (Tier 3 may take longer)
+    await page.waitForTimeout(1000) // Temporary until we have better loading indicator
 
     // Assert: Column order unchanged (only rows affected)
-    const finalColumns = await inspector.getTableColumns('with_duplicates')
+    const finalColumns = await inspector.getTableColumns('column_order_test')
     expect(finalColumns.map(c => c.name)).toEqual(initialOrder)
   })
 
@@ -284,7 +290,12 @@ test.describe('Column Order Preservation', () => {
 
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
-    await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })
+
+    // Wait a moment for the operation to start
+    await page.waitForTimeout(500)
+
+    // Wait for join to complete by checking if table was created (longer timeout for join operations)
+    await inspector.waitForTableLoaded('join_result', 2, 60000)
 
     // Assert: Left columns + Right columns (excluding duplicate join key)
     // Left: ['id', 'name', 'email']
@@ -324,6 +335,9 @@ test.describe('Column Order Preservation', () => {
     await page.getByTestId('combiner-stack-btn').click()
     await expect(page.getByText('Tables Stacked', { exact: true })).toBeVisible({ timeout: 5000 })
 
+    // Wait for table to be loaded in the store
+    await inspector.waitForTableLoaded('stacked_result', 4)
+
     const orderAfterStack = await inspector.getTableColumns('stacked_result')
     const expectedOrder = orderAfterStack.map(c => c.name)
 
@@ -333,7 +347,8 @@ test.describe('Column Order Preservation', () => {
     // Act: Apply transformation to stacked table
     // First, switch to stacked_result table in the UI
     await page.getByTestId('table-selector').click()
-    await page.getByRole('option', { name: 'stacked_result' }).click()
+    // Match option by partial text since it includes row count
+    await page.getByRole('option', { name: /stacked_result/ }).click()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()

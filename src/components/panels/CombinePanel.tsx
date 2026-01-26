@@ -23,12 +23,14 @@ import { useAuditStore } from '@/stores/auditStore'
 import { validateStack, validateJoin, autoCleanKeys } from '@/lib/combiner-engine'
 import { getTableColumns } from '@/lib/duckdb'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { isInternalColumn } from '@/lib/commands/utils/column-ordering'
 import { toast } from 'sonner'
-import type { JoinType } from '@/types'
+import type { JoinType, TableInfo } from '@/types'
 
 export function CombinePanel() {
   const tables = useTableStore((s) => s.tables)
   const addTable = useTableStore((s) => s.addTable)
+  const updateTable = useTableStore((s) => s.updateTable)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
 
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
@@ -119,11 +121,33 @@ export function CombinePanel() {
 
       const rowCount = result.executionResult?.rowCount || 0
       const columns = await getTableColumns(resultTableName.trim())
+
+      // Calculate column order: union of source table columns (first appearance)
+      const sourceTableInfos = stackTableIds.map(id =>
+        tables.find(t => t.id === id)
+      ).filter(Boolean) as TableInfo[]
+
+      const columnOrder: string[] = []
+      const seen = new Set<string>()
+
+      for (const table of sourceTableInfos) {
+        const tableOrder = table.columnOrder || table.columns.map(c => c.name)
+        for (const col of tableOrder) {
+          if (!seen.has(col) && !isInternalColumn(col)) {
+            columnOrder.push(col)
+            seen.add(col)
+          }
+        }
+      }
+
       const newTableId = addTable(
         resultTableName.trim(),
         columns.map((c) => ({ ...c, nullable: true })),
         rowCount
       )
+
+      // Immediately update with columnOrder
+      updateTable(newTableId, { columnOrder })
 
       // Add audit entry to the result table
       addAuditEntry({
@@ -219,11 +243,25 @@ export function CombinePanel() {
 
       const rowCount = result.executionResult?.rowCount || 0
       const columns = await getTableColumns(resultTableName.trim())
+
+      // Calculate column order: left + right (excluding duplicate join key)
+      // Use leftTable and rightTable from closure (already validated at function entry)
+      const leftOrder = leftTable.columnOrder || leftTable.columns.map(c => c.name)
+      const rightOrder = rightTable.columnOrder || rightTable.columns.map(c => c.name)
+
+      const columnOrder = [
+        ...leftOrder.filter(col => !isInternalColumn(col)),
+        ...rightOrder.filter(col => col !== keyColumn && !isInternalColumn(col))
+      ]
+
       const newTableId = addTable(
         resultTableName.trim(),
         columns.map((c) => ({ ...c, nullable: true })),
         rowCount
       )
+
+      // Immediately update with columnOrder
+      updateTable(newTableId, { columnOrder })
 
       const joinTypeLabel = joinType === 'inner' ? 'Inner' : joinType === 'left' ? 'Left' : 'Full Outer'
 
