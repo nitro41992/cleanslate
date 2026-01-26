@@ -49,6 +49,7 @@ let isPersistent = false
 let isReadOnly = false
 let flushTimer: NodeJS.Timeout | null = null
 let hasShownStorageWarning = false // Reset on page reload
+let initPromise: Promise<duckdb.AsyncDuckDB> | null = null // Prevent double-init from React StrictMode
 
 const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
   mvp: {
@@ -62,8 +63,28 @@ const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
 }
 
 export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
+  // Return existing DB if already initialized
   if (db) return db
 
+  // Return existing promise if initialization is in progress (React StrictMode protection)
+  if (initPromise) {
+    console.log('[DuckDB] Init already in progress, returning existing promise')
+    return initPromise
+  }
+
+  // Create new initialization promise
+  initPromise = (async () => {
+    try {
+      return await _initDuckDBInternal()
+    } finally {
+      initPromise = null
+    }
+  })()
+
+  return initPromise
+}
+
+async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
   // 1. Detect browser capabilities
   const caps = await detectBrowserCapabilities()
 
