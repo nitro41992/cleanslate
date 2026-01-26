@@ -52,6 +52,7 @@ await inspector.waitForTableLoaded('my_table', expectedRows)
 - `await inspector.waitForTransformComplete(tableId)` — Transform operations complete
 - `await inspector.waitForPanelAnimation(panelId)` — Panel open/close animations
 - `await inspector.waitForMergeComplete()` — Matcher merge operations
+- `await inspector.waitForCombinerComplete()` — Combiner stack/join operations
 - `await inspector.waitForGridReady()` — Data grid fully initialized
 - `await expect(locator).toBeVisible()` — UI elements
 - `await expect(locator).toBeHidden()` — Spinners disappear
@@ -167,7 +168,8 @@ await inspector.waitForTableLoaded(name, rows) // Wait for table
 // Operation Completion (replaces waitForTimeout!)
 await inspector.waitForTransformComplete(tableId)  // Transform done
 await inspector.waitForPanelAnimation(panelId)     // Panel ready
-await inspector.waitForMergeComplete()             // Merge done
+await inspector.waitForMergeComplete()             // Matcher merge done
+await inspector.waitForCombinerComplete()          // Combiner stack/join done
 await inspector.waitForGridReady()                 // Grid ready
 
 // Data Access

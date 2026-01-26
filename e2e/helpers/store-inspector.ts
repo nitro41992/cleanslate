@@ -141,6 +141,12 @@ export interface StoreInspector {
    */
   waitForMergeComplete: (timeout?: number) => Promise<void>
   /**
+   * Wait for combiner operation (stack/join) to complete.
+   * Polls combinerStore.isProcessing to detect when the operation finishes.
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForCombinerComplete: (timeout?: number) => Promise<void>
+  /**
    * Wait for the data grid to be fully initialized and ready for interaction.
    * Checks for grid visibility, data loading completion, and stable state.
    * @param timeout - Optional timeout in milliseconds (default 15000)
@@ -493,6 +499,20 @@ export function createStoreInspector(page: Page): StoreInspector {
           const state = (stores.matcherStore as any).getState()
           // Wait for isMatching to become false
           return state?.isMatching === false
+        },
+        { timeout }
+      )
+    },
+
+    async waitForCombinerComplete(timeout = 30000): Promise<void> {
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.combinerStore) return true  // If store doesn't exist, consider complete
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.combinerStore as any).getState()
+          // Wait for isProcessing to become false
+          return state?.isProcessing === false
         },
         { timeout }
       )

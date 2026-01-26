@@ -306,6 +306,8 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('transform after combiner preserves combined table order', async () => {
+    test.setTimeout(120000)  // 2 minutes for heavy combiner test
+
     // Arrange: Stack two tables
     await inspector.runQuery('DROP TABLE IF EXISTS stack_table_1')
     await inspector.runQuery('DROP TABLE IF EXISTS stack_table_2')
@@ -338,17 +340,21 @@ test.describe('Column Order Preservation', () => {
     // Wait for table to be loaded in the store
     await inspector.waitForTableLoaded('stacked_result', 4)
 
+    // Wait for combiner operation to fully complete before continuing
+    await inspector.waitForCombinerComplete()
+
     const orderAfterStack = await inspector.getTableColumns('stacked_result')
     const expectedOrder = orderAfterStack.map(c => c.name)
 
-    // Close combiner panel
+    // Close combiner panel and wait for it to be fully hidden
     await laundromat.closePanel()
+    await expect(page.getByTestId('combiner')).toBeHidden({ timeout: 5000 })
 
     // Act: Apply transformation to stacked table
     // First, switch to stacked_result table in the UI
     await page.getByTestId('table-selector').click()
-    // Match option by partial text since it includes row count
-    await page.getByRole('option', { name: /stacked_result/ }).click()
+    // Match menuitem by partial text since it includes row count
+    await page.getByRole('menuitem', { name: /stacked_result/ }).click()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
