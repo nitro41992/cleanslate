@@ -1197,10 +1197,13 @@ export class CommandExecutor implements ICommandExecutor {
         newValue: editParams.newValue,
       } as import('@/types').ManualEditParams
     } else {
+      // Include all params from the command to ensure custom parameters are preserved
+      // This is critical for transformations like pad_zeros which have custom params (e.g., length)
       timelineParams = {
         type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
         transformationType: command.type.replace('transform:', '').replace('scrub:', '').replace('edit:', ''),
         column,
+        ...command.params, // CRITICAL FIX: Include all custom params (length, delimiter, etc.)
       } as import('@/types').TimelineParams
     }
 
