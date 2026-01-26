@@ -476,7 +476,9 @@ export class CommandExecutor implements ICommandExecutor {
           updatedCtx,
           snapshotMetadata,
           executionResult.versionedColumn?.backup,
-          highlightInfo.rowPredicate
+          highlightInfo.rowPredicate,
+          currentColumnOrder,
+          newColumnOrder
         )
 
         // Sync with legacy timelineStore for UI integration (highlight, drill-down)
@@ -656,11 +658,15 @@ export class CommandExecutor implements ICommandExecutor {
         timelineStoreState.setPosition(tableId, legacyTimeline.currentPosition - 1)
       }
 
-      // Update table store
-      const updatedCtx = await refreshTableContext(ctx)
+      // Restore column order from before the command was executed
+      const columnOrderToRestore = commandRecord.columnOrderBefore
+
+      // Update table store with restored column order
+      const updatedCtx = await refreshTableContext(ctx, undefined, columnOrderToRestore)
       this.updateTableStore(tableId, {
         rowCount: updatedCtx.table.rowCount,
         columns: updatedCtx.table.columns,
+        columnOrder: columnOrderToRestore,
       })
 
       return { success: true }
@@ -724,11 +730,24 @@ export class CommandExecutor implements ICommandExecutor {
         timelineStoreState.setPosition(tableId, legacyTimeline.currentPosition + 1)
       }
 
-      // Update table store
-      const updatedCtx = await refreshTableContext(ctx)
+      // Calculate new column order after redo (same logic as execute)
+      const tableStore = useTableStore.getState()
+      const currentTable = tableStore.tables.find((t) => t.id === tableId)
+      const currentColumnOrder = currentTable?.columnOrder
+
+      const newColumnOrder = updateColumnOrder(
+        currentColumnOrder,
+        executionResult.newColumnNames || [],
+        executionResult.droppedColumnNames || [],
+        executionResult.renameMappings
+      )
+
+      // Update table store with new column order
+      const updatedCtx = await refreshTableContext(ctx, executionResult.renameMappings, newColumnOrder)
       this.updateTableStore(tableId, {
         rowCount: updatedCtx.table.rowCount,
         columns: updatedCtx.table.columns,
+        columnOrder: newColumnOrder,
       })
 
       return {
@@ -918,7 +937,9 @@ export class CommandExecutor implements ICommandExecutor {
     ctx: CommandContext,
     snapshot?: SnapshotMetadata,
     backupColumn?: string,
-    rowPredicate?: string | null
+    rowPredicate?: string | null,
+    columnOrderBefore?: string[],
+    columnOrderAfter?: string[]
   ): Promise<void> {
     const timeline = getTimeline(tableId)
 
@@ -972,6 +993,8 @@ export class CommandExecutor implements ICommandExecutor {
       rowPredicate,
       affectedColumns,
       cellChanges,
+      columnOrderBefore,
+      columnOrderAfter,
     }
 
     timeline.commands.push(record)

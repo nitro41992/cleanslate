@@ -127,6 +127,9 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
 
     if (!sourceTable) return id
 
+    // Preserve columnOrder from source table
+    const columnOrder = sourceTable.columnOrder
+
     const newTable: TableInfo = {
       id,
       name: newName,
@@ -143,6 +146,7 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
         checkpointedAt: now,
       },
       dataVersion: 0,
+      columnOrder,
     }
 
     set((s) => ({

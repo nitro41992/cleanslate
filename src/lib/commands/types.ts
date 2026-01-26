@@ -412,4 +412,8 @@ export interface TimelineCommandRecord {
   cellChanges?: CellChange[]
   /** Set to true when snapshot was pruned - undo no longer possible for Tier 3 commands */
   undoDisabled?: boolean
+  /** Column order BEFORE this command executed (for undo) */
+  columnOrderBefore?: string[]
+  /** Column order AFTER this command executed (for redo) */
+  columnOrderAfter?: string[]
 }
