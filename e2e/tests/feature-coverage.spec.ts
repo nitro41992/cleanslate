@@ -448,7 +448,24 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test.afterEach(async () => {
-    // Close page after each test to free memory
+    // Aggressive cleanup for memory-intensive matcher tests
+    await coolHeap(page, inspector, {
+      dropTables: true,
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+    })
+
+    // Also clear matcherStore state explicitly
+    await page.evaluate(() => {
+      const stores = (window as any).__CLEANSLATE_STORES__
+      const matcherStore = stores?.matcherStore?.getState?.()
+      if (matcherStore?.reset) {
+        matcherStore.reset()
+      }
+    })
+
+    // Close page after cleanup to free memory
     await page.close()
   })
 
@@ -648,7 +665,24 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test.afterEach(async () => {
-    // Close page after each test to free memory
+    // Aggressive cleanup for memory-intensive matcher tests
+    await coolHeap(page, inspector, {
+      dropTables: true,
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+    })
+
+    // Also clear matcherStore state explicitly
+    await page.evaluate(() => {
+      const stores = (window as any).__CLEANSLATE_STORES__
+      const matcherStore = stores?.matcherStore?.getState?.()
+      if (matcherStore?.reset) {
+        matcherStore.reset()
+      }
+    })
+
+    // Close page after cleanup to free memory
     await page.close()
   })
 

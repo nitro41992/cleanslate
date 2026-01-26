@@ -74,6 +74,9 @@ export async function coolHeap(
         // Drop both user tables and internal tables (v_diff_*, etc.)
         await inspector.runQuery(`DROP TABLE IF EXISTS "${table.name}"`)
       }
+
+      // Force memory reclamation after dropping tables
+      await inspector.runQuery('VACUUM')
     } catch (error) {
       console.warn('[coolHeap] Failed to drop tables:', error)
     }

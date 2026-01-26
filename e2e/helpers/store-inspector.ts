@@ -86,6 +86,11 @@ export interface StoreInspector {
    * Check if DuckDB connection is healthy
    */
   checkConnectionHealth: () => Promise<boolean>
+  /**
+   * Flush DuckDB WAL to OPFS storage immediately
+   * Must be called before page reload in tests to ensure data persistence
+   */
+  flushToOPFS: () => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -268,6 +273,16 @@ export function createStoreInspector(page: Page): StoreInspector {
           throw new Error('checkConnectionHealth not available')
         }
         return duckdb.checkConnectionHealth()
+      })
+    },
+
+    async flushToOPFS(): Promise<void> {
+      await page.evaluate(async () => {
+        const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: any }).__CLEANSLATE_DUCKDB__
+        if (duckdb?.flushDuckDB) {
+          // immediate=true bypasses test environment check
+          await duckdb.flushDuckDB(true)
+        }
       })
     },
   }

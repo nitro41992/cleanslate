@@ -66,7 +66,10 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     expect(transformedData[0].name).toBe('JOHN DOE')
     expect(transformedData[1].name).toBe('JANE SMITH')
 
-    // 5. Reload and poll for persistence (no fixed wait - returns as soon as ready)
+    // 5. Flush to OPFS before reload (required in test env where auto-flush is disabled)
+    await inspector.flushToOPFS()
+
+    // 6. Reload and poll for persistence
     await expect.poll(
       async () => {
         await page.reload()
@@ -77,7 +80,7 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
       { timeout: 10000, message: 'Table not restored from OPFS' }
     ).toBeTruthy()
 
-    // 6. Verify data persisted (table should exist with transformed data)
+    // 7. Verify data persisted (table should exist with transformed data)
     const tables = await inspector.getTables()
     const restoredTable = tables.find(t => t.name === 'basic_data')
 
@@ -115,6 +118,9 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     // Verify both tables exist
     let tables = await inspector.getTables()
     expect(tables.length).toBeGreaterThanOrEqual(2)
+
+    // Flush to OPFS before reload
+    await inspector.flushToOPFS()
 
     // Refresh page and poll for persistence
     await expect.poll(
@@ -156,6 +162,9 @@ test.describe.serial('OPFS Persistence - Basic Functionality', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await picker.addTransformation('Trim Whitespace', { column: 'email' })
+
+    // Flush to OPFS before reload
+    await inspector.flushToOPFS()
 
     // Refresh page and poll for persistence
     await expect.poll(

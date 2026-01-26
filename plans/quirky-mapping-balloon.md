@@ -1,202 +1,125 @@
-# E2E Test Fixes Plan
+# E2E Test Fixes Plan - Phase 2
 
 ## Summary
-Fix remaining E2E test failures across three phases: showstoppers, race conditions, and test pruning.
+Fix remaining E2E test failures after Phase 1 implementation: FR-REGRESSION-2 feature bug, OPFS persistence, FR-C1 audit tests, and memory pressure.
 
 ---
 
-## Phase 1: Fix Showstoppers (Crashes & Timeouts)
+## Implementation Status
 
-### 1.1 Memory Optimization Timeouts
-**File:** `e2e/tests/memory-optimization.spec.ts`
+| Issue | Status | Verification |
+|-------|--------|--------------|
+| Issue 1: FR-REGRESSION-2 | ✅ FIXED | All 12 audit-undo-regression tests pass |
+| Issue 2: OPFS Persistence | ⚠️ Code complete, env issue | flushToOPFS helper added, but OPFS not persisting in headless test env |
+| Issue 3: FR-C1 Merge Audit | ⚠️ Code complete, crashes persist | Aggressive cleanup added, but page crashes during test execution |
+| Issue 4: Memory Pressure | ✅ IMPLEMENTED | Worker sharding + VACUUM added |
 
-**Problem:** Tests timeout (30s default insufficient for Parquet/DuckDB in CI), causing "Target Page Closed" errors.
+---
 
-**Fix:**
-- Move `test.setTimeout(120000)` to describe level (line ~402)
-- Convert `beforeAll/afterAll` to `beforeEach/afterEach` for per-test page isolation
-- **CRITICAL:** Re-instantiate ALL page objects with the NEW page in `beforeEach` - reusing old instances with new page causes immediate failures
+## Issue 1: FR-REGRESSION-2 Highlight Feature Bug
 
-```typescript
-test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
-  test.setTimeout(120000)
+**Status:** ✅ FIXED
 
-  let page: Page
-  let laundromat: LaundromatPage
-  let wizard: IngestionWizardPage
-  let inspector: StoreInspector
-  let picker: TransformationPickerPage
+**Root Cause Analysis:**
+The `rowIds` array was empty because `affectedRowIds` were not being populated during command execution when diff view extraction failed.
 
-  test.beforeEach(async ({ browser }) => {
-    // 1. Create fresh page
-    page = await browser.newPage()
+**Fix Applied in `src/lib/commands/executor.ts`:**
+Enhanced fallback strategies for `affectedRowIds` extraction:
 
-    // 2. Re-instantiate ALL page objects with the NEW page
-    laundromat = new LaundromatPage(page)
-    wizard = new IngestionWizardPage(page)
-    inspector = createStoreInspector(page)
-    picker = new TransformationPickerPage(page)
+1. **Strategy 1** (existing): Use command's `getAffectedRowsPredicate`
+2. **Strategy 2** (new): For tier 1 transforms, query rows where `__base` column differs from current value
+3. **Strategy 3** (new): Fallback to all rows if we have rowsAffected count
 
-    // 3. Load the app
-    await laundromat.goto()
-    await inspector.waitForDuckDBReady()
-  })
+Key fix: Strategy 2 now uses `WHERE "${baseColumn}" IS DISTINCT FROM "${column}"` instead of just checking `IS NOT NULL`.
 
-  test.afterEach(async () => {
-    // Clean OPFS, close page - force garbage collection
-    await page.evaluate(async () => {
-      try {
-        const opfsRoot = await navigator.storage.getDirectory()
-        await opfsRoot.removeEntry('cleanslate.db')
-      } catch {}
-    })
-    await page.close()
-  })
-})
-```
-
-### 1.2 "Table does not exist" (FR-A4)
-**File:** `e2e/tests/feature-coverage.spec.ts`
-
-**Problem:** FR-A4 tests depend on FR-A3 state. When FR-A3 fails, FR-A4 gets "Table fr_a3_text_dirty does not exist".
-
-**Fix:** Add `loadTestData()` helper inside FR-A4 describe block (after line 1365):
-
-```typescript
-async function loadTestData() {
-  // IMPORTANT: Reload to ensure clean state - prevents getting stuck in previous screen
-  await page.reload()
-  await inspector.waitForDuckDBReady()
-
-  await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
-  await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
-  await wizard.waitForOpen()
-  await wizard.import()
-  await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
-}
-```
-
-Update tests `should commit cell edit` (line 1389) and `should undo/redo cell edits` (line 1427) to call `loadTestData()`.
-
-### 1.3 Audit Sidebar Timeout (FR-C1)
-**File:** `e2e/page-objects/laundromat.page.ts`
-
-**Problem:** Audit sidebar timeout after `applyMerges()` - UI needs more settling time.
-
-**Fix:** Update `openAuditSidebar()` method:
-
-```typescript
-async openAuditSidebar(): Promise<void> {
-  await this.dismissOverlays()
-  const toggleBtn = this.page.getByTestId('toggle-audit-sidebar')
-  await toggleBtn.waitFor({ state: 'visible', timeout: 10000 })  // was 5000
-
-  const sidebarOpen = await this.page.getByTestId('audit-sidebar').isVisible().catch(() => false)
-  if (!sidebarOpen) {
-    await toggleBtn.click({ force: true })
-    await this.page.waitForTimeout(500)
-  }
-  await this.page.getByTestId('audit-sidebar').waitFor({ state: 'visible', timeout: 15000 })  // was 10000
-}
+**Verification:**
+```bash
+npx playwright test audit-undo-regression.spec.ts --workers=1
+# Result: 12 passed
 ```
 
 ---
 
-## Phase 2: Fix Logic & Race Conditions
+## Issue 2: OPFS Persistence Test Failures
 
-### 2.1 OPFS Persistence (Alice vs John Doe)
-**File:** `e2e/tests/opfs-persistence.spec.ts`
+**Status:** ⚠️ Code complete, environment limitation
 
-**Problem:** Test expects `initialData[0].name` to be `'Alice'` (alphabetical) but DuckDB returns `'John Doe'` (insertion order from CSV).
+**Changes Applied:**
+1. `src/main.tsx`: Exposed `flushDuckDB` to window object
+2. `e2e/helpers/store-inspector.ts`: Added `flushToOPFS()` helper method
+3. `e2e/tests/opfs-persistence.spec.ts`: Added `await inspector.flushToOPFS()` before reload
 
-**Root Cause:** `basic-data.csv` has rows in order: John Doe, Jane Smith, Bob Johnson, Alice Brown, Charlie Wilson. Test assumed alphabetical sorting.
-
-**Fix:** Update assertions to match actual CSV order (lines 57, 66-67, 89):
-
-```typescript
-// Line 57: Fix initial data assertion
-expect(initialData[0].name).toBe('John Doe')  // was 'Alice'
-
-// Lines 66-67: Fix transformed data assertions
-expect(transformedData[0].name).toBe('JOHN DOE')  // was 'ALICE'
-expect(transformedData[1].name).toBe('JANE SMITH')  // was 'BOB'
-
-// Line 89: Fix restored data assertion
-expect(restoredData[0].name).toBe('JOHN DOE')  // was 'ALICE'
-```
-
-**Double-check:** The "Uppercase" transformation on `column: 'name'` should affect all rows. Verify it's not a filter operation that removes rows - the transformation targets the inspected rows (0 and 1).
-
-### 2.2 UUID Mismatch (FR-REGRESSION-2)
-**File:** `e2e/tests/audit-undo-regression.spec.ts`
-
-**Problem:** `highlightState.rowIds` returns empty array `[]` - highlight click timing issue.
-
-**Fix:** Add polling wait before assertions (around line 78):
-
-```typescript
-// After highlightBtn.click()
-await expect.poll(
-  async () => {
-    const state = await inspector.getTimelineHighlight()
-    return state.rowIds.length
-  },
-  { timeout: 5000, message: 'Highlight rowIds never populated' }
-).toBeGreaterThan(0)
-
-// Keep existing assertions but add fail-fast count check:
-expect(highlightState.rowIds.length).toBe(expected_cs_ids.length)
-expectRowIdsHighlighted(highlightState.rowIds, expected_cs_ids)
-```
+**Remaining Issue:**
+OPFS persistence tests still fail. The app may be running in memory mode in the headless test environment (OPFS detection via `navigator.storage.getDirectory()` may fail or return a different result).
 
 ---
 
-## Phase 3: Prune Redundant Tests
+## Issue 3: FR-C1 Merge Audit Test Crashes
 
-### 3.1 Remove FR-REGRESSION-10
-**File:** `e2e/tests/audit-undo-regression.spec.ts`
-**Lines:** 526-578
+**Status:** ⚠️ Code complete, crashes during test execution
 
-**Action:** Delete entire test block. It's an edge case (new columns in diff view) covered by main diff tests.
+**Changes Applied:**
+1. `e2e/tests/feature-coverage.spec.ts`: Added aggressive heap cooling to both FR-C1 test sections
+2. `e2e/helpers/heap-cooling.ts`: Added VACUUM after table drops
 
-### 3.2 Skip FR-F-INT-3 and FR-F-INT-4
-**File:** `e2e/tests/value-standardization.spec.ts`
-
-**Problem:** Undo/Redo tests are flaky in E2E - should rely on unit tests instead.
-
-**Action:** Mark both as `.fixme()`:
-- Line 546: `test.fixme('FR-F-INT-3: Undo should revert standardization', ...)`
-- Line 569: `test.fixme('FR-F-INT-4: Redo should reapply standardization', ...)`
-
-Note: FR-F-INT-5 handles its own state by doing redo first, so it remains unaffected.
+**Remaining Issue:**
+Page crashes during test execution (not during cleanup). The fuzzy matcher operations are memory-intensive and cause browser context crashes when opening audit sidebar after merges.
 
 ---
 
-## Files to Modify
+## Issue 4: Memory Pressure (General)
+
+**Status:** ✅ IMPLEMENTED
+
+**Changes Applied:**
+1. `playwright.config.ts`: Added worker sharding for memory-intensive test files
+2. `e2e/helpers/heap-cooling.ts`: Added VACUUM after table drops
+
+---
+
+## Files Modified
 
 | File | Changes |
 |------|---------|
-| `e2e/tests/memory-optimization.spec.ts` | Timeout + per-test page isolation |
-| `e2e/tests/feature-coverage.spec.ts` | Add loadTestData() helper for FR-A4 |
-| `e2e/page-objects/laundromat.page.ts` | Increase audit sidebar timeouts |
-| `e2e/tests/opfs-persistence.spec.ts` | Fix row order assertions |
-| `e2e/tests/audit-undo-regression.spec.ts` | Add polling wait, remove FR-REGRESSION-10 |
-| `e2e/tests/value-standardization.spec.ts` | Mark undo/redo tests as fixme |
+| `src/lib/commands/executor.ts` | Improved `affectedRowIds` fallback strategies (Strategy 2 fixed) |
+| `src/main.tsx` | Exposed `flushDuckDB` to window for E2E tests |
+| `e2e/helpers/store-inspector.ts` | Added `flushToOPFS()` method |
+| `e2e/helpers/heap-cooling.ts` | Added VACUUM after table drops |
+| `e2e/tests/opfs-persistence.spec.ts` | Added flush before reload calls |
+| `e2e/tests/feature-coverage.spec.ts` | Added aggressive heap cooling to FR-C1 sections |
+| `playwright.config.ts` | Worker sharding for memory-intensive tests |
 
 ---
 
-## Verification
+## Remaining Work
+
+### FR-C1 Memory Crashes
+The FR-C1 tests crash during execution, not cleanup. Possible solutions:
+1. Reduce dataset size in fixtures
+2. Add explicit GC hints between operations
+3. Split heavy operations across test boundaries
+4. Increase browser memory limits
+
+### OPFS Environment Detection
+The OPFS persistence tests assume OPFS is available, but it may not be in headless Playwright. Possible solutions:
+1. Skip tests when OPFS is not detected
+2. Add explicit OPFS capability check before running tests
+3. Use headed mode for OPFS tests
+
+---
+
+## Verification Commands
 
 ```bash
-# Phase 1 verification
-npx playwright test memory-optimization.spec.ts --workers=1
-npx playwright test feature-coverage.spec.ts -g "FR-A4"
-npx playwright test feature-coverage.spec.ts -g "FR-C1"
+# Issue 1: FR-REGRESSION-2 (PASSING)
+npx playwright test audit-undo-regression.spec.ts --workers=1
 
-# Phase 2 verification
-npx playwright test opfs-persistence.spec.ts
-npx playwright test audit-undo-regression.spec.ts -g "FR-REGRESSION-2"
+# Issue 2: OPFS persistence (env issue)
+npx playwright test opfs-persistence.spec.ts --workers=1
+
+# Issue 3: FR-C1 tests (crashes during execution)
+npx playwright test feature-coverage.spec.ts -g "FR-C1" --workers=1
 
 # Full suite
-npm run test:e2e
+npm test
 ```

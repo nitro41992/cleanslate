@@ -24,8 +24,16 @@ export default defineConfig({
   },
   projects: [
     {
+      name: 'chromium-memory-intensive',
+      use: { ...devices['Desktop Chrome'] },
+      // Limit workers for memory-intensive test files
+      testMatch: /memory-optimization|opfs-persistence/,
+      fullyParallel: false,
+    },
+    {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      testIgnore: /memory-optimization|opfs-persistence/,
     },
   ],
   webServer: {

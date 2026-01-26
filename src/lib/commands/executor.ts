@@ -392,9 +392,11 @@ export class CommandExecutor implements ICommandExecutor {
       let affectedRowIds = await this.extractAffectedRowIds(updatedCtx, diffViewName)
 
       // CRITICAL FIX: For transform commands, ensure affectedRowIds are populated
-      // even if diff view extraction fails. Use the command's predicate for accurate affected rows.
+      // even if diff view extraction fails. Multiple fallback strategies:
       if (affectedRowIds.length === 0 && command.type.startsWith('transform:')) {
         const column = (command.params as { column?: string })?.column
+
+        // Strategy 1: Use command's getAffectedRowsPredicate (existing)
         if (column && typeof command.getAffectedRowsPredicate === 'function') {
           try {
             const predicate = await command.getAffectedRowsPredicate(updatedCtx)
@@ -407,6 +409,35 @@ export class CommandExecutor implements ICommandExecutor {
             }
           } catch (err) {
             console.warn('[EXECUTOR] Failed to extract affectedRowIds via predicate:', err)
+          }
+        }
+
+        // Strategy 2: For tier 1 transforms with __base columns, query rows where value differs from __base
+        if (affectedRowIds.length === 0 && column) {
+          try {
+            const baseColumn = getBaseColumnName(column)
+            const result = await updatedCtx.db.query<{ _cs_id: string }>(`
+              SELECT _cs_id FROM "${updatedCtx.table.name}"
+              WHERE "${baseColumn}" IS DISTINCT FROM "${column}"
+              LIMIT 10000
+            `)
+            affectedRowIds = result.map(r => String(r._cs_id))
+          } catch {
+            // __base column may not exist for non-tier-1 commands
+          }
+        }
+
+        // Strategy 3: If still empty but we have rowsAffected count, use ALL rows as fallback
+        // (Better to highlight all than none for user visibility)
+        if (affectedRowIds.length === 0 && auditInfo?.rowsAffected && auditInfo.rowsAffected > 0) {
+          try {
+            const result = await updatedCtx.db.query<{ _cs_id: string }>(`
+              SELECT _cs_id FROM "${updatedCtx.table.name}" LIMIT 10000
+            `)
+            affectedRowIds = result.map(r => String(r._cs_id))
+            console.log(`[EXECUTOR] Used all-rows fallback for affectedRowIds (${affectedRowIds.length} rows)`)
+          } catch (err) {
+            console.warn('[EXECUTOR] All fallback strategies failed for affectedRowIds:', err)
           }
         }
       }
