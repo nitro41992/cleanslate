@@ -13,39 +13,37 @@ import { downloadAndVerifyTXT } from '../helpers/download-helpers'
  * These tests verify the feature that tracks individual row changes during transformations.
  */
 
-test.describe.serial('Audit Row Details', () => {
+test.describe('Audit Row Details', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-    await laundromat.goto()
+    await page.goto('/')
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
-  // Helper for case-sensitive data (used by tests 1-6)
+  // Helper for case-sensitive data
   async function loadCaseSensitiveData() {
-    await inspector.runQuery('DROP TABLE IF EXISTS case_sensitive_data')
     await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('case_sensitive_data', 4)
   }
 
-  // Helper for whitespace data (used by tests 7-10)
+  // Helper for whitespace data
   async function loadWhitespaceData() {
-    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
     await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -65,6 +63,9 @@ test.describe.serial('Audit Row Details', () => {
     })
     await laundromat.closePanel()
 
+    // Wait for transformation to complete
+    await inspector.waitForTransformComplete()
+
     // Verify audit entry has hasRowDetails and auditEntryId set
     const auditEntries = await inspector.getAuditEntries()
     const transformEntry = auditEntries.find((e) => e.action.includes('Find & Replace'))
@@ -77,7 +78,24 @@ test.describe.serial('Audit Row Details', () => {
   })
 
   test('should store row-level changes in _audit_details table', async () => {
-    // Use data from previous test (transformation already applied)
+    await loadCaseSensitiveData()
+
+    // Apply Find & Replace transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No' },
+    })
+    await laundromat.closePanel()
+
+    // Wait for transformation to be processed
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action.includes('Find & Replace'))
+    }, { timeout: 10000 }).toBe(true)
+
     // Query the _audit_details table directly
     const auditEntries = await inspector.getAuditEntries()
     const transformEntry = auditEntries.find((e) => e.action.includes('Find & Replace'))
@@ -111,6 +129,24 @@ test.describe.serial('Audit Row Details', () => {
   })
 
   test('should open audit detail modal when clicking entry with details', async () => {
+    await loadCaseSensitiveData()
+
+    // Apply Find & Replace transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No' },
+    })
+    await laundromat.closePanel()
+
+    // Wait for transformation to be processed
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action.includes('Find & Replace'))
+    }, { timeout: 10000 }).toBe(true)
+
     // Switch to audit log tab
     await laundromat.switchToAuditLogTab()
 
@@ -131,7 +167,32 @@ test.describe.serial('Audit Row Details', () => {
   })
 
   test('should display row-level changes in modal table', async () => {
-    // Modal should still be open from previous test
+    await loadCaseSensitiveData()
+
+    // Apply Find & Replace transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No' },
+    })
+    await laundromat.closePanel()
+
+    // Wait for transformation to be processed
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action.includes('Find & Replace'))
+    }, { timeout: 10000 }).toBe(true)
+
+    // Switch to audit log and open modal
+    await laundromat.switchToAuditLogTab()
+    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const entryWithDetails = page.getByTestId('audit-entry-with-details').first()
+    await expect(entryWithDetails).toBeVisible()
+    await entryWithDetails.click()
+
+    // Verify modal is open
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible()
 
@@ -155,7 +216,32 @@ test.describe.serial('Audit Row Details', () => {
   })
 
   test('should export row details as CSV from modal', async () => {
-    // Modal should still be open
+    await loadCaseSensitiveData()
+
+    // Apply Find & Replace transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No' },
+    })
+    await laundromat.closePanel()
+
+    // Wait for transformation to be processed
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action.includes('Find & Replace'))
+    }, { timeout: 10000 }).toBe(true)
+
+    // Switch to audit log and open modal
+    await laundromat.switchToAuditLogTab()
+    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const entryWithDetails = page.getByTestId('audit-entry-with-details').first()
+    await expect(entryWithDetails).toBeVisible()
+    await entryWithDetails.click()
+
+    // Verify modal is open
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible()
 
@@ -195,7 +281,25 @@ test.describe.serial('Audit Row Details', () => {
   })
 
   test('should include row details in full audit log export', async () => {
-    // Ensure we're on audit log tab
+    await loadCaseSensitiveData()
+
+    // Apply Find & Replace transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Find & Replace', {
+      column: 'name',
+      params: { Find: 'hello', 'Replace with': 'hi' },
+      selectParams: { 'Case Sensitive': 'No' },
+    })
+    await laundromat.closePanel()
+
+    // Wait for transformation to be processed
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action.includes('Find & Replace'))
+    }, { timeout: 10000 }).toBe(true)
+
+    // Switch to audit log tab
     await laundromat.switchToAuditLogTab()
     await page.waitForSelector('[data-testid="audit-sidebar"]')
 
