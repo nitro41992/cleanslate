@@ -48,25 +48,17 @@ import {
 } from './audit-capture'
 import { getBaseColumnName } from './column-versions'
 import type { TimelineCommandType } from '@/types'
-import { toast } from '@/hooks/use-toast'
 import {
   getMemoryStatus,
   getDuckDBMemoryUsage,
   getEstimatedTableSizes,
 } from '@/lib/duckdb/memory'
 import {
-  exportTableToParquet,
   importTableFromParquet,
   deleteParquetSnapshot,
 } from '@/lib/opfs/snapshot-storage'
 
 // ===== TIMELINE STORAGE =====
-
-/**
- * Maximum number of Tier 3 snapshots per table.
- * LRU eviction removes oldest when limit exceeded.
- */
-const MAX_SNAPSHOTS_PER_TABLE = 5
 
 /**
  * Metrics for tracking fallback strategy usage.
@@ -821,6 +813,33 @@ export class CommandExecutor implements ICommandExecutor {
   }
 
   /**
+   * Get the number of undone operations that would be discarded if a new command is executed.
+   * Returns 0 if there are no future states (we're at the end of history).
+   *
+   * @param tableId - The table ID to check
+   * @returns Number of operations that would be discarded
+   */
+  getFutureStatesCount(tableId: string): number {
+    // Read from timelineStore for consistency (source of truth for position)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+
+    if (!storeTimeline) return 0
+
+    const position = storeTimeline.currentPosition
+    const totalCommands = storeTimeline.commands.length
+
+    // If position is at the end (length - 1), no future states
+    // If position is -1 (no commands), no future states
+    if (position < 0 || position >= totalCommands - 1) {
+      return 0
+    }
+
+    // Commands after position are "undone" and would be discarded
+    return totalCommands - 1 - position
+  }
+
+  /**
    * Get fallback metrics for debugging row ID extraction strategies.
    * Useful for diagnosing which strategies are succeeding/failing.
    */
@@ -989,6 +1008,21 @@ export class CommandExecutor implements ICommandExecutor {
       cellChanges,
       columnOrderBefore,
       columnOrderAfter,
+    }
+
+    // If we're not at the end, truncate future commands (branching history)
+    // This matches the behavior in timelineStore.appendCommand()
+    if (timeline.position < timeline.commands.length - 1) {
+      // Truncate commands after current position
+      timeline.commands = timeline.commands.slice(0, timeline.position + 1)
+
+      // Remove snapshots that are after the truncation point
+      for (const [idx] of timeline.snapshots) {
+        if (idx > timeline.position) {
+          timeline.snapshots.delete(idx)
+          timeline.snapshotTimestamps.delete(idx)
+        }
+      }
     }
 
     timeline.commands.push(record)

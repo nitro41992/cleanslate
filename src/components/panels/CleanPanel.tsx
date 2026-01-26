@@ -33,11 +33,12 @@ import { GroupedTransformationPicker } from '@/components/clean/GroupedTransform
 import { initializeTimeline } from '@/lib/timeline-engine'
 import {
   createCommand,
-  getCommandExecutor,
   getCommandTypeFromTransform,
   getCommandLabel,
   type ExecutorProgress,
 } from '@/lib/commands'
+import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
+import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -50,6 +51,9 @@ export function CleanPanel() {
   const [castValidation, setCastValidation] = useState<CastTypeValidation | null>(null)
   // Execution progress state for batched operations
   const [executionProgress, setExecutionProgress] = useState<ExecutorProgress | null>(null)
+
+  // Hook for executing commands with confirmation when discarding redo states
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -112,15 +116,19 @@ export function CleanPanel() {
         ...params, // Spread additional params (find, replace, delimiter, etc.)
       }
 
-      // 4. Create and execute command through CommandExecutor
+      // 4. Create and execute command with confirmation if discarding redo states
       const command = createCommand(commandType, commandParams)
-      const executor = getCommandExecutor()
-      const result = await executor.execute(command, {
-        onProgress: (progress) => {
+      const result = await executeWithConfirmation(command, activeTable.id, {
+        onProgress: (progress: ExecutorProgress) => {
           console.log(`[Command] ${progress.phase}: ${progress.progress}%`)
           setExecutionProgress(progress)
         },
       })
+
+      // User cancelled the confirmation dialog
+      if (!result) {
+        return
+      }
 
       // 5. Handle validation errors
       if (!result.success && result.validationResult) {
@@ -265,6 +273,9 @@ export function CleanPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Confirm Discard Undone Operations Dialog */}
+      <ConfirmDiscardDialog {...confirmDialogProps} />
 
       <div className="flex flex-col h-full">
       <ScrollArea className="flex-1">

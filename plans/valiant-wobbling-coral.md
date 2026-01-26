@@ -757,3 +757,115 @@ const result = await connection.query(
 - `src/lib/duckdb/index.ts` - Added `ORDER BY _cs_id` to `getTableData()` and `getTableDataWithRowIds()`
 - `src/lib/duckdb/index.ts` - Added `tableHasCsIdNoMutex()` helper for use inside mutex blocks
 - `src/lib/opfs/snapshot-storage.ts` - Reverted ORDER BY addition (rely on preserve_insertion_order)
+
+---
+
+## Phase 8: Branching History Support (2026-01-26)
+
+### Problem
+
+When user is in the middle of undo/redo history (after undoing some actions) and performs a new action, the "future" states (undone operations) should be discarded. Two issues:
+
+1. **Bug**: Executor's internal `tableTimelines` wasn't truncating future commands when adding new commands, while `timelineStore.appendCommand()` was. This caused dirty cell indicators to remain for commands that should have been discarded.
+
+2. **UX**: User wanted a confirmation before discarding undone operations.
+
+### Solution
+
+#### Fix 1: Executor Timeline Truncation
+
+Added truncation logic to `recordCommandToTimeline()` in `executor.ts` to match `timelineStore.appendCommand()` behavior:
+
+```typescript
+// If we're not at the end, truncate future commands (branching history)
+// This matches the behavior in timelineStore.appendCommand()
+if (timeline.position < timeline.commands.length - 1) {
+  // Truncate commands after current position
+  timeline.commands = timeline.commands.slice(0, timeline.position + 1)
+
+  // Remove snapshots that are after the truncation point
+  for (const [idx] of timeline.snapshots) {
+    if (idx > timeline.position) {
+      timeline.snapshots.delete(idx)
+      timeline.snapshotTimestamps.delete(idx)
+    }
+  }
+}
+```
+
+#### Fix 2: Confirmation Dialog
+
+Added `useExecuteWithConfirmation` hook and `ConfirmDiscardDialog` component:
+
+**Files created**:
+- `src/hooks/useExecuteWithConfirmation.ts` - Hook that shows confirmation dialog before executing if there are future states
+- `src/components/common/ConfirmDiscardDialog.tsx` - AlertDialog component for the confirmation
+
+**Usage**:
+```tsx
+const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
+
+// Execute with confirmation
+const result = await executeWithConfirmation(command, tableId, { onProgress })
+if (!result) {
+  // User cancelled
+  return
+}
+
+// Render the dialog
+<ConfirmDiscardDialog {...confirmDialogProps} />
+```
+
+#### Fix 3: getFutureStatesCount Method
+
+Added `getFutureStatesCount(tableId)` method to CommandExecutor to check how many undone operations would be discarded:
+
+```typescript
+getFutureStatesCount(tableId: string): number {
+  const timelineStoreState = useTimelineStore.getState()
+  const storeTimeline = timelineStoreState.getTimeline(tableId)
+
+  if (!storeTimeline) return 0
+
+  const position = storeTimeline.currentPosition
+  const totalCommands = storeTimeline.commands.length
+
+  if (position < 0 || position >= totalCommands - 1) {
+    return 0
+  }
+
+  return totalCommands - 1 - position
+}
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/lib/commands/executor.ts` | Added timeline truncation in `recordCommandToTimeline()`, added `getFutureStatesCount()` method |
+| `src/hooks/useExecuteWithConfirmation.ts` | **NEW** - Hook for executing with confirmation dialog |
+| `src/components/common/ConfirmDiscardDialog.tsx` | **NEW** - Confirmation dialog component |
+| `src/components/panels/CleanPanel.tsx` | Integrated `useExecuteWithConfirmation` hook |
+
+### Integration Status
+
+- [x] CleanPanel - Integrated with confirmation dialog
+- [ ] ScrubPanel - Can be integrated similarly
+- [ ] CombinePanel - Can be integrated similarly
+- [ ] MatchView - Can be integrated similarly
+- [ ] StandardizeView - Can be integrated similarly
+- [ ] DataGrid (cell edits) - Skipped for now (confirmations on every cell edit would be disruptive)
+
+### Verification
+
+1. **Timeline truncation**:
+   - Edit a cell → Apply transform → Undo transform → Edit another cell
+   - Verify: The undone transform is permanently discarded (not in redo stack)
+   - Verify: Dirty indicators only show for active edits (not the discarded transform's effects)
+
+2. **Confirmation dialog**:
+   - Edit a cell → Apply transform → Undo transform
+   - Apply another transform
+   - Verify: Confirmation dialog appears before executing
+   - Verify: Cancelling leaves the state unchanged
+   - Verify: Confirming discards the undone transform and applies the new one
