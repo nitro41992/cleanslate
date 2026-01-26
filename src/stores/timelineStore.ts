@@ -566,3 +566,39 @@ export function useTimelineNavigation(tableId: string | null) {
     }
   })
 }
+
+// Persistence: Auto-save state on timeline changes
+// Import dynamically to avoid circular dependencies
+let isRestoringState = false
+
+export function setRestoringState(restoring: boolean) {
+  isRestoringState = restoring
+}
+
+if (typeof window !== 'undefined') {
+  import('@/lib/persistence/debounce').then(({ DebouncedSave }) => {
+    const debouncedSave = new DebouncedSave(500)
+
+    useTimelineStore.subscribe((state) => {
+      // Skip save during state restoration to avoid write cycles
+      if (isRestoringState) return
+
+      // Trigger debounced save
+      debouncedSave.trigger(async () => {
+        const { saveAppState } = await import('@/lib/persistence/state-persistence')
+        const { useTableStore } = await import('@/stores/tableStore')
+        const { useUIStore } = await import('@/stores/uiStore')
+
+        const tableState = useTableStore.getState()
+        const uiState = useUIStore.getState()
+
+        await saveAppState(
+          tableState.tables,
+          tableState.activeTableId,
+          state.getSerializedTimelines(),
+          uiState.sidebarCollapsed
+        )
+      })
+    })
+  })
+}

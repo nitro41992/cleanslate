@@ -50,6 +50,8 @@ export interface EditDirtyState {
 
 export interface StoreInspector {
   getTables: () => Promise<TableInfo[]>
+  /** Alias for getTables (backward compatibility) */
+  getTableList: () => Promise<TableInfo[]>
   getActiveTableId: () => Promise<string | null>
   getTableData: (tableName: string, limit?: number) => Promise<Record<string, unknown>[]>
   getAuditEntries: (tableId?: string) => Promise<AuditEntry[]>
@@ -62,6 +64,22 @@ export interface StoreInspector {
    * @returns Query result rows
    */
   runQuery: (sql: string) => Promise<Record<string, unknown>[]>
+  /**
+   * Execute SQL statement without returning results (CREATE, INSERT, DROP, etc.)
+   */
+  runExecute: (sql: string) => Promise<void>
+  /**
+   * Check if undo is available for a table
+   */
+  canUndo: (tableId: string) => Promise<boolean>
+  /**
+   * Check if redo is available for a table
+   */
+  canRedo: (tableId: string) => Promise<boolean>
+  /**
+   * Get UI store state property
+   */
+  getUIState: (property: string) => Promise<unknown>
   /**
    * Get diff highlighting state from diffStore
    */
@@ -365,6 +383,52 @@ export function createStoreInspector(page: Page): StoreInspector {
 
         return 0
       }, { tableId })
+    },
+
+    async getTableList(): Promise<TableInfo[]> {
+      // Alias for getTables (backward compatibility)
+      return this.getTables()
+    },
+
+    async runExecute(sql: string): Promise<void> {
+      await page.evaluate(async (sql) => {
+        const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { execute: (sql: string) => Promise<void>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
+        if (!duckdb?.execute) throw new Error('DuckDB not available')
+        return duckdb.execute(sql)
+      }, sql)
+    },
+
+    async canUndo(tableId: string): Promise<boolean> {
+      return page.evaluate((id) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        const timeline = state?.timelines?.get?.(id)
+        return timeline?.currentPosition >= 0
+      }, tableId)
+    },
+
+    async canRedo(tableId: string): Promise<boolean> {
+      return page.evaluate((id) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        const timeline = state?.timelines?.get?.(id)
+        if (!timeline) return false
+        return timeline.currentPosition < timeline.commands.length - 1
+      }, tableId)
+    },
+
+    async getUIState(property: string): Promise<unknown> {
+      return page.evaluate((prop) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.uiStore) return null
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.uiStore as any).getState()
+        return state?.[prop]
+      }, property)
     },
   }
 }

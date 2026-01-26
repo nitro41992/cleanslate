@@ -27,6 +27,7 @@ interface TableActions {
     rowCount: number,
     transformations: LineageTransformation[]
   ) => string
+  loadTables: (tables: TableInfo[]) => void
 }
 
 export const useTableStore = create<TableState & TableActions>((set) => ({
@@ -156,4 +157,45 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
 
     return id
   },
+
+  loadTables: (tables) => {
+    // Bulk load tables during restoration (doesn't trigger subscriptions)
+    set({ tables })
+  },
 }))
+
+// Persistence: Auto-save state on table changes
+// Import dynamically to avoid circular dependencies
+let isRestoringState = false
+
+export function setRestoringState(restoring: boolean) {
+  isRestoringState = restoring
+}
+
+if (typeof window !== 'undefined') {
+  import('@/lib/persistence/debounce').then(({ DebouncedSave }) => {
+    const debouncedSave = new DebouncedSave(500)
+
+    useTableStore.subscribe((state) => {
+      // Skip save during state restoration to avoid write cycles
+      if (isRestoringState) return
+
+      // Trigger debounced save
+      debouncedSave.trigger(async () => {
+        const { saveAppState } = await import('@/lib/persistence/state-persistence')
+        const { useTimelineStore } = await import('@/stores/timelineStore')
+        const { useUIStore } = await import('@/stores/uiStore')
+
+        const timelineState = useTimelineStore.getState()
+        const uiState = useUIStore.getState()
+
+        await saveAppState(
+          state.tables,
+          state.activeTableId,
+          timelineState.getSerializedTimelines(),
+          uiState.sidebarCollapsed
+        )
+      })
+    })
+  })
+}

@@ -93,3 +93,42 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   setLoadingMessage: (message) => set({ loadingMessage: message }),
   setSkipNextGridReload: (skip) => set({ skipNextGridReload: skip }),
 }))
+
+// Persistence: Auto-save state on UI preference changes
+// Import dynamically to avoid circular dependencies
+let isRestoringState = false
+
+export function setRestoringState(restoring: boolean) {
+  isRestoringState = restoring
+}
+
+if (typeof window !== 'undefined') {
+  import('@/lib/persistence/debounce').then(({ DebouncedSave }) => {
+    const debouncedSave = new DebouncedSave(500)
+
+    useUIStore.subscribe((state, prevState) => {
+      // Skip save during state restoration to avoid write cycles
+      if (isRestoringState) return
+
+      // Only save if sidebarCollapsed changed
+      if (state.sidebarCollapsed !== prevState.sidebarCollapsed) {
+        // Trigger debounced save
+        debouncedSave.trigger(async () => {
+          const { saveAppState } = await import('@/lib/persistence/state-persistence')
+          const { useTableStore } = await import('@/stores/tableStore')
+          const { useTimelineStore } = await import('@/stores/timelineStore')
+
+          const tableState = useTableStore.getState()
+          const timelineState = useTimelineStore.getState()
+
+          await saveAppState(
+            tableState.tables,
+            tableState.activeTableId,
+            timelineState.getSerializedTimelines(),
+            state.sidebarCollapsed
+          )
+        })
+      }
+    })
+  })
+}
