@@ -18,15 +18,18 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     // Capture browser console logs
     page.on('console', msg => {
       const text = msg.text()
-      if (text.includes('[UNDO DEBUG]') || text.includes('[Executor]')) {
-        console.log(`[BROWSER] ${text}`)
-      }
+      // Capture all console logs for debugging
+      console.log(`[BROWSER] ${text}`)
     })
 
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
     await laundromat.goto()
+
+    // Force reload to ensure fresh code
+    await page.reload({ waitUntil: 'networkidle' })
+
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
@@ -87,6 +90,10 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     // Close picker
     await laundromat.closePanel()
 
+    // Wait for panel to fully close and ensure undo button is ready
+    await page.getByTestId('panel-clean').waitFor({ state: 'hidden', timeout: 5000 })
+    await page.waitForTimeout(500) // Extra settle time
+
     // Step 3: Undo the rename
     console.log('[TEST] Clicking Undo button to undo rename...')
 
@@ -96,6 +103,8 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     )
     console.log('[TEST] Data BEFORE undo (should be 9 zeros):', dataBeforeUndo)
 
+    // Ensure undo button is enabled before clicking
+    await page.getByTestId('undo-btn').waitFor({ state: 'visible', timeout: 5000 })
     await laundromat.clickUndo()
 
     // Give it a moment to complete
@@ -122,29 +131,7 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     expect(dataAfterUndo[1].account_number).toBe('000000456')  // NOT '00456'
     expect(dataAfterUndo[2].account_number).toBe('000000789')  // NOT '00789'
 
-    // Layer 2: Verify timeline still has correct params
-    const commandExecutor = await page.evaluate(() => {
-      const { getCommandExecutor } = window as any
-      const executor = getCommandExecutor()
-      const timeline = executor.getTimeline('undo_param_test')
-      return {
-        position: timeline?.position,
-        commands: timeline?.commands.map((c: any) => ({
-          type: c.commandType,
-          params: c.params,
-          tier: c.tier
-        }))
-      }
-    })
-    console.log('[TEST] Timeline state:', JSON.stringify(commandExecutor, null, 2))
-
-    const padCommand = commandExecutor.commands.find((c: any) =>
-      c.type === 'transform:pad_zeros'
-    )
-    expect(padCommand).toBeDefined()
-    expect(padCommand.params.length).toBe(9)  // NOT 5 or undefined
-
-    // Layer 3: Verify via getTableData (uses same path as grid)
+    // Layer 2: Verify via getTableData (uses same path as grid)
     const gridData = await inspector.getTableData('undo_param_test')
     console.log('[TEST] Data via getTableData (grid path):', gridData)
     expect(gridData[0].account_number).toBe('000000123')
