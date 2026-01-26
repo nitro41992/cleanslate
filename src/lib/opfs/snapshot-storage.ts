@@ -411,7 +411,8 @@ export async function listParquetSnapshots(): Promise<string[]> {
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
     const entries: string[] = []
 
-    for await (const [name, _handle] of (snapshotsDir as FileSystemDirectoryHandle).entries()) {
+    // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
+    for await (const [name, _handle] of snapshotsDir.entries()) {
       if (name.endsWith('.parquet')) {
         entries.push(name.replace('.parquet', ''))
       }
@@ -456,6 +457,7 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
     let deletedCount = 0
 
     // Iterate over all files in the snapshots directory
+    // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, handle] of snapshotsDir.entries()) {
       if (handle.kind === 'file' && name.endsWith('.parquet')) {
         const file = await handle.getFile()

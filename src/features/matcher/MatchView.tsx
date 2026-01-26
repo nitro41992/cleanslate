@@ -290,7 +290,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               tableId,
               tableName,
               action: result.auditInfo.action,
-              details: result.auditInfo.details, // Use structured details for modal detection
+              details: JSON.stringify(result.auditInfo.details), // Stringify for deprecated audit store
               rowsAffected: result.auditInfo.rowsAffected,
               hasRowDetails: result.auditInfo.hasRowDetails,
               auditEntryId: result.auditInfo.auditEntryId,

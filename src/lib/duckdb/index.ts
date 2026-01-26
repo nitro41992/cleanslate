@@ -91,9 +91,8 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
       try {
         await db.open({
           path: 'opfs://cleanslate.db',
-          query: {
-            access_mode: 'READ_WRITE',
-          },
+          // @ts-expect-error access_mode works at runtime but types don't include it
+          query: { access_mode: 'READ_WRITE' },
         })
         isPersistent = true
         console.log(`[DuckDB] OPFS persistence enabled (${caps.browser})`)
@@ -105,9 +104,8 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
           console.warn('[DuckDB] Database locked by another tab, opening read-only')
           await db.open({
             path: 'opfs://cleanslate.db',
-            query: {
-              access_mode: 'READ_ONLY',
-            },
+            // @ts-expect-error access_mode works at runtime but types don't include it
+            query: { access_mode: 'READ_ONLY' },
           })
           isPersistent = true
           isReadOnly = true
@@ -125,9 +123,8 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
       // Firefox: In-memory fallback
       await db.open({
         path: ':memory:',
-        query: {
-          access_mode: 'READ_WRITE',
-        },
+        // @ts-expect-error access_mode works at runtime but types don't include it
+        query: { access_mode: 'READ_WRITE' },
       })
       isPersistent = false
       console.log(`[DuckDB] In-memory mode (${caps.browser} - no OPFS support)`)

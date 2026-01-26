@@ -15,7 +15,7 @@ export interface ReplaceParams extends BaseTransformParams {
   column: string
   find: string
   replace: string
-  caseSensitive?: boolean
+  caseSensitive?: boolean | string // UI may pass 'true'/'false' strings
   matchType?: 'contains' | 'exact'
 }
 

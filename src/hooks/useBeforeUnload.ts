@@ -12,7 +12,7 @@ import { flushDuckDB } from '@/lib/duckdb'
  */
 export function useBeforeUnload() {
   useEffect(() => {
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+    const handleBeforeUnload = (_event: BeforeUnloadEvent) => {
       // Flush immediately (bypasses debounce)
       // This is synchronous in DuckDB-WASM's OPFS backend
       flushDuckDB(true, {

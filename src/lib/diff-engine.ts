@@ -798,7 +798,7 @@ export async function fetchDiffPage(
   removedColumns: string[],
   offset: number,
   limit: number = 500,
-  keyOrderBy: string,
+  _keyOrderBy: string,
   storageType: 'memory' | 'parquet' = 'memory'
 ): Promise<DiffRow[]> {
   // Use robust resolver to handle Parquet sources with file existence checks and registration

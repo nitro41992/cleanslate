@@ -87,8 +87,8 @@ async function renameLegacyStorageToBackup(): Promise<void> {
   try {
     const opfsRoot = await navigator.storage.getDirectory()
 
-    // Create backup directory
-    const backupDir = await opfsRoot.getDirectoryHandle(
+    // Create backup directory (side effect only - we just need it to exist)
+    await opfsRoot.getDirectoryHandle(
       'cleanslate_backup_failed_migration',
       { create: true }
     )
@@ -111,7 +111,7 @@ async function renameLegacyStorageToBackup(): Promise<void> {
  * Called once on first load if legacy storage detected
  */
 export async function migrateFromCSVStorage(
-  db: AsyncDuckDB,
+  _db: AsyncDuckDB,
   conn: AsyncDuckDBConnection
 ): Promise<MigrationResult> {
   const result: MigrationResult = {
