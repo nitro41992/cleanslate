@@ -98,8 +98,11 @@ test.describe('Column Order Preservation', () => {
     await picker.addTransformation('Remove Duplicates') // No column param - operates on all columns
     await laundromat.closePanel()
 
-    // Wait for operation to complete (Tier 3 may take longer)
-    await page.waitForTimeout(1000) // Temporary until we have better loading indicator
+    // Wait for operation to complete - poll for transformation to be reflected
+    const tableId = (await inspector.getTables()).find(t => t.name === 'column_order_test')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
 
     // Assert: Column order unchanged (only rows affected)
     const finalColumns = await inspector.getTableColumns('column_order_test')
@@ -290,9 +293,6 @@ test.describe('Column Order Preservation', () => {
 
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
-
-    // Wait a moment for the operation to start
-    await page.waitForTimeout(500)
 
     // Wait for join to complete by checking if table was created (longer timeout for join operations)
     await inspector.waitForTableLoaded('join_result', 2, 60000)

@@ -221,7 +221,11 @@ test.describe.serial('Memory Optimization - Compression', () => {
     await picker.addTransformation('Lowercase', { column: 'city' })
 
     // Wait for transformations to complete
-    await page.waitForTimeout(1000)
+    const tables = await inspector.getTables()
+    const tableId = tables.find(t => t.name === 'large_dataset_5000')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
 
     // Get memory after transformations
     const memAfter = await page.evaluate(() => {
@@ -549,15 +553,19 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
-    await page.waitForTimeout(1000)  // Allow transformation to complete
+    const tables = await inspector.getTables()
+    const tableId = tables.find(t => t.name === 'dataset_500')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
 
     // 5. Open Diff view → Compare with Preview
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('diff-panel')
 
     // Select Compare with Preview mode
     await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
-    await page.waitForTimeout(300)
+    await expect(page.locator('button').filter({ hasText: 'Compare with Preview' })).toHaveAttribute('data-state', 'on')
 
     // Select id as key column
     await page.getByRole('checkbox', { name: 'id' }).click()
@@ -566,7 +574,10 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await page.getByTestId('diff-compare-btn').click()
 
     // Wait for comparison to complete
-    await page.waitForTimeout(2000)
+    await expect.poll(async () => {
+      const state = await inspector.getDiffState()
+      return state.isComparing
+    }, { timeout: 10000 }).toBe(false)
 
     // 7. Verify diff loads without errors
     // Rule 2: Assert NO console errors (positive assertion)
@@ -603,7 +614,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
         grid.scrollTop = grid.scrollHeight
       }
     })
-    await page.waitForTimeout(1000)
+    await expect(page.locator('[data-testid="diff-grid"]')).toBeVisible()
 
     // Scroll back to top
     await page.evaluate(() => {
@@ -612,7 +623,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
         grid.scrollTop = 0
       }
     })
-    await page.waitForTimeout(1000)
+    await expect(page.locator('[data-testid="diff-grid"]')).toBeVisible()
 
     // 10. Verify pagination doesn't throw file locking errors
     const paginationErrors = consoleErrors.filter(err =>
@@ -625,7 +636,6 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     // 11. Export diff to CSV
     const downloadPromise = page.waitForEvent('download')
     await page.getByTestId('diff-export-btn').click()
-    await page.waitForTimeout(500)
     const download = await downloadPromise
 
     // 12. Verify export completes without Binder Error (ORDER BY detection works)
@@ -687,19 +697,26 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'email' })
     await laundromat.closePanel()
-    await page.waitForTimeout(1000)
+    const tables = await inspector.getTables()
+    const tableId = tables.find(t => t.name === 'dataset_500_pagination')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
 
     // 3. Open Diff view → Compare with Preview
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('diff-panel')
 
     await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
-    await page.waitForTimeout(300)
+    await expect(page.locator('button').filter({ hasText: 'Compare with Preview' })).toHaveAttribute('data-state', 'on')
     await page.getByRole('checkbox', { name: 'id' }).click()
 
     // 4. Run comparison (creates diff result table)
     await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)
+    await expect.poll(async () => {
+      const state = await inspector.getDiffState()
+      return state.isComparing
+    }, { timeout: 10000 }).toBe(false)
 
     // 5. Scroll to bottom of diff grid (triggers pagination)
     for (let i = 0; i < 3; i++) {
@@ -709,7 +726,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
           grid.scrollTop = grid.scrollHeight
         }
       })
-      await page.waitForTimeout(300)
+      await expect(page.locator('[data-testid="diff-grid"]')).toBeVisible()
 
       // Scroll back to top
       await page.evaluate(() => {
@@ -718,7 +735,7 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
           grid.scrollTop = 0
         }
       })
-      await page.waitForTimeout(300)
+      await expect(page.locator('[data-testid="diff-grid"]')).toBeVisible()
     }
 
     // 6. Verify no console errors: "Access Handles cannot be created"
@@ -731,17 +748,20 @@ test.describe.serial('Memory Optimization - Chunked Parquet Snapshots', () => {
 
     // 7. Close diff view
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(500)
+    await expect(page.getByTestId('diff-panel')).toBeHidden()
 
     // 8. Re-open diff view (should not throw file locking errors)
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('diff-panel')
 
     await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
-    await page.waitForTimeout(300)
+    await expect(page.locator('button').filter({ hasText: 'Compare with Preview' })).toHaveAttribute('data-state', 'on')
     await page.getByRole('checkbox', { name: 'id' }).click()
     await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(3000)
+    await expect.poll(async () => {
+      const state = await inspector.getDiffState()
+      return state.isComparing
+    }, { timeout: 10000 }).toBe(false)
 
     // 9. Verify no file locking errors on re-open
     const reopenErrors = consoleErrors.filter(err =>

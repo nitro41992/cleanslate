@@ -291,15 +291,15 @@ test.describe.serial('Audit Row Details', () => {
     await laundromat.switchToDataPreviewTab()
     await laundromat.editCell(0, 0, '99')
 
-    // Wait for edit to be processed
-    await page.waitForTimeout(500)
+    // Wait for edit to be processed - poll for audit entry with Manual Edit
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action === 'Manual Edit' || e.entryType === 'B')
+    }, { timeout: 10000 }).toBe(true)
 
     // Switch to audit log
     await laundromat.switchToAuditLogTab()
     await page.waitForSelector('[data-testid="audit-sidebar"]')
-
-    // Wait for audit entries to be visible
-    await page.waitForTimeout(300)
 
     // Get audit entries
     const auditEntries = await inspector.getAuditEntries()
@@ -352,13 +352,15 @@ test.describe.serial('Audit Row Details', () => {
     await laundromat.closeAuditSidebar()
     await laundromat.editCell(1, 1, 'Modified Value')
 
-    // Wait for edit to be processed
-    await page.waitForTimeout(500)
+    // Wait for edit to be processed - poll for audit entry
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action === 'Manual Edit' || e.entryType === 'B')
+    }, { timeout: 10000 }).toBe(true)
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
     await page.waitForSelector('[data-testid="audit-sidebar"]')
-    await page.waitForTimeout(300)
 
     // Find and click the Manual Edit entry - use role selector for reliability
     const sidebar = page.locator('aside[data-testid="audit-sidebar"]')

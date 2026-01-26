@@ -127,8 +127,9 @@ test.describe('Full E2E Flow', () => {
     await picker.addTransformation('Remove Duplicates')
     await laundromat.closePanel()
 
-    // Wait for transformation to fully propagate to DuckDB
-    await page.waitForTimeout(500)
+    // Wait for transformation to complete in DuckDB
+    const tableId = (await inspector.getTables())[0].id
+    await inspector.waitForTransformComplete(tableId)
 
     // Verify reduced count - query DuckDB directly as store may not sync immediately
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM with_duplicates')

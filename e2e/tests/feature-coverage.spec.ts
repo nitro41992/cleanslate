@@ -489,14 +489,13 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
     // Select table and column
     await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('combobox').first()).toBeVisible()
     await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
 
     // Use "Compare All" strategy for small datasets (ensures all pairs are compared)
     // The radio button name is "Compare All (Slowest)"
     await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
 
     // Click Find Duplicates - uses page object method with fallback for React issues
     await matchView.findDuplicates()
@@ -528,11 +527,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await laundromat.openMatchView()
     await matchView.waitForOpen()
     await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('combobox').first()).toBeVisible()
     await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
     await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
     await matchView.findDuplicates()
     await matchView.waitForPairs()
 
@@ -542,7 +540,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
     // Mark first pair as merged
     await matchView.mergePair(0)
-    await page.waitForTimeout(300) // Allow state update
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Verify stats updated
     const afterMergeStats = await matchView.getStats()
@@ -559,11 +560,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await laundromat.openMatchView()
     await matchView.waitForOpen()
     await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('combobox').first()).toBeVisible()
     await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
     await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
     await matchView.findDuplicates()
     await matchView.waitForPairs()
 
@@ -575,10 +575,14 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
     // Mark first pair as merged
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Apply merges (will close the match view)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Verify table row count decreased
     const tablesAfter = await inspector.getTables()
@@ -590,7 +594,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     expect(newRowCount).toBe(7) // 8 - 1 merged pair = 7
 
     // Verify DataGrid refresh - this tests the bug fix (rowCount dependency)
-    await page.waitForTimeout(500) // Allow grid to refresh
+    await inspector.waitForGridReady()
     const rowCountText = await laundromat.getRowCount()
     expect(rowCountText).toContain('7')
   })
@@ -601,35 +605,38 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await laundromat.openMatchView()
     await matchView.waitForOpen()
     await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('combobox').first()).toBeVisible()
     await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
     await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
     await matchView.findDuplicates()
     await matchView.waitForPairs()
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for match panel to fully close and UI to stabilize
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await page.waitForTimeout(1000) // Wait for toast auto-dismiss
+    await expect(page.getByText('Merges Applied')).toBeHidden({ timeout: 5000 })
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(1000) // Additional stabilization
+    await inspector.waitForGridReady()
 
     // Open audit sidebar to verify the merge was logged
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
 
     // Rule 1: Assert exact action text, not regex pattern (high-fidelity)
     const mergeAuditEntry = page.getByText('Merge Duplicates', { exact: true })
     await expect(mergeAuditEntry).toBeVisible({ timeout: 5000 })
 
     // Rule 3: Verify it has row details indicator (visual validation)
-    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
     const entryWithDetails = auditSidebar.locator('.cursor-pointer').filter({ hasText: 'Merge Duplicates' })
     await expect(entryWithDetails).toBeVisible()
 
@@ -715,14 +722,18 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
     // Merge a pair
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Apply merges
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for success toast to appear and dismiss
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await page.waitForTimeout(1000) // Wait for toast to auto-dismiss
+    await expect(page.getByText('Merges Applied')).toBeHidden({ timeout: 5000 })
 
     // Ensure we're back at the main view by checking the grid is visible
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
@@ -730,7 +741,7 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Wait for match view to be fully closed
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500) // Additional stabilization
+    await inspector.waitForGridReady()
 
     // Debug: Check if audit entry was created
     const auditEntries = await inspector.getAuditEntries()
@@ -742,7 +753,8 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
 
     // Click on the Apply Merges audit entry (it has row details)
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
@@ -783,14 +795,19 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
     // Merge a pair (O'Brien / O'Brian should match)
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Apply merges
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Open audit sidebar and drill-down
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
 
@@ -818,19 +835,24 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await matchView.findDuplicates()
     await matchView.waitForPairs()
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for merge to complete and return to main view
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
+    await inspector.waitForGridReady()
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
 
     // Click on an audit entry with details
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
@@ -869,12 +891,16 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await matchView.findDuplicates()
     await matchView.waitForPairs()
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const stats = await matchView.getStats()
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for merge to complete
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await page.waitForTimeout(1000)
+    await expect(page.getByText('Merges Applied')).toBeHidden({ timeout: 5000 })
 
     // Query the merge audit details table directly
     const auditDetails = await inspector.runQuery(`
@@ -953,7 +979,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should hash sensitive columns', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
@@ -963,12 +989,12 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-ssn')).toBeVisible()
 
     // Select hash method for SSN column using data-testid
     await page.getByTestId('method-select-ssn').click()
     await page.getByRole('option', { name: /Hash/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -977,7 +1003,8 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
 
     // Verify hash format (32-char hex from MD5)
     const data = await inspector.getTableData('fr_d2_pii')
@@ -996,7 +1023,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should redact PII patterns', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
@@ -1006,12 +1033,12 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-email')).toBeVisible()
 
     // Select redact method for email column
     await page.getByTestId('method-select-email').click()
     await page.getByRole('option', { name: /Redact/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -1020,7 +1047,8 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
 
     // Verify redaction (same table, modified in-place)
     const data = await inspector.getTableData('fr_d2_pii')
@@ -1032,7 +1060,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should mask partial values', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
@@ -1042,12 +1070,12 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-full_name')).toBeVisible()
 
     // Select mask method for full_name column
     await page.getByTestId('method-select-full_name').click()
     await page.getByRole('option', { name: /Mask/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -1056,7 +1084,8 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
 
     // Verify masking (shows first and last char with asterisks in between)
     const data = await inspector.getTableData('fr_d2_pii')
@@ -1068,7 +1097,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should extract year only from dates', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
@@ -1078,12 +1107,12 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-birth_date')).toBeVisible()
 
     // Select year_only method for birth_date column
     await page.getByTestId('method-select-birth_date').click()
     await page.getByRole('option', { name: /Year Only/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -1092,7 +1121,8 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
 
     // Verify year_only: 1985-03-15 -> 1985-01-01
     const data = await inspector.getTableData('fr_d2_pii')
@@ -1287,7 +1317,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
     // Wait for any transitions to settle before opening panel
-    await page.waitForTimeout(500)
+    await inspector.waitForGridReady()
 
     // Open combine panel via toolbar (single-page app) with robust retry
     const combinePanel = page.getByTestId('panel-combine')
@@ -1298,15 +1328,15 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
     // Try multiple methods to open the panel
     await combineButton.click()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('panel-combine')
 
     // If panel didn't open, try again
     if (!await combinePanel.isVisible().catch(() => false)) {
       // console.log('First click on Combine button did not open panel, retrying')
       await page.keyboard.press('Escape')
-      await page.waitForTimeout(300)
+      await expect(combinePanel).toBeHidden({ timeout: 2000 })
       await combineButton.click({ force: true })
-      await page.waitForTimeout(500)
+      await inspector.waitForPanelAnimation('panel-combine')
     }
 
     await expect(combinePanel).toBeVisible({ timeout: 5000 })
@@ -1315,22 +1345,22 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     // Switch to Join tab and wait for it to be active
     await page.getByRole('tab', { name: 'Join' }).click()
     await expect(page.locator('text=Join Tables').first()).toBeVisible()
-    await page.waitForTimeout(300)  // Wait for tab switch animation
+    await expect(page.getByRole('combobox').first()).toBeVisible()
 
     // Select left table (orders) - use .first() to handle duplicate entries from previous tests
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_e2_orders/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByRole('combobox').nth(1)).toBeVisible()
 
     // Select right table (customers)
     await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: /fr_e2_customers/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByRole('combobox').nth(2)).toBeVisible()
 
     // Select key column
     await page.getByRole('combobox').nth(2).click()
     await page.getByRole('option', { name: 'customer_id' }).click()
-    await page.waitForTimeout(300)
+    await expect(page.getByLabel(/left/i)).toBeVisible()
 
     // The dropdown should auto-close after selection, no need to press Escape
     // Just verify Join tab is still visible
@@ -1340,7 +1370,7 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     const leftRadio = page.getByLabel(/left/i)
     await expect(leftRadio).toBeVisible({ timeout: 5000 })
     await leftRadio.click({ force: true })
-    await page.waitForTimeout(200)  // Wait for selection to register
+    await expect(page.getByPlaceholder('e.g., orders_with_customers')).toBeVisible()
 
     // Enter result table name
     await page.getByPlaceholder('e.g., orders_with_customers').fill('join_result')
@@ -1424,7 +1454,12 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
 
     // Rule 3: Actually perform a cell edit and verify dirty state in store
     await laundromat.editCell(0, 1, 'EDITED_VALUE')
-    await page.waitForTimeout(300)
+
+    // Wait for edit to complete by polling the store
+    await expect.poll(async () => {
+      const dirtyState = await inspector.getEditDirtyState()
+      return dirtyState.hasDirtyEdits
+    }, { timeout: 5000 }).toBe(true)
 
     // Verify dirty state via store inspection (canvas grid has no DOM dirty indicators)
     const dirtyState = await inspector.getEditDirtyState()
@@ -1489,13 +1524,19 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
 
     // Undo (Ctrl+Z)
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(100)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_a3_text_dirty')
+      return data[0].name
+    }, { timeout: 5000 }).toBe(originalName)
     const afterUndoData = await inspector.getTableData('fr_a3_text_dirty')
     expect(afterUndoData[0].name).toBe(originalName)
 
     // Redo (Ctrl+Y)
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(100)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_a3_text_dirty')
+      return data[0].name
+    }, { timeout: 5000 }).toBe('CHANGED')
     const afterRedoData = await inspector.getTableData('fr_a3_text_dirty')
     expect(afterRedoData[0].name).toBe('CHANGED')
   })

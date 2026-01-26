@@ -190,12 +190,15 @@ test.describe.serial('Transformations: Duplicates Data', () => {
     await picker.addTransformation('Remove Duplicates')
     await laundromat.closePanel()
 
-    // Wait for transformation to fully propagate to DuckDB
-    await page.waitForTimeout(500)
+    // Wait for transformation to fully propagate to DuckDB - poll for correct count
+    await expect.poll(async () => {
+      const result = await inspector.runQuery('SELECT count(*) as cnt FROM with_duplicates')
+      return Number(result[0].cnt)
+    }, { timeout: 10000 }).toBe(3) // 3 unique rows
 
-    // Verify reduced count - query DuckDB directly as store may not sync immediately
+    // Verify reduced count
     const result = await inspector.runQuery('SELECT count(*) as cnt FROM with_duplicates')
-    expect(Number(result[0].cnt)).toBe(3) // 3 unique rows
+    expect(Number(result[0].cnt)).toBe(3)
     // Rule 1: Verify specific unique rows after dedup
     const data = await inspector.getTableData('with_duplicates')
     const ids = data.map((r) => String(r.id)).sort()
@@ -633,7 +636,12 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
     await laundromat.closePanel()
-    await page.waitForTimeout(1000)  // Allow dedup to complete
+
+    // Wait for dedup to complete by polling for correct row count
+    await expect.poll(async () => {
+      const countResult = await inspector.runQuery('SELECT COUNT(*) as cnt FROM dedup_large_test')
+      return Number(countResult[0].cnt)
+    }, { timeout: 15000 }).toBe(30)
 
     // 5. Query _cs_id values after transformation
     const afterData = await inspector.runQuery(`

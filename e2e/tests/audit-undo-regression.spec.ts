@@ -51,14 +51,13 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-
-    // Wait for transformation to complete
-    await page.waitForTimeout(500)
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Verify highlight button exists on the Trim entry
     // The button shows "Highlight" when not active
@@ -77,7 +76,6 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
       .filter({ hasText: 'Highlight' })
       .first()
     await highlightBtn.click()
-    await page.waitForTimeout(300)
 
     // Button should now say "Clear"
     const clearBtn = page
@@ -112,14 +110,15 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Click Clear to remove highlighting
     await clearBtn.first().click()
-    await page.waitForTimeout(300)
 
     // Button should be back to "Highlight"
     await expect(highlightBtn.first()).toBeVisible()
 
     // Verify highlight is cleared in store
-    const clearedState = await inspector.getTimelineHighlight()
-    expect(clearedState.commandId).toBeNull()
+    await expect.poll(async () => {
+      const state = await inspector.getTimelineHighlight()
+      return state.commandId
+    }, { timeout: 5000 }).toBeNull()
   })
 
   test('FR-REGRESSION-3: Audit drill-down shows row details', async () => {
@@ -169,8 +168,8 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Get data after transform (trimmed values)
     const afterTransform = await inspector.getTableData('whitespace_data')
@@ -181,11 +180,10 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Click somewhere to ensure focus isn't on an input
     await page.locator('body').click()
-    await page.waitForTimeout(100)
 
     // Press Ctrl+Z to undo
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(1000) // Give more time for undo
+    await inspector.waitForTransformComplete()
 
     // Get data after undo (should have whitespace restored)
     const afterUndo = await inspector.getTableData('whitespace_data')
@@ -207,7 +205,7 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Press Ctrl+Y to redo
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     // Get data after redo (should be trimmed again)
     const afterRedo = await inspector.getTableData('whitespace_data')
@@ -226,11 +224,12 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     // This test continues from FR-REGRESSION-5 where we have a redone transform
     // Open audit sidebar first
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Now undo to see the "Undone" badge
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     // Check for "Undone" badge or visual indicator
     // After undo, the transform entry should show "Undone" badge
@@ -243,7 +242,7 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Redo to restore for subsequent tests
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     // The "Undone" badge should no longer be visible - Rule 2: Use positive hidden assertion
     await expect(undoneBadge).toBeHidden({ timeout: 3000 })
@@ -290,19 +289,20 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Apply second transform: Trim
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Open audit sidebar and verify both transforms appear
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Both should have highlight buttons (meaning they're in timeline)
     const highlightBtns = page
@@ -321,15 +321,15 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Apply second transform: Trim
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Get current data (uppercase + trimmed)
     const step2Data = await inspector.getTableData('mixed_case')
@@ -337,14 +337,14 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Undo once (reverts trim)
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     const step1Data = await inspector.getTableData('mixed_case')
     const _step1Value = step1Data[0]?.name as string // Used to verify intermediate state
 
     // Undo again (reverts uppercase)
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     const step0Data = await inspector.getTableData('mixed_case')
     const step0Value = step0Data[0]?.name as string
@@ -355,9 +355,9 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Redo both transforms
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     // Verify we're back to fully transformed state
     const finalData = await inspector.getTableData('mixed_case')
@@ -382,7 +382,7 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Undo and check position changes
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     const newPositionText = await positionBadge.first().textContent()
     // Rule 2: Assert exact timeline positions
@@ -391,7 +391,7 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Redo to restore
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
   })
 })
 
@@ -431,12 +431,13 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Standardize Date', { column: 'date_us' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Click on the audit entry (should have "View details" link)
     const auditEntry = page.locator('[data-testid="audit-entry-with-details"]').first()
@@ -499,8 +500,8 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Calculate Age', { column: 'birth_date' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Get the audit entry from the auditStore to find the audit_entry_id
     const auditEntries = await inspector.getAuditEntries()

@@ -54,7 +54,7 @@ test.describe.serial('FR-B2: Visual Diff - Lightweight', () => {
   test('should identify added, removed, and modified rows', async () => {
     // Close diff view to upload files
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('diff-view')).toBeHidden({ timeout: 5000 })
 
     // Clean up any existing tables
     await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
@@ -77,7 +77,12 @@ test.describe.serial('FR-B2: Visual Diff - Lightweight', () => {
 
     // Explicitly select "Compare Two Tables" mode (previous tests may have left it in "Compare with Preview" mode)
     await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(200)
+
+    // Wait for mode switch to register in store
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.mode
+    }, { timeout: 5000 }).toBe('compare-tables')
 
     // Fail-fast guard: Assert diff comparison UI exists (requires 2+ tables)
     await expect(page.getByTestId('diff-compare-btn')).toBeVisible({ timeout: 5000 })
@@ -147,7 +152,7 @@ test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
 
     // Close diff view to upload files (use dismissOverlays helper for robustness)
     await laundromat.dismissOverlays()
-    await page.waitForTimeout(500)
+    await expect(page.getByTestId('diff-view')).toBeHidden({ timeout: 5000 })
 
     // Generate minimal overlapping data
     const generateOverlappingCSV = (startId: number, endId: number, prefix: string): string => {
@@ -194,11 +199,16 @@ test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
 
     // Open Diff view
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('match-view')
 
     // Select Compare Two Tables mode
     await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(300)
+
+    // Wait for mode switch to register in store
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.mode
+    }, { timeout: 5000 }).toBe('compare-tables')
 
     // Select tables
     await page.getByRole('combobox').first().click()
@@ -211,7 +221,12 @@ test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
 
     // Run comparison
     await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)  // Wait for diff to complete
+
+    // Wait for diff comparison to complete
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.isComparing === false && diffState.summary !== null
+    }, { timeout: 15000 }).toBe(true)
 
     // Verify diff summary
     const summary = await page.evaluate(() => {

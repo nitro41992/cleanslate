@@ -38,7 +38,15 @@ test('debug timeline state and executor', async ({ browser }) => {
   // Undo
   await page.locator('body').click()
   await page.keyboard.press('Control+z')
-  await page.waitForTimeout(1000)
+
+  // Wait for undo operation to complete by polling timeline position
+  await expect.poll(
+    async () => {
+      const position = await inspector.getTimelinePosition()
+      return position.current
+    },
+    { timeout: 5000, intervals: [100, 250] }
+  ).toBeLessThan(pos.current) // Position should decrease after undo
 
   console.log('=== After undo ===')
   pos = await inspector.getTimelinePosition()

@@ -78,8 +78,8 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(1000) // Allow snapshot creation to complete
 
     // 3. Open Diff view
     await laundromat.openDiffView()
@@ -222,11 +222,11 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
 
     // 3. Apply 3 manual edits to different cells
     await laundromat.editCell(0, 1, 'EDITED_NAME_0')  // Row 0, col 1 (name)
-    await page.waitForTimeout(300)
+    await inspector.waitForTransformComplete()
     await laundromat.editCell(1, 2, 'edited@test.com')  // Row 1, col 2 (email)
-    await page.waitForTimeout(300)
+    await inspector.waitForTransformComplete()
     await laundromat.editCell(2, 1, 'EDITED_NAME_2')  // Row 2, col 1 (name)
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     // 4. Verify timeline has "Original" snapshot in store
     const timelineState = await page.evaluate(() => {
@@ -275,7 +275,12 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
 
     // 9. Switch to "Compare with Preview" mode (should be default, but make explicit)
     await diffView.selectComparePreviewMode()
-    await page.waitForTimeout(300)
+
+    // Wait for mode switch to register in store
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.mode
+    }, { timeout: 5000 }).toBe('compare-preview')
 
     // 10. Run comparison (no key columns needed - uses _cs_id internally)
     await diffView.runComparison()
