@@ -45,29 +45,21 @@ export async function detectBrowserCapabilities(): Promise<BrowserCapabilities> 
     if (typeof navigator.storage?.getDirectory === 'function') {
       hasOPFS = true
 
-      // Check for FileSystemFileHandle.createSyncAccessHandle
-      // This is required for DuckDB-WASM's OPFS backend
-      // Chrome/Edge/Safari have it, Firefox does not
+      // CRITICAL: createSyncAccessHandle is only available in Web Workers, NOT main thread
+      // We cannot detect it here, but if crossOriginIsolated is true, it should work in the worker
+      // See: https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle
 
-      // TEMPORARY DEBUG: Try to actually create a file handle and test it
-      if (typeof FileSystemFileHandle !== 'undefined') {
-        const prototypeCheck = 'createSyncAccessHandle' in FileSystemFileHandle.prototype
-        console.log('[Browser Detection] Prototype check:', prototypeCheck)
+      // Check if we're cross-origin isolated (required for sync access handles)
+      const isCrossOriginIsolated = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
 
-        // Try actually getting a file handle to test
-        try {
-          const root = await navigator.storage.getDirectory()
-          const testHandle = await root.getFileHandle('_duckdb_test.txt', { create: true })
-          const actualCheck = 'createSyncAccessHandle' in testHandle
-          console.log('[Browser Detection] Actual file handle check:', actualCheck)
-          await root.removeEntry('_duckdb_test.txt')
-
-          // Use the actual check instead of prototype check
-          supportsAccessHandle = actualCheck
-        } catch (testErr) {
-          console.warn('[Browser Detection] Could not test actual file handle:', testErr)
-          supportsAccessHandle = prototypeCheck
-        }
+      if (isCrossOriginIsolated) {
+        // Cross-origin isolated AND has OPFS = likely supports sync access handles in worker
+        supportsAccessHandle = true
+        console.log('[Browser Detection] Cross-origin isolated + OPFS available = assuming sync access handle support')
+      } else {
+        // Not cross-origin isolated = definitely won't work
+        supportsAccessHandle = false
+        console.log('[Browser Detection] Not cross-origin isolated = no sync access handle support')
       }
     }
   } catch (err) {
