@@ -1,10 +1,34 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import type { Plugin } from 'vite'
+
+// Plugin to add cross-origin isolation headers
+// Required for DuckDB-WASM OPFS persistence (createSyncAccessHandle)
+function crossOriginIsolation(): Plugin {
+  return {
+    name: 'cross-origin-isolation',
+    configureServer(server) {
+      server.middlewares.use((_req, res, next) => {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+        res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+        next()
+      })
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((_req, res, next) => {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+        res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+        next()
+      })
+    },
+  }
+}
 
 export default defineConfig({
   plugins: [
     react(),
+    crossOriginIsolation(),
   ],
   resolve: {
     alias: {
@@ -16,20 +40,5 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
-  },
-  server: {
-    headers: {
-      // Enable cross-origin isolation for DuckDB-WASM OPFS persistence
-      // Required for FileSystemFileHandle.createSyncAccessHandle()
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
-  preview: {
-    headers: {
-      // Same headers for production preview
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
   },
 })
