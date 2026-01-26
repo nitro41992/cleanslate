@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { Sparkles, Download, History, Upload, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -11,6 +12,8 @@ import { TimelineScrubber } from '@/components/grid/TimelineScrubber'
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
+import { useTimelineStore } from '@/stores/timelineStore'
+import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { useDuckDB } from '@/hooks/useDuckDB'
 
 interface AppHeaderProps {
@@ -30,14 +33,22 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
   const { exportTable } = useDuckDB()
 
   const addAuditEntry = useAuditStore((s) => s.addEntry)
-  const auditEntries = useAuditStore((s) => s.entries)
+
+  // Subscribe to timeline for reactive updates
+  const timelines = useTimelineStore((s) => s.timelines)
+
+  // Derive audit entries from timeline
+  const auditEntries = useMemo(() => {
+    if (activeTableId) {
+      return getAuditEntriesForTable(activeTableId)
+    }
+    return []
+  }, [activeTableId, timelines])
 
   // Check if there are meaningful changes (not just "File Loaded")
-  const hasChanges = activeTableId
-    ? auditEntries.some(
-        (entry) => entry.tableId === activeTableId && entry.action !== 'File Loaded'
-      )
-    : false
+  const hasChanges = auditEntries.some(
+    (entry) => entry.action !== 'File Loaded'
+  )
 
   const handleExport = () => {
     if (activeTable && activeTableId) {

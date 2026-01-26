@@ -1,7 +1,27 @@
+/**
+ * Audit Store - Derived from Timeline
+ *
+ * IMPORTANT: Audit entries are now derived from timelineStore, not stored separately.
+ * This ensures the audit log always matches the timeline position after undo/redo.
+ *
+ * The store still provides:
+ * - getEntriesForTable(tableId) - now delegates to timeline
+ * - addEntry() / addTransformationEntry() / addManualEditEntry() - kept for backward
+ *   compatibility, but these entries are NOT the source of truth. The timeline is.
+ * - exportLog() - exports from derived entries
+ *
+ * Migration note: Code should eventually move to using useAuditEntriesFromTimeline()
+ * directly, but this store provides backward compatibility during the transition.
+ */
+
 import { create } from 'zustand'
 import type { AuditLogEntry, AuditEntryType, SerializedAuditLogEntry } from '@/types'
 import { generateId } from '@/lib/utils'
 import { getAuditRowDetails } from '@/lib/transformations'
+import {
+  getAuditEntriesForTable,
+  getAllAuditEntries,
+} from '@/lib/audit-from-timeline'
 
 interface ManualEditParams {
   tableId: string
@@ -24,10 +44,18 @@ interface TransformationEntryParams {
 }
 
 interface AuditState {
-  entries: AuditLogEntry[]
+  /**
+   * @deprecated Legacy entries array. Use getEntriesForTable() which derives from timeline.
+   * This is only kept for non-table audit entries (app-level events) if needed.
+   */
+  _legacyEntries: AuditLogEntry[]
 }
 
 interface AuditActions {
+  /**
+   * @deprecated Use CommandExecutor to record actions. Entries are derived from timeline.
+   * This is kept for backward compatibility but does NOT update the timeline-derived view.
+   */
   addEntry: (
     tableId: string,
     tableName: string,
@@ -35,19 +63,66 @@ interface AuditActions {
     details: string,
     entryType?: AuditEntryType
   ) => void
+
+  /**
+   * @deprecated Use CommandExecutor. Entries are derived from timeline.
+   */
   addTransformationEntry: (params: TransformationEntryParams) => void
-  addManualEditEntry: (params: ManualEditParams) => string // Returns auditEntryId
+
+  /**
+   * @deprecated Use CommandExecutor. Returns auditEntryId for compatibility.
+   */
+  addManualEditEntry: (params: ManualEditParams) => string
+
+  /**
+   * Load legacy entries (for OPFS persistence backward compatibility)
+   * @deprecated Timeline is the source of truth
+   */
   loadEntries: (entries: AuditLogEntry[]) => void
+
+  /**
+   * Clear legacy entries
+   */
   clearEntries: () => void
+
+  /**
+   * Get audit entries for a specific table.
+   * DERIVED FROM TIMELINE - only shows entries up to current position.
+   */
   getEntriesForTable: (tableId: string) => AuditLogEntry[]
+
+  /**
+   * Get all audit entries across all tables.
+   * DERIVED FROM TIMELINE - only shows entries up to each table's current position.
+   */
+  getAllEntries: () => AuditLogEntry[]
+
+  /**
+   * Get serialized entries for persistence.
+   * @deprecated Timeline handles its own persistence
+   */
   getSerializedEntries: () => SerializedAuditLogEntry[]
+
+  /**
+   * Export audit log as text
+   */
   exportLog: () => Promise<string>
 }
 
-export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
-  entries: [],
+export const useAuditStore = create<AuditState & AuditActions>((set) => ({
+  _legacyEntries: [],
+
+  // DEPRECATED: Legacy add methods - kept for backward compatibility
+  // These don't affect the timeline-derived audit view
 
   addEntry: (tableId, tableName, action, details, entryType = 'A') => {
+    // Note: This is a no-op for timeline-derived audit.
+    // The real audit entry comes from CommandExecutor -> timelineStore.appendCommand()
+    console.log('[AuditStore] addEntry called (legacy, no-op for timeline-derived audit)', {
+      tableId,
+      action,
+    })
+    // Keep legacy behavior for non-table events if needed
     const entry: AuditLogEntry = {
       id: generateId(),
       timestamp: new Date(),
@@ -58,74 +133,58 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
       entryType,
     }
     set((state) => ({
-      entries: [entry, ...state.entries],
+      _legacyEntries: [entry, ...state._legacyEntries],
     }))
   },
 
   addTransformationEntry: (params) => {
-    const entry: AuditLogEntry = {
-      id: generateId(),
-      timestamp: new Date(),
-      tableId: params.tableId,
-      tableName: params.tableName,
+    // No-op for timeline-derived audit
+    console.log('[AuditStore] addTransformationEntry called (legacy, no-op)', {
       action: params.action,
-      details: params.details,
-      entryType: 'A',
-      rowsAffected: params.rowsAffected,
-      hasRowDetails: params.hasRowDetails,
-      auditEntryId: params.auditEntryId,
-      isCapped: params.isCapped,
-    }
-    set((state) => ({
-      entries: [entry, ...state.entries],
-    }))
+    })
   },
 
   addManualEditEntry: (params) => {
-    const entryId = generateId()
-    const entry: AuditLogEntry = {
-      id: entryId,
-      timestamp: new Date(),
-      tableId: params.tableId,
-      tableName: params.tableName,
-      action: 'Manual Edit',
-      details: `Cell [${params.rowIndex}, ${params.columnName}] changed`,
-      entryType: 'B',
-      previousValue: params.previousValue,
-      newValue: params.newValue,
-      rowIndex: params.rowIndex,
+    // Return a generated ID for compatibility, but don't store
+    console.log('[AuditStore] addManualEditEntry called (legacy)', {
       columnName: params.columnName,
-      rowsAffected: 1,
-      hasRowDetails: true,
-      auditEntryId: entryId,
-    }
-    set((state) => ({
-      entries: [entry, ...state.entries],
-    }))
-    return entryId // Return the auditEntryId for timeline linkage
+    })
+    return generateId()
   },
 
   loadEntries: (entries) => {
-    set({ entries })
+    // Load into legacy array for backward compatibility
+    set({ _legacyEntries: entries })
   },
 
   clearEntries: () => {
-    set({ entries: [] })
+    set({ _legacyEntries: [] })
   },
 
+  // DERIVED FROM TIMELINE - these are the primary methods to use
+
   getEntriesForTable: (tableId) => {
-    return get().entries.filter((e) => e.tableId === tableId)
+    // Derive from timeline (single source of truth)
+    return getAuditEntriesForTable(tableId)
+  },
+
+  getAllEntries: () => {
+    // Derive from timeline (single source of truth)
+    return getAllAuditEntries()
   },
 
   getSerializedEntries: () => {
-    return get().entries.map((entry) => ({
+    // Serialize the timeline-derived entries
+    const entries = getAllAuditEntries()
+    return entries.map((entry) => ({
       ...entry,
       timestamp: entry.timestamp.toISOString(),
     }))
   },
 
   exportLog: async () => {
-    const entries = get().entries
+    // Export from timeline-derived entries
+    const entries = getAllAuditEntries()
     const typeAEntries = entries.filter((e) => e.entryType !== 'B')
     const typeBEntries = entries.filter((e) => e.entryType === 'B')
 
@@ -167,7 +226,9 @@ export const useAuditStore = create<AuditState & AuditActions>((set, get) => ({
 
       // Include previous/new values for Type B entries
       if (entry.entryType === 'B') {
-        lines.push(`Row: ${entry.rowIndex}`)
+        if (entry.rowIndex !== undefined) {
+          lines.push(`Row: ${entry.rowIndex}`)
+        }
         lines.push(`Column: ${entry.columnName}`)
         lines.push(`Previous Value: ${formatValue(entry.previousValue)}`)
         lines.push(`New Value: ${formatValue(entry.newValue)}`)
@@ -186,3 +247,14 @@ function formatValue(value: unknown): string {
   if (value === '') return '<empty>'
   return String(value)
 }
+
+/**
+ * Backward compatibility: Re-export the entries getter as a selector
+ * Components using `useAuditStore((s) => s.entries)` should migrate to
+ * `useAuditStore((s) => s.getAllEntries())`
+ */
+Object.defineProperty(useAuditStore.getState(), 'entries', {
+  get() {
+    return getAllAuditEntries()
+  },
+})

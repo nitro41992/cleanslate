@@ -17,7 +17,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useState } from 'react'
 import { duplicateTable } from '@/lib/duckdb'
-import { useAuditStore } from '@/stores/auditStore'
+import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { formatNumber } from '@/lib/utils'
 
 interface TableSelectorProps {
@@ -30,7 +30,6 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
   const setActiveTable = useTableStore((s) => s.setActiveTable)
   const removeTable = useTableStore((s) => s.removeTable)
   const checkpointTable = useTableStore((s) => s.checkpointTable)
-  const auditEntries = useAuditStore((s) => s.entries)
 
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
 
@@ -56,8 +55,8 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
 
       const { columns, rowCount } = await duplicateTable(table.name, checkpointName)
 
-      const tableTransformations = auditEntries
-        .filter((e) => e.tableId === tableId)
+      // Get transformations from timeline-derived audit
+      const tableTransformations = getAuditEntriesForTable(tableId)
         .map((e) => ({
           action: e.action,
           details: e.details,

@@ -12,6 +12,7 @@ import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTableStore } from '@/stores/tableStore'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { getAuditEntriesForTable, getAllAuditEntries } from '@/lib/audit-from-timeline'
 import { AuditDetailModal } from '@/components/common/AuditDetailModal'
 import type { AuditLogEntry } from '@/types'
 import { cn } from '@/lib/utils'
@@ -20,8 +21,18 @@ export function AuditSidebar() {
   const auditSidebarOpen = usePreviewStore((s) => s.auditSidebarOpen)
   const setAuditSidebarOpen = usePreviewStore((s) => s.setAuditSidebarOpen)
   const activeTableId = useTableStore((s) => s.activeTableId)
-  const entries = useAuditStore((s) => s.entries)
   const exportLog = useAuditStore((s) => s.exportLog)
+
+  // Subscribe to timeline changes for reactive updates
+  const timelines = useTimelineStore((s) => s.timelines)
+
+  // Derive audit entries from timeline (updates on undo/redo)
+  const entries = useMemo(() => {
+    if (activeTableId) {
+      return getAuditEntriesForTable(activeTableId)
+    }
+    return getAllAuditEntries()
+  }, [activeTableId, timelines])
 
   // Timeline integration for drill-down highlighting
   const getTimeline = useTimelineStore((s) => s.getTimeline)

@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useAuditStore } from '@/stores/auditStore'
+import { useTimelineStore } from '@/stores/timelineStore'
+import { getAuditEntriesForTable, getAllAuditEntries } from '@/lib/audit-from-timeline'
 import { formatDate } from '@/lib/utils'
 import { Download, Trash2, Clock, FileText, Rows3 } from 'lucide-react'
 import { AuditDetailModal } from './AuditDetailModal'
@@ -23,9 +25,19 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
   const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  const entries = useAuditStore((s) =>
-    tableId ? s.getEntriesForTable(tableId) : s.entries
-  )
+  // Subscribe to timeline changes to trigger re-render when undo/redo happens
+  // This ensures the audit log always reflects the current timeline position
+  const timelines = useTimelineStore((s) => s.timelines)
+
+  // Derive audit entries from timeline (computed, not stored)
+  const entries = useMemo(() => {
+    // timelines dependency ensures re-computation on timeline changes
+    if (tableId) {
+      return getAuditEntriesForTable(tableId)
+    }
+    return getAllAuditEntries()
+  }, [tableId, timelines])
+
   const clearEntries = useAuditStore((s) => s.clearEntries)
   const exportLog = useAuditStore((s) => s.exportLog)
 

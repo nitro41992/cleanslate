@@ -436,11 +436,21 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
 - Kept executor's internal `tableTimelines` position sync for backward compatibility with `canUndo`, `canRedo`, `getDirtyCells`
 - Both keyboard shortcuts (useUnifiedUndo) and programmatic calls (executor.undo/redo) now use TimelineEngine
 
-### Deferred Phases
+#### Phase 6: Derive Audit from Timeline ✅
+- Created `src/lib/audit-from-timeline.ts` with functions to derive audit entries from timeline
+- `convertCommandToAuditEntry()` maps TimelineCommand → AuditLogEntry
+- `getAuditEntriesForTable(tableId)` returns entries up to currentPosition
+- `getAllAuditEntries()` returns entries across all tables
+- Updated `auditStore.ts` to delegate to timeline-derived entries
+- Updated all components using `s.entries`:
+  - `AuditLogPanel.tsx` - uses useMemo + timeline subscription
+  - `AuditSidebar.tsx` - uses useMemo + timeline subscription
+  - `AppHeader.tsx` - uses useMemo + timeline subscription
+  - `AppShell.tsx` - uses getAuditEntriesForTable directly
+  - `TableSelector.tsx` - uses getAuditEntriesForTable directly
+- Audit log now automatically updates on undo/redo (no drift bug)
 
-#### Phase 6: Derive Audit from Timeline (Deferred)
-- Audit log still populated separately via `addAuditEntry()` calls
-- Future: Consider computed selector approach for consistency
+### Remaining Steps
 
 ### Large File Risk Mitigations (Noted for future work)
 

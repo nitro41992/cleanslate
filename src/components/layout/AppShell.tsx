@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/tooltip'
 import { useTableStore } from '@/stores/tableStore'
 import { useUIStore } from '@/stores/uiStore'
-import { useAuditStore } from '@/stores/auditStore'
+import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { duplicateTable } from '@/lib/duckdb'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
 import { formatNumber } from '@/lib/utils'
@@ -92,7 +92,6 @@ export function AppShell({ children }: AppShellProps) {
   const checkpointTable = useTableStore((s) => s.checkpointTable)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
-  const auditEntries = useAuditStore((s) => s.entries)
 
   const {
     isAvailable: isStorageAvailable,
@@ -119,9 +118,8 @@ export function AppShell({ children }: AppShellProps) {
       // Duplicate the table in DuckDB
       const { columns, rowCount } = await duplicateTable(table.name, checkpointName)
 
-      // Get transformations applied to this table from audit log
-      const tableTransformations = auditEntries
-        .filter((e) => e.tableId === tableId)
+      // Get transformations applied to this table from timeline (derived audit)
+      const tableTransformations = getAuditEntriesForTable(tableId)
         .map((e) => ({
           action: e.action,
           details: e.details,
