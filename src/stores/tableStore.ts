@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { TableInfo, ColumnInfo, LineageTransformation } from '@/types'
 import { generateId } from '@/lib/utils'
 import { cleanupTimelineSnapshots } from '@/lib/timeline-engine'
+import { isInternalColumn } from '@/lib/commands/utils/column-ordering'
 
 interface TableState {
   tables: TableInfo[]
@@ -37,6 +38,12 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
   addTable: (name, columns, rowCount, existingId) => {
     const id = existingId || generateId()
     const now = new Date()
+
+    // Initialize columnOrder with user-visible columns (exclude _cs_id, __base)
+    const columnOrder = columns
+      .filter(c => !isInternalColumn(c.name))
+      .map(c => c.name)
+
     const newTable: TableInfo = {
       id,
       name,
@@ -45,6 +52,7 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
       createdAt: now,
       updatedAt: now,
       dataVersion: 0,
+      columnOrder,
     }
     set((state) => ({
       tables: [...state.tables, newTable],

@@ -71,6 +71,7 @@ export class RenameColumnCommand extends Tier2TransformCommand<RenameColumnParam
         affected: 0, // Metadata change only
         newColumnNames: [this.params.newName],
         droppedColumnNames: [this.params.column],
+        renameMappings: { [this.params.column]: this.params.newName },
       }
     } catch (error) {
       return {

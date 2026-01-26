@@ -162,6 +162,8 @@ export interface ExecutionResult {
   newColumnNames: string[]
   /** Columns removed by this command (e.g., combine_columns, match:merge) */
   droppedColumnNames: string[]
+  /** Mapping of old column names to new names (for rename_column) */
+  renameMappings?: Record<string, string>
   /** For Tier 1 commands: the versioned column created */
   versionedColumn?: {
     original: string

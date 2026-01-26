@@ -34,6 +34,7 @@ import {
   createTier3DiffView,
   type DiffViewConfig,
 } from './diff-views'
+import { updateColumnOrder } from './utils/column-ordering'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
@@ -342,8 +343,24 @@ export class CommandExecutor implements ICommandExecutor {
         })),
       })
 
-      // Refresh context with new schema
-      const updatedCtx = await refreshTableContext(ctx)
+      // Calculate new column order BEFORE refreshing context to prevent race condition
+      const tableStore = useTableStore.getState()
+      const currentTable = tableStore.tables.find((t) => t.id === ctx.table.id)
+      const currentColumnOrder = currentTable?.columnOrder
+
+      const newColumnOrder = updateColumnOrder(
+        currentColumnOrder,
+        executionResult.newColumnNames || [],
+        executionResult.droppedColumnNames || [],
+        executionResult.renameMappings
+      )
+
+      // Refresh context with new schema and pre-calculated column order
+      const updatedCtx = await refreshTableContext(
+        ctx,
+        executionResult.renameMappings,
+        newColumnOrder
+      )
 
       // Step 4.5: CHECKPOINT after Tier 3 to flush WAL and release buffer pool
       if (tier === 3) {
@@ -482,7 +499,10 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Step 8: Update stores
       progress('complete', 100, 'Complete')
-      this.updateTableStore(ctx.table.id, executionResult)
+      this.updateTableStore(ctx.table.id, {
+        ...executionResult,
+        columnOrder: newColumnOrder,
+      })
 
       // Proactive memory management: prune snapshots if memory > 80%
       await this.pruneSnapshotsIfHighMemory()
@@ -984,7 +1004,7 @@ export class CommandExecutor implements ICommandExecutor {
 
   private updateTableStore(
     tableId: string,
-    result: { rowCount?: number; columns?: { name: string; type: string; nullable: boolean }[]; newColumnNames?: string[]; droppedColumnNames?: string[] }
+    result: { rowCount?: number; columns?: { name: string; type: string; nullable: boolean }[]; newColumnNames?: string[]; droppedColumnNames?: string[]; columnOrder?: string[] }
   ): void {
     const tableStore = useTableStore.getState()
     const currentTable = tableStore.tables.find(t => t.id === tableId)
@@ -992,6 +1012,7 @@ export class CommandExecutor implements ICommandExecutor {
     tableStore.updateTable(tableId, {
       rowCount: result.rowCount ?? currentTable?.rowCount,
       columns: result.columns ?? currentTable?.columns,
+      columnOrder: result.columnOrder ?? currentTable?.columnOrder,
       dataVersion: (currentTable?.dataVersion ?? 0) + 1, // CRITICAL: Trigger re-render
     })
   }
