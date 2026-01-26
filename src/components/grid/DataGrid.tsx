@@ -152,7 +152,6 @@ export function DataGrid({
   )
 
   // Audit store for logging edits
-  const addManualEditEntry = useAuditStore((s) => s.addManualEditEntry)
 
   const gridColumns: GridColumn[] = useMemo(
     () =>
@@ -343,6 +342,14 @@ export function DataGrid({
     return map
   }, [csIdToRowIndex])
 
+  // Helper to convert BigInt values to strings for command serialization
+  const serializeValue = (value: unknown): unknown => {
+    if (typeof value === 'bigint') {
+      return value.toString()
+    }
+    return value
+  }
+
   // Handle cell edits using CommandExecutor
   const onCellEdited = useCallback(
     async ([col, row]: Item, newValue: EditableGridCell) => {
@@ -351,7 +358,7 @@ export function DataGrid({
       const colName = columns[col]
       const adjustedRow = row - loadedRange.start
       const rowData = data[adjustedRow]
-      const previousValue = rowData?.[colName]
+      const previousValue = serializeValue(rowData?.[colName])
 
       // Get the new value from the cell
       let newCellValue: unknown
@@ -391,10 +398,6 @@ export function DataGrid({
               tableId, tableName, rowIndex: row, columnName: colName,
               previousValue, newValue: newCellValue, timestamp: new Date(),
             })
-            addManualEditEntry({
-              tableId, tableName, rowIndex: row, columnName: colName,
-              previousValue, newValue: newCellValue,
-            })
             const timelineParams: ManualEditParams = {
               type: 'manual_edit', csId: result.csId, columnName: colName,
               previousValue, newValue: newCellValue,
@@ -423,8 +426,8 @@ export function DataGrid({
           newValue: newCellValue,
         })
 
-        // Execute with skipAudit since we need Type B audit entry (manual edit)
-        const result = await executeWithConfirmation(command, tableId, { skipAudit: true })
+        // Execute command - audit info (including hasRowDetails) will be captured for timeline
+        const result = await executeWithConfirmation(command, tableId)
 
         // User cancelled the confirmation dialog
         if (!result) {
@@ -457,16 +460,6 @@ export function DataGrid({
             timestamp: new Date(),
           })
 
-          // Log Type B audit entry (manual edit)
-          addManualEditEntry({
-            tableId,
-            tableName,
-            rowIndex: row,
-            columnName: colName,
-            previousValue,
-            newValue: newCellValue,
-          })
-
           // Trigger re-render for dirty cell tracking
           setExecutorTimelineVersion((v) => v + 1)
         } else {
@@ -476,7 +469,7 @@ export function DataGrid({
         console.error('Failed to update cell:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addManualEditEntry, executeWithConfirmation]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, executeWithConfirmation]
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights

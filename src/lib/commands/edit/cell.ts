@@ -41,7 +41,7 @@ export class EditCellCommand implements Command<EditCellParams> {
   constructor(id: string | undefined, params: EditCellParams) {
     this.id = id || generateId()
     this.params = params
-    this.label = `Edit [${params.csId.slice(0, 8)}..., ${params.columnName}]`
+    this.label = 'Manual Edit'
   }
 
   async validate(ctx: CommandContext): Promise<ValidationResult> {
