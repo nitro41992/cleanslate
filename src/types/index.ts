@@ -9,6 +9,7 @@ export interface TableInfo {
   isCheckpoint?: boolean        // Flag for checkpoint tables
   lineage?: TableLineage        // Full transformation history
   dataVersion?: number          // Increments on any data change to trigger grid refresh
+  columnOrder?: string[]        // User-visible column names only (excludes _cs_id, __base)
 }
 
 export interface TableLineage {

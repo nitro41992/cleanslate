@@ -16,6 +16,7 @@ import {
 import { useTableStore } from '@/stores/tableStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { scanForBackupColumns } from './column-versions'
+import { reorderColumns } from './utils/column-ordering'
 
 // Global column version store per table
 // Key: tableId, Value: Map<columnName, ColumnVersionInfo>
@@ -107,11 +108,23 @@ export function clearColumnVersionStore(tableId: string): void {
 
 /**
  * Refresh table metadata in context (after schema changes)
+ *
+ * @param ctx - Current command context
+ * @param renameMappings - Optional rename mappings for column order preservation
+ * @param columnOrderOverride - Optional pre-calculated column order to prevent race conditions
  */
 export async function refreshTableContext(
-  ctx: CommandContext
+  ctx: CommandContext,
+  renameMappings?: Record<string, string>,
+  columnOrderOverride?: string[]
 ): Promise<CommandContext> {
-  const columns = await ctx.db.getTableColumns(ctx.table.name)
+  const fetchedColumns = await ctx.db.getTableColumns(ctx.table.name)
+
+  // Apply column reordering if override provided
+  const columns = columnOrderOverride
+    ? reorderColumns(fetchedColumns, columnOrderOverride, renameMappings)
+    : fetchedColumns
+
   const rowCountResult = await ctx.db.query<{ count: number }>(
     `SELECT COUNT(*) as count FROM "${ctx.table.name}"`
   )

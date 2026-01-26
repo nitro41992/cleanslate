@@ -91,6 +91,14 @@ export interface StoreInspector {
    * Must be called before page reload in tests to ensure data persistence
    */
   flushToOPFS: () => Promise<void>
+  /**
+   * Get column information for a specific table
+   */
+  getTableColumns: (tableName: string) => Promise<{ name: string; type: string }[]>
+  /**
+   * Get full table info including columnOrder field
+   */
+  getTableInfo: (tableName: string) => Promise<TableInfo | undefined>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -284,6 +292,27 @@ export function createStoreInspector(page: Page): StoreInspector {
           await duckdb.flushDuckDB(true)
         }
       })
+    },
+
+    async getTableColumns(tableName: string): Promise<{ name: string; type: string }[]> {
+      return page.evaluate(async (name) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.tableStore) return []
+        const store = stores.tableStore as { getState: () => { tables: TableInfo[] } }
+        const state = store.getState()
+        const table = state.tables.find((t) => t.name === name)
+        return table?.columns || []
+      }, tableName)
+    },
+
+    async getTableInfo(tableName: string): Promise<TableInfo | undefined> {
+      return page.evaluate(async (name) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.tableStore) return undefined
+        const store = stores.tableStore as { getState: () => { tables: TableInfo[] } }
+        const state = store.getState()
+        return state.tables.find((t) => t.name === name)
+      }, tableName)
     },
   }
 }
