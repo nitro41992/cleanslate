@@ -8,7 +8,7 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { COLUMN_PLACEHOLDER } from '../../column-versions'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform } from '../../batch-utils'
 
 export interface TrimParams extends BaseTransformParams {
   column: string
@@ -31,21 +31,12 @@ export class TrimCommand extends Tier1TransformCommand<TrimParams> {
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const col = this.params.column!
 
-    // Check if batching is needed
     if (ctx.batchMode) {
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE ("${col}"), TRIM("${col}") as "${col}"
-         FROM "${ctx.table.name}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT "${col}" as before, TRIM("${col}") as after
-         FROM "${ctx.table.name}"
-         WHERE "${col}" IS DISTINCT FROM TRIM("${col}")`
+      return runBatchedColumnTransform(
+        ctx, col, `TRIM("${col}")`, `"${col}" IS DISTINCT FROM TRIM("${col}")`
       )
     }
 
-    // Original logic for <500k rows
     return super.execute(ctx)
   }
 }

@@ -9,7 +9,8 @@
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
+import { tableHasCsId } from '@/lib/duckdb'
 
 export interface PadZerosParams extends BaseTransformParams {
   column: string
@@ -37,41 +38,25 @@ export class PadZerosCommand extends Tier3TransformCommand<PadZerosParams> {
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const col = quoteColumn(this.params.column)
+    const col = this.params.column
+    const quotedCol = quoteColumn(col)
     const length = this.params.length ?? 5
+    const transformExpr = `LPAD(CAST(${quotedCol} AS VARCHAR), ${length}, '0')`
 
-    // Check if batching is needed
     if (ctx.batchMode) {
-      const transformExpr = `LPAD(CAST(${col} AS VARCHAR), ${length}, '0')`
-
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE (${col}), ${transformExpr} as ${col}
-         FROM "${tableName}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT ${col} as before, ${transformExpr} as after
-         FROM "${tableName}"
-         WHERE ${col} IS DISTINCT FROM ${transformExpr}`
+      return runBatchedColumnTransform(
+        ctx, col, transformExpr, `${quotedCol} IS DISTINCT FROM ${transformExpr}`
       )
     }
 
-    // Original logic for <500k rows
+    // Non-batch mode: use column-ordered SELECT
     const tempTable = `${tableName}_temp_${Date.now()}`
+    const columnOrder = getColumnOrderForTable(ctx)
+    const hasCsId = await tableHasCsId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: transformExpr }, hasCsId)
 
     try {
-      // Build the LPAD expression
-      // Cast to VARCHAR first to handle numeric values
-      const padExpr = `LPAD(CAST(${col} AS VARCHAR), ${length}, '0')`
-
-      // Create temp table with padded values
-      const sql = `
-        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT * EXCLUDE (${col}),
-               ${padExpr} as ${col}
-        FROM ${quoteTable(tableName)}
-      `
-      await ctx.db.execute(sql)
+      await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 
       // Swap tables
       await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -93,7 +78,6 @@ export class PadZerosCommand extends Tier3TransformCommand<PadZerosParams> {
         droppedColumnNames: [],
       }
     } catch (error) {
-      // Cleanup
       try {
         await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
       } catch {
@@ -115,7 +99,6 @@ export class PadZerosCommand extends Tier3TransformCommand<PadZerosParams> {
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
     const col = quoteColumn(this.params.column)
     const length = this.params.length ?? 5
-    // Rows where value is shorter than target length
     return `${col} IS NOT NULL AND LENGTH(CAST(${col} AS VARCHAR)) < ${length}`
   }
 }

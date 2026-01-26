@@ -8,7 +8,8 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
+import { tableHasCsId } from '@/lib/duckdb'
 
 export interface FixNegativesParams extends BaseTransformParams {
   column: string
@@ -20,47 +21,36 @@ export class FixNegativesCommand extends Tier3TransformCommand<FixNegativesParam
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const col = quoteColumn(this.params.column)
+    const col = this.params.column
+    const quotedCol = quoteColumn(col)
 
     // Build the expression to convert (xxx) to -xxx
     const fixNegExpr = `
       CASE
-        WHEN TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'
+        WHEN TRIM(CAST(${quotedCol} AS VARCHAR)) LIKE '%(%)'
         THEN TRY_CAST(
-          '-' || REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(${col} AS VARCHAR)), '$', ''), '(', ''), ')', ''), ',', '')
+          '-' || REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(${quotedCol} AS VARCHAR)), '$', ''), '(', ''), ')', ''), ',', '')
           AS DOUBLE
         )
-        ELSE TRY_CAST(REPLACE(CAST(${col} AS VARCHAR), ',', '') AS DOUBLE)
+        ELSE TRY_CAST(REPLACE(CAST(${quotedCol} AS VARCHAR), ',', '') AS DOUBLE)
       END
     `
 
-    // Check if batching is needed
     if (ctx.batchMode) {
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE (${col}), ${fixNegExpr} as ${col}
-         FROM "${tableName}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT ${col} as before, ${fixNegExpr} as after
-         FROM "${tableName}"
-         WHERE ${col} IS NOT NULL AND TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'`
+      return runBatchedColumnTransform(
+        ctx, col, fixNegExpr,
+        `${quotedCol} IS NOT NULL AND TRIM(CAST(${quotedCol} AS VARCHAR)) LIKE '%(%)'`
       )
     }
 
-    // Original logic for <500k rows
+    // Non-batch mode: use column-ordered SELECT
     const tempTable = `${tableName}_temp_${Date.now()}`
+    const columnOrder = getColumnOrderForTable(ctx)
+    const hasCsId = await tableHasCsId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: fixNegExpr }, hasCsId)
 
     try {
-
-      // Create temp table with fixed negatives
-      const sql = `
-        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT * EXCLUDE (${col}),
-               ${fixNegExpr} as ${col}
-        FROM ${quoteTable(tableName)}
-      `
-      await ctx.db.execute(sql)
+      await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 
       // Swap tables
       await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -82,7 +72,6 @@ export class FixNegativesCommand extends Tier3TransformCommand<FixNegativesParam
         droppedColumnNames: [],
       }
     } catch (error) {
-      // Cleanup
       try {
         await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
       } catch {
@@ -103,7 +92,6 @@ export class FixNegativesCommand extends Tier3TransformCommand<FixNegativesParam
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
     const col = quoteColumn(this.params.column)
-    // Rows that have accounting-style negatives: (500) or $(750.00)
     return `${col} IS NOT NULL AND TRIM(CAST(${col} AS VARCHAR)) LIKE '%(%)'`
   }
 }

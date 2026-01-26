@@ -7,13 +7,14 @@
 
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
-import { quoteColumn, quoteTable } from '../../utils/sql'
+import { quoteTable } from '../../utils/sql'
 import {
   buildDateFormatExpression,
   buildDateParseSuccessPredicate,
   type OutputFormat,
 } from '../../utils/date'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
+import { tableHasCsId } from '@/lib/duckdb'
 
 export interface StandardizeDateParams extends BaseTransformParams {
   column: string
@@ -42,32 +43,22 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const col = this.params.column
+    const tableName = ctx.table.name
     const format = this.params.format ?? 'YYYY-MM-DD'
     const dateExpr = buildDateFormatExpression(col, format)
 
-    // Check if batching is needed (3 lines!)
     if (ctx.batchMode) {
-      return runBatchedTransform(ctx, `
-        SELECT * EXCLUDE ("${col}"), ${dateExpr} as "${col}"
-        FROM "${ctx.table.name}"
-      `)
+      return runBatchedColumnTransform(ctx, col, dateExpr)
     }
 
-    // Original logic for <500k rows
-    const tableName = ctx.table.name
+    // Non-batch mode: use column-ordered SELECT
     const tempTable = `${tableName}_temp_${Date.now()}`
+    const columnOrder = getColumnOrderForTable(ctx)
+    const hasCsId = await tableHasCsId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: dateExpr }, hasCsId)
 
     try {
-      // Build the date standardization expression (already done above)
-
-      // Create temp table with standardized date
-      const sql = `
-        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT * EXCLUDE (${quoteColumn(col)}),
-               ${dateExpr} as ${quoteColumn(col)}
-        FROM ${quoteTable(tableName)}
-      `
-      await ctx.db.execute(sql)
+      await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 
       // Swap tables
       await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -89,7 +80,6 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
         droppedColumnNames: [],
       }
     } catch (error) {
-      // Cleanup
       try {
         await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
       } catch {
@@ -109,7 +99,6 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
-    // Rows where date parsing succeeds
     return buildDateParseSuccessPredicate(this.params.column)
   }
 }

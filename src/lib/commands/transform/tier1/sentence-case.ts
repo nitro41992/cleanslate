@@ -8,7 +8,7 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { COLUMN_PLACEHOLDER } from '../../column-versions'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform } from '../../batch-utils'
 
 export interface SentenceCaseParams extends BaseTransformParams {
   column: string
@@ -35,26 +35,15 @@ export class SentenceCaseCommand extends Tier1TransformCommand<SentenceCaseParam
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const col = this.params.column!
 
-    // Check if batching is needed
     if (ctx.batchMode) {
-      const transformExpr = `CASE
+      const expr = `CASE
         WHEN "${col}" IS NULL OR TRIM("${col}") = '' THEN "${col}"
         ELSE concat(upper(substring("${col}", 1, 1)), lower(substring("${col}", 2)))
       END`
 
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE ("${col}"), ${transformExpr} as "${col}"
-         FROM "${ctx.table.name}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT "${col}" as before, ${transformExpr} as after
-         FROM "${ctx.table.name}"
-         WHERE "${col}" IS DISTINCT FROM ${transformExpr}`
-      )
+      return runBatchedColumnTransform(ctx, col, expr, `"${col}" IS DISTINCT FROM ${expr}`)
     }
 
-    // Original logic for <500k rows
     return super.execute(ctx)
   }
 }

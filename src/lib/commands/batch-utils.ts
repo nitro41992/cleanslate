@@ -5,31 +5,130 @@
 
 import type { CommandContext, ExecutionResult } from './types'
 import { batchExecute, swapStagingTable, cleanupStagingTable } from './batch-executor'
-import { getConnection } from '@/lib/duckdb'
+import { getConnection, tableHasCsId, CS_ID_COLUMN } from '@/lib/duckdb'
+import { useTableStore } from '@/stores/tableStore'
+import { isInternalColumn } from './utils/column-ordering'
 
 /**
- * Run a batched transformation using staging table strategy
+ * Get the column order for a table from the store.
+ * Falls back to column names from context if not set.
+ * Exported for use by Tier 3 commands that need column ordering for non-batch SQL.
+ */
+export function getColumnOrderForTable(ctx: CommandContext): string[] {
+  const tableStore = useTableStore.getState()
+  const table = tableStore.tables.find(t => t.id === ctx.table.id)
+
+  // Use stored column order if available
+  if (table?.columnOrder && table.columnOrder.length > 0) {
+    return table.columnOrder
+  }
+
+  // Fallback to current columns from context (excluding internal columns)
+  return ctx.table.columns
+    .map(c => c.name)
+    .filter(name => !isInternalColumn(name))
+}
+
+/**
+ * Build a SELECT query that preserves column order.
  *
- * This helper encapsulates the entire batching workflow:
- * 1. Create staging table with batched inserts
- * 2. Checkpoint WAL every 5 batches to prevent memory accumulation
- * 3. Atomically swap staging → live table on success
- * 4. Cleanup staging table on error
+ * CRITICAL: Using SELECT * EXCLUDE (...) loses column ordering in DuckDB.
+ * This function explicitly lists all columns in the user-defined order,
+ * applying transformations to specific columns in-place.
+ *
+ * Internal columns (_cs_id) are included at the end to preserve row identity for editing.
+ *
+ * Exported for use by Tier 3 commands that need column ordering for non-batch SQL.
+ *
+ * @param tableName - Source table name
+ * @param columnOrder - User-defined column order (from getColumnOrderForTable)
+ * @param columnTransforms - Map of column name -> SQL expression for transformation
+ * @param includeCsId - Whether to include _cs_id column (should be true if source table has it)
+ * @returns SQL SELECT query with columns in correct order
+ */
+export function buildColumnOrderedSelect(
+  tableName: string,
+  columnOrder: string[],
+  columnTransforms: Record<string, string>,
+  includeCsId = false
+): string {
+  // Build select parts for user-visible columns in order
+  const selectParts = columnOrder
+    .filter(col => !isInternalColumn(col))
+    .map(col => {
+      const transform = columnTransforms[col]
+      if (transform) {
+        return `${transform} as "${col}"`
+      }
+      return `"${col}"`
+    })
+
+  // Include _cs_id at the end if it exists in the source table
+  // This is needed for row identity during cell editing
+  if (includeCsId) {
+    selectParts.push(`"${CS_ID_COLUMN}"`)
+  }
+
+  return `SELECT ${selectParts.join(', ')} FROM "${tableName}"`
+}
+
+/**
+ * Run a batched single-column transformation with automatic column order preservation.
+ *
+ * This is the preferred API for commands - just pass the column and transformation expression.
+ * Column ordering is handled automatically.
  *
  * @param ctx - Command context with batch settings
- * @param selectQuery - SQL SELECT query to execute in batches (should read from ctx.table.name)
- * @param sampleQuery - Optional SQL query to capture before/after samples for audit (limit 1000 applied automatically)
+ * @param column - Column name to transform
+ * @param transformExpr - SQL expression for the transformation (should reference the column with quotes)
+ * @param samplePredicate - Optional WHERE predicate for sample query (e.g., '"col" IS DISTINCT FROM UPPER("col")')
  * @returns Execution result with affected row count and optional sample changes
  *
  * @example
  * // In UppercaseCommand.execute():
  * if (ctx.batchMode) {
- *   return runBatchedTransform(
- *     ctx,
- *     `SELECT * EXCLUDE ("name"), UPPER("name") as "name" FROM "${ctx.table.name}"`,
- *     `SELECT "name" as before, UPPER("name") as after FROM "${ctx.table.name}" WHERE "name" IS DISTINCT FROM UPPER("name")`
- *   )
+ *   return runBatchedColumnTransform(ctx, col, `UPPER("${col}")`)
  * }
+ */
+export async function runBatchedColumnTransform(
+  ctx: CommandContext,
+  column: string,
+  transformExpr: string,
+  samplePredicate?: string
+): Promise<ExecutionResult> {
+  const columnOrder = getColumnOrderForTable(ctx)
+
+  // Check if source table has _cs_id (needed for row identity during cell editing)
+  const hasCsId = await tableHasCsId(ctx.table.name)
+
+  const selectQuery = buildColumnOrderedSelect(
+    ctx.table.name,
+    columnOrder,
+    { [column]: transformExpr },
+    hasCsId
+  )
+
+  // Build sample query if predicate provided
+  const sampleQuery = samplePredicate
+    ? `SELECT "${column}" as before, ${transformExpr} as after
+       FROM "${ctx.table.name}"
+       WHERE ${samplePredicate}`
+    : undefined
+
+  return runBatchedTransform(ctx, selectQuery, sampleQuery)
+}
+
+/**
+ * Run a batched transformation using staging table strategy (raw SQL version).
+ *
+ * NOTE: For single-column transforms, prefer runBatchedColumnTransform() which
+ * automatically handles column ordering. Use this only for complex multi-column
+ * transforms or when you need full control over the SELECT query.
+ *
+ * @param ctx - Command context with batch settings
+ * @param selectQuery - SQL SELECT query to execute in batches
+ * @param sampleQuery - Optional SQL query to capture before/after samples for audit
+ * @returns Execution result with affected row count and optional sample changes
  */
 export async function runBatchedTransform(
   ctx: CommandContext,

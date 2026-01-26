@@ -9,7 +9,7 @@ import type { CommandContext, CommandType, ValidationResult, ExecutionResult } f
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { escapeSqlString, escapeRegexPattern } from '../../utils/sql'
 import { COLUMN_PLACEHOLDER } from '../../column-versions'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform } from '../../batch-utils'
 
 export interface ReplaceParams extends BaseTransformParams {
   column: string
@@ -93,20 +93,19 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
     const caseSensitive = this.params.caseSensitive === false || this.params.caseSensitive === 'false' ? false : true
     const matchType = this.params.matchType ?? 'contains'
 
-    // Check if batching is needed
     if (ctx.batchMode) {
-      let transformExpr: string
+      let expr: string
 
       if (matchType === 'exact') {
         if (caseSensitive) {
-          transformExpr = `CASE WHEN "${col}" = '${find}' THEN '${replace}' ELSE "${col}" END`
+          expr = `CASE WHEN "${col}" = '${find}' THEN '${replace}' ELSE "${col}" END`
         } else {
-          transformExpr = `CASE WHEN LOWER("${col}") = LOWER('${find}') THEN '${replace}' ELSE "${col}" END`
+          expr = `CASE WHEN LOWER("${col}") = LOWER('${find}') THEN '${replace}' ELSE "${col}" END`
         }
       } else {
         // contains
         if (caseSensitive) {
-          transformExpr = `REPLACE("${col}", '${find}', '${replace}')`
+          expr = `REPLACE("${col}", '${find}', '${replace}')`
         } else {
           // Case-insensitive regex replacement (character class workaround)
           let pattern = escapeRegexPattern(this.params.find)
@@ -115,23 +114,13 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
             const upper = letter.toUpperCase()
             return lower !== upper ? `[${lower}${upper}]` : letter
           })
-          transformExpr = `REGEXP_REPLACE("${col}", '${pattern}', '${replace}', 'g')`
+          expr = `REGEXP_REPLACE("${col}", '${pattern}', '${replace}', 'g')`
         }
       }
 
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE ("${col}"), ${transformExpr} as "${col}"
-         FROM "${ctx.table.name}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT "${col}" as before, ${transformExpr} as after
-         FROM "${ctx.table.name}"
-         WHERE "${col}" IS DISTINCT FROM ${transformExpr}`
-      )
+      return runBatchedColumnTransform(ctx, col, expr, `"${col}" IS DISTINCT FROM ${expr}`)
     }
 
-    // Original logic for <500k rows
     return super.execute(ctx)
   }
 }

@@ -8,7 +8,7 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier1TransformCommand, type BaseTransformParams } from '../base'
 import { COLUMN_PLACEHOLDER } from '../../column-versions'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform } from '../../batch-utils'
 
 export interface UppercaseParams extends BaseTransformParams {
   column: string
@@ -33,15 +33,11 @@ export class UppercaseCommand extends Tier1TransformCommand<UppercaseParams> {
 
     // Check if batching is needed
     if (ctx.batchMode) {
-      return runBatchedTransform(
+      return runBatchedColumnTransform(
         ctx,
-        // Transform query
-        `SELECT * EXCLUDE ("${col}"), UPPER("${col}") as "${col}"
-         FROM "${ctx.table.name}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT "${col}" as before, UPPER("${col}") as after
-         FROM "${ctx.table.name}"
-         WHERE "${col}" IS DISTINCT FROM UPPER("${col}")`
+        col,
+        `UPPER("${col}")`,
+        `"${col}" IS DISTINCT FROM UPPER("${col}")`
       )
     }
 

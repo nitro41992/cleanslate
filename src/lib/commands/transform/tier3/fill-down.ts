@@ -9,6 +9,8 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
+import { buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
+import { tableHasCsId } from '@/lib/duckdb'
 
 export interface FillDownParams extends BaseTransformParams {
   column: string
@@ -21,39 +23,30 @@ export class FillDownCommand extends Tier3TransformCommand<FillDownParams> {
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
     const tempTable = `${tableName}_temp_${Date.now()}`
-    const col = quoteColumn(this.params.column)
+    const col = this.params.column
+    const quotedCol = quoteColumn(col)
 
     try {
-      // Build the fill down expression using LAST_VALUE with IGNORE NULLS
-      // Need to handle both NULL and empty string as "empty"
-      // Also need a stable row order - use _cs_id if available, otherwise ROWID
+      // Check if _cs_id column exists (for ordering and preservation)
+      const hasCsId = await tableHasCsId(tableName)
+      const orderCol = hasCsId ? '"_cs_id"' : 'ROWID'
 
-      // First, check if _cs_id column exists
-      const hasRowId = ctx.table.columns.some((c) => c.name === '_cs_id')
-      const orderCol = hasRowId ? '"_cs_id"' : 'ROWID'
-
-      // Fill down expression:
-      // If current value is null/empty, use LAST_VALUE from previous non-empty rows
-      // Otherwise keep current value
-      // Note: IGNORE NULLS must be inside the LAST_VALUE function call
+      // Fill down expression using LAST_VALUE with IGNORE NULLS
       const fillExpr = `
         COALESCE(
-          NULLIF(TRIM(CAST(${col} AS VARCHAR)), ''),
-          LAST_VALUE(NULLIF(TRIM(CAST(${col} AS VARCHAR)), '') IGNORE NULLS) OVER (
+          NULLIF(TRIM(CAST(${quotedCol} AS VARCHAR)), ''),
+          LAST_VALUE(NULLIF(TRIM(CAST(${quotedCol} AS VARCHAR)), '') IGNORE NULLS) OVER (
             ORDER BY ${orderCol}
             ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
           )
         )
       `
 
-      // Create temp table with filled values
-      const sql = `
-        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT * EXCLUDE (${col}),
-               ${fillExpr} as ${col}
-        FROM ${quoteTable(tableName)}
-      `
-      await ctx.db.execute(sql)
+      // Use column-ordered SELECT to preserve column order
+      const columnOrder = getColumnOrderForTable(ctx)
+      const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: fillExpr }, hasCsId)
+
+      await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 
       // Swap tables
       await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -75,7 +68,6 @@ export class FillDownCommand extends Tier3TransformCommand<FillDownParams> {
         droppedColumnNames: [],
       }
     } catch (error) {
-      // Cleanup
       try {
         await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
       } catch {
@@ -96,7 +88,6 @@ export class FillDownCommand extends Tier3TransformCommand<FillDownParams> {
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
     const col = quoteColumn(this.params.column)
-    // Rows where value is null or empty (these will be filled)
     return `${col} IS NULL OR TRIM(CAST(${col} AS VARCHAR)) = ''`
   }
 }

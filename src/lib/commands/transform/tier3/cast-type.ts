@@ -8,7 +8,8 @@
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
+import { tableHasCsId } from '@/lib/duckdb'
 
 export type CastTargetType = 'VARCHAR' | 'INTEGER' | 'DOUBLE' | 'DATE' | 'BOOLEAN'
 
@@ -35,36 +36,26 @@ export class CastTypeCommand extends Tier3TransformCommand<CastTypeParams> {
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const col = quoteColumn(this.params.column)
+    const col = this.params.column
+    const quotedCol = quoteColumn(col)
+    const transformExpr = `TRY_CAST(${quotedCol} AS ${this.params.targetType})`
 
     // Check if batching is needed
     if (ctx.batchMode) {
-      const transformExpr = `TRY_CAST(${col} AS ${this.params.targetType})`
-
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE (${col}), ${transformExpr} as ${col}
-         FROM "${tableName}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT ${col} as before, ${transformExpr} as after
-         FROM "${tableName}"
-         WHERE (${transformExpr} IS NOT NULL OR ${col} IS NOT NULL)`
+      return runBatchedColumnTransform(
+        ctx, col, transformExpr,
+        `(${transformExpr} IS NOT NULL OR ${quotedCol} IS NOT NULL)`
       )
     }
 
-    // Original logic for <500k rows
+    // Non-batch mode: use column-ordered SELECT
     const tempTable = `${tableName}_temp_${Date.now()}`
+    const columnOrder = getColumnOrderForTable(ctx)
+    const hasCsId = await tableHasCsId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: transformExpr }, hasCsId)
 
     try {
-      // Create temp table with casted column
-      const sql = `
-        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT * EXCLUDE (${col}),
-               TRY_CAST(${col} AS ${this.params.targetType}) as ${col}
-        FROM ${quoteTable(tableName)}
-      `
-      await ctx.db.execute(sql)
+      await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 
       // Swap tables
       await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -81,12 +72,11 @@ export class CastTypeCommand extends Tier3TransformCommand<CastTypeParams> {
         success: true,
         rowCount,
         columns,
-        affected: rowCount, // All rows potentially affected
+        affected: rowCount,
         newColumnNames: [],
         droppedColumnNames: [],
       }
     } catch (error) {
-      // Cleanup
       try {
         await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
       } catch {
@@ -107,7 +97,6 @@ export class CastTypeCommand extends Tier3TransformCommand<CastTypeParams> {
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
     const col = quoteColumn(this.params.column)
-    // All non-null rows are affected
     return `${col} IS NOT NULL`
   }
 }

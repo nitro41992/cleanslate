@@ -9,7 +9,8 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
-import { runBatchedTransform } from '../../batch-utils'
+import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
+import { tableHasCsId } from '@/lib/duckdb'
 
 export interface UnformatCurrencyParams extends BaseTransformParams {
   column: string
@@ -21,56 +22,44 @@ export class UnformatCurrencyCommand extends Tier3TransformCommand<UnformatCurre
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
-    const col = quoteColumn(this.params.column)
+    const col = this.params.column
+    const quotedCol = quoteColumn(col)
 
     // Build the unformat expression
     const unformatExpr = `
       TRY_CAST(
         CASE
-          WHEN CAST(${col} AS VARCHAR) LIKE '(%)'
+          WHEN CAST(${quotedCol} AS VARCHAR) LIKE '(%)'
           THEN '-' || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-            CAST(${col} AS VARCHAR), '(', ''), ')', ''), '$', ''), ',', ''), ' ', ''), '€', '')
+            CAST(${quotedCol} AS VARCHAR), '(', ''), ')', ''), '$', ''), ',', ''), ' ', ''), '€', '')
           ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-            CAST(${col} AS VARCHAR), '$', ''), ',', ''), ' ', ''), '€', ''), '£', ''), '¥', ''), '+', '')
+            CAST(${quotedCol} AS VARCHAR), '$', ''), ',', ''), ' ', ''), '€', ''), '£', ''), '¥', ''), '+', '')
         END
         AS DOUBLE
       )
     `
 
-    // Check if batching is needed
+    const samplePredicate = `${quotedCol} IS NOT NULL AND (
+      CAST(${quotedCol} AS VARCHAR) LIKE '%$%' OR
+      CAST(${quotedCol} AS VARCHAR) LIKE '%,%' OR
+      CAST(${quotedCol} AS VARCHAR) LIKE '%€%' OR
+      CAST(${quotedCol} AS VARCHAR) LIKE '%£%' OR
+      CAST(${quotedCol} AS VARCHAR) LIKE '%¥%' OR
+      CAST(${quotedCol} AS VARCHAR) LIKE '(%)'
+    )`
+
     if (ctx.batchMode) {
-      return runBatchedTransform(
-        ctx,
-        // Transform query
-        `SELECT * EXCLUDE (${col}), ${unformatExpr} as ${col}
-         FROM "${tableName}"`,
-        // Sample query (captures before/after for first 1000 affected rows)
-        `SELECT ${col} as before, ${unformatExpr} as after
-         FROM "${tableName}"
-         WHERE ${col} IS NOT NULL AND (
-           CAST(${col} AS VARCHAR) LIKE '%$%' OR
-           CAST(${col} AS VARCHAR) LIKE '%,%' OR
-           CAST(${col} AS VARCHAR) LIKE '%€%' OR
-           CAST(${col} AS VARCHAR) LIKE '%£%' OR
-           CAST(${col} AS VARCHAR) LIKE '%¥%' OR
-           CAST(${col} AS VARCHAR) LIKE '(%)'
-         )`
-      )
+      return runBatchedColumnTransform(ctx, col, unformatExpr, samplePredicate)
     }
 
-    // Original logic for <500k rows
+    // Non-batch mode: use column-ordered SELECT
     const tempTable = `${tableName}_temp_${Date.now()}`
+    const columnOrder = getColumnOrderForTable(ctx)
+    const hasCsId = await tableHasCsId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: unformatExpr }, hasCsId)
 
     try {
-
-      // Create temp table with unformatted currency
-      const sql = `
-        CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
-        SELECT * EXCLUDE (${col}),
-               ${unformatExpr} as ${col}
-        FROM ${quoteTable(tableName)}
-      `
-      await ctx.db.execute(sql)
+      await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 
       // Swap tables
       await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -92,7 +81,6 @@ export class UnformatCurrencyCommand extends Tier3TransformCommand<UnformatCurre
         droppedColumnNames: [],
       }
     } catch (error) {
-      // Cleanup
       try {
         await ctx.db.execute(`DROP TABLE IF EXISTS ${quoteTable(tempTable)}`)
       } catch {
@@ -113,7 +101,6 @@ export class UnformatCurrencyCommand extends Tier3TransformCommand<UnformatCurre
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {
     const col = quoteColumn(this.params.column)
-    // Rows that have currency-like content
     return `${col} IS NOT NULL AND (
       CAST(${col} AS VARCHAR) LIKE '%$%' OR
       CAST(${col} AS VARCHAR) LIKE '%,%' OR
