@@ -15,7 +15,7 @@ export default defineConfig({
     timeout: 10000,
   },
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5174',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -24,21 +24,6 @@ export default defineConfig({
   },
   projects: [
     {
-      name: 'chromium-memory-intensive',
-      use: {
-        ...devices['Desktop Chrome'],
-        launchOptions: {
-          args: [
-            '--js-flags=--max-old-space-size=4096',
-            '--enable-precise-memory-info',
-          ],
-        },
-      },
-      // Limit workers for memory-intensive test files
-      testMatch: /memory-optimization|opfs-persistence/,
-      fullyParallel: false,
-    },
-    {
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
@@ -46,12 +31,11 @@ export default defineConfig({
           args: ['--js-flags=--max-old-space-size=4096'],
         },
       },
-      testIgnore: /memory-optimization|opfs-persistence/,
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
+    command: 'npm run dev -- --port 5174',
+    url: 'http://localhost:5174',
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
   },
