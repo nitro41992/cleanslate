@@ -7,7 +7,6 @@
 
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -15,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
 import { AlertTriangle } from 'lucide-react'
 
 interface ConfirmDiscardDialogProps {
@@ -55,13 +55,21 @@ export function ConfirmDiscardDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
+          <AlertDialogCancel onClick={() => onCancel()}>Cancel</AlertDialogCancel>
+          {/* Using Button instead of AlertDialogAction to prevent race condition.
+              AlertDialogAction auto-closes the dialog, which can trigger onOpenChange(false)
+              and call handleCancel() before handleConfirm() completes.
+              We also stop propagation to prevent AlertDialog from interpreting this as a close event. */}
+          <Button
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onConfirm()
+            }}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
             Discard & Continue
-          </AlertDialogAction>
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

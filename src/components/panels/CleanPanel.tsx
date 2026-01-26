@@ -14,7 +14,6 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -264,12 +263,15 @@ export function CleanPanel() {
             <AlertDialogCancel onClick={handleCancelCastType}>
               Cancel
             </AlertDialogCancel>
-            <AlertDialogAction
+            {/* Using Button instead of AlertDialogAction to prevent race condition.
+                AlertDialogAction auto-closes the dialog, which can trigger onOpenChange(false)
+                before handleConfirmCastType completes. */}
+            <Button
               onClick={handleConfirmCastType}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Apply Anyway
-            </AlertDialogAction>
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

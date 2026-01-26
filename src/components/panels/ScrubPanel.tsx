@@ -20,6 +20,8 @@ import { usePreviewStore } from '@/stores/previewStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { applyObfuscationRules } from '@/lib/obfuscation'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
+import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import type { CommandType } from '@/lib/commands'
 import type { ObfuscationMethod } from '@/types'
 import { toast } from 'sonner'
@@ -42,6 +44,9 @@ export function ScrubPanel() {
   const closePanel = usePreviewStore((s) => s.closePanel)
 
   const { getData } = useDuckDB()
+
+  // Hook for executing commands with confirmation when discarding redo states
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   const {
     tableId,
@@ -122,9 +127,12 @@ export function ScrubPanel() {
     const executor = getCommandExecutor()
     let successCount = 0
     let totalAffected = 0
+    let isFirstCommand = true
 
     try {
       // Execute one command per rule (per-column granularity)
+      // First command uses executeWithConfirmation to check for redo states
+      // Subsequent commands execute directly (user already confirmed)
       for (const rule of supportedRules) {
         const commandType = METHOD_TO_COMMAND[rule.method]
         if (!commandType) continue
@@ -150,7 +158,20 @@ export function ScrubPanel() {
             continue
         }
 
-        const result = await executor.execute(command)
+        // First command: use confirmation dialog if there are redo states
+        // Subsequent commands: execute directly since user already confirmed
+        let result
+        if (isFirstCommand) {
+          result = await executeWithConfirmation(command, tableId)
+          // User cancelled the confirmation dialog
+          if (!result) {
+            setIsProcessing(false)
+            return
+          }
+          isFirstCommand = false
+        } else {
+          result = await executor.execute(command)
+        }
 
         if (result.success) {
           successCount++
@@ -340,6 +361,9 @@ export function ScrubPanel() {
             </>
           )}
         </Button>
+
+        {/* Confirm Discard Undone Operations Dialog */}
+        <ConfirmDiscardDialog {...confirmDialogProps} />
       </div>
     </div>
   )

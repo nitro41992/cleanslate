@@ -22,8 +22,10 @@ import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { validateStack, validateJoin, autoCleanKeys } from '@/lib/combiner-engine'
 import { getTableColumns } from '@/lib/duckdb'
-import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { createCommand } from '@/lib/commands'
 import { isInternalColumn } from '@/lib/commands/utils/column-ordering'
+import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
+import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
 import type { JoinType, TableInfo } from '@/types'
 
@@ -62,6 +64,9 @@ export function CombinePanel() {
     setIsProcessing,
     setError,
   } = useCombinerStore()
+
+  // Hook for executing commands with confirmation when discarding redo states
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   const [selectedTable, setSelectedTable] = useState<string>('')
 
@@ -102,7 +107,7 @@ export function CombinePanel() {
 
     setIsProcessing(true)
     try {
-      // Create and execute command via CommandExecutor
+      // Create and execute command via CommandExecutor with confirmation if discarding redo states
       const command = createCommand('combine:stack', {
         tableId: tableA.id,
         sourceTableA: tableA.name,
@@ -110,10 +115,15 @@ export function CombinePanel() {
         resultTableName: resultTableName.trim(),
       })
 
-      const executor = getCommandExecutor()
-      const result = await executor.execute(command, {
+      const result = await executeWithConfirmation(command, tableA.id, {
         skipAudit: true, // We'll log audit to result table manually
       })
+
+      // User cancelled the confirmation dialog
+      if (!result) {
+        setIsProcessing(false)
+        return
+      }
 
       if (!result.success) {
         throw new Error(result.error || 'Stack operation failed')
@@ -222,7 +232,7 @@ export function CombinePanel() {
 
     setIsProcessing(true)
     try {
-      // Create and execute command via CommandExecutor
+      // Create and execute command via CommandExecutor with confirmation if discarding redo states
       const command = createCommand('combine:join', {
         tableId: leftTable.id,
         leftTableName: leftTable.name,
@@ -232,10 +242,15 @@ export function CombinePanel() {
         resultTableName: resultTableName.trim(),
       })
 
-      const executor = getCommandExecutor()
-      const result = await executor.execute(command, {
+      const result = await executeWithConfirmation(command, leftTable.id, {
         skipAudit: true, // We'll log audit to result table manually
       })
+
+      // User cancelled the confirmation dialog
+      if (!result) {
+        setIsProcessing(false)
+        return
+      }
 
       if (!result.success) {
         throw new Error(result.error || 'Join operation failed')
@@ -570,6 +585,9 @@ export function CombinePanel() {
             )}
           </Button>
         )}
+
+        {/* Confirm Discard Undone Operations Dialog */}
+        <ConfirmDiscardDialog {...confirmDialogProps} />
       </div>
     </Tabs>
   )

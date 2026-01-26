@@ -18,6 +18,8 @@ import { useUIStore } from '@/stores/uiStore'
 import { updateCell } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
+import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import type { TimelineHighlight, ManualEditParams } from '@/types'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
@@ -107,6 +109,9 @@ export function DataGrid({
 
   // Edit store for tracking edits (legacy)
   const recordEdit = useEditStore((s) => s.recordEdit)
+
+  // Hook for executing commands with confirmation when discarding redo states
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   // Track CommandExecutor timeline version for triggering re-renders
   const [executorTimelineVersion, setExecutorTimelineVersion] = useState(0)
@@ -408,7 +413,7 @@ export function DataGrid({
       try {
         console.log('[DATAGRID] Creating edit:cell command...')
 
-        // Create and execute the edit:cell command
+        // Create and execute the edit:cell command with confirmation if discarding redo states
         const command = createCommand('edit:cell', {
           tableId,
           tableName,
@@ -418,10 +423,13 @@ export function DataGrid({
           newValue: newCellValue,
         })
 
-        const executor = getCommandExecutor()
-
         // Execute with skipAudit since we need Type B audit entry (manual edit)
-        const result = await executor.execute(command, { skipAudit: true })
+        const result = await executeWithConfirmation(command, tableId, { skipAudit: true })
+
+        // User cancelled the confirmation dialog
+        if (!result) {
+          return
+        }
 
         if (result.success) {
           console.log('[DATAGRID] Cell edit successful via CommandExecutor')
@@ -468,7 +476,7 @@ export function DataGrid({
         console.error('Failed to update cell:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addManualEditEntry]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addManualEditEntry, executeWithConfirmation]
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights
@@ -581,48 +589,53 @@ export function DataGrid({
   const gridHeight = containerSize.height || 500
 
   return (
-    <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
-      {data.length > 0 && (
-        <DataGridLib
-          ref={gridRef}
-          columns={gridColumns}
-          rows={rowCount}
-          getCellContent={getCellContent}
-          onVisibleRegionChanged={onVisibleRegionChanged}
-          getRowThemeOverride={getRowThemeOverride}
-          onCellClicked={
-            onCellClick
-              ? ([col, row]) => onCellClick(col, row)
-              : undefined
-          }
-          onCellEdited={editable ? onCellEdited : undefined}
-          drawCell={editable ? drawCell : undefined}
-          width={gridWidth}
-          height={gridHeight}
-          smoothScrollX
-          smoothScrollY
-          theme={{
-            bgCell: '#18191c',
-            bgCellMedium: '#28292d',
-            bgHeader: '#1f2024',
-            bgHeaderHasFocus: '#3d3020',
-            bgHeaderHovered: '#252629',
-            textDark: '#e8e6e3',
-            textMedium: '#8b8d93',
-            textLight: '#8b8d93',
-            textHeader: '#e8e6e3',
-            borderColor: '#2d2e33',
-            accentColor: '#e09520',
-            accentFg: '#141517',
-            accentLight: '#3d3020',
-            linkColor: '#e09520',
-            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-            baseFontStyle: '13px',
-            headerFontStyle: '600 13px',
-            editorFontSize: '13px',
-          }}
-        />
-      )}
-    </div>
+    <>
+      <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
+        {data.length > 0 && (
+          <DataGridLib
+            ref={gridRef}
+            columns={gridColumns}
+            rows={rowCount}
+            getCellContent={getCellContent}
+            onVisibleRegionChanged={onVisibleRegionChanged}
+            getRowThemeOverride={getRowThemeOverride}
+            onCellClicked={
+              onCellClick
+                ? ([col, row]) => onCellClick(col, row)
+                : undefined
+            }
+            onCellEdited={editable ? onCellEdited : undefined}
+            drawCell={editable ? drawCell : undefined}
+            width={gridWidth}
+            height={gridHeight}
+            smoothScrollX
+            smoothScrollY
+            theme={{
+              bgCell: '#18191c',
+              bgCellMedium: '#28292d',
+              bgHeader: '#1f2024',
+              bgHeaderHasFocus: '#3d3020',
+              bgHeaderHovered: '#252629',
+              textDark: '#e8e6e3',
+              textMedium: '#8b8d93',
+              textLight: '#8b8d93',
+              textHeader: '#e8e6e3',
+              borderColor: '#2d2e33',
+              accentColor: '#e09520',
+              accentFg: '#141517',
+              accentLight: '#3d3020',
+              linkColor: '#e09520',
+              fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+              baseFontStyle: '13px',
+              headerFontStyle: '600 13px',
+              editorFontSize: '13px',
+            }}
+          />
+        )}
+      </div>
+
+      {/* Confirm Discard Undone Operations Dialog */}
+      {editable && <ConfirmDiscardDialog {...confirmDialogProps} />}
+    </>
   )
 }

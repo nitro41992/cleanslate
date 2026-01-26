@@ -99,6 +99,11 @@ export interface StoreInspector {
    * Get full table info including columnOrder field
    */
   getTableInfo: (tableName: string) => Promise<TableInfo | undefined>
+  /**
+   * Get future states count for undo/redo confirmation testing.
+   * Returns the number of commands that would be discarded if a new action is performed.
+   */
+  getFutureStatesCount: (tableId?: string) => Promise<number>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -132,7 +137,13 @@ export function createStoreInspector(page: Page): StoreInspector {
         async ({ tableName, limit }) => {
           const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<Record<string, unknown>[]>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
           if (!duckdb?.query) throw new Error('DuckDB not available')
-          return duckdb.query(`SELECT * FROM "${tableName}" LIMIT ${limit}`)
+          // ORDER BY _cs_id for deterministic row ordering (matches src/lib/duckdb/index.ts)
+          // Fall back to no ORDER BY if _cs_id doesn't exist (e.g., diff tables)
+          try {
+            return await duckdb.query(`SELECT * FROM "${tableName}" ORDER BY _cs_id LIMIT ${limit}`)
+          } catch {
+            return await duckdb.query(`SELECT * FROM "${tableName}" LIMIT ${limit}`)
+          }
         },
         { tableName, limit }
       )
@@ -313,6 +324,47 @@ export function createStoreInspector(page: Page): StoreInspector {
         const state = store.getState()
         return state.tables.find((t) => t.name === name)
       }, tableName)
+    },
+
+    async getFutureStatesCount(tableId?: string): Promise<number> {
+      return page.evaluate(({ tableId }) => {
+        // Try to get count from CommandExecutor first (primary source)
+        const commandsModule = (window as Window & { __CLEANSLATE_COMMANDS__?: { getCommandExecutor: () => { getFutureStatesCount: (id: string) => number } } }).__CLEANSLATE_COMMANDS__
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+
+        // Get active table ID if not provided
+        let resolvedTableId = tableId
+        if (!resolvedTableId && stores?.tableStore) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const tableState = (stores.tableStore as any).getState()
+          resolvedTableId = tableState?.activeTableId
+        }
+
+        if (!resolvedTableId) return 0
+
+        // Try CommandExecutor first
+        if (commandsModule?.getCommandExecutor) {
+          const executor = commandsModule.getCommandExecutor()
+          if (executor?.getFutureStatesCount) {
+            return executor.getFutureStatesCount(resolvedTableId)
+          }
+        }
+
+        // Fallback to timeline store calculation
+        if (stores?.timelineStore) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const timelineState = (stores.timelineStore as any).getState()
+          const timeline = timelineState?.timelines?.get?.(resolvedTableId)
+          if (timeline) {
+            const current = timeline.currentPosition ?? -1
+            const total = timeline.commands?.length ?? 0
+            // Future states = commands after current position
+            return Math.max(0, total - current - 1)
+          }
+        }
+
+        return 0
+      }, { tableId })
     },
   }
 }

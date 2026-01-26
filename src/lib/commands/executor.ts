@@ -176,6 +176,17 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // CRITICAL: If there are future states (after undo), clear the column version store
+      // before building context. This prevents stale expression chain metadata from causing
+      // "column not found" errors when the snapshot restore removed the __base columns.
+      // The column version store will be rebuilt fresh by the new command if needed.
+      const futureStatesCount = this.getFutureStatesCount(tableId)
+      if (futureStatesCount > 0) {
+        const { clearColumnVersionStore } = await import('./context')
+        clearColumnVersionStore(tableId)
+        console.log(`[Executor] Cleared column version store (discarding ${futureStatesCount} future states)`)
+      }
+
       // Build context
       const ctx = await buildCommandContext(tableId)
 
@@ -829,13 +840,15 @@ export class CommandExecutor implements ICommandExecutor {
     const position = storeTimeline.currentPosition
     const totalCommands = storeTimeline.commands.length
 
-    // If position is at the end (length - 1), no future states
-    // If position is -1 (no commands), no future states
-    if (position < 0 || position >= totalCommands - 1) {
+    // If position is at or past the end, no future states
+    if (position >= totalCommands - 1) {
       return 0
     }
 
     // Commands after position are "undone" and would be discarded
+    // When position = -1 (all commands undone): totalCommands - 1 - (-1) = totalCommands
+    // When position = 0: totalCommands - 1 - 0 = totalCommands - 1
+    // etc.
     return totalCommands - 1 - position
   }
 

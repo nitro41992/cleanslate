@@ -143,6 +143,14 @@ export class TransformationPickerPage {
   }
 
   /**
+   * Click the Apply button without waiting for completion.
+   * Use this when expecting a confirmation dialog to appear.
+   */
+  async clickApply(): Promise<void> {
+    await this.applyButton.click()
+  }
+
+  /**
    * Add and apply a transformation with optional column, params, and select params.
    * This is the main convenience method for tests.
    */

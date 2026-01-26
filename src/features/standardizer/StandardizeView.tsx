@@ -19,7 +19,9 @@ import { ClusterProgress } from './components/ClusterProgress'
 import { useTableStore } from '@/stores/tableStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useStandardizer } from '@/hooks/useStandardizer'
-import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { createCommand } from '@/lib/commands'
+import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
+import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
 import { useState } from 'react'
 
@@ -67,6 +69,9 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   } = useStandardizerStore()
 
   const { startClustering, cancelClustering } = useStandardizer()
+
+  // Hook for executing commands with confirmation when discarding redo states
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
@@ -135,10 +140,14 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
         mappings,
       })
 
-      // Execute via CommandExecutor
+      // Execute via CommandExecutor with confirmation if discarding redo states
       // Executor handles: snapshot creation, execution, audit logging, timeline recording
-      const executor = getCommandExecutor()
-      const result = await executor.execute(command)
+      const result = await executeWithConfirmation(command, tableId)
+
+      // User cancelled the confirmation dialog
+      if (!result) {
+        return
+      }
 
       if (result.success) {
         const rowsAffected = result.executionResult?.affected || 0
@@ -378,6 +387,9 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Confirm Discard Undone Operations Dialog */}
+      <ConfirmDiscardDialog {...confirmDialogProps} />
     </div>
   )
 }

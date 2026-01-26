@@ -78,6 +78,8 @@ export function useExecuteWithConfirmation(): UseExecuteWithConfirmationResult {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [futureCount, setFutureCount] = useState(0)
   const pendingRef = useRef<PendingExecution | null>(null)
+  // Track if we're intentionally closing dialog (vs user pressing Escape)
+  const isIntentionalCloseRef = useRef(false)
 
   const getFutureStatesCount = useCallback((tableId: string): number => {
     const executor = getCommandExecutor()
@@ -109,10 +111,24 @@ export function useExecuteWithConfirmation(): UseExecuteWithConfirmationResult {
     const pending = pendingRef.current
     if (pending) {
       const executor = getCommandExecutor()
-      executor.execute(pending.command, pending.options).then(pending.resolve)
+      // Mark as intentional close to prevent handleOpenChange from calling cancel
+      isIntentionalCloseRef.current = true
       pendingRef.current = null
+      setDialogOpen(false)
+      executor
+        .execute(pending.command, pending.options)
+        .then(pending.resolve)
+        .catch((error) => {
+          // Resolve with error result instead of rejecting
+          pending.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+    } else {
+      isIntentionalCloseRef.current = true
+      setDialogOpen(false)
     }
-    setDialogOpen(false)
   }, [])
 
   const handleCancel = useCallback(() => {
@@ -121,13 +137,19 @@ export function useExecuteWithConfirmation(): UseExecuteWithConfirmationResult {
       pending.resolve(undefined)
       pendingRef.current = null
     }
+    isIntentionalCloseRef.current = true
     setDialogOpen(false)
   }, [])
 
   const handleOpenChange = useCallback((open: boolean) => {
     if (!open) {
-      // Dialog was closed (e.g., by pressing Escape)
-      handleCancel()
+      // Only call cancel if dialog was closed externally (e.g., Escape key)
+      // not when we intentionally closed it from handleConfirm or handleCancel
+      if (!isIntentionalCloseRef.current) {
+        handleCancel()
+      }
+      // Reset the flag for next time
+      isIntentionalCloseRef.current = false
     }
   }, [handleCancel])
 

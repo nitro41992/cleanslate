@@ -24,7 +24,9 @@ import { useTableStore } from '@/stores/tableStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useFuzzyMatcher } from '@/hooks/useFuzzyMatcher'
-import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { createCommand } from '@/lib/commands'
+import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
+import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
 
 interface MatchViewProps {
@@ -85,6 +87,9 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   const { startMatching, cancelMatching } = useFuzzyMatcher()
   const cancelMatchingRef = useRef(cancelMatching)
   cancelMatchingRef.current = cancelMatching
+
+  // Hook for executing commands with confirmation when discarding redo states
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   // Confirmation dialog state
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
@@ -272,10 +277,14 @@ export function MatchView({ open, onClose }: MatchViewProps) {
         pairs,
       })
 
-      // Execute via CommandExecutor
+      // Execute via CommandExecutor with confirmation if discarding redo states
       // Executor handles: snapshot creation, execution, audit logging, timeline recording
-      const executor = getCommandExecutor()
-      const result = await executor.execute(command)
+      const result = await executeWithConfirmation(command, tableId)
+
+      // User cancelled the confirmation dialog
+      if (!result) {
+        return
+      }
 
       if (result.success) {
         const deletedCount = result.executionResult?.affected || 0
@@ -662,6 +671,9 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Confirm Discard Undone Operations Dialog */}
+      <ConfirmDiscardDialog {...confirmDialogProps} />
     </div>
   )
 }
