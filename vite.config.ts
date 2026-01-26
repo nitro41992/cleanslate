@@ -9,14 +9,16 @@ function crossOriginIsolation(): Plugin {
   return {
     name: 'cross-origin-isolation',
     configureServer(server) {
-      server.middlewares.use((_req, res, next) => {
+      console.log('[Vite Plugin] Cross-origin isolation middleware registered')
+      server.middlewares.use((req, res, next) => {
+        console.log('[COOP/COEP] Setting headers for:', req.url)
         res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
         res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
         next()
       })
     },
     configurePreviewServer(server) {
-      server.middlewares.use((_req, res, next) => {
+      server.middlewares.use((req, res, next) => {
         res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
         res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
         next()
