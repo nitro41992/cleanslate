@@ -16,6 +16,7 @@
  */
 
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
+import { LARGE_DATASET_THRESHOLD } from '@/lib/constants'
 
 export interface BatchExecuteOptions {
   /**
@@ -37,8 +38,8 @@ export interface BatchExecuteOptions {
   selectQuery: string
 
   /**
-   * Batch size (default: 50000 rows)
-   * Proven threshold from audit-capture.ts
+   * Batch size (default: LARGE_DATASET_THRESHOLD from constants.ts)
+   * Aligns with timeline snapshot threshold for consistent behavior.
    */
   batchSize?: number
 
@@ -83,9 +84,22 @@ export async function batchExecute(
     sourceTable,
     stagingTable,
     selectQuery,
-    batchSize = 50000,
+    batchSize = LARGE_DATASET_THRESHOLD,
     onProgress,
   } = options
+
+  // CRITICAL: Ensure deterministic ordering for LIMIT/OFFSET pagination
+  // Without ORDER BY, SQL doesn't guarantee consistent row ordering between batches,
+  // which can cause rows to be duplicated or skipped.
+  // We use _cs_id as the ordering column since all CleanSlate tables have it.
+  const hasOrderBy = /\bORDER\s+BY\b/i.test(selectQuery)
+  const orderedQuery = hasOrderBy
+    ? selectQuery
+    : `${selectQuery} ORDER BY "_cs_id" ASC`
+
+  if (!hasOrderBy) {
+    console.log('[BatchExecutor] Added ORDER BY "_cs_id" for deterministic batching')
+  }
 
   // Get total row count from source table
   const countResult = await conn.query(`SELECT COUNT(*) as total FROM "${sourceTable}"`)
@@ -94,7 +108,7 @@ export async function batchExecute(
   if (totalRows === 0) {
     // Empty table - create empty staging table with same schema
     await conn.query(`DROP TABLE IF EXISTS "${stagingTable}"`)
-    await conn.query(`CREATE TABLE "${stagingTable}" AS ${selectQuery} LIMIT 0`)
+    await conn.query(`CREATE TABLE "${stagingTable}" AS ${orderedQuery} LIMIT 0`)
     return { rowsProcessed: 0, batches: 0, stagingTable }
   }
 
@@ -104,7 +118,7 @@ export async function batchExecute(
   let processed = 0
   let batchNum = 0
 
-  // Batch loop using LIMIT/OFFSET
+  // Batch loop using LIMIT/OFFSET with deterministic ordering
   while (processed < totalRows) {
     const remaining = totalRows - processed
     const currentBatchSize = Math.min(batchSize, remaining)
@@ -113,14 +127,14 @@ export async function batchExecute(
       // First batch: CREATE TABLE AS SELECT
       await conn.query(`
         CREATE TABLE "${stagingTable}" AS
-        ${selectQuery}
+        ${orderedQuery}
         LIMIT ${currentBatchSize} OFFSET ${processed}
       `)
     } else {
       // Subsequent batches: INSERT INTO SELECT
       await conn.query(`
         INSERT INTO "${stagingTable}"
-        ${selectQuery}
+        ${orderedQuery}
         LIMIT ${currentBatchSize} OFFSET ${processed}
       `)
     }

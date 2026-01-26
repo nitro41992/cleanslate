@@ -450,7 +450,20 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
   - `TableSelector.tsx` - uses getAuditEntriesForTable directly
 - Audit log now automatically updates on undo/redo (no drift bug)
 
-### Remaining Steps
+#### Step 2: Fix Batch Execution Determinism ✅
+- Updated `batch-executor.ts` to ensure ORDER BY in selectQuery
+- Checks if selectQuery contains ORDER BY, appends `ORDER BY "_cs_id" ASC` if not
+- Prevents row duplication/skipping during LIMIT/OFFSET pagination
+
+#### Step 3: Align Thresholds ✅
+- Created `src/lib/constants.ts` with shared `LARGE_DATASET_THRESHOLD = 50_000`
+- Updated `batch-executor.ts` to use `LARGE_DATASET_THRESHOLD` for batchSize default
+- Updated `timeline-engine.ts` to use `LARGE_DATASET_THRESHOLD` for Parquet threshold
+- Now a 75k row table will consistently use both:
+  - Batch execution (50k batches)
+  - Parquet snapshots (≥50k threshold)
+
+### Remaining Steps (None)
 
 ### Large File Risk Mitigations (Noted for future work)
 

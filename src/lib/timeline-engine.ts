@@ -37,6 +37,7 @@ import type {
   ColumnInfo,
   TableTimeline,
 } from '@/types'
+import { LARGE_DATASET_THRESHOLD } from '@/lib/constants'
 
 /**
  * Mutex to prevent concurrent timeline initialization for the same tableId.
@@ -51,10 +52,11 @@ import type {
 const initializationInFlight = new Map<string, Promise<string>>()
 
 /**
- * Threshold for using Parquet storage for original snapshots
- * Tables with ≥100k rows use OPFS Parquet, smaller tables use in-memory duplicates
+ * Threshold for using Parquet storage for original snapshots.
+ * Uses LARGE_DATASET_THRESHOLD to align with batch execution settings.
+ * Tables with ≥50k rows use OPFS Parquet, smaller tables use in-memory duplicates.
  */
-const ORIGINAL_SNAPSHOT_THRESHOLD = 100_000
+const ORIGINAL_SNAPSHOT_THRESHOLD = LARGE_DATASET_THRESHOLD
 
 /**
  * Naming convention for timeline snapshots
