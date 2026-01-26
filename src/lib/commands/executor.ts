@@ -35,6 +35,7 @@ import {
   type DiffViewConfig,
 } from './diff-views'
 import { updateColumnOrder } from './utils/column-ordering'
+import { extractCustomParams, validateParamSync } from './utils/param-extraction'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
@@ -1266,7 +1267,20 @@ export class CommandExecutor implements ICommandExecutor {
   }
 
   /**
-   * Sync command execution to legacy timelineStore for UI integration
+   * Sync command execution to legacy timelineStore for UI integration.
+   *
+   * CRITICAL: This method bridges the executor's command system with the
+   * timeline replay system. Parameters MUST be properly structured:
+   *
+   * - Base params (tableId, column) are extracted separately
+   * - Custom params (length, delimiter, etc.) are nested in params.params
+   *
+   * The timeline-engine.ts `applyTransformCommand` reads params.params
+   * to replay commands. If custom params are not properly nested, replay
+   * will use default values instead of the original user-specified values.
+   *
+   * @see extractCustomParams for the extraction logic
+   * @see validateParamSync for development-mode validation
    */
   private syncExecuteToTimelineStore(
     tableId: string,
@@ -1313,16 +1327,24 @@ export class CommandExecutor implements ICommandExecutor {
         newValue: editParams.newValue,
       } as import('@/types').ManualEditParams
     } else {
-      // Extract custom params (excluding tableId and column) for nested params property
+      // Extract custom params (excluding tableId, column, tableName) for nested params property
+      // Uses extractCustomParams for type-safe extraction and consistent handling
       // This is critical for transformations like pad_zeros which have custom params (e.g., length)
-      const { tableId: _tableId, column: _column, ...customParams } = command.params as Record<string, unknown>
+      const customParams = extractCustomParams(command.params as { tableId: string; column?: string } & Record<string, unknown>)
 
       timelineParams = {
         type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
         transformationType: command.type.replace('transform:', '').replace('scrub:', '').replace('edit:', ''),
         column,
-        params: customParams, // CRITICAL FIX: Nest custom params properly (length, delimiter, etc.)
+        params: customParams, // CRITICAL: Nest custom params properly (length, delimiter, etc.)
       } as import('@/types').TimelineParams
+
+      // Development-mode validation to catch param sync bugs early
+      validateParamSync(
+        command.params as Record<string, unknown>,
+        timelineParams as { params?: Record<string, unknown> },
+        command.type
+      )
     }
 
     // Extract cell changes for highlighting (manual edits, batch edits)

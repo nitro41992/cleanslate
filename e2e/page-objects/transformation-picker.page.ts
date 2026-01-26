@@ -41,8 +41,15 @@ export class TransformationPickerPage {
       const isExpanded = await categoryButton.getAttribute('data-state').then(state => state === 'open').catch(() => false)
       if (!isExpanded) {
         await categoryButton.click()
-        // Wait for submenu to appear
-        await this.page.waitForTimeout(300)
+        // Wait for submenu to appear (state-aware)
+        await categoryButton.getAttribute('data-state').then(async () => {
+          // Wait for the data-state to change to 'open'
+          await this.page.waitForFunction(
+            (selector) => document.querySelector(selector)?.getAttribute('data-state') === 'open',
+            categoryButton.toString(),
+            { timeout: 2000 }
+          ).catch(() => {})
+        }).catch(() => {})
       }
     }
 
@@ -60,8 +67,11 @@ export class TransformationPickerPage {
 
     await transformButton.waitFor({ state: 'visible', timeout: 5000 })
     await transformButton.click()
-    // Wait for transformation form to render
-    await this.page.waitForTimeout(300)
+
+    // Wait for transformation form to render (state-aware: wait for column selector)
+    await this.page.getByTestId('column-selector').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
+      // Some transformations may not have column selector, which is OK
+    })
   }
 
   /**
@@ -123,8 +133,13 @@ export class TransformationPickerPage {
       },
       { timeout: 30000 }
     )
-    // Wait for toast to appear indicating success
-    await this.page.waitForTimeout(300)
+    // Wait for success indicator (toast or button state change) - state-aware
+    // The waitForFunction above already confirms the operation completed
+    // Additional toast check is optional for explicit success verification
+    await this.page.locator('[role="region"][aria-label*="Notifications"] [data-state="open"]')
+      .waitFor({ state: 'visible', timeout: 1000 }).catch(() => {
+        // Toast may not appear for all transformations, which is OK
+      })
   }
 
   /**

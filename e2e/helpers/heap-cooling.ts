@@ -85,11 +85,37 @@ export async function coolHeap(
   // 2. Close panels (releases React component memory)
   if (closePanels) {
     try {
-      // Press Escape multiple times to close any open panels/overlays
-      await page.keyboard.press('Escape')
-      await page.waitForTimeout(100)
-      await page.keyboard.press('Escape')
-      await page.waitForTimeout(100)
+      // Press Escape to close any open panels/overlays (state-aware approach)
+      const panelSelectors = [
+        '[data-testid="panel-clean"]',
+        '[data-testid="panel-combine"]',
+        '[data-testid="panel-scrub"]',
+        '[data-testid="match-view"]',
+        '[data-testid="diff-view"]',
+      ]
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        // Check if any panel is visible
+        let anyPanelVisible = false
+        for (const selector of panelSelectors) {
+          if (await page.locator(selector).isVisible().catch(() => false)) {
+            anyPanelVisible = true
+            break
+          }
+        }
+
+        if (!anyPanelVisible) break
+
+        await page.keyboard.press('Escape')
+
+        // Wait for panels to close (state-aware)
+        for (const selector of panelSelectors) {
+          const panel = page.locator(selector)
+          if (await panel.isVisible().catch(() => false)) {
+            await panel.waitFor({ state: 'hidden', timeout: 500 }).catch(() => {})
+          }
+        }
+      }
     } catch (error) {
       console.warn('[coolHeap] Failed to close panels:', error)
     }
@@ -185,11 +211,37 @@ export async function coolHeap(
  */
 export async function coolHeapLight(page: Page): Promise<void> {
   try {
-    // Close panels via Escape key
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(100)
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(100)
+    // Close panels via Escape key (state-aware approach)
+    const panelSelectors = [
+      '[data-testid="panel-clean"]',
+      '[data-testid="panel-combine"]',
+      '[data-testid="panel-scrub"]',
+      '[data-testid="match-view"]',
+      '[data-testid="diff-view"]',
+    ]
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Check if any panel is visible
+      let anyPanelVisible = false
+      for (const selector of panelSelectors) {
+        if (await page.locator(selector).isVisible().catch(() => false)) {
+          anyPanelVisible = true
+          break
+        }
+      }
+
+      if (!anyPanelVisible) break
+
+      await page.keyboard.press('Escape')
+
+      // Wait for panels to close (state-aware)
+      for (const selector of panelSelectors) {
+        const panel = page.locator(selector)
+        if (await panel.isVisible().catch(() => false)) {
+          await panel.waitFor({ state: 'hidden', timeout: 500 }).catch(() => {})
+        }
+      }
+    }
   } catch (error) {
     console.warn('[coolHeapLight] Failed to close panels:', error)
   }

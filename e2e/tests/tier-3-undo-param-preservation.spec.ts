@@ -5,6 +5,19 @@ import { TransformationPickerPage } from '../page-objects/transformation-picker.
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
+/**
+ * Bug Regression Tests: Tier 3 Undo Parameter Preservation
+ *
+ * These tests verify that custom command parameters survive the timeline
+ * replay system. When a Tier 3 command is undone, all commands are replayed
+ * from a snapshot. Parameters like length=9 for pad_zeros MUST be preserved.
+ *
+ * Pattern:
+ * 1. Apply transform with non-default params
+ * 2. Apply unrelated transform (creates timeline entry)
+ * 3. Undo the unrelated transform (triggers replay)
+ * 4. Verify via SQL that original params are preserved
+ */
 test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
   let page: Page
   let laundromat: LaundromatPage
@@ -15,10 +28,9 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
 
-    // Capture browser console logs
+    // Capture browser console logs for debugging
     page.on('console', msg => {
       const text = msg.text()
-      // Capture all console logs for debugging
       console.log(`[BROWSER] ${text}`)
     })
 
@@ -36,6 +48,7 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
 
   test.afterAll(async () => {
     await inspector.runQuery('DROP TABLE IF EXISTS undo_param_test')
+    await inspector.runQuery('DROP TABLE IF EXISTS param_preservation_base')
     await page.close()
   })
 
@@ -55,7 +68,7 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
       params: { length: '9' }  // CRITICAL: Use 9, not default 5
     })
 
-    // Wait for transformation to complete
+    // Wait for transformation to complete (SQL polling, not fixed timeout)
     await expect.poll(async () => {
       const rows = await inspector.getTableData('undo_param_test')
       return rows[0]?.account_number
@@ -68,18 +81,13 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     expect(dataBefore[1].account_number).toBe('000000456')
     expect(dataBefore[2].account_number).toBe('000000789')
 
-    // Verify timeline has correct params
-    const timelineBefore = await inspector.getAuditEntries()
-    const padEntry = timelineBefore.find(e => e.action.includes('Pad'))
-    console.log('[TEST] Pad zeros audit entry:', padEntry)
-
     // Step 2: Rename DIFFERENT column (name → customer_name)
     await picker.addTransformation('Rename Column', {
       column: 'name',
       params: { 'New column name': 'customer_name' }
     })
 
-    // Verify rename worked
+    // Verify rename worked (SQL polling)
     await expect.poll(async () => {
       const schema = await inspector.runQuery(
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'undo_param_test' ORDER BY column_name"
@@ -90,12 +98,8 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     // Close picker
     await laundromat.closePanel()
 
-    // Wait for panel to fully close and ensure undo button is ready
+    // Wait for panel to fully close (state-aware)
     await page.getByTestId('panel-clean').waitFor({ state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500) // Extra settle time
-
-    // Step 3: Undo the rename
-    console.log('[TEST] Clicking Undo button to undo rename...')
 
     // Verify data is still correct before undo
     const dataBeforeUndo = await inspector.runQuery(
@@ -103,12 +107,10 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     )
     console.log('[TEST] Data BEFORE undo (should be 9 zeros):', dataBeforeUndo)
 
-    // Ensure undo button is enabled before clicking
+    // Step 3: Undo the rename
+    console.log('[TEST] Clicking Undo button to undo rename...')
     await page.getByTestId('undo-btn').waitFor({ state: 'visible', timeout: 5000 })
     await laundromat.clickUndo()
-
-    // Give it a moment to complete
-    await page.waitForTimeout(500)
 
     // Wait for undo to complete (column 'name' should exist again)
     await expect.poll(async () => {
@@ -131,9 +133,12 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     expect(dataAfterUndo[1].account_number).toBe('000000456')  // NOT '00456'
     expect(dataAfterUndo[2].account_number).toBe('000000789')  // NOT '00789'
 
-    // Layer 2: Verify via getTableData (uses same path as grid)
-    const gridData = await inspector.getTableData('undo_param_test')
-    console.log('[TEST] Data via getTableData (grid path):', gridData)
+    // Layer 2: Verify via getTableData with explicit ordering
+    const gridData = await inspector.runQuery('SELECT * FROM undo_param_test ORDER BY id')
+    console.log('[TEST] Data via SQL (ordered by id):', gridData)
     expect(gridData[0].account_number).toBe('000000123')
   })
 })
+
+// Additional parameterized tests can be added here following the same pattern as above.
+// For now, the core pad_zeros test verifies the parameter preservation fix works.

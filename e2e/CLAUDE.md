@@ -175,3 +175,59 @@ Located in `fixtures/csv/`:
 - [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`?
 - [ ] **Timing:** Zero `waitForTimeout` calls?
 - [ ] **Dynamic Data:** UUIDs/Timestamps handled dynamically, not hardcoded?
+
+## 9. Parameter Preservation Testing
+
+Commands with custom parameters (e.g., `pad_zeros` with `length: 9`) must preserve those values through the undo/redo timeline system. Test failures indicate silent data corruption.
+
+### The Replay Trigger Pattern
+
+To verify parameters are preserved, trigger a timeline replay:
+
+1. Apply the target transform with non-default params
+2. Apply an unrelated Tier 3 transform (triggers snapshot)
+3. Undo the Tier 3 transform (triggers replay from snapshot)
+4. Verify the target transform still uses correct params via SQL
+
+```typescript
+// Use SQL polling to verify - DO NOT rely on UI alone
+await expect.poll(async () => {
+  const rows = await inspector.runQuery('SELECT val FROM test_table')
+  return rows.every(r => String(r.val).length === 9)  // Verify padded length
+}, { timeout: 10000 }).toBe(true)
+```
+
+### Test File Location
+
+`e2e/tests/tier-3-undo-param-preservation.spec.ts`
+
+### Helper Functions
+
+Located in `e2e/helpers/param-preservation-helpers.ts`:
+
+```typescript
+// Apply transform and trigger replay via unrelated Tier 3 undo
+await applyAndTriggerReplay(picker, laundromat, inspector, {
+  name: 'Pad Zeros',
+  column: 'id',
+  params: { 'Length': '9' }
+})
+
+// Validate via SQL (primary) and timeline (secondary)
+await validateParamPreservation(inspector, tableId, async () => {
+  const rows = await inspector.runQuery('SELECT id FROM test_table')
+  expect(rows.every(r => String(r.id).length === 9)).toBe(true)
+})
+```
+
+### Commands Requiring Parameter Tests
+
+| Risk Level | Commands |
+|------------|----------|
+| **High** | `split_column`, `combine_columns`, `match:merge` |
+| **Medium** | `replace`, `pad_zeros`, `cast_type`, `mask`, `hash` |
+| **Lower** | `replace_empty`, `custom_sql`, `calculate_age`, `fill_down` |
+
+### Key Rule
+
+**Always validate via SQL query, not just UI inspection.** The database is the source of truth.

@@ -126,12 +126,67 @@ Any action that changes data state MUST be a Command implementing the `Command` 
 - **UI State:** Lives in Zustand stores (`isLoading`, `selectedColumn`, `previewRows`)
 - **Anti-Pattern:** Loading 100k rows into a Zustand store array
 
-### Code Review Checklist
+### 5.5 Dual-Timeline Parameter Contract
+
+Commands flow through two timeline systems that MUST stay synchronized:
+
+```
+CommandExecutor.execute()
+        ↓
+syncExecuteToTimelineStore()  ← Params MUST be properly nested here
+        ↓
+timelineStore.appendCommand()
+        ↓
+timeline-engine.applyTransformCommand()  ← Reads params.params for replay
+```
+
+**The Problem:** Commands have params like `{ tableId, column, length, delimiter }`. When syncing to `timelineStore`, custom params (`length`, `delimiter`) must be nested in `params.params` for replay to work correctly.
+
+**The Solution:** Use `extractCustomParams()` from `src/lib/commands/utils/param-extraction.ts`:
+
+```typescript
+import { extractCustomParams } from './utils/param-extraction'
+
+// In syncExecuteToTimelineStore:
+const customParams = extractCustomParams(command.params)
+
+timelineParams = {
+  type: 'transform',
+  transformationType: '...',
+  column,
+  params: customParams,  // CRITICAL: Nested for replay
+}
+```
+
+**Vulnerable Commands:** Commands with custom parameters that can lose values on replay:
+
+| Risk | Commands | Custom Params |
+|------|----------|---------------|
+| High | `split_column`, `combine_columns`, `match:merge` | delimiter, newColumnName, pairs |
+| Medium | `replace`, `pad_zeros`, `cast_type`, `mask`, `hash` | find/replace, length, targetType |
+| Lower | `replace_empty`, `custom_sql`, `calculate_age`, `fill_down` | replacement, sql, referenceDate |
+
+### 5.6 New Command Checklist
+
+When adding a new command with custom parameters:
+
+1. **Define params interface** in command file with explicit types
+2. **Use `extractCustomParams()`** in executor if command has non-base params
+3. **Verify replay** works by running:
+   - Apply transform with non-default params
+   - Apply unrelated Tier 3 transform
+   - Undo the Tier 3 transform
+   - Verify original transform still uses correct params
+4. **Add E2E test** in `tier-3-undo-param-preservation.spec.ts`
+5. **Update `COMMANDS_WITH_CUSTOM_PARAMS`** in `param-extraction.ts`
+
+### 5.7 Code Review Checklist
 
 - [ ] No new logic in `transformations.ts`?
 - [ ] Data mutation = Command?
 - [ ] Dependencies flow downward only?
 - [ ] Regression test included?
+- [ ] **Custom params preserved?** (If command has non-base params, verify they're in `COMMANDS_WITH_CUSTOM_PARAMS` and tested)
 
 ## 6. E2E Testing Guidelines
 

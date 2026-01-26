@@ -77,14 +77,16 @@ export class MatchViewPage {
     await expect(button).toBeVisible()
     await expect(button).toBeEnabled()
 
-    // Scroll into view
+    // Scroll into view and wait for scroll to complete (state-aware)
     await button.scrollIntoViewIfNeeded()
-    await this.page.waitForTimeout(300)
+    await expect(button).toBeInViewport()
 
-    // Try clicking the button
+    // Click the button with hover (state-aware preparation)
     await button.hover()
-    await this.page.waitForTimeout(200)
+    await expect(button).toBeVisible() // Ensure still visible after hover
     await button.click()
+
+    // Wait for matching to start (intentionally longer wait for fuzzy matching operation)
     await this.page.waitForTimeout(2000)
 
     // Check if matching started by looking for progress indicator or button text change
@@ -189,9 +191,8 @@ export class MatchViewPage {
    * Click the merge button for a specific pair (0-indexed)
    */
   async mergePair(index: number): Promise<void> {
-    // Wait for the match view to be stable
+    // Wait for the match view to be stable (state-aware)
     await expect(this.container).toBeVisible()
-    await this.page.waitForTimeout(200)
 
     // Locate pair rows by finding elements that contain "% Similar" text
     // This ensures we're targeting the actual pair rows, not strategy options
@@ -210,9 +211,8 @@ export class MatchViewPage {
    * Click the keep separate button for a specific pair (0-indexed)
    */
   async keepSeparatePair(index: number): Promise<void> {
-    // Wait for the match view to be stable
+    // Wait for the match view to be stable (state-aware)
     await expect(this.container).toBeVisible()
-    await this.page.waitForTimeout(200)
 
     // Locate pair rows by finding elements that contain "% Similar" text
     const pairRows = this.page.locator('[data-testid="match-view"]').locator('text=/\\d+% Similar/').locator('..')

@@ -56,36 +56,33 @@ export class LaundromatPage {
 
   /**
    * Dismiss any visible toast notifications or dialogs that might block UI interactions.
+   * Uses state-aware dismissal instead of fixed waits for CI reliability.
    */
   async dismissOverlays(): Promise<void> {
-    // Wait a moment for overlays to appear
-    await this.page.waitForTimeout(200)
-
-    // Check if any dialog overlay is visible and close it
+    // Dialog overlay selector (Radix UI pattern)
     const dialogOverlay = this.page.locator('[data-state="open"][aria-hidden="true"]')
+    // Toast region selector
     const toastRegion = this.page.locator('[role="region"][aria-label*="Notifications"]')
 
-    // Press Escape multiple times to close any stacked dialogs/toasts
-    for (let i = 0; i < 3; i++) {
+    // State-aware dismissal: only press Escape if overlays are visible
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const dialogVisible = await dialogOverlay.first().isVisible().catch(() => false)
+      const toastVisible = await toastRegion.first().isVisible().catch(() => false)
+
+      if (!dialogVisible && !toastVisible) {
+        break // No overlays to dismiss
+      }
+
       await this.page.keyboard.press('Escape')
-      await this.page.waitForTimeout(100)
-    }
 
-    // Wait for overlay to be hidden if it exists
-    try {
-      await dialogOverlay.waitFor({ state: 'hidden', timeout: 1000 })
-    } catch {
-      // Ignore if no overlay found
+      // Wait for overlay to be hidden (state-aware, not fixed timeout)
+      if (dialogVisible) {
+        await dialogOverlay.first().waitFor({ state: 'hidden', timeout: 1000 }).catch(() => {})
+      }
+      if (toastVisible) {
+        await toastRegion.first().waitFor({ state: 'hidden', timeout: 500 }).catch(() => {})
+      }
     }
-
-    // Wait for toast to be hidden if it exists
-    try {
-      await toastRegion.waitFor({ state: 'hidden', timeout: 500 })
-    } catch {
-      // Ignore if no toast region found
-    }
-
-    await this.page.waitForTimeout(100)
   }
 
   async clickUndo(): Promise<void> {
@@ -113,20 +110,19 @@ export class LaundromatPage {
       return
     }
 
-    // Try clicking the toggle button with retries
+    // Try clicking the toggle button with retries (state-aware waits)
     for (let attempt = 0; attempt < 3; attempt++) {
       await toggleBtn.click({ force: true })
-      await this.page.waitForTimeout(500)
 
-      // Check if sidebar opened
-      const opened = await sidebar.isVisible().catch(() => false)
-      if (opened) {
-        break
+      // Wait for sidebar to become visible (state-aware, not fixed timeout)
+      try {
+        await sidebar.waitFor({ state: 'visible', timeout: 1500 })
+        break // Success
+      } catch {
+        // Sidebar didn't open, dismiss overlays and retry
+        await this.page.keyboard.press('Escape')
+        await this.dismissOverlays()
       }
-
-      // If not opened, dismiss overlays and retry
-      await this.page.keyboard.press('Escape')
-      await this.page.waitForTimeout(300)
     }
 
     await sidebar.waitFor({ state: 'visible', timeout: 15000 })
@@ -269,6 +265,24 @@ export class LaundromatPage {
    */
   async closePanel(): Promise<void> {
     await this.page.keyboard.press('Escape')
-    await this.page.waitForTimeout(200)
+
+    // Wait for panels to close (state-aware, not fixed timeout)
+    // Check for common panel test IDs
+    const panelLocators = [
+      this.page.getByTestId('panel-clean'),
+      this.page.getByTestId('panel-combine'),
+      this.page.getByTestId('panel-scrub'),
+      this.page.getByTestId('match-view'),
+      this.page.getByTestId('diff-view'),
+    ]
+
+    // Wait for any visible panel to close (with short timeout per panel)
+    for (const panel of panelLocators) {
+      const isVisible = await panel.isVisible().catch(() => false)
+      if (isVisible) {
+        await panel.waitFor({ state: 'hidden', timeout: 1000 }).catch(() => {})
+        break // Only one panel should be open at a time
+      }
+    }
   }
 }
