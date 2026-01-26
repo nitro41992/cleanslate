@@ -1269,10 +1269,15 @@ export class CommandExecutor implements ICommandExecutor {
         newValue: editParams.newValue,
       } as import('@/types').ManualEditParams
     } else {
+      // Extract custom params (excluding tableId and column) for nested params property
+      // This is critical for transformations like pad_zeros which have custom params (e.g., length)
+      const { tableId: _tableId, column: _column, ...customParams } = command.params as Record<string, unknown>
+
       timelineParams = {
         type: legacyCommandType === 'transform' ? 'transform' : legacyCommandType,
         transformationType: command.type.replace('transform:', '').replace('scrub:', '').replace('edit:', ''),
         column,
+        params: customParams, // CRITICAL FIX: Nest custom params properly (length, delimiter, etc.)
       } as import('@/types').TimelineParams
     }
 
