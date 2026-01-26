@@ -86,7 +86,16 @@ export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
 
   // 3. Open with OPFS or in-memory based on browser capabilities
   try {
-    if (caps.hasOPFS && caps.supportsAccessHandle) {
+    // TEMPORARY: Force OPFS mode if crossOriginIsolated is true, even if detection fails
+    const forceOPFS = caps.hasOPFS && (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated)
+    console.log('[DuckDB] OPFS check:', {
+      hasOPFS: caps.hasOPFS,
+      supportsAccessHandle: caps.supportsAccessHandle,
+      crossOriginIsolated: typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : 'undefined',
+      forceOPFS
+    })
+
+    if (caps.hasOPFS && (caps.supportsAccessHandle || forceOPFS)) {
       // Chrome/Edge/Safari: OPFS-backed persistent storage
       try {
         await db.open({

@@ -48,8 +48,26 @@ export async function detectBrowserCapabilities(): Promise<BrowserCapabilities> 
       // Check for FileSystemFileHandle.createSyncAccessHandle
       // This is required for DuckDB-WASM's OPFS backend
       // Chrome/Edge/Safari have it, Firefox does not
+
+      // TEMPORARY DEBUG: Try to actually create a file handle and test it
       if (typeof FileSystemFileHandle !== 'undefined') {
-        supportsAccessHandle = 'createSyncAccessHandle' in FileSystemFileHandle.prototype
+        const prototypeCheck = 'createSyncAccessHandle' in FileSystemFileHandle.prototype
+        console.log('[Browser Detection] Prototype check:', prototypeCheck)
+
+        // Try actually getting a file handle to test
+        try {
+          const root = await navigator.storage.getDirectory()
+          const testHandle = await root.getFileHandle('_duckdb_test.txt', { create: true })
+          const actualCheck = 'createSyncAccessHandle' in testHandle
+          console.log('[Browser Detection] Actual file handle check:', actualCheck)
+          await root.removeEntry('_duckdb_test.txt')
+
+          // Use the actual check instead of prototype check
+          supportsAccessHandle = actualCheck
+        } catch (testErr) {
+          console.warn('[Browser Detection] Could not test actual file handle:', testErr)
+          supportsAccessHandle = prototypeCheck
+        }
       }
     }
   } catch (err) {
