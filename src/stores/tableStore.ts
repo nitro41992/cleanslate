@@ -59,6 +59,16 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
       tables: [...state.tables, newTable],
       activeTableId: id,
     }))
+
+    // Immediately trigger save for table additions (critical operation)
+    if (typeof window !== 'undefined' && !isRestoringState) {
+      import('@/lib/persistence/state-persistence').then(({ saveAppStateNow }) => {
+        saveAppStateNow().catch(err => {
+          console.error('[TableStore] Failed to save after addTable:', err)
+        })
+      })
+    }
+
     return id
   },
 
@@ -167,6 +177,7 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
 // Persistence: Auto-save state on table changes
 // Import dynamically to avoid circular dependencies
 let isRestoringState = false
+let debouncedSaveInstance: any = null
 
 export function setRestoringState(restoring: boolean) {
   isRestoringState = restoring
@@ -174,28 +185,46 @@ export function setRestoringState(restoring: boolean) {
 
 if (typeof window !== 'undefined') {
   import('@/lib/persistence/debounce').then(({ DebouncedSave }) => {
-    const debouncedSave = new DebouncedSave(500)
+    debouncedSaveInstance = new DebouncedSave(500)
+    console.log('[TableStore] Persistence subscription initialized')
 
     useTableStore.subscribe((state) => {
       // Skip save during state restoration to avoid write cycles
-      if (isRestoringState) return
+      if (isRestoringState) {
+        console.log('[TableStore] Skipping save - restoring state')
+        return
+      }
+
+      console.log('[TableStore] State changed, triggering debounced save:', {
+        tables: state.tables.length,
+        activeTableId: state.activeTableId,
+      })
 
       // Trigger debounced save
-      debouncedSave.trigger(async () => {
-        const { saveAppState } = await import('@/lib/persistence/state-persistence')
-        const { useTimelineStore } = await import('@/stores/timelineStore')
-        const { useUIStore } = await import('@/stores/uiStore')
+      debouncedSaveInstance.trigger(async () => {
+        try {
+          const { saveAppState } = await import('@/lib/persistence/state-persistence')
+          const { useTimelineStore } = await import('@/stores/timelineStore')
+          const { useUIStore } = await import('@/stores/uiStore')
 
-        const timelineState = useTimelineStore.getState()
-        const uiState = useUIStore.getState()
+          const timelineState = useTimelineStore.getState()
+          const uiState = useUIStore.getState()
 
-        await saveAppState(
-          state.tables,
-          state.activeTableId,
-          timelineState.getSerializedTimelines(),
-          uiState.sidebarCollapsed
-        )
+          await saveAppState(
+            state.tables,
+            state.activeTableId,
+            timelineState.getSerializedTimelines(),
+            uiState.sidebarCollapsed
+          )
+        } catch (error) {
+          console.error('[TableStore] Failed to save state:', error)
+        }
       })
     })
+
+    // Note: beforeunload can't wait for async operations in modern browsers
+    // Critical saves (like addTable) are now immediate, so debounce is only for frequent updates
+  }).catch(err => {
+    console.error('[TableStore] Failed to initialize persistence:', err)
   })
 }

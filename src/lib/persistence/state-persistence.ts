@@ -298,3 +298,44 @@ export async function clearAppState(): Promise<void> {
     }
   }
 }
+
+/**
+ * Save current application state immediately (bypasses debounce)
+ * Exported for debugging and manual triggers
+ */
+export async function saveAppStateNow(): Promise<void> {
+  try {
+    // Dynamically import stores to avoid circular dependencies
+    const { useTableStore } = await import('@/stores/tableStore')
+    const { useTimelineStore } = await import('@/stores/timelineStore')
+    const { useUIStore } = await import('@/stores/uiStore')
+
+    const tableState = useTableStore.getState()
+    const timelineState = useTimelineStore.getState()
+    const uiState = useUIStore.getState()
+
+    console.log('[Persistence] Manual save triggered:', {
+      tables: tableState.tables.length,
+      activeTableId: tableState.activeTableId,
+    })
+
+    await saveAppState(
+      tableState.tables,
+      tableState.activeTableId,
+      timelineState.getSerializedTimelines(),
+      uiState.sidebarCollapsed
+    )
+  } catch (error) {
+    console.error('[Persistence] Manual save failed:', error)
+    throw error
+  }
+}
+
+// Expose to window for debugging
+if (typeof window !== 'undefined') {
+  (window as any).__CLEANSLATE_PERSISTENCE__ = {
+    saveNow: saveAppStateNow,
+    clearState: clearAppState,
+    restoreState: restoreAppState,
+  }
+}
