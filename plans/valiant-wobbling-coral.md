@@ -427,13 +427,16 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
 - Kept `dirtyCells` tracking for backward compatibility (deprecated)
 - Added deprecation notices to guide migration to CommandExecutor/timeline
 
-### Deferred Phases
+#### Phase 5b: Simplify CommandExecutor ✅
+- Simplified `executor.undo()` to delegate to `undoTimeline()` from TimelineEngine
+- Simplified `executor.redo()` to delegate to `redoTimeline()` from TimelineEngine
+- Removed ~100 lines of complex tiered undo logic (Tier 1/2/3 switch-case)
+- Removed unused `findNearestSnapshot()` method
+- Removed unused imports (`createColumnVersionManager`, `ColumnVersionStore`, `createCommand`)
+- Kept executor's internal `tableTimelines` position sync for backward compatibility with `canUndo`, `canRedo`, `getDirtyCells`
+- Both keyboard shortcuts (useUnifiedUndo) and programmatic calls (executor.undo/redo) now use TimelineEngine
 
-#### Phase 5b: Simplify CommandExecutor (Deferred)
-- The plan called for removing tiered undo logic from CommandExecutor
-- Current implementation keeps CommandExecutor's existing undo/redo as fallback
-- `useUnifiedUndo` now handles keyboard shortcuts, CommandExecutor handles API calls
-- Future: Consider fully delegating to TimelineEngine
+### Deferred Phases
 
 #### Phase 6: Derive Audit from Timeline (Deferred)
 - Audit log still populated separately via `addAuditEntry()` calls

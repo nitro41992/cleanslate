@@ -27,8 +27,8 @@ import type {
   SnapshotMetadata,
 } from './types'
 import { buildCommandContext, refreshTableContext } from './context'
-import { createColumnVersionManager, type ColumnVersionStore } from './column-versions'
-import { getUndoTier, requiresSnapshot, createCommand, getCommandMetadata } from './registry'
+// Note: Column versioning is now handled by TimelineEngine's Fast Path
+import { getUndoTier, requiresSnapshot, getCommandMetadata } from './registry'
 import {
   createTier1DiffView,
   createTier3DiffView,
@@ -39,8 +39,9 @@ import { extractCustomParams, validateParamSync } from './utils/param-extraction
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
-import { duplicateTable, dropTable, tableExists, getConnection } from '@/lib/duckdb'
+import { duplicateTable, dropTable, tableExists, getConnection, execute as duckExecute } from '@/lib/duckdb'
 import { initDuckDB } from '@/lib/duckdb'
+import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
 import {
   ensureAuditDetailsTable,
   captureTier23RowDetails,
@@ -625,6 +626,13 @@ export class CommandExecutor implements ICommandExecutor {
   /**
    * Undo the last command
    */
+  /**
+   * Undo the last command
+   *
+   * Delegates to TimelineEngine which handles:
+   * - Fast Path: Inverse SQL for manual_edit commands (instant)
+   * - Heavy Path: Snapshot restore + replay for transforms
+   */
   async undo(tableId: string): Promise<ExecutorResult> {
     const timeline = tableTimelines.get(tableId)
     if (!timeline || timeline.position < 0) {
@@ -635,15 +643,7 @@ export class CommandExecutor implements ICommandExecutor {
     }
 
     const commandRecord = timeline.commands[timeline.position]
-    if (!commandRecord) {
-      return {
-        success: false,
-        error: 'No command at current position',
-      }
-    }
-
-    // Check if undo is disabled (snapshot was pruned)
-    if (commandRecord.undoDisabled) {
+    if (commandRecord?.undoDisabled) {
       return {
         success: false,
         error: 'Undo unavailable: History limit reached',
@@ -651,87 +651,35 @@ export class CommandExecutor implements ICommandExecutor {
     }
 
     try {
-      const ctx = await buildCommandContext(tableId)
+      // Delegate to TimelineEngine for smart undo (Fast Path / Heavy Path)
+      const result = await undoTimeline(tableId)
 
-      switch (commandRecord.tier) {
-        case 1:
-          // Tier 1: Column versioning undo OR snapshot if batched
-          if (commandRecord.backupColumn && commandRecord.affectedColumns?.[0]) {
-            const versionStore: ColumnVersionStore = { versions: ctx.columnVersions }
-            const versionManager = createColumnVersionManager(ctx.db, versionStore)
-            const result = await versionManager.undoVersion(
-              ctx.table.name,
-              commandRecord.affectedColumns[0]
-            )
-            if (!result.success) {
-              return { success: false, error: result.error }
-            }
-          } else if (commandRecord.snapshotTable) {
-            // Fallback to snapshot if no backup column (batched execution)
-            // Large batched operations use Parquet cold storage
-            await this.restoreFromSnapshot(ctx.table.name, commandRecord.snapshotTable)
-          } else {
-            return {
-              success: false,
-              error: 'Undo unavailable: No backup column or snapshot found'
-            }
-          }
-          break
-
-        case 2:
-          // Tier 2: Execute inverse SQL
-          if (commandRecord.inverseSql) {
-            await ctx.db.execute(commandRecord.inverseSql)
-          }
-          break
-
-        case 3:
-          // Tier 3: Restore from snapshot
-          if (commandRecord.snapshotTable) {
-            await this.restoreFromSnapshot(ctx.table.name, commandRecord.snapshotTable)
-          } else {
-            // Find nearest snapshot before this position
-            const snapshot = this.findNearestSnapshot(timeline, timeline.position - 1)
-            if (snapshot) {
-              await this.restoreFromSnapshot(ctx.table.name, snapshot)
-              // Replay commands from snapshot position to target position
-              // (For now, just restore and decrement position)
-            }
-          }
-          break
+      if (!result) {
+        return {
+          success: false,
+          error: 'Nothing to undo',
+        }
       }
 
-      // Decrement position
+      // Sync executor's internal timeline position
       timeline.position--
 
       // Drop diff view for the undone command (cleanup orphaned views)
-      // Diff views are created during execute() with stepIndex = position + 1
-      const stepIndex = timeline.position + 1 // Position before decrement
+      const stepIndex = timeline.position + 1
       const diffViewName = `v_diff_step_${tableId}_${stepIndex}`
       try {
-        await ctx.db.execute(`DROP VIEW IF EXISTS "${diffViewName}"`)
+        await duckExecute(`DROP VIEW IF EXISTS "${diffViewName}"`)
         console.log(`[Undo] Dropped diff view: ${diffViewName}`)
       } catch (err) {
         // Non-fatal - diff view may not exist or already dropped
         console.warn(`[Undo] Failed to drop diff view ${diffViewName}:`, err)
       }
 
-      // Sync with legacy timelineStore
-      const timelineStoreState = useTimelineStore.getState()
-      const legacyTimeline = timelineStoreState.getTimeline(tableId)
-      if (legacyTimeline && legacyTimeline.currentPosition >= 0) {
-        timelineStoreState.setPosition(tableId, legacyTimeline.currentPosition - 1)
-      }
-
-      // Restore column order from before the command was executed
-      const columnOrderToRestore = commandRecord.columnOrderBefore
-
-      // Update table store with restored column order
-      const updatedCtx = await refreshTableContext(ctx, undefined, columnOrderToRestore)
+      // Update table store with result from TimelineEngine
       this.updateTableStore(tableId, {
-        rowCount: updatedCtx.table.rowCount,
-        columns: updatedCtx.table.columns,
-        columnOrder: columnOrderToRestore,
+        rowCount: result.rowCount,
+        columns: result.columns,
+        columnOrder: result.columnOrder,
       })
 
       return { success: true }
@@ -745,6 +693,10 @@ export class CommandExecutor implements ICommandExecutor {
 
   /**
    * Redo the next command
+   *
+   * Delegates to TimelineEngine which handles:
+   * - Fast Path: Direct SQL for manual_edit commands (instant)
+   * - Heavy Path: Replay to target position for transforms
    */
   async redo(tableId: string): Promise<ExecutorResult> {
     const timeline = tableTimelines.get(tableId)
@@ -755,70 +707,28 @@ export class CommandExecutor implements ICommandExecutor {
       }
     }
 
-    const nextPosition = timeline.position + 1
-    const commandRecord = timeline.commands[nextPosition]
-    if (!commandRecord) {
-      return {
-        success: false,
-        error: 'No command at next position',
-      }
-    }
-
     try {
-      // Recreate the command from the saved params
-      const command = createCommand(
-        commandRecord.commandType,
-        commandRecord.params
-      )
+      // Delegate to TimelineEngine for smart redo (Fast Path / Heavy Path)
+      const result = await redoTimeline(tableId)
 
-      // Build context
-      const ctx = await buildCommandContext(tableId)
-
-      // Execute the command directly
-      const executionResult = await command.execute(ctx)
-
-      if (!executionResult.success) {
+      if (!result) {
         return {
           success: false,
-          executionResult,
-          error: executionResult.error || 'Redo execution failed',
+          error: 'Nothing to redo',
         }
       }
 
-      // Advance position
-      timeline.position = nextPosition
+      // Sync executor's internal timeline position
+      timeline.position++
 
-      // Sync with legacy timelineStore
-      const timelineStoreState = useTimelineStore.getState()
-      const legacyTimeline = timelineStoreState.getTimeline(tableId)
-      if (legacyTimeline && legacyTimeline.currentPosition < legacyTimeline.commands.length - 1) {
-        timelineStoreState.setPosition(tableId, legacyTimeline.currentPosition + 1)
-      }
-
-      // Calculate new column order after redo (same logic as execute)
-      const tableStore = useTableStore.getState()
-      const currentTable = tableStore.tables.find((t) => t.id === tableId)
-      const currentColumnOrder = currentTable?.columnOrder
-
-      const newColumnOrder = updateColumnOrder(
-        currentColumnOrder,
-        executionResult.newColumnNames || [],
-        executionResult.droppedColumnNames || [],
-        executionResult.renameMappings
-      )
-
-      // Update table store with new column order
-      const updatedCtx = await refreshTableContext(ctx, executionResult.renameMappings, newColumnOrder)
+      // Update table store with result from TimelineEngine
       this.updateTableStore(tableId, {
-        rowCount: updatedCtx.table.rowCount,
-        columns: updatedCtx.table.columns,
-        columnOrder: newColumnOrder,
+        rowCount: result.rowCount,
+        columns: result.columns,
+        columnOrder: result.columnOrder,
       })
 
-      return {
-        success: true,
-        executionResult,
-      }
+      return { success: true }
     } catch (error) {
       return {
         success: false,
@@ -989,18 +899,6 @@ export class CommandExecutor implements ICommandExecutor {
       // Diff view creation is non-critical, don't fail the command
       return undefined
     }
-  }
-
-  private findNearestSnapshot(
-    timeline: TableCommandTimeline,
-    maxPosition: number
-  ): SnapshotMetadata | undefined {
-    // Look for snapshots at or before maxPosition
-    for (let i = maxPosition; i >= 0; i--) {
-      const snapshot = timeline.snapshots.get(i)
-      if (snapshot) return snapshot
-    }
-    return timeline.originalSnapshot
   }
 
   private async recordTimelineCommand(
