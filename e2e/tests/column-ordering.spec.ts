@@ -133,13 +133,13 @@ test.describe('Column Order Preservation', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'email' })
+    await laundromat.closePanel()
 
     // Verify order might be affected after transform (this will show the bug)
     const afterTransform = await inspector.getTableColumns('column_order_test')
     // console.log('After transform:', afterTransform.map(c => c.name))
 
     await laundromat.clickUndo()
-    await page.waitForTimeout(500) // Wait for undo to complete
 
     // Assert: Order restored to original
     const afterUndo = await inspector.getTableColumns('column_order_test')
@@ -156,15 +156,13 @@ test.describe('Column Order Preservation', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await laundromat.closePanel()
 
     const afterTransform = await inspector.getTableColumns('column_order_test')
     const orderAfterTransform = afterTransform.map(c => c.name)
 
     await laundromat.clickUndo()
-    await page.waitForTimeout(500)
-
     await laundromat.clickRedo()
-    await page.waitForTimeout(500)
 
     // Assert: Redo restores the SAME order as after transform (not shuffled again)
     const afterRedo = await inspector.getTableColumns('column_order_test')
@@ -184,16 +182,19 @@ test.describe('Column Order Preservation', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'email' })
+    await laundromat.closePanel()
 
     // 2. Lowercase name
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'name' })
+    await laundromat.closePanel()
 
     // 3. Uppercase status
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'status' })
+    await laundromat.closePanel()
 
     // Assert: Original column order maintained
     const finalColumns = await inspector.getTableColumns('column_order_test')
