@@ -48,6 +48,19 @@ export interface EditDirtyState {
   dirtyCount: number
 }
 
+export interface MatcherStoreState {
+  pairs: Array<{ id: string; status: string }>
+  stats: {
+    total: number
+    merged: number
+    keptSeparate: number
+    pending: number
+    definiteCount: number
+    maybeCount: number
+    notMatchCount: number
+  }
+}
+
 export interface StoreInspector {
   getTables: () => Promise<TableInfo[]>
   getActiveTableId: () => Promise<string | null>
@@ -70,6 +83,10 @@ export interface StoreInspector {
    * Get edit store dirty state
    */
   getEditDirtyState: () => Promise<EditDirtyState>
+  /**
+   * Get matcher store state (pairs count and stats)
+   */
+  getMatcherState: () => Promise<MatcherStoreState>
   /**
    * Get timeline position for undo/redo verification
    */
@@ -258,6 +275,40 @@ export function createStoreInspector(page: Page): StoreInspector {
         return {
           hasDirtyEdits: dirtyCells?.size > 0,
           dirtyCount: dirtyCells?.size || 0,
+        }
+      })
+    },
+
+    async getMatcherState(): Promise<MatcherStoreState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.matcherStore) {
+          return {
+            pairs: [],
+            stats: {
+              total: 0,
+              merged: 0,
+              keptSeparate: 0,
+              pending: 0,
+              definiteCount: 0,
+              maybeCount: 0,
+              notMatchCount: 0,
+            },
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.matcherStore as any).getState()
+        return {
+          pairs: state?.pairs || [],
+          stats: state?.stats || {
+            total: 0,
+            merged: 0,
+            keptSeparate: 0,
+            pending: 0,
+            definiteCount: 0,
+            maybeCount: 0,
+            notMatchCount: 0,
+          },
         }
       })
     },

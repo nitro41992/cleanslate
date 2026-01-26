@@ -511,11 +511,11 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await matchView.waitForPairs()
 
     // Verify pairs are displayed with similarity percentages
-    // Rule 1: Verify expected pairs and names
-    const pairCount = await matchView.getPairCount()
-    expect(pairCount).toBeGreaterThanOrEqual(2) // Expect specific count
+    // Rule 1: Verify expected pairs and names (use store instead of DOM scraping)
+    const matcherState = await inspector.getMatcherState()
+    expect(matcherState.pairs.length).toBeGreaterThanOrEqual(2) // Expect specific count
 
-    // Verify "% Similar" format is displayed
+    // Verify "% Similar" format is displayed in UI
     await expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible()
     // Verify pair contains expected matches
     await expect(page.locator('text=/John/').first()).toBeVisible()
@@ -534,20 +534,20 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await matchView.findDuplicates()
     await matchView.waitForPairs()
 
-    // Get initial stats
-    const initialStats = await matchView.getStats()
-    expect(initialStats.merged).toBe(0)
+    // Get initial stats (use store instead of DOM scraping)
+    const initialState = await inspector.getMatcherState()
+    expect(initialState.stats.merged).toBe(0)
 
     // Mark first pair as merged
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
-      return stats.merged
+      const state = await inspector.getMatcherState()
+      return state.stats.merged
     }, { timeout: 5000 }).toBe(1)
 
     // Verify stats updated
-    const afterMergeStats = await matchView.getStats()
-    expect(afterMergeStats.merged).toBe(1)
+    const afterMergeState = await inspector.getMatcherState()
+    expect(afterMergeState.stats.merged).toBe(1)
 
     // Verify Apply Merges bar is visible
     const hasApplyBar = await matchView.hasApplyMergesBar()
@@ -576,7 +576,8 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     // Mark first pair as merged
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
       return stats.merged
     }, { timeout: 5000 }).toBe(1)
 
@@ -613,7 +614,8 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await matchView.waitForPairs()
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
       return stats.merged
     }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
@@ -723,7 +725,8 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Merge a pair
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
       return stats.merged
     }, { timeout: 5000 }).toBe(1)
 
@@ -796,7 +799,8 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Merge a pair (O'Brien / O'Brian should match)
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
       return stats.merged
     }, { timeout: 5000 }).toBe(1)
 
@@ -836,7 +840,8 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await matchView.waitForPairs()
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
       return stats.merged
     }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
@@ -892,7 +897,8 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await matchView.waitForPairs()
     await matchView.mergePair(0)
     await expect.poll(async () => {
-      const stats = await matchView.getStats()
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
       return stats.merged
     }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()

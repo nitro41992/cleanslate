@@ -174,7 +174,14 @@ export class MatchViewPage {
   }
 
   /**
-   * Get the number of pairs found
+   * Get the number of pairs found (UI verification)
+   *
+   * ⚠️ WARNING: This method uses DOM scraping which is fragile.
+   * For reliable data verification in tests, use:
+   * ```typescript
+   * const matcherState = await inspector.getMatcherState()
+   * expect(matcherState.pairs.length).toBe(expectedCount)
+   * ```
    */
   async getPairCount(): Promise<number> {
     // Count elements with "% Similar" text
@@ -184,7 +191,16 @@ export class MatchViewPage {
   }
 
   /**
-   * Get the stats from the header
+   * Get the stats from the header (UI verification)
+   *
+   * ⚠️ WARNING: This method uses DOM scraping which is fragile.
+   * For reliable data verification in tests, use:
+   * ```typescript
+   * const matcherState = await inspector.getMatcherState()
+   * expect(matcherState.stats.pending).toBe(expectedCount)
+   * expect(matcherState.stats.merged).toBe(expectedCount)
+   * expect(matcherState.stats.keptSeparate).toBe(expectedCount)
+   * ```
    */
   async getStats(): Promise<{ pending: number; merged: number; keptSeparate: number }> {
     await expect(this.container).toBeVisible({ timeout: 5000 })
