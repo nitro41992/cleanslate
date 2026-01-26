@@ -86,8 +86,19 @@ export class MatchViewPage {
     await expect(button).toBeVisible() // Ensure still visible after hover
     await button.click()
 
-    // Wait for matching to start (intentionally longer wait for fuzzy matching operation)
-    await this.page.waitForTimeout(2000)
+    // Wait for matching to start by checking button state or loading indicator
+    await Promise.race([
+      this.page.waitForFunction(
+        () => {
+          const btn = document.querySelector('[data-testid="find-duplicates-btn"]')
+          return btn && (btn.textContent?.includes('Finding') || btn.hasAttribute('disabled'))
+        },
+        { timeout: 5000 }
+      ),
+      this.page.locator('text=/Finding matches/').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+    ]).catch(() => {
+      // Matching may have already started or button may not have changed state
+    })
 
     // Check if matching started by looking for progress indicator or button text change
     const buttonText = await button.textContent().catch(() => '')
@@ -139,7 +150,10 @@ export class MatchViewPage {
       })
 
       // console.log('Direct call returned', Array.isArray(pairs) ? pairs.length : 0, 'pairs')
-      await this.page.waitForTimeout(1000)
+      // Wait for pairs to be visible in the UI
+      await expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 5000 }).catch(() => {
+        // If no pairs visible, that's OK - maybe no duplicates found
+      })
     }
   }
 

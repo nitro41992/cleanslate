@@ -159,50 +159,86 @@ export class LaundromatPage {
    * @param col - 0-indexed column number
    * @param newValue - The new value to enter
    */
+  /**
+   * Edit a cell in the data grid.
+   * Glide Data Grid is canvas-based - uses keyboard navigation for reliability.
+   *
+   * IMPORTANT: Canvas grids require minimal delays between keyboard events for canvas
+   * repainting and event processing. These are NOT arbitrary waits - they're necessary
+   * for the canvas rendering pipeline to complete before the next event is processed.
+   *
+   * @param row - 0-indexed row number
+   * @param col - 0-indexed column number
+   * @param newValue - The new value to enter
+   */
   async editCell(row: number, col: number, newValue: string): Promise<void> {
     // Dismiss any overlays first
     await this.dismissOverlays()
 
-    // Wait for grid to be fully rendered
+    // Wait for grid to be fully rendered and data loaded (semantic wait)
     await this.gridContainer.waitFor({ state: 'visible' })
-    await this.page.waitForTimeout(300)
+    await this.page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.tableStore) return false
+        const state = (stores.tableStore as { getState: () => { isLoading: boolean } }).getState()
+        return state?.isLoading === false
+      },
+      { timeout: 10000 }
+    )
 
-    // Click the grid to focus it
+    // Click the grid to focus it and wait for canvas to be ready for input
     await this.gridContainer.click()
-    await this.page.waitForTimeout(150)
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
-    // Navigate to home position (first cell)
+    // Navigate to home position (first cell) and wait for canvas to update selection
     await this.page.keyboard.press('Control+Home')
-    await this.page.waitForTimeout(150)
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
-    // Navigate to target row
+    // Navigate to target row (canvas needs time to repaint selection after each navigation)
     for (let i = 0; i < row; i++) {
       await this.page.keyboard.press('ArrowDown')
-      await this.page.waitForTimeout(30)
+      // Wait for canvas repaint - one frame is usually enough for arrow key navigation
+      await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
     }
 
-    // Navigate to target column
+    // Navigate to target column (canvas needs time to repaint selection after each navigation)
     for (let i = 0; i < col; i++) {
       await this.page.keyboard.press('ArrowRight')
-      await this.page.waitForTimeout(30)
+      // Wait for canvas repaint - one frame is usually enough for arrow key navigation
+      await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
     }
-    await this.page.waitForTimeout(150)
+
+    // Wait for final canvas repaint after navigation completes
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
     // Enter edit mode - Glide Data Grid uses F2 or just start typing
     await this.page.keyboard.press('F2')
-    await this.page.waitForTimeout(200)
+    // Wait for edit overlay to render (canvas transitions to edit mode)
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
-    // Select all and wait for selection to complete
+    // Select all existing content and wait for selection to complete
     await this.page.keyboard.press('Control+a')
-    await this.page.waitForTimeout(100)
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
 
     // Type new value with slight delay between characters
     await this.page.keyboard.type(newValue, { delay: 20 })
-    await this.page.waitForTimeout(100)
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
 
     // Commit with Enter
     await this.page.keyboard.press('Enter')
-    await this.page.waitForTimeout(300)
+
+    // Wait for the edit command to complete by checking tableStore (semantic wait)
+    await this.page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.tableStore) return false
+        const state = (stores.tableStore as { getState: () => { isLoading: boolean } }).getState()
+        // After edit:cell command completes, isLoading should be false
+        return state?.isLoading === false
+      },
+      { timeout: 5000 }
+    )
   }
 
   // Panel navigation methods for new single-page app architecture
