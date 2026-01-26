@@ -391,6 +391,9 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
 - [x] Audit log always matches timeline position (Phase 6 - completed)
 - [x] All existing E2E tests pass (column order tests pass)
 - [x] No references to `editStore.undo()` or `editStore.redo()` remain
+- [x] Undone audit entries appear greyed out with "Undone" badge (Phase 7 - Issue 1)
+- [x] Manual edit drill-down shows valid row identifier (Phase 7 - Issue 2)
+- [x] Manual edit cell highlighting works in DataGrid (Phase 7 - Issue 3)
 
 ---
 
@@ -463,7 +466,116 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
   - Batch execution (50k batches)
   - Parquet snapshots (≥50k threshold)
 
-### Remaining Steps (None)
+### Remaining Steps: Phase 7 - Audit UX Fixes
+
+Three issues discovered during verification that need to be fixed:
+
+#### Issue 1: Undone audit entries removed instead of greyed out
+
+**Problem**: When you undo a step, the audit entry disappears entirely from the sidebar instead of being greyed out with an "Undone" badge.
+
+**Root cause**: `audit-from-timeline.ts` line 123-124 filters out commands:
+```typescript
+const activeCommands = timeline.commands.slice(0, timeline.currentPosition + 1)
+```
+
+The `AuditSidebar` already has UI for showing "Undone" badges and greyed styling (opacity-40), but it never receives those entries because we filter them out.
+
+**Fix**: Modify `getAuditEntriesForTable()` to return ALL commands. The UI component will handle the visual distinction using `getEntryState()` which already checks command index vs `currentPosition`.
+
+**Files to modify**:
+- `src/lib/audit-from-timeline.ts` - Remove the slice filter, return all commands
+
+---
+
+#### Issue 2: Manual edit drill-down shows "undefined" for row index
+
+**Problem**: When drilling down into a manual edit in the audit detail modal, the "Row #" column shows "undefined".
+
+**Root cause**: In `convertCommandToAuditEntry()`, the `rowIndex` variable is declared but never assigned for manual edits. This is because `ManualEditParams` uses `csId` (stable row identifier) instead of `rowIndex` (position-based, which can change after sorts/filters).
+
+**Fix options**:
+1. **Best**: Don't show row index for manual edits - just show column, previous value, new value (row position is meaningless)
+2. Show csId instead (technical but accurate)
+3. Try to resolve csId to current row index (fragile - position can change)
+
+**Recommended**: Option 1 - Modify `ManualEditDetailView` to not show "Row #" column for manual edits (or show "N/A" or the csId truncated).
+
+**Files to modify**:
+- `src/components/common/ManualEditDetailView.tsx` - Show "N/A" or truncated csId instead of undefined rowIndex
+
+---
+
+#### Issue 3: Manual edit highlights don't show the row in the grid
+
+**Problem**: When clicking "Highlight" on a manual edit in the audit sidebar, the affected row/cell is not visually highlighted in the DataGrid.
+
+**Root cause**: For manual edits, `diffMode` is set to `'cell'` in `timelineStore.setHighlightedCommand()` (line 333). The row theme override in `DataGrid.getRowThemeOverride()` only applies background when `diffMode === 'row'`:
+```typescript
+if (activeHighlight.diffMode === 'row') {
+  return { bgCell: 'rgba(59, 130, 246, 0.15)' }
+}
+```
+
+For cell-level highlights, the visual should come from `drawCell` callback using `highlight.cellKeys`.
+
+**Analysis of DataGrid highlighting code**:
+- Cell highlighting (drawCell lines 445-480): Correctly checks `activeHighlight?.cellKeys?.has(cellKey)` and draws yellow background
+- Row highlighting (getRowThemeOverride lines 502-512): Only applies blue background when `diffMode === 'row'` - intentional design for cell vs row mode
+- **Important**: `drawCell` is only passed when `editable` is true (line 558)
+
+The design is intentional:
+- Manual edits → cell mode → yellow CELL background via drawCell (not row)
+- Row operations → row mode → blue ROW background via getRowThemeOverride
+
+**Possible causes if cell highlighting not working**:
+1. Grid not in editable mode → drawCell isn't used
+2. cellKey mismatch (csId:columnName format issue)
+3. Reactivity issue - component not re-rendering when store updates
+4. `timelineHighlight` prop overriding store value
+
+**User preference**: Cell highlighting only (yellow background on the specific edited cell) - current design is correct.
+
+**Fix approach**: Debug why cell highlighting isn't working:
+1. Verify `drawCell` is being called (check if grid is in editable mode)
+2. Verify `activeHighlight.cellKeys` contains the expected `csId:columnName` key
+3. Verify `cellKey` computed in drawCell matches the stored key
+4. Check for reactivity issues with the highlight store
+
+**Files to inspect/modify**:
+- `src/components/grid/DataGrid.tsx` - Debug drawCell callback, verify cellKey matching
+
+---
+
+### Phase 7 Implementation Order
+
+1. **Fix Issue 1 first** - Undone entries not showing (simplest, highest impact)
+   - Modify `getAuditEntriesForTable()` to return all commands
+   - Verify AuditSidebar shows greyed-out entries with "Undone" badge
+
+2. **Fix Issue 2** - Manual edit drill-down showing undefined
+   - Modify `ManualEditDetailView` to show "N/A" or truncated csId instead of undefined
+
+3. **Fix Issue 3** - Cell highlighting not working
+   - Debug and trace the highlight flow
+   - Verify cellKey matching in drawCell
+
+### Phase 7 Verification
+
+1. **Issue 1 verification**:
+   - Edit a cell → Apply a transform → Undo the transform
+   - Verify: Transform entry should appear greyed out with "Undone" badge
+   - Redo the transform → Verify entry becomes active again
+
+2. **Issue 2 verification**:
+   - Edit a cell → Click on the audit entry → Open detail modal
+   - Verify: Row # shows "N/A" or csId, not "undefined"
+
+3. **Issue 3 verification**:
+   - Edit a cell → Click "Highlight" in audit sidebar
+   - Verify: The edited cell shows yellow background highlight
+
+---
 
 ### Large File Risk Mitigations
 
@@ -477,3 +589,68 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
 - Pre-existing test failures (not related to this implementation):
   - `tier-3-undo-param-preservation.spec.ts` - pad_zeros param test (pre-existing param extraction issue)
   - Some timeout/browser crash flakiness in heavy tests
+
+---
+
+## Phase 7 Completed (2026-01-26)
+
+### Issue 1: Undone audit entries now appear greyed out ✅
+
+**Changes made**:
+- Modified `getAuditEntriesForTable()` in `src/lib/audit-from-timeline.ts` to return ALL commands (not just up to currentPosition)
+- Modified `getAllAuditEntries()` similarly
+- The `AuditSidebar` component already had UI for greyed styling (`opacity-40`) and "Undone" badge - it now receives these entries
+
+**Result**: Undone operations now appear in audit sidebar with "Undone" badge and reduced opacity. Users can see their complete history including undone operations.
+
+### Issue 2: Manual edit drill-down shows Cell ID instead of undefined ✅
+
+**Changes made**:
+- Added `csId?: string` field to `AuditLogEntry` interface in `src/types/index.ts`
+- Added `csId?: string` field to `SerializedAuditLogEntry` for persistence
+- Updated `convertCommandToAuditEntry()` in `src/lib/audit-from-timeline.ts` to populate csId from ManualEditParams
+- Updated `ManualEditDetailView.tsx`:
+  - Changed header from "Row #" to "Cell ID"
+  - Added `formatCellId()` helper to show truncated csId (first 8 chars) with tooltip for full value
+  - Shows "N/A" if csId is undefined (edge case)
+
+**Result**: Manual edit detail view now shows truncated Cell ID with tooltip instead of "undefined".
+
+### Issue 3: Manual edit cell highlighting now works ✅
+
+**Analysis**: The highlighting logic was correct, but canvas-based Glide Data Grid doesn't automatically re-render cells when the `drawCell` callback changes. The grid needs explicit invalidation.
+
+**Changes made to `DataGrid.tsx`**:
+- Added import for `DataEditorRef` from `@glideapps/glide-data-grid`
+- Added `gridRef` to hold reference to the grid
+- Added `prevHighlightCommandId` ref to track highlight changes
+- Added `useEffect` that calls `gridRef.current.updateCells()` when highlight changes
+- The effect triggers on both setting and clearing highlights
+- Added `ref={gridRef}` to the DataGridLib component
+
+**Result**: Clicking "Highlight" in the audit sidebar now immediately shows yellow cell highlight in the grid. Clearing the highlight also works correctly.
+
+### Files Modified in Phase 7
+
+| File | Changes |
+|------|---------|
+| `src/lib/audit-from-timeline.ts` | Return all commands (not filtered by position), populate csId |
+| `src/types/index.ts` | Added `csId` field to `AuditLogEntry` and `SerializedAuditLogEntry` |
+| `src/components/common/ManualEditDetailView.tsx` | Changed "Row #" to "Cell ID", show truncated csId with tooltip |
+| `src/components/grid/DataGrid.tsx` | Added grid ref and useEffect to force re-render on highlight change |
+
+### Verification Steps
+
+1. **Issue 1 verification**:
+   - [x] Edit a cell → Apply a transform → Undo the transform
+   - [x] Transform entry appears greyed out with "Undone" badge
+   - [x] Redo the transform → Entry becomes active again
+
+2. **Issue 2 verification**:
+   - [x] Edit a cell → Click on the audit entry → Open detail modal
+   - [x] Cell ID shows truncated csId (8 chars...) with tooltip for full value
+
+3. **Issue 3 verification**:
+   - [x] Edit a cell → Click "Highlight" in audit sidebar
+   - [x] The edited cell shows yellow background highlight
+   - [x] Click "Clear" → Highlight disappears
