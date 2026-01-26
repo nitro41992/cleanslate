@@ -547,7 +547,7 @@ export class CommandExecutor implements ICommandExecutor {
         )
 
         // Sync with legacy timelineStore for UI integration (highlight, drill-down)
-        this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo, affectedRowIds)
+        this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo, affectedRowIds, currentColumnOrder, newColumnOrder)
       }
 
       // Capture row-level details for Tier 1 only (uses __base columns, must be AFTER execution)
@@ -1287,7 +1287,9 @@ export class CommandExecutor implements ICommandExecutor {
     tableName: string,
     command: Command,
     auditInfo?: { affectedColumns: string[]; rowsAffected: number; hasRowDetails: boolean; auditEntryId: string },
-    affectedRowIds?: string[]
+    affectedRowIds?: string[],
+    columnOrderBefore?: string[],
+    columnOrderAfter?: string[]
   ): void {
     const timelineStoreState = useTimelineStore.getState()
     const legacyTimeline = timelineStoreState.getTimeline(tableId)
@@ -1361,6 +1363,8 @@ export class CommandExecutor implements ICommandExecutor {
       hasRowDetails: auditInfo?.hasRowDetails,
       affectedRowIds,
       cellChanges,
+      columnOrderBefore,
+      columnOrderAfter,
     })
   }
 }

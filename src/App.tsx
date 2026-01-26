@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { FileText } from 'lucide-react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { MobileBlocker } from '@/components/layout/MobileBlocker'
@@ -36,13 +36,10 @@ import { useAuditStore } from '@/stores/auditStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
-import { useTimelineStore } from '@/stores/timelineStore'
-import { useUIStore } from '@/stores/uiStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { usePersistence } from '@/hooks/usePersistence'
 import { useBeforeUnload } from '@/hooks/useBeforeUnload'
-import { getCommandExecutor } from '@/lib/commands'
-import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
+import { useUnifiedUndo } from '@/hooks/useUnifiedUndo'
 import { toast } from 'sonner'
 
 import type { CSVIngestionSettings } from '@/types'
@@ -77,8 +74,10 @@ function App() {
   const { autoRestore, loadFromStorage } = usePersistence()
   const [showRestoreDialog, setShowRestoreDialog] = useState(false)
 
-  // Timeline store for undo/redo
-  const isReplaying = useTimelineStore((s) => s.isReplaying)
+  // Unified undo/redo hook - single entry point for all undo/redo operations
+  const { undo, redo } = useUnifiedUndo(activeTableId ?? null)
+
+  // Audit logging for table persistence operations
   const addAuditEntry = useAuditStore((s) => s.addEntry)
 
   // Diff view state
@@ -111,134 +110,22 @@ function App() {
     checkForSavedData()
   }, [autoRestore])
 
-  // Memory refresh after data operations
-  const refreshMemory = useUIStore((s) => s.refreshMemory)
-
-  // Get updateTable for legacy timeline fallback
-  const updateTable = useTableStore((s) => s.updateTable)
-
-  // Keyboard shortcuts for undo/redo (CommandExecutor with legacy fallback)
-  const handleUndo = useCallback(async () => {
-    console.log('[UNDO] handleUndo called', { activeTableId, isReplaying, activeTable: activeTable?.name })
-    if (!activeTableId || isReplaying) {
-      console.log('[UNDO] Early return - no activeTableId or isReplaying')
-      return
-    }
-
-    try {
-      // Try CommandExecutor first (for transform commands)
-      const executor = getCommandExecutor()
-      if (executor.canUndo(activeTableId)) {
-        const result = await executor.undo(activeTableId)
-        console.log('[UNDO] executor.undo returned:', result)
-
-        if (result.success) {
-          // Table store is updated automatically by CommandExecutor
-          if (activeTable) {
-            addAuditEntry(
-              activeTableId,
-              activeTable.name,
-              'Undo',
-              'Reverted to previous state',
-              'A'
-            )
-          }
-        }
-      } else {
-        // Fallback to legacy timeline (for cell edits and pre-migration commands)
-        console.log('[UNDO] CommandExecutor has nothing to undo, trying legacy timeline...')
-        const result = await undoTimeline(activeTableId)
-        if (result) {
-          console.log('[UNDO] Legacy undoTimeline returned:', result)
-          updateTable(activeTableId, { rowCount: result.rowCount })
-          if (activeTable) {
-            addAuditEntry(
-              activeTableId,
-              activeTable.name,
-              'Undo',
-              'Reverted to previous state',
-              'A'
-            )
-          }
-        } else {
-          console.log('[UNDO] Nothing to undo in either system')
-        }
-      }
-      // Refresh memory after undo operation
-      refreshMemory()
-    } catch (error) {
-      console.error('[UNDO] Error during undo:', error)
-    }
-  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable, refreshMemory])
-
-  const handleRedo = useCallback(async () => {
-    console.log('[REDO] handleRedo called', { activeTableId, isReplaying })
-    if (!activeTableId || isReplaying) {
-      console.log('[REDO] Early return - no activeTableId or isReplaying')
-      return
-    }
-
-    try {
-      // Try CommandExecutor first (for transform commands)
-      const executor = getCommandExecutor()
-      if (executor.canRedo(activeTableId)) {
-        const result = await executor.redo(activeTableId)
-        console.log('[REDO] executor.redo returned:', result)
-
-        if (result.success) {
-          // Table store is updated automatically by CommandExecutor
-          if (activeTable) {
-            addAuditEntry(
-              activeTableId,
-              activeTable.name,
-              'Redo',
-              'Reapplied next state',
-              'A'
-            )
-          }
-        }
-      } else {
-        // Fallback to legacy timeline (for cell edits and pre-migration commands)
-        console.log('[REDO] CommandExecutor has nothing to redo, trying legacy timeline...')
-        const result = await redoTimeline(activeTableId)
-        if (result) {
-          console.log('[REDO] Legacy redoTimeline returned:', result)
-          updateTable(activeTableId, { rowCount: result.rowCount })
-          if (activeTable) {
-            addAuditEntry(
-              activeTableId,
-              activeTable.name,
-              'Redo',
-              'Reapplied next state',
-              'A'
-            )
-          }
-        } else {
-          console.log('[REDO] Nothing to redo in either system')
-        }
-      }
-      // Refresh memory after redo operation
-      refreshMemory()
-    } catch (error) {
-      console.error('[REDO] Error during redo:', error)
-    }
-  }, [activeTableId, activeTable, isReplaying, addAuditEntry, updateTable, refreshMemory])
-
+  // Keyboard shortcuts for undo/redo - uses useUnifiedUndo hook
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        handleUndo()
+        undo()
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
         e.preventDefault()
-        handleRedo()
+        redo()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleUndo, handleRedo])
+  }, [undo, redo])
 
   // Listen for file upload trigger from header
   useEffect(() => {

@@ -35,6 +35,7 @@ import type {
   StandardizeParams,
   BatchEditParams,
   ColumnInfo,
+  TableTimeline,
 } from '@/types'
 
 /**
@@ -426,7 +427,7 @@ export async function replayToPosition(
   tableId: string,
   targetPosition: number,
   onProgress?: (progress: number, message: string) => void
-): Promise<{ rowCount: number; columns: ColumnInfo[] }> {
+): Promise<{ rowCount: number; columns: ColumnInfo[]; columnOrder?: string[] }> {
   console.log('[REPLAY] replayToPosition called', { tableId, targetPosition })
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
@@ -513,7 +514,9 @@ export async function replayToPosition(
       const countResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${tableName}"`)
       const columns = await getTableColumns(tableName)
       const userColumns = columns.filter(c => c.name !== CS_ID_COLUMN)
-      return { rowCount: Number(countResult[0].count), columns: userColumns }
+      // Resolve column order at target position
+      const columnOrder = resolveColumnOrder(timeline, targetPosition)
+      return { rowCount: Number(countResult[0].count), columns: userColumns, columnOrder }
     }
 
     // Replay commands from (snapshotIndex + 1) to targetPosition
@@ -559,9 +562,11 @@ export async function replayToPosition(
     const countResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${tableName}"`)
     const columns = await getTableColumns(tableName)
     const userColumns = columns.filter(c => c.name !== CS_ID_COLUMN)
+    // Resolve column order at target position
+    const columnOrder = resolveColumnOrder(timeline, targetPosition)
 
     onProgress?.(100, 'Complete')
-    return { rowCount: Number(countResult[0].count), columns: userColumns }
+    return { rowCount: Number(countResult[0].count), columns: userColumns, columnOrder }
   } finally {
     store.setIsReplaying(false)
     store.setReplayProgress(0)
@@ -569,13 +574,90 @@ export async function replayToPosition(
 }
 
 /**
+ * Convert a value to SQL literal for use in UPDATE statements
+ */
+function toSqlValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'NULL'
+  }
+  if (typeof value === 'string') {
+    // Escape single quotes by doubling them
+    return `'${value.replace(/'/g, "''")}'`
+  }
+  if (typeof value === 'number') {
+    return String(value)
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'TRUE' : 'FALSE'
+  }
+  // For other types, convert to string
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
+/**
+ * Execute inverse UPDATE for Fast Path undo of manual_edit commands.
+ *
+ * Validates that the column exists before attempting the update.
+ * Returns false if column doesn't exist (edge case: user edits column A → renames to B → undoes rename → undoes edit)
+ *
+ * @param tableName - The table to update
+ * @param csId - The _cs_id of the row to update
+ * @param columnName - The column to update
+ * @param previousValue - The value to restore
+ * @returns true if successful, false if column doesn't exist
+ */
+async function executeInverseUpdate(
+  tableName: string,
+  csId: string,
+  columnName: string,
+  previousValue: unknown
+): Promise<boolean> {
+  // SAFETY: Validate column exists before attempting update
+  const columns = await getTableColumns(tableName)
+  const columnExists = columns.some(c => c.name === columnName)
+
+  if (!columnExists) {
+    console.warn(`[FastPath] Column "${columnName}" not found in table, falling back to Heavy Path`)
+    return false
+  }
+
+  const sqlValue = toSqlValue(previousValue)
+  await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csId}'`)
+  return true
+}
+
+/**
+ * Find the effective columnOrder at a given timeline position.
+ * Walks backward to find the most recent command with columnOrderAfter,
+ * or returns undefined to signal "use current tableStore order".
+ *
+ * @param timeline - The timeline to search
+ * @param position - The position to resolve column order for (-1 = original, 0+ = after command at index)
+ * @returns Column order array if found, undefined otherwise
+ */
+function resolveColumnOrder(timeline: TableTimeline, position: number): string[] | undefined {
+  // Walk backward from position to find last command that set columnOrder
+  for (let i = position; i >= 0; i--) {
+    const cmd = timeline.commands[i]
+    if (cmd.columnOrderAfter) {
+      return cmd.columnOrderAfter
+    }
+  }
+  // No command has columnOrder - return undefined, caller uses tableStore's current order
+  return undefined
+}
+
+/**
  * Undo to the previous position
- * Returns the new row count and columns on success, or undefined if cannot undo
+ * Returns the new row count, columns, and columnOrder on success, or undefined if cannot undo
+ *
+ * Uses Fast Path for manual_edit commands (instant inverse SQL) when possible.
+ * Falls back to Heavy Path (snapshot restore + replay) for transforms.
  */
 export async function undoTimeline(
   tableId: string,
   onProgress?: (progress: number, message: string) => void
-): Promise<{ rowCount: number; columns: ColumnInfo[] } | undefined> {
+): Promise<{ rowCount: number; columns: ColumnInfo[]; columnOrder?: string[] } | undefined> {
   console.log('[TIMELINE] undoTimeline called for tableId:', tableId)
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
@@ -594,28 +676,140 @@ export async function undoTimeline(
     return undefined
   }
 
+  const command = timeline.commands[timeline.currentPosition]
+
+  // FAST PATH: Manual edits use inverse SQL (instant, no snapshot restore)
+  if (command.params.type === 'manual_edit') {
+    console.log('[TIMELINE] Fast Path: Undoing manual_edit via inverse SQL')
+    const params = command.params as ManualEditParams
+    const success = await executeInverseUpdate(
+      timeline.tableName,
+      params.csId,
+      params.columnName,
+      params.previousValue
+    )
+
+    if (!success) {
+      // Column doesn't exist (edge case after column operations) - fall back to Heavy Path
+      console.log('[TIMELINE] Fast Path failed, falling back to Heavy Path')
+      const targetPosition = timeline.currentPosition - 1
+      return await replayToPosition(tableId, targetPosition, onProgress)
+    }
+
+    // Update position
+    store.setPosition(tableId, timeline.currentPosition - 1)
+
+    // Return current table state (no full reload needed)
+    const columns = await getTableColumns(timeline.tableName)
+    const countResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${timeline.tableName}"`)
+
+    // Resolve column order from timeline or fall back to command's columnOrderBefore
+    const columnOrder = resolveColumnOrder(timeline, timeline.currentPosition - 1) || command.columnOrderBefore
+
+    console.log('[TIMELINE] Fast Path undo completed')
+    return {
+      rowCount: Number(countResult[0].count),
+      columns: columns.filter(c => c.name !== CS_ID_COLUMN),
+      columnOrder,
+    }
+  }
+
+  // HEAVY PATH: Transforms use snapshot restore + replay
   const targetPosition = timeline.currentPosition - 1
-  console.log('[TIMELINE] Target position for undo:', targetPosition)
+  console.log('[TIMELINE] Heavy Path: Target position for undo:', targetPosition)
   return await replayToPosition(tableId, targetPosition, onProgress)
 }
 
 /**
  * Redo to the next position
- * Returns the new row count and columns on success, or undefined if cannot redo
+ * Returns the new row count, columns, and columnOrder on success, or undefined if cannot redo
+ *
+ * Uses Fast Path for manual_edit commands (instant re-execute) when possible.
+ * Falls back to Heavy Path (snapshot restore + replay) for transforms.
  */
 export async function redoTimeline(
   tableId: string,
   onProgress?: (progress: number, message: string) => void
-): Promise<{ rowCount: number; columns: ColumnInfo[] } | undefined> {
+): Promise<{ rowCount: number; columns: ColumnInfo[]; columnOrder?: string[] } | undefined> {
+  console.log('[TIMELINE] redoTimeline called for tableId:', tableId)
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
   if (!timeline || timeline.currentPosition >= timeline.commands.length - 1) {
+    console.log('[TIMELINE] Cannot redo - no timeline or at latest state')
     return undefined
   }
 
-  const targetPosition = timeline.currentPosition + 1
-  return await replayToPosition(tableId, targetPosition, onProgress)
+  const nextPosition = timeline.currentPosition + 1
+  const command = timeline.commands[nextPosition]
+
+  // FAST PATH: Manual edits use direct SQL execution (instant)
+  if (command.params.type === 'manual_edit') {
+    console.log('[TIMELINE] Fast Path: Redoing manual_edit via direct SQL')
+    const params = command.params as ManualEditParams
+    const success = await executeForwardUpdate(
+      timeline.tableName,
+      params.csId,
+      params.columnName,
+      params.newValue
+    )
+
+    if (!success) {
+      // Column doesn't exist - fall back to Heavy Path
+      console.log('[TIMELINE] Fast Path failed, falling back to Heavy Path')
+      return await replayToPosition(tableId, nextPosition, onProgress)
+    }
+
+    // Update position
+    store.setPosition(tableId, nextPosition)
+
+    // Return current table state
+    const columns = await getTableColumns(timeline.tableName)
+    const countResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${timeline.tableName}"`)
+
+    // Resolve column order from the command being redone
+    const columnOrder = command.columnOrderAfter || resolveColumnOrder(timeline, nextPosition)
+
+    console.log('[TIMELINE] Fast Path redo completed')
+    return {
+      rowCount: Number(countResult[0].count),
+      columns: columns.filter(c => c.name !== CS_ID_COLUMN),
+      columnOrder,
+    }
+  }
+
+  // HEAVY PATH: Transforms use snapshot restore + replay
+  console.log('[TIMELINE] Heavy Path: Target position for redo:', nextPosition)
+  return await replayToPosition(tableId, nextPosition, onProgress)
+}
+
+/**
+ * Execute forward UPDATE for Fast Path redo of manual_edit commands.
+ *
+ * @param tableName - The table to update
+ * @param csId - The _cs_id of the row to update
+ * @param columnName - The column to update
+ * @param newValue - The value to set
+ * @returns true if successful, false if column doesn't exist
+ */
+async function executeForwardUpdate(
+  tableName: string,
+  csId: string,
+  columnName: string,
+  newValue: unknown
+): Promise<boolean> {
+  // SAFETY: Validate column exists before attempting update
+  const columns = await getTableColumns(tableName)
+  const columnExists = columns.some(c => c.name === columnName)
+
+  if (!columnExists) {
+    console.warn(`[FastPath] Column "${columnName}" not found in table, falling back to Heavy Path`)
+    return false
+  }
+
+  const sqlValue = toSqlValue(newValue)
+  await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csId}'`)
+  return true
 }
 
 /**

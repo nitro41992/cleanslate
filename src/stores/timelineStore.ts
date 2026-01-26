@@ -61,6 +61,8 @@ interface TimelineActions {
       cellChanges?: CellChange[]
       rowsAffected?: number
       hasRowDetails?: boolean
+      columnOrderBefore?: string[]
+      columnOrderAfter?: string[]
     }
   ) => TimelineCommand
 
@@ -189,6 +191,8 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
       cellChanges: options.cellChanges,
       rowsAffected: options.rowsAffected,
       hasRowDetails: options.hasRowDetails,
+      columnOrderBefore: options.columnOrderBefore,
+      columnOrderAfter: options.columnOrderAfter,
     }
 
     set((state) => {
@@ -448,6 +452,8 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
         cellChanges: cmd.cellChanges,
         rowsAffected: cmd.rowsAffected,
         hasRowDetails: cmd.hasRowDetails,
+        columnOrderBefore: cmd.columnOrderBefore,
+        columnOrderAfter: cmd.columnOrderAfter,
       }))
 
       serialized.push({
@@ -483,6 +489,8 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
         cellChanges: cmd.cellChanges,
         rowsAffected: cmd.rowsAffected,
         hasRowDetails: cmd.hasRowDetails,
+        columnOrderBefore: cmd.columnOrderBefore,
+        columnOrderAfter: cmd.columnOrderAfter,
       }))
 
       const timeline: TableTimeline = {

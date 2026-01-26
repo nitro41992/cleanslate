@@ -237,6 +237,9 @@ export interface TimelineCommand {
   // Metadata
   rowsAffected?: number
   hasRowDetails?: boolean
+  // Column order preservation for undo/redo
+  columnOrderBefore?: string[]       // Column order before this command
+  columnOrderAfter?: string[]        // Column order after this command
 }
 
 /**
@@ -355,6 +358,9 @@ export interface SerializedTimelineCommand {
   cellChanges?: CellChange[]
   rowsAffected?: number
   hasRowDetails?: boolean
+  // Column order preservation for undo/redo
+  columnOrderBefore?: string[]
+  columnOrderAfter?: string[]
 }
 
 /**
