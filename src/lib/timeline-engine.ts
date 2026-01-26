@@ -1233,14 +1233,36 @@ async function initializeTimelineInternal(
   const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
   const potentialSnapshotId = `original_${sanitizedTableName}`
   const existingParquetSnapshot = await checkSnapshotFileExists(potentialSnapshotId)
-  if (existingParquetSnapshot) {
-    // SIMPLIFIED APPROACH: For now, always delete existing snapshots on timeline init
-    // This ensures _cs_id values always match (fresh snapshot from current table)
-    // Trade-off: Loses original state on page reload, but prevents stale snapshot bugs
-    //
-    // TODO: Implement metadata-based validation (store first N _cs_id values in a sidecar file)
-    // to enable safe snapshot reuse without complex Parquet queries
-    console.log('[INIT_TIMELINE] Found existing Parquet snapshot, deleting to ensure fresh state:', potentialSnapshotId)
+
+  // Check if there's a restored timeline in the store (from app-state.json)
+  // If so, this is a page refresh scenario - reuse the existing snapshot
+  const restoredTimeline = store.getTimeline(tableId)
+
+  if (existingParquetSnapshot && restoredTimeline && restoredTimeline.commands.length > 0) {
+    // REUSE SCENARIO: Timeline was restored from app-state.json and snapshot file exists
+    // This means user had data, refreshed the page, and we should preserve undo capability
+    console.log('[INIT_TIMELINE] Reusing existing Parquet snapshot for restored timeline:', potentialSnapshotId)
+    console.log('[INIT_TIMELINE] Restored timeline has', restoredTimeline.commands.length, 'commands at position', restoredTimeline.currentPosition)
+
+    // Verify the originalSnapshotName matches what we expect
+    const expectedSnapshotName = `parquet:${potentialSnapshotId}`
+    if (restoredTimeline.originalSnapshotName !== expectedSnapshotName) {
+      console.warn('[INIT_TIMELINE] Snapshot name mismatch:', {
+        expected: expectedSnapshotName,
+        actual: restoredTimeline.originalSnapshotName,
+      })
+      // Update the timeline with correct snapshot name
+      store.updateTimelineOriginalSnapshot(tableId, expectedSnapshotName)
+    }
+
+    return restoredTimeline.id
+  }
+
+  if (existingParquetSnapshot && !restoredTimeline) {
+    // STALE SCENARIO: Snapshot file exists but no restored timeline
+    // This could happen if app-state.json was cleared but OPFS files remain
+    // Delete the stale snapshot and create fresh
+    console.log('[INIT_TIMELINE] Found stale Parquet snapshot (no timeline), deleting:', potentialSnapshotId)
     const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
     await deleteParquetSnapshot(potentialSnapshotId)
     // Fall through to create new snapshot below

@@ -225,10 +225,50 @@ export async function exportTableToParquet(
 }
 
 /**
+ * Helper to register a file with retry and memory fallback
+ * OPFS file handles can have locking issues - this provides resilience
+ */
+async function registerFileWithRetry(
+  db: AsyncDuckDB,
+  fileHandle: FileSystemFileHandle,
+  fileName: string,
+  maxRetries = 3
+): Promise<'handle' | 'buffer'> {
+  // Try file handle registration first (zero-copy, preferred)
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await db.registerFileHandle(
+        fileName,
+        fileHandle,
+        duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
+        false // read-only
+      )
+      return 'handle'
+    } catch (err) {
+      const isLockError = String(err).includes('Access Handle')
+      if (!isLockError || attempt === maxRetries) {
+        // Not a lock error or last attempt - fall back to buffer
+        console.warn(`[Snapshot] File handle registration failed for ${fileName}, using buffer fallback`)
+        break
+      }
+      // Wait before retry (exponential backoff: 50ms, 100ms, 200ms)
+      await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt - 1)))
+    }
+  }
+
+  // Fallback: Read file into memory buffer
+  // This avoids OPFS locking issues but uses more memory
+  const file = await fileHandle.getFile()
+  const buffer = await file.arrayBuffer()
+  await db.registerFileBuffer(fileName, new Uint8Array(buffer))
+  return 'buffer'
+}
+
+/**
  * Import a table from Parquet file in OPFS
  *
- * Uses DuckDB's file handle registration for zero-copy reads.
- * Data never touches JavaScript heap - flows from OPFS disk to WASM.
+ * Uses DuckDB's file handle registration for zero-copy reads when possible.
+ * Falls back to memory buffer if file handle registration fails (OPFS lock conflicts).
  *
  * Handles both chunked files (for large tables) and single files (for small tables).
  *
@@ -264,20 +304,13 @@ export async function importTableFromParquet(
   if (isChunked) {
     // Register all chunk files
     let partIndex = 0
-    const fileHandles: FileSystemFileHandle[] = []
 
     while (true) {
       try {
         const fileName = `${snapshotId}_part_${partIndex}.parquet`
         const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-        fileHandles.push(fileHandle)
 
-        await db.registerFileHandle(
-          fileName,
-          fileHandle,
-          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-          false // read-only
-        )
+        await registerFileWithRetry(db, fileHandle, fileName)
 
         partIndex++
       } catch {
@@ -305,12 +338,7 @@ export async function importTableFromParquet(
     const fileName = `${snapshotId}.parquet`
     const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
 
-    await db.registerFileHandle(
-      fileName,
-      fileHandle,
-      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-      false
-    )
+    await registerFileWithRetry(db, fileHandle, fileName)
 
     // NOTE: Do NOT add ORDER BY here - it can cause non-stable re-sorting
     // Rely on preserve_insertion_order (default: true) to maintain Parquet file order

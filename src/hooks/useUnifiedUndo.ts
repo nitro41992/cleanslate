@@ -17,6 +17,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useUIStore } from '@/stores/uiStore'
 import { undoTimeline, redoTimeline } from '@/lib/timeline-engine'
+import { usePersistence } from '@/hooks/usePersistence'
 
 export interface UnifiedUndoResult {
   /** Whether undo is available */
@@ -78,6 +79,9 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
   const addAuditEntry = useAuditStore((s) => s.addEntry)
   const refreshMemory = useUIStore((s) => s.refreshMemory)
 
+  // Persistence - for immediate save after undo/redo
+  const { saveTable } = usePersistence()
+
   // Compute canUndo/canRedo from timeline
   const canUndo = useMemo(() => {
     if (!timeline || isReplaying) return false
@@ -138,6 +142,13 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
           rowCount: result.rowCount,
           columnCount: result.columns.length,
         })
+
+        // Immediately save to Parquet (bypass debounce)
+        if (activeTable) {
+          saveTable(activeTable.name).catch((err) =>
+            console.error('[useUnifiedUndo] Failed to save after undo:', err)
+          )
+        }
       }
 
       // Refresh memory display
@@ -145,7 +156,7 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
     } catch (error) {
       console.error('[useUnifiedUndo] Undo failed:', error)
     }
-  }, [tableId, canUndo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory])
+  }, [tableId, canUndo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory, saveTable])
 
   // Redo handler - delegates to Timeline Engine
   const redo = useCallback(async () => {
@@ -179,6 +190,13 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
           rowCount: result.rowCount,
           columnCount: result.columns.length,
         })
+
+        // Immediately save to Parquet (bypass debounce)
+        if (activeTable) {
+          saveTable(activeTable.name).catch((err) =>
+            console.error('[useUnifiedUndo] Failed to save after redo:', err)
+          )
+        }
       }
 
       // Refresh memory display
@@ -186,7 +204,7 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
     } catch (error) {
       console.error('[useUnifiedUndo] Redo failed:', error)
     }
-  }, [tableId, canRedo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory])
+  }, [tableId, canRedo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory, saveTable])
 
   return {
     canUndo,

@@ -44,23 +44,11 @@ export async function detectBrowserCapabilities(): Promise<BrowserCapabilities> 
     // Test if navigator.storage.getDirectory() exists
     if (typeof navigator.storage?.getDirectory === 'function') {
       hasOPFS = true
-
-      // CRITICAL: createSyncAccessHandle is only available in Web Workers, NOT main thread
-      // We cannot detect it here, but if crossOriginIsolated is true, it should work in the worker
-      // See: https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle
-
-      // Check if we're cross-origin isolated (required for sync access handles)
-      const isCrossOriginIsolated = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
-
-      if (isCrossOriginIsolated) {
-        // Cross-origin isolated AND has OPFS = likely supports sync access handles in worker
-        supportsAccessHandle = true
-        console.log('[Browser Detection] Cross-origin isolated + OPFS available = assuming sync access handle support')
-      } else {
-        // Not cross-origin isolated = definitely won't work
-        supportsAccessHandle = false
-        console.log('[Browser Detection] Not cross-origin isolated = no sync access handle support')
-      }
+      // NOTE: OPFS persistence is disabled due to DuckDB-WASM bug #2096
+      // https://github.com/duckdb/duckdb-wasm/issues/2096
+      // Setting supportsAccessHandle to false forces in-memory mode
+      supportsAccessHandle = false
+      console.log(`[Browser Detection] OPFS available but disabled (DuckDB-WASM bug #2096)`)
     }
   } catch (err) {
     console.warn('[Browser Detection] OPFS check failed:', err)

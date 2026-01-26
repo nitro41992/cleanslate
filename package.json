@@ -13,7 +13,7 @@
     "test:headed": "playwright test --headed"
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "^1.32.0",
+    "@duckdb/duckdb-wasm": "^1.33.1-dev19.0",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@glideapps/glide-data-grid": "^6.0.3",
     "@radix-ui/react-alert-dialog": "^1.1.15",

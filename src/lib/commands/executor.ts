@@ -648,21 +648,37 @@ export class CommandExecutor implements ICommandExecutor {
    * Delegates to TimelineEngine which handles:
    * - Fast Path: Inverse SQL for manual_edit commands (instant)
    * - Heavy Path: Snapshot restore + replay for transforms
+   *
+   * IMPORTANT: After page refresh, the executor's internal tableTimelines is empty,
+   * but timelineStore has restored data. We check timelineStore first.
    */
   async undo(tableId: string): Promise<ExecutorResult> {
+    // Check timelineStore first (source of truth, persisted across page refresh)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+
+    // Determine if we can undo based on timelineStore (not internal timeline)
+    const canUndoFromStore = storeTimeline && storeTimeline.currentPosition >= 0
+
+    // Check internal timeline as well (for undoDisabled flag)
     const timeline = tableTimelines.get(tableId)
-    if (!timeline || timeline.position < 0) {
+
+    // If neither has undo capability, return error
+    if (!canUndoFromStore && (!timeline || timeline.position < 0)) {
       return {
         success: false,
         error: 'Nothing to undo',
       }
     }
 
-    const commandRecord = timeline.commands[timeline.position]
-    if (commandRecord?.undoDisabled) {
-      return {
-        success: false,
-        error: 'Undo unavailable: History limit reached',
+    // Check undoDisabled flag if internal timeline exists
+    if (timeline && timeline.position >= 0) {
+      const commandRecord = timeline.commands[timeline.position]
+      if (commandRecord?.undoDisabled) {
+        return {
+          success: false,
+          error: 'Undo unavailable: History limit reached',
+        }
       }
     }
 
@@ -677,11 +693,15 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
-      // Sync executor's internal timeline position
-      timeline.position--
+      // Sync executor's internal timeline position if it exists
+      if (timeline) {
+        timeline.position--
+      }
 
       // Drop diff view for the undone command (cleanup orphaned views)
-      const stepIndex = timeline.position + 1
+      // Use storeTimeline position if internal timeline doesn't exist
+      const currentPosition = storeTimeline?.currentPosition ?? (timeline?.position ?? -1)
+      const stepIndex = currentPosition + 1
       const diffViewName = `v_diff_step_${tableId}_${stepIndex}`
       try {
         await duckExecute(`DROP VIEW IF EXISTS "${diffViewName}"`)
@@ -713,10 +733,23 @@ export class CommandExecutor implements ICommandExecutor {
    * Delegates to TimelineEngine which handles:
    * - Fast Path: Direct SQL for manual_edit commands (instant)
    * - Heavy Path: Replay to target position for transforms
+   *
+   * IMPORTANT: After page refresh, the executor's internal tableTimelines is empty,
+   * but timelineStore has restored data. We check timelineStore first.
    */
   async redo(tableId: string): Promise<ExecutorResult> {
+    // Check timelineStore first (source of truth, persisted across page refresh)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+
+    // Determine if we can redo based on timelineStore (not internal timeline)
+    const canRedoFromStore = storeTimeline && storeTimeline.currentPosition < storeTimeline.commands.length - 1
+
+    // Check internal timeline as well
     const timeline = tableTimelines.get(tableId)
-    if (!timeline || timeline.position >= timeline.commands.length - 1) {
+
+    // If neither has redo capability, return error
+    if (!canRedoFromStore && (!timeline || timeline.position >= timeline.commands.length - 1)) {
       return {
         success: false,
         error: 'Nothing to redo',
@@ -734,8 +767,10 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
-      // Sync executor's internal timeline position
-      timeline.position++
+      // Sync executor's internal timeline position if it exists
+      if (timeline) {
+        timeline.position++
+      }
 
       // Update table store with result from TimelineEngine
       this.updateTableStore(tableId, {
@@ -753,7 +788,21 @@ export class CommandExecutor implements ICommandExecutor {
     }
   }
 
+  /**
+   * Check if undo is available for a table.
+   *
+   * IMPORTANT: Uses timelineStore as source of truth (persisted across page refreshes)
+   * instead of the executor's internal tableTimelines Map (which is session-only).
+   */
   canUndo(tableId: string): boolean {
+    // Primary: Check timelineStore (persisted, survives page refresh)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+    if (storeTimeline && storeTimeline.currentPosition >= 0) {
+      return true
+    }
+
+    // Fallback: Check internal timeline (for backwards compatibility)
     const timeline = tableTimelines.get(tableId)
     if (!timeline || timeline.position < 0) return false
 
@@ -761,7 +810,21 @@ export class CommandExecutor implements ICommandExecutor {
     return !!cmd && !cmd.undoDisabled
   }
 
+  /**
+   * Check if redo is available for a table.
+   *
+   * IMPORTANT: Uses timelineStore as source of truth (persisted across page refreshes)
+   * instead of the executor's internal tableTimelines Map (which is session-only).
+   */
   canRedo(tableId: string): boolean {
+    // Primary: Check timelineStore (persisted, survives page refresh)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+    if (storeTimeline && storeTimeline.currentPosition < storeTimeline.commands.length - 1) {
+      return true
+    }
+
+    // Fallback: Check internal timeline (for backwards compatibility)
     const timeline = tableTimelines.get(tableId)
     return !!timeline && timeline.position < timeline.commands.length - 1
   }
@@ -815,10 +878,21 @@ export class CommandExecutor implements ICommandExecutor {
   }
 
   /**
-   * Get the current timeline position for a table
-   * Useful for triggering re-renders when position changes
+   * Get the current timeline position for a table.
+   * Useful for triggering re-renders when position changes.
+   *
+   * IMPORTANT: Uses timelineStore as source of truth (persisted across page refreshes)
+   * instead of the executor's internal tableTimelines Map (which is session-only).
    */
   getTimelinePosition(tableId: string): number {
+    // Primary: Check timelineStore (persisted, survives page refresh)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+    if (storeTimeline) {
+      return storeTimeline.currentPosition
+    }
+
+    // Fallback: Check internal timeline (for backwards compatibility)
     const timeline = tableTimelines.get(tableId)
     return timeline?.position ?? -1
   }

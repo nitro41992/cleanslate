@@ -50,58 +50,38 @@ export function useDuckDB() {
         const isPersistent = isDuckDBPersistent()
         const isReadOnly = isDuckDBReadOnly()
 
+        // Restore timelines and UI preferences from app-state.json
+        // This runs regardless of DuckDB persistence mode since app-state.json uses OPFS directly
+        try {
+          const { restoreAppState } = await import('@/lib/persistence/state-persistence')
+          const savedState = await restoreAppState()
+
+          if (savedState) {
+            // Restore timelines (for undo/redo history)
+            const { useTimelineStore } = await import('@/stores/timelineStore')
+            useTimelineStore.getState().loadTimelines(savedState.timelines)
+
+            // Restore UI preferences
+            useUIStore.getState().setSidebarCollapsed(savedState.uiPreferences.sidebarCollapsed)
+
+            // Expose saved table metadata for usePersistence to use
+            // This ensures tableIds remain consistent across refreshes
+            const tableIdMap: Record<string, string> = {}
+            for (const table of savedState.tables) {
+              tableIdMap[table.name] = table.id
+            }
+            ;(window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__ = tableIdMap
+
+            console.log('[Persistence] Timelines and UI restored from app-state.json', {
+              tableIdMap,
+            })
+          }
+        } catch (error) {
+          console.warn('[Persistence] Failed to restore timelines:', error)
+        }
+
         if (isPersistent && !isReadOnly) {
           console.log('[DuckDB] Ready with persistent storage (auto-save enabled)')
-
-          // Restore application state from OPFS
-          setLoadingMessage('Restoring workspace...')
-          try {
-            const { restoreAppState } = await import('@/lib/persistence/state-persistence')
-            const { setRestoringState: setTableRestoringState } = await import('@/stores/tableStore')
-            const { setRestoringState: setTimelineRestoringState } = await import('@/stores/timelineStore')
-            const { setRestoringState: setUIRestoringState } = await import('@/stores/uiStore')
-
-            // Set flag to prevent subscriptions from triggering saves during restore
-            setTableRestoringState(true)
-            setTimelineRestoringState(true)
-            setUIRestoringState(true)
-
-            const savedState = await restoreAppState()
-
-            if (savedState) {
-              // Restore tables
-              useTableStore.getState().loadTables(savedState.tables)
-              useTableStore.getState().setActiveTable(savedState.activeTableId)
-
-              // Restore timelines
-              const { useTimelineStore } = await import('@/stores/timelineStore')
-              useTimelineStore.getState().loadTimelines(savedState.timelines)
-
-              // Restore UI preferences
-              useUIStore.getState().setSidebarCollapsed(savedState.uiPreferences.sidebarCollapsed)
-
-              console.log('[Persistence] Workspace restored successfully')
-              toast({
-                title: 'Workspace Restored',
-                description: `${savedState.tables.length} table(s) loaded from previous session`,
-              })
-            }
-
-            // Clear restoring flags
-            setTableRestoringState(false)
-            setTimelineRestoringState(false)
-            setUIRestoringState(false)
-          } catch (error) {
-            console.error('[Persistence] Failed to restore workspace:', error)
-            // Don't block app startup - just log the error
-            toast({
-              title: 'Restore Warning',
-              description: 'Could not restore previous workspace. Starting fresh.',
-              variant: 'default',
-            })
-          } finally {
-            setLoadingMessage(null)
-          }
         } else if (isPersistent && isReadOnly) {
           console.log('[DuckDB] Ready with persistent storage (read-only mode)')
           // Read-only toast already shown in initDuckDB()

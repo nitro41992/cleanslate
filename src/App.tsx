@@ -87,9 +87,8 @@ function App() {
   const [persistTableName, setPersistTableName] = useState('')
   const [isPersisting, setIsPersisting] = useState(false)
 
-  // Persistence
-  const { autoRestore, loadFromStorage } = usePersistence()
-  const [showRestoreDialog, setShowRestoreDialog] = useState(false)
+  // Persistence - auto-hydrates on mount via Parquet files in OPFS
+  const { isRestoring } = usePersistence()
 
   // Unified undo/redo hook - single entry point for all undo/redo operations
   const { undo, redo } = useUnifiedUndo(activeTableId ?? null)
@@ -116,16 +115,7 @@ function App() {
     }
   }, [activeTableId, activeTable, setPreviewActiveTable])
 
-  // Check for saved data on mount
-  useEffect(() => {
-    const checkForSavedData = async () => {
-      const hasSavedData = await autoRestore()
-      if (hasSavedData) {
-        setShowRestoreDialog(true)
-      }
-    }
-    checkForSavedData()
-  }, [autoRestore])
+  // Persistence hydration handled by usePersistence hook
 
   // Keyboard shortcuts for undo/redo - uses useUnifiedUndo hook
   useEffect(() => {
@@ -150,6 +140,20 @@ function App() {
     window.addEventListener('trigger-file-upload', handler)
     return () => window.removeEventListener('trigger-file-upload', handler)
   }, [])
+
+  // Show loading screen while restoring data from OPFS
+  // Note: hydrate() in usePersistence has finally { setIsRestoring(false) } as fail-safe
+  // IMPORTANT: This must be AFTER all hooks to comply with Rules of Hooks
+  if (isRestoring) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+          <p className="text-muted-foreground">Restoring your workspace...</p>
+        </div>
+      </div>
+    )
+  }
 
   const handleFileDrop = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase()
@@ -362,32 +366,6 @@ function App() {
         preloadedBuffer={pendingFile?.buffer}
         onConfirm={handleWizardConfirm}
       />
-
-      {/* Restore Data Dialog */}
-      <Dialog open={showRestoreDialog} onOpenChange={setShowRestoreDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Restore Previous Session?</DialogTitle>
-            <DialogDescription>
-              We found tables from a previous session saved in your browser.
-              Would you like to restore them?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRestoreDialog(false)}>
-              Start Fresh
-            </Button>
-            <Button
-              onClick={() => {
-                loadFromStorage()
-                setShowRestoreDialog(false)
-              }}
-            >
-              Restore Tables
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Persist as Table Dialog */}
       <Dialog open={showPersistDialog} onOpenChange={setShowPersistDialog}>

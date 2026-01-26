@@ -86,9 +86,17 @@ export async function saveAppState(
       },
     }
 
+    // BigInt replacer - convert BigInt to string with "n" suffix for later parsing
+    const bigIntReplacer = (_key: string, value: unknown) => {
+      if (typeof value === 'bigint') {
+        return value.toString() + 'n'
+      }
+      return value
+    }
+
     const fileHandle = await root.getFileHandle(APP_STATE_FILE, { create: true })
     const writable = await fileHandle.createWritable()
-    await writable.write(JSON.stringify(state, null, 2))
+    await writable.write(JSON.stringify(state, bigIntReplacer, 2))
     await writable.close()
 
     console.log('[Persistence] App state saved:', {

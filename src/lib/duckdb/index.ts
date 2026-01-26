@@ -1,5 +1,9 @@
 import * as duckdb from '@duckdb/duckdb-wasm'
-// EH bundle (primary - native WASM exceptions, more robust)
+// COI bundle (for Cross-Origin Isolated environments - supports OPFS + pthreads)
+import duckdb_wasm_coi from '@duckdb/duckdb-wasm/dist/duckdb-coi.wasm?url'
+import duckdb_worker_coi from '@duckdb/duckdb-wasm/dist/duckdb-browser-coi.worker.js?url'
+import duckdb_worker_coi_pthread from '@duckdb/duckdb-wasm/dist/duckdb-browser-coi.pthread.worker.js?url'
+// EH bundle (for non-COI environments - native WASM exceptions)
 import duckdb_wasm_eh from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'
 import duckdb_worker_eh from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'
 // MVP bundle (fallback for older browsers without WASM exceptions)
@@ -60,6 +64,11 @@ const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
     mainModule: duckdb_wasm_eh,
     mainWorker: duckdb_worker_eh,
   },
+  coi: {
+    mainModule: duckdb_wasm_coi,
+    mainWorker: duckdb_worker_coi,
+    pthreadWorker: duckdb_worker_coi_pthread,
+  },
 }
 
 export async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
@@ -88,15 +97,35 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
   // 1. Detect browser capabilities
   const caps = await detectBrowserCapabilities()
 
-  // 2. Initialize DuckDB-WASM
-  const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
-  const bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
+  // 2. Select appropriate bundle based on environment
+  // COI bundle is required for Cross-Origin Isolated environments (OPFS + pthreads support)
+  const isCOI = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
+  let bundle: duckdb.DuckDBBundle
+  let bundleType: string
+
+  if (isCOI && MANUAL_BUNDLES.coi) {
+    // Use COI bundle for cross-origin isolated environments
+    bundle = MANUAL_BUNDLES.coi
+    bundleType = 'COI'
+    console.log('[DuckDB] Using COI bundle for cross-origin isolated environment')
+  } else {
+    // Fall back to selectBundle for non-COI environments
+    bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
+    bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
+  }
+
   const worker = new Worker(bundle.mainWorker!)
   // Use VoidLogger to silence noisy query logs - our diagnostic logging is more useful
   const logger = new duckdb.VoidLogger()
 
   db = new duckdb.AsyncDuckDB(logger, worker)
-  await db.instantiate(bundle.mainModule)
+
+  // COI bundle requires pthreadWorker for multi-threading support
+  if (bundleType === 'COI' && bundle.pthreadWorker) {
+    await db.instantiate(bundle.mainModule, bundle.pthreadWorker)
+  } else {
+    await db.instantiate(bundle.mainModule)
+  }
 
   // Expose DuckDB to window for console debugging
   if (typeof window !== 'undefined') {
@@ -116,24 +145,42 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
 
     if (caps.hasOPFS && caps.supportsAccessHandle) {
       // Chrome/Edge/Safari: OPFS-backed persistent storage
+      // Using EH bundle (single-threaded) which works with OPFS without the COI bundle bug
       try {
+        console.log('[DuckDB] Opening OPFS with accessMode:', duckdb.DuckDBAccessMode.READ_WRITE, '(value:', duckdb.DuckDBAccessMode.READ_WRITE, ')')
         await db.open({
           path: 'opfs://cleanslate.db',
-          // @ts-expect-error access_mode works at runtime but types don't include it
-          query: { access_mode: 'READ_WRITE' },
+          accessMode: duckdb.DuckDBAccessMode.READ_WRITE,
         })
         isPersistent = true
-        console.log(`[DuckDB] OPFS persistence enabled (${caps.browser})`)
+        isReadOnly = false
+
+        // Verify write access by checking if we can run a simple write query
+        const testConn = await db.connect()
+        try {
+          await testConn.query('CREATE TABLE IF NOT EXISTS _write_test (x INT)')
+          await testConn.query('DROP TABLE IF EXISTS _write_test')
+          console.log(`[DuckDB] OPFS persistence enabled (${caps.browser}), write access verified`)
+        } catch (writeTestError) {
+          console.error('[DuckDB] Write access test failed:', writeTestError)
+          isReadOnly = true
+          toast({
+            title: 'Read-Only Mode',
+            description: 'Database opened but write access failed. Check browser permissions.',
+            variant: 'default',
+          })
+        } finally {
+          await testConn.close()
+        }
       } catch (openError) {
-        // Check if error is due to database already open in another tab
+        // Check if error is due to database already open in another tab or stale file handle
         const errorMsg = openError instanceof Error ? openError.message : String(openError)
-        if (errorMsg.includes('locked') || errorMsg.includes('busy')) {
+        if (errorMsg.includes('locked') || errorMsg.includes('busy') || errorMsg.includes('Access Handles cannot be created')) {
           // Database locked by another tab - open in read-only mode
           console.warn('[DuckDB] Database locked by another tab, opening read-only')
           await db.open({
             path: 'opfs://cleanslate.db',
-            // @ts-expect-error access_mode works at runtime but types don't include it
-            query: { access_mode: 'READ_ONLY' },
+            accessMode: duckdb.DuckDBAccessMode.READ_ONLY,
           })
           isPersistent = true
           isReadOnly = true
@@ -143,6 +190,97 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
             description: 'CleanSlate is open in another tab. This tab is read-only.',
             variant: 'default',
           })
+        } else if (errorMsg.includes('not a valid DuckDB database file')) {
+          // Corrupted or stale database file - need to terminate worker, delete ALL related files, and create fresh instance
+          console.warn('[DuckDB] Corrupted/stale OPFS file detected, attempting recovery...')
+          try {
+            // Terminate the current worker to release file handles
+            await db.terminate()
+            db = null
+            console.log('[DuckDB] Terminated worker to release file handles')
+
+            // Recursively delete all DuckDB-related files from OPFS
+            // DuckDB-WASM may create: cleanslate.db, cleanslate.db.wal, cleanslate_temp.db, and directories
+            const root = await navigator.storage.getDirectory()
+
+            // Helper to recursively delete entries matching a pattern
+            async function deleteMatchingEntries(dir: FileSystemDirectoryHandle, pattern: RegExp, prefix = '') {
+              // Use values() iterator - cast to any for TypeScript compatibility
+              const entries = (dir as any).entries() as AsyncIterable<[string, FileSystemHandle]>
+              for await (const [name, handle] of entries) {
+                const fullPath = prefix ? `${prefix}/${name}` : name
+                if (handle.kind === 'directory') {
+                  // Recurse into directories
+                  await deleteMatchingEntries(handle as FileSystemDirectoryHandle, pattern, fullPath)
+                  // Try to delete empty directories related to duckdb
+                  if (name.toLowerCase().includes('duckdb') || name.toLowerCase().includes('cleanslate')) {
+                    try {
+                      await dir.removeEntry(name, { recursive: true })
+                      console.log(`[DuckDB] Deleted directory: ${fullPath}`)
+                    } catch { /* Directory not empty or other error */ }
+                  }
+                } else if (pattern.test(name)) {
+                  try {
+                    await dir.removeEntry(name)
+                    console.log(`[DuckDB] Deleted file: ${fullPath}`)
+                  } catch (e) {
+                    console.warn(`[DuckDB] Failed to delete ${fullPath}:`, e)
+                  }
+                }
+              }
+            }
+
+            // Delete any file containing 'cleanslate' or common DuckDB extensions
+            const cleanupPattern = /cleanslate|\.duckdb|\.wal$/i
+            await deleteMatchingEntries(root, cleanupPattern)
+            console.log('[DuckDB] OPFS cleanup completed')
+
+            // Create fresh DuckDB instance with new worker (using same bundle type)
+            const freshWorker = new Worker(bundle.mainWorker!)
+            db = new duckdb.AsyncDuckDB(logger, freshWorker)
+            if (bundleType === 'COI' && bundle.pthreadWorker) {
+              await db.instantiate(bundle.mainModule, bundle.pthreadWorker)
+            } else {
+              await db.instantiate(bundle.mainModule)
+            }
+
+            // Update window reference
+            if (typeof window !== 'undefined') {
+              // @ts-ignore
+              window.__db = db
+            }
+
+            // Retry opening with fresh OPFS file
+            await db.open({
+              path: 'opfs://cleanslate.db',
+              accessMode: duckdb.DuckDBAccessMode.READ_WRITE,
+            })
+            isPersistent = true
+            console.log(`[DuckDB] OPFS persistence enabled after recovery (${caps.browser})`)
+
+            toast({
+              title: 'Database Recovered',
+              description: 'A corrupted database file was detected and cleared. Your data has been reset.',
+              variant: 'default',
+            })
+          } catch (recoveryError) {
+            console.error('[DuckDB] Recovery failed:', recoveryError)
+            // Need to recreate db instance for memory fallback
+            if (!db) {
+              const fallbackWorker = new Worker(bundle.mainWorker!)
+              db = new duckdb.AsyncDuckDB(logger, fallbackWorker)
+              if (bundleType === 'COI' && bundle.pthreadWorker) {
+                await db.instantiate(bundle.mainModule, bundle.pthreadWorker)
+              } else {
+                await db.instantiate(bundle.mainModule)
+              }
+              if (typeof window !== 'undefined') {
+                // @ts-ignore
+                window.__db = db
+              }
+            }
+            throw openError  // Re-throw original error to trigger memory fallback
+          }
         } else {
           throw openError  // Re-throw if not a locking issue
         }
@@ -151,14 +289,18 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
       // Firefox: In-memory fallback
       await db.open({
         path: ':memory:',
-        // @ts-expect-error access_mode works at runtime but types don't include it
-        query: { access_mode: 'READ_WRITE' },
+        accessMode: duckdb.DuckDBAccessMode.READ_WRITE,
       })
       isPersistent = false
       console.log(`[DuckDB] In-memory mode (${caps.browser} - no OPFS support)`)
     }
   } catch (error) {
     console.error('[DuckDB] OPFS init failed, falling back to memory:', error)
+    toast({
+      title: 'Using In-Memory Mode',
+      description: 'Data will not persist between sessions. Export your work before closing.',
+      variant: 'default',
+    })
     await db.open({ path: ':memory:' })
     isPersistent = false
   }
