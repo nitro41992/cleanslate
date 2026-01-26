@@ -49,9 +49,15 @@ await inspector.waitForTableLoaded('my_table', expectedRows)
 **Use instead:**
 - `await inspector.waitForDuckDBReady()` — DuckDB initialization
 - `await inspector.waitForTableLoaded(name, rows)` — Table data ready
+- `await inspector.waitForTransformComplete(tableId)` — Transform operations complete
+- `await inspector.waitForPanelAnimation(panelId)` — Panel open/close animations
+- `await inspector.waitForMergeComplete()` — Matcher merge operations
+- `await inspector.waitForGridReady()` — Data grid fully initialized
 - `await expect(locator).toBeVisible()` — UI elements
 - `await expect(locator).toBeHidden()` — Spinners disappear
 - `await expect.poll(...)` — Data persistence checks
+
+**📚 See also:** `e2e/helpers/WAIT_HELPERS_QUICKREF.md` for detailed usage patterns
 
 ```typescript
 // ❌ Bad: Hope it finished
@@ -154,12 +160,23 @@ test.describe.serial('FR-A3: Text Cleaning', () => {
 
 **Key StoreInspector Methods:**
 ```typescript
+// Initialization & Data Loading
 await inspector.waitForDuckDBReady()           // Wait for DuckDB init
 await inspector.waitForTableLoaded(name, rows) // Wait for table
+
+// Operation Completion (replaces waitForTimeout!)
+await inspector.waitForTransformComplete(tableId)  // Transform done
+await inspector.waitForPanelAnimation(panelId)     // Panel ready
+await inspector.waitForMergeComplete()             // Merge done
+await inspector.waitForGridReady()                 // Grid ready
+
+// Data Access
 await inspector.getTableData(name)             // Get all rows
 await inspector.runQuery(sql)                  // Execute SQL
 await inspector.getAuditEntries()              // Get audit log
 ```
+
+**📚 Full documentation:** See `e2e/helpers/WAIT_HELPERS.md`, `WAIT_HELPERS_EXAMPLES.md`, `WAIT_HELPERS_QUICKREF.md`
 
 ## 7. Fixtures
 
