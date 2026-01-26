@@ -286,6 +286,9 @@ export async function importTableFromParquet(
     }
 
     // Read all chunks with glob pattern
+    // NOTE: Do NOT add ORDER BY here - it can cause non-stable re-sorting
+    // Rely on preserve_insertion_order (default: true) to maintain Parquet file order
+    // The export already wrote rows in _cs_id order
     await conn.query(`
       CREATE OR REPLACE TABLE "${targetTableName}" AS
       SELECT * FROM read_parquet('${snapshotId}_part_*.parquet')
@@ -309,6 +312,9 @@ export async function importTableFromParquet(
       false
     )
 
+    // NOTE: Do NOT add ORDER BY here - it can cause non-stable re-sorting
+    // Rely on preserve_insertion_order (default: true) to maintain Parquet file order
+    // The export already wrote rows in _cs_id order
     await conn.query(`
       CREATE OR REPLACE TABLE "${targetTableName}" AS
       SELECT * FROM read_parquet('${fileName}')

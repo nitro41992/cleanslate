@@ -654,3 +654,106 @@ The design is intentional:
    - [x] Edit a cell → Click "Highlight" in audit sidebar
    - [x] The edited cell shows yellow background highlight
    - [x] Click "Clear" → Highlight disappears
+
+4. **Dirty cell indicator (red triangle) verification**:
+   - [x] Edit a cell → Red triangle appears in corner
+   - [x] Make more edits → Red triangles accumulate
+   - [x] Apply a transformation → Red triangles persist
+   - [x] Undo a manual edit → That red triangle disappears
+   - [x] Redo a manual edit → That red triangle reappears
+
+### Additional Fix: Grid Invalidation on Undo/Redo
+
+**Problem discovered**: After fixing Issue 3, the dirty cell indicators (red triangles) were not updating on undo/redo. They would disappear on undo but not reappear on redo.
+
+**Root cause**: Canvas-based Glide Data Grid caches aggressively. Even though `dirtyCells` was being recalculated correctly (via the useMemo dependency on `timelinePosition`), the grid wasn't redrawing the cells with the updated indicators.
+
+**Fix**: Added a second `useEffect` that triggers grid invalidation when `timelinePosition` changes (which happens on undo/redo). This ensures:
+- Red triangles disappear when manual edits are undone
+- Red triangles reappear when manual edits are redone
+
+**Code**: Extracted `invalidateVisibleCells()` helper and added effect for timeline position changes in `DataGrid.tsx`.
+
+---
+
+### Critical Fix: Snapshot Index Off-by-One Error (2026-01-26)
+
+**Problem discovered**: When undoing all the way back (past a transformation) and then redoing all the way forward, transformations persist but manual edits don't come back.
+
+**Root cause**: The executor was creating snapshots at the WRONG index. In `executor.ts`:
+
+```typescript
+// BEFORE (BUG):
+const stepIndex = timeline.position + 1  // Position after this command will execute
+```
+
+This caused snapshots to be registered at index N+1, but they contained state BEFORE command N+1 was executed.
+
+When `replayToPosition(tableId, 1)` was called:
+1. `getSnapshotBefore(tableId, 1)` found snapshot at index 1
+2. Restored from it (which had manual_edit but NOT the transform)
+3. Since `targetPosition (1) <= snapshotIndex (1)`, it returned WITHOUT replaying the transform!
+
+**Fix**: Create snapshots at `timeline.position` instead of `timeline.position + 1`:
+
+```typescript
+// AFTER (FIXED):
+const stepIndex = timeline.position  // Snapshot of current state (after last command, before this one)
+```
+
+Now:
+- Snapshot[0] = state after command[0] (manual_edit)
+- When replaying to position 1, `getSnapshotBefore(1)` returns snapshot[0]
+- Restore from snapshot[0], then replay command[1] (transform)
+- Result: manual_edit + transform - CORRECT!
+
+**Files modified**:
+- `src/lib/commands/executor.ts` - Fixed snapshot index calculation
+
+**Debug logging added** (for verification):
+- `src/lib/timeline-engine.ts` - Added detailed logging to `applyManualEditCommand` to verify UPDATE statements are matching rows
+
+---
+
+### Critical Fix: Deterministic Row Ordering (2026-01-26)
+
+**Problem discovered**: After Parquet restore on large tables (228k rows), manual edits appear to be lost. The data is actually correct in the database, but the edited rows move out of the visible viewport because row ordering changes.
+
+**Evidence from user testing**:
+- Before undo: First row was "Rachel Roh" (csId: 1340539111971516416)
+- After undo: First row was "Cheryle Johnson" (csId: 1427829380017971203)
+- Verification shows data IS correct: `[REPLAY] Verification after manual_edit: {expectedValue: 'asd', actualValue: 'asd', rowFound: true}`
+
+**Root cause analysis** (based on [DuckDB Order Preservation documentation](https://duckdb.org/docs/stable/sql/dialect/order_preservation)):
+
+1. **Parquet import is NOT the issue** - DuckDB's `preserve_insertion_order` (default: true) preserves Parquet file order during reads
+2. **Adding ORDER BY to import is WRONG** - ORDER BY can use non-stable sorting, potentially changing order!
+3. **The real issue is data fetching queries** - `getTableData` and `getTableDataWithRowIds` used `SELECT * FROM table LIMIT N OFFSET M` without ORDER BY
+4. **Multi-threading can cause non-determinism** - DuckDB exploits non-determinism for parallel performance per [DuckDB Non-Deterministic Behavior docs](https://duckdb.org/docs/stable/operations_manual/non-deterministic_behavior)
+
+**Fix**: Add `ORDER BY _cs_id` to data fetching queries (NOT to Parquet import):
+
+```typescript
+// getTableDataWithRowIds - used by DataGrid for pagination
+const result = await connection.query(
+  `SELECT * FROM "${tableName}" ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit} OFFSET ${offset}`
+)
+
+// getTableData - fallback for DataGrid
+const hasCsId = await tableHasCsIdNoMutex(connection, tableName)
+const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
+const result = await connection.query(
+  `SELECT * FROM "${tableName}" ${orderClause} LIMIT ${limit} OFFSET ${offset}`
+)
+```
+
+**Why this is correct**:
+1. Export writes Parquet in `_cs_id` order (via ORDER BY in COPY)
+2. Import relies on `preserve_insertion_order` to maintain file order (no ORDER BY needed)
+3. Data fetching uses explicit `ORDER BY _cs_id` for deterministic pagination across queries
+4. This matches the pattern recommended by DuckDB for [deterministic results](https://duckdb.org/docs/stable/operations_manual/non-deterministic_behavior)
+
+**Files modified**:
+- `src/lib/duckdb/index.ts` - Added `ORDER BY _cs_id` to `getTableData()` and `getTableDataWithRowIds()`
+- `src/lib/duckdb/index.ts` - Added `tableHasCsIdNoMutex()` helper for use inside mutex blocks
+- `src/lib/opfs/snapshot-storage.ts` - Reverted ORDER BY addition (rely on preserve_insertion_order)

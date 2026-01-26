@@ -457,9 +457,18 @@ export async function getTableData(
 ): Promise<Record<string, unknown>[]> {
   return withMutex(async () => {
     const connection = await getConnection()
-    const result = await connection.query(
-      `SELECT * FROM "${tableName}" LIMIT ${limit} OFFSET ${offset}`
-    )
+    // Try ORDER BY _cs_id for deterministic pagination, fall back if column doesn't exist
+    let result
+    try {
+      result = await connection.query(
+        `SELECT * FROM "${tableName}" ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit} OFFSET ${offset}`
+      )
+    } catch {
+      // Table doesn't have _cs_id (e.g., diff tables) - query without ORDER BY
+      result = await connection.query(
+        `SELECT * FROM "${tableName}" LIMIT ${limit} OFFSET ${offset}`
+      )
+    }
     const rows = result.toArray().map((row) => row.toJSON())
 
     if (includeInternal) {
@@ -490,8 +499,10 @@ export async function getTableDataWithRowIds(
 ): Promise<{ csId: string; data: Record<string, unknown> }[]> {
   return withMutex(async () => {
     const connection = await getConnection()
+    // ORDER BY _cs_id for deterministic pagination across queries
+    // Without this, multi-threaded DuckDB may return rows in different order
     const result = await connection.query(
-      `SELECT * FROM "${tableName}" LIMIT ${limit} OFFSET ${offset}`
+      `SELECT * FROM "${tableName}" ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit} OFFSET ${offset}`
     )
     return result.toArray().map((row) => {
       const json = row.toJSON()

@@ -27,16 +27,15 @@ export function convertCommandToAuditEntry(
   // For manual edits, extract the previous/new values from params
   let previousValue: unknown
   let newValue: unknown
-  let rowIndex: number | undefined
   let columnName: string | undefined
+  let csId: string | undefined
 
   if (isManualEdit) {
     const params = command.params as ManualEditParams
     previousValue = params.previousValue
     newValue = params.newValue
     columnName = params.columnName
-    // Note: ManualEditParams uses csId, not rowIndex
-    // We don't have rowIndex in the new system, but we can indicate the cell
+    csId = params.csId // Stable cell identifier (replaces rowIndex)
   }
 
   // Also check cellChanges for batch edits or legacy format
@@ -45,6 +44,7 @@ export function convertCommandToAuditEntry(
     previousValue = previousValue ?? firstChange.previousValue
     newValue = newValue ?? firstChange.newValue
     columnName = columnName ?? firstChange.columnName
+    csId = csId ?? firstChange.csId
   }
 
   return {
@@ -61,8 +61,8 @@ export function convertCommandToAuditEntry(
     // Manual edit specific fields
     previousValue,
     newValue,
-    rowIndex,
     columnName,
+    csId,
   }
 }
 
@@ -107,7 +107,8 @@ function buildDetails(command: TimelineCommand): string {
 
 /**
  * Get audit entries for a specific table from its timeline.
- * Only returns entries up to (and including) the current position.
+ * Returns ALL entries (both active and undone) - the UI handles visual distinction.
+ * Entries beyond currentPosition are shown greyed out with "Undone" badge.
  *
  * @param tableId - The table ID to get audit entries for
  * @returns Array of AuditLogEntry, sorted newest first
@@ -120,18 +121,32 @@ export function getAuditEntriesForTable(tableId: string): AuditLogEntry[] {
     return []
   }
 
-  // Only include commands up to current position (undone commands are hidden)
-  const activeCommands = timeline.commands.slice(0, timeline.currentPosition + 1)
+  // Create synthetic "File Imported" entry from timeline creation
+  const importEntry: AuditLogEntry = {
+    id: `import_${timeline.id}`,
+    timestamp: timeline.createdAt,
+    tableId: timeline.tableId,
+    tableName: timeline.tableName,
+    action: 'File Imported',
+    details: `Imported table "${timeline.tableName}"`,
+    entryType: 'A',
+    rowsAffected: 0, // Unknown at this point
+    hasRowDetails: false,
+    auditEntryId: `import_${timeline.id}`,
+  }
 
-  // Convert commands to audit entries (newest first)
-  return activeCommands
+  // Return ALL commands plus the import entry - UI handles greyed styling for undone entries
+  // (entries beyond currentPosition shown with opacity-40 and "Undone" badge)
+  const commandEntries = timeline.commands
     .map((cmd, index) => convertCommandToAuditEntry(timeline, cmd, index))
-    .reverse()
+
+  // Return with newest first: commands reversed, then import at the end (oldest)
+  return [...commandEntries.reverse(), importEntry]
 }
 
 /**
  * Get all audit entries across all tables.
- * Only returns entries up to each table's current position.
+ * Returns ALL entries (both active and undone) - the UI handles visual distinction.
  *
  * @returns Array of AuditLogEntry from all tables, sorted newest first
  */
@@ -139,13 +154,25 @@ export function getAllAuditEntries(): AuditLogEntry[] {
   const store = useTimelineStore.getState()
   const allEntries: AuditLogEntry[] = []
 
-  // Iterate over all timelines
+  // Iterate over all timelines - include ALL commands plus import entry
   for (const timeline of store.timelines.values()) {
-    // Only include commands up to current position
-    const activeCommands = timeline.commands.slice(0, timeline.currentPosition + 1)
+    // Add synthetic "File Imported" entry
+    allEntries.push({
+      id: `import_${timeline.id}`,
+      timestamp: timeline.createdAt,
+      tableId: timeline.tableId,
+      tableName: timeline.tableName,
+      action: 'File Imported',
+      details: `Imported table "${timeline.tableName}"`,
+      entryType: 'A',
+      rowsAffected: 0,
+      hasRowDetails: false,
+      auditEntryId: `import_${timeline.id}`,
+    })
 
-    for (let i = 0; i < activeCommands.length; i++) {
-      allEntries.push(convertCommandToAuditEntry(timeline, activeCommands[i], i))
+    // Add all command entries
+    for (let i = 0; i < timeline.commands.length; i++) {
+      allEntries.push(convertCommandToAuditEntry(timeline, timeline.commands[i], i))
     }
   }
 

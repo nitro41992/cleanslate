@@ -248,9 +248,22 @@ export class CommandExecutor implements ICommandExecutor {
 
         // Call timeline engine's createStepSnapshot for Parquet-backed snapshots
         // This creates a snapshot of the CURRENT state (before the new command is applied)
+        // CRITICAL FIX: Snapshot at index N = state AFTER command[N] was executed
+        // This snapshot captures the state after command[position], before the new expensive command
         const { createStepSnapshot } = await import('@/lib/timeline-engine')
         const timeline = getTimeline(tableId)
-        const stepIndex = timeline.position + 1  // Position after this command will execute
+        const stepIndex = timeline.position  // Snapshot of current state (after last command, before this one)
+
+        // Log the exact state before creating snapshot
+        console.log('[Executor] Creating step snapshot:', {
+          executorPosition: timeline.position,
+          executorCommandCount: timeline.commands.length,
+          timelineStorePosition: existingTimeline?.currentPosition,
+          timelineStoreCommandCount: existingTimeline?.commands.length,
+          stepIndex,
+          commandType: command.type,
+          tier,
+        })
 
         const snapshotName = await createStepSnapshot(
           ctx.table.name,
@@ -764,6 +777,10 @@ export class CommandExecutor implements ICommandExecutor {
    * Returns cells that have been modified by edit:cell commands
    * at or before the current timeline position.
    *
+   * IMPORTANT: Reads position from timelineStore (not executor's internal timeline)
+   * to ensure consistency with React state. This avoids race conditions where
+   * React re-renders before executor.timeline.position is updated.
+   *
    * @param tableId - The table ID to get dirty cells for
    * @returns Set of cell keys in format "csId:columnName"
    */
@@ -771,11 +788,17 @@ export class CommandExecutor implements ICommandExecutor {
     const timeline = tableTimelines.get(tableId)
     if (!timeline) return new Set()
 
+    // Read position from timelineStore for consistency with React state
+    // (executor's internal position may lag behind during undo/redo)
+    const timelineStoreState = useTimelineStore.getState()
+    const storeTimeline = timelineStoreState.getTimeline(tableId)
+    const position = storeTimeline?.currentPosition ?? -1
+
     const dirtyCells = new Set<string>()
 
     // Collect cells from commands up to current position (inclusive)
     // Commands after currentPosition are "undone" and shouldn't show as dirty
-    for (let i = 0; i <= timeline.position && i < timeline.commands.length; i++) {
+    for (let i = 0; i <= position && i < timeline.commands.length; i++) {
       const cmd = timeline.commands[i]
       if (cmd.cellChanges) {
         for (const change of cmd.cellChanges) {

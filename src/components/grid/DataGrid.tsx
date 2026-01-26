@@ -6,6 +6,7 @@ import DataGridLib, {
   GetRowThemeCallback,
   EditableGridCell,
   DrawCellCallback,
+  DataEditorRef,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { useDuckDB } from '@/hooks/useDuckDB'
@@ -93,6 +94,8 @@ export function DataGrid({
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
+  // Grid ref for programmatic control (e.g., forcing re-render on highlight changes)
+  const gridRef = useRef<DataEditorRef>(null)
 
   // Timeline store for highlight state and replay status
   const storeHighlight = useTimelineStore((s) => s.highlight)
@@ -229,6 +232,43 @@ export function DataGrid({
           })
       })
   }, [tableName, columns, getData, getDataWithRowIds, rowCount, dataVersion, isReplaying, isBusy])
+
+  // Track previous values to detect changes
+  const prevHighlightCommandId = useRef<string | null | undefined>(undefined)
+  const prevTimelinePosition = useRef<number>(-1)
+
+  // Helper to invalidate visible cells in the grid
+  const invalidateVisibleCells = useCallback(() => {
+    if (!gridRef.current) return
+    const cellsToUpdate: { cell: [number, number] }[] = []
+    const visibleStart = loadedRange.start
+    const visibleEnd = Math.min(loadedRange.end, loadedRange.start + 50) // Limit to 50 cells for performance
+    for (let row = visibleStart; row < visibleEnd; row++) {
+      cellsToUpdate.push({ cell: [0, row] })
+    }
+    if (cellsToUpdate.length > 0) {
+      gridRef.current.updateCells(cellsToUpdate)
+    }
+  }, [loadedRange])
+
+  // Force grid re-render when highlight changes (set or cleared)
+  // Canvas-based grids need explicit invalidation to redraw cells with new highlight state
+  useEffect(() => {
+    const currentCommandId = activeHighlight?.commandId ?? null
+    if (prevHighlightCommandId.current !== currentCommandId) {
+      invalidateVisibleCells()
+    }
+    prevHighlightCommandId.current = currentCommandId
+  }, [activeHighlight?.commandId, invalidateVisibleCells])
+
+  // Force grid re-render when timeline position changes (undo/redo)
+  // This ensures dirty cell indicators (red triangles) update correctly
+  useEffect(() => {
+    if (prevTimelinePosition.current !== timelinePosition) {
+      invalidateVisibleCells()
+    }
+    prevTimelinePosition.current = timelinePosition
+  }, [timelinePosition, invalidateVisibleCells])
 
   // Load more data on scroll (with row ID tracking for timeline highlighting)
   const onVisibleRegionChanged = useCallback(
@@ -544,6 +584,7 @@ export function DataGrid({
     <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
       {data.length > 0 && (
         <DataGridLib
+          ref={gridRef}
           columns={gridColumns}
           rows={rowCount}
           getCellContent={getCellContent}

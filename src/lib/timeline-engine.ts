@@ -194,16 +194,38 @@ export async function restoreTimelineOriginalSnapshot(
     const snapshotId = snapshotName.replace('parquet:', '')
 
     console.log(`[Timeline] Restoring from Parquet: ${snapshotId}`)
+
+    // CRITICAL: Verify Parquet file exists BEFORE dropping the table
+    const { checkSnapshotFileExists } = await import('@/lib/opfs/snapshot-storage')
+    const fileExists = await checkSnapshotFileExists(snapshotId)
+    if (!fileExists) {
+      throw new Error(`[Timeline] Parquet snapshot file not found: ${snapshotId}. Cannot restore table.`)
+    }
+
     const db = await initDuckDB()
     const conn = await getConnection()
 
     // Drop current table
     await dropTable(tableName)
 
-    // Import from OPFS
-    await importTableFromParquet(db, conn, snapshotId, tableName)
+    // Import from OPFS - wrapped in try-catch with detailed error
+    try {
+      await importTableFromParquet(db, conn, snapshotId, tableName)
+      console.log(`[Timeline] Successfully restored table ${tableName} from Parquet snapshot`)
+    } catch (importError) {
+      // CRITICAL: Table was dropped but import failed - try to create empty table to prevent crashes
+      console.error(`[Timeline] CRITICAL: Failed to import from Parquet after dropping table:`, importError)
+      // Re-throw to let caller handle - the table is in a broken state
+      throw new Error(`Failed to restore table ${tableName} from Parquet snapshot ${snapshotId}: ${importError}`)
+    }
   } else {
     // In-memory snapshot (existing behavior)
+    // First verify the snapshot table exists
+    const snapshotExists = await tableExists(snapshotName)
+    if (!snapshotExists) {
+      throw new Error(`[Timeline] In-memory snapshot table not found: ${snapshotName}. Cannot restore table.`)
+    }
+
     await dropTable(tableName)
     await duplicateTable(snapshotName, tableName, true)
   }
@@ -218,11 +240,14 @@ export async function createStepSnapshot(
   timelineId: string,
   stepIndex: number
 ): Promise<string> {
+  console.log('[SNAPSHOT] createStepSnapshot called:', { tableName, timelineId, stepIndex })
+
   // Check row count to decide storage strategy
   const countResult = await query<{ count: number }>(
     `SELECT COUNT(*) as count FROM "${tableName}"`
   )
   const rowCount = Number(countResult[0].count)
+  console.log('[SNAPSHOT] Table row count:', rowCount)
 
   if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
     console.log(`[Timeline] Creating Parquet step snapshot for ${rowCount.toLocaleString()} rows at step ${stepIndex}...`)
@@ -236,8 +261,19 @@ export async function createStepSnapshot(
 
     // Register in store with parquet: prefix
     const tableId = findTableIdByTimeline(timelineId)
+    console.log('[SNAPSHOT] Registering snapshot in store:', {
+      tableId,
+      stepIndex,
+      snapshotName: `parquet:${snapshotId}`,
+      foundTableId: !!tableId,
+    })
     if (tableId) {
       useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+      // Verify it was registered
+      const timeline = useTimelineStore.getState().getTimeline(tableId)
+      console.log('[SNAPSHOT] After registration, snapshots:', [...(timeline?.snapshots.entries() ?? [])])
+    } else {
+      console.error('[SNAPSHOT] CRITICAL: Could not find tableId for timelineId:', timelineId)
     }
 
     return `parquet:${snapshotId}`
@@ -258,8 +294,19 @@ export async function createStepSnapshot(
 
     // Register in store with Parquet reference
     const tableId = findTableIdByTimeline(timelineId)
+    console.log('[SNAPSHOT] Registering small table snapshot in store:', {
+      tableId,
+      stepIndex,
+      snapshotName: `parquet:${snapshotId}`,
+      foundTableId: !!tableId,
+    })
     if (tableId) {
       useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+      // Verify it was registered
+      const timeline = useTimelineStore.getState().getTimeline(tableId)
+      console.log('[SNAPSHOT] After registration (small table), snapshots:', [...(timeline?.snapshots.entries() ?? [])])
+    } else {
+      console.error('[SNAPSHOT] CRITICAL: Could not find tableId for timelineId (small table):', timelineId)
     }
 
     return `parquet:${snapshotId}`
@@ -365,7 +412,39 @@ async function applyManualEditCommand(
   tableName: string,
   params: ManualEditParams
 ): Promise<void> {
+  console.log('[REPLAY] applyManualEditCommand:', {
+    tableName,
+    csId: params.csId,
+    columnName: params.columnName,
+    newValue: params.newValue,
+  })
+
+  // DEBUG: Check if the row exists before UPDATE
+  const checkResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${params.csId}'`
+  )
+  const rowExists = Number(checkResult[0].count) > 0
+  console.log('[REPLAY] Row exists check:', { csId: params.csId, exists: rowExists })
+
+  if (!rowExists) {
+    console.error('[REPLAY] CRITICAL: Row with csId not found in table!', {
+      csId: params.csId,
+      tableName,
+    })
+    // List a few sample _cs_id values to help debug
+    const sampleIds = await query<Record<string, unknown>>(
+      `SELECT "${CS_ID_COLUMN}" FROM "${tableName}" LIMIT 5`
+    )
+    console.error('[REPLAY] Sample _cs_id values in table:', sampleIds)
+  }
+
   await updateCellByRowId(tableName, params.csId, params.columnName, params.newValue)
+
+  // DEBUG: Verify the value was actually set
+  const verifyResult = await query<Record<string, unknown>>(
+    `SELECT "${params.columnName}" FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${params.csId}'`
+  )
+  console.log('[REPLAY] After UPDATE, value is:', verifyResult[0]?.[params.columnName])
 }
 
 /**
@@ -464,11 +543,18 @@ export async function replayToPosition(
     const snapshotIndex = snapshot?.index ?? -1
     let snapshotTableName = snapshot?.tableName ?? originalSnapshotName
 
+    // Log all available snapshots for debugging
+    const allSnapshots = [...timeline.snapshots.entries()].map(([idx, name]) => ({ index: idx, name }))
+
     console.log('[REPLAY] Snapshot search result:', {
+      targetPosition,
       snapshot,
       snapshotIndex,
       snapshotTableName,
       originalSnapshotName,
+      allAvailableSnapshots: allSnapshots,
+      willUseOriginal: snapshotIndex === -1,
+      willReplayCommands: targetPosition > snapshotIndex,
     })
 
     // Handle missing or empty snapshot name
@@ -482,7 +568,16 @@ export async function replayToPosition(
 
     // Verify snapshot exists (handle both Parquet and in-memory)
     const isParquetSnapshot = snapshotTableName.startsWith('parquet:')
-    const snapshotExists = isParquetSnapshot || await tableExists(snapshotTableName)
+    let snapshotExists = false
+    if (isParquetSnapshot) {
+      // For Parquet snapshots, verify the file actually exists in OPFS
+      const { checkSnapshotFileExists } = await import('@/lib/opfs/snapshot-storage')
+      const snapshotId = snapshotTableName.replace('parquet:', '')
+      snapshotExists = await checkSnapshotFileExists(snapshotId)
+    } else {
+      // For in-memory snapshots, check if the table exists
+      snapshotExists = await tableExists(snapshotTableName)
+    }
     console.log('[REPLAY] Snapshot exists check:', { snapshotTableName, snapshotExists, isParquetSnapshot })
 
     if (!snapshotExists) {
@@ -496,19 +591,36 @@ export async function replayToPosition(
 
     // Restore from snapshot (handle both Parquet and in-memory)
     console.log('[REPLAY] Restoring table from snapshot:', { tableName, snapshotTableName, isParquetSnapshot })
-    if (snapshotTableName.startsWith('parquet:')) {
-      await restoreTimelineOriginalSnapshot(tableName, snapshotTableName)
-    } else {
-      await execute(`DROP TABLE IF EXISTS "${tableName}"`)
-      await duplicateTable(snapshotTableName, tableName, true)
+    try {
+      if (snapshotTableName.startsWith('parquet:')) {
+        await restoreTimelineOriginalSnapshot(tableName, snapshotTableName)
+      } else {
+        await execute(`DROP TABLE IF EXISTS "${tableName}"`)
+        await duplicateTable(snapshotTableName, tableName, true)
+      }
+    } catch (restoreError) {
+      console.error('[REPLAY] CRITICAL: Failed to restore table from snapshot:', restoreError)
+      // Re-throw with context - caller needs to know the restore failed
+      throw new Error(`Failed to restore table ${tableName} from snapshot: ${restoreError}`)
     }
 
-    // Debug: Query a sample of the restored data
-    const sampleData = await query<Record<string, unknown>>(`SELECT * FROM "${tableName}" LIMIT 3`)
-    console.log('[REPLAY] Table restored from snapshot. Sample data:', sampleData)
+    // Debug: Query a sample of the restored data and verify row count
+    const sampleData = await query<Record<string, unknown>>(`SELECT * FROM "${tableName}" LIMIT 5`)
+    const restoredCountResult = await query<{ count: number }>(`SELECT COUNT(*) as count FROM "${tableName}"`)
+    console.log('[REPLAY] Table restored from snapshot:', {
+      snapshotTableName,
+      snapshotIndex,
+      restoredRowCount: Number(restoredCountResult[0].count),
+      sampleData,
+    })
 
     // If target is at or before snapshot, we're done
     if (targetPosition <= snapshotIndex) {
+      console.log('[REPLAY] Early return: targetPosition <= snapshotIndex, no replay needed', {
+        targetPosition,
+        snapshotIndex,
+        reason: 'Snapshot already contains state at or after target position',
+      })
       onProgress?.(100, 'Complete')
       store.setPosition(tableId, targetPosition)
       store.setIsReplaying(false)
@@ -534,15 +646,27 @@ export async function replayToPosition(
 
     for (let i = 0; i < commandsToReplay.length; i++) {
       const cmd = commandsToReplay[i]
+      const absoluteIndex = snapshotIndex + 1 + i
 
       // Progress: 10-90% for replay, leaving 10% for final steps
       const progress = 10 + Math.round((i / totalCommands) * 80)
       onProgress?.(progress, `Replaying: ${cmd.label}...`)
 
-      console.log('[REPLAY] Replaying command:', { index: i, label: cmd.label, type: cmd.commandType })
+      console.log('[REPLAY] Replaying command:', {
+        replayIndex: i,
+        absoluteIndex,
+        label: cmd.label,
+        type: cmd.commandType,
+        paramsType: cmd.params.type,
+        // For manual_edit, show the key params
+        ...(cmd.params.type === 'manual_edit' ? {
+          csId: (cmd.params as ManualEditParams).csId,
+          columnName: (cmd.params as ManualEditParams).columnName,
+          newValue: (cmd.params as ManualEditParams).newValue,
+        } : {})
+      })
 
       // Check if this command needs a snapshot created before it
-      const absoluteIndex = snapshotIndex + 1 + i
       if (cmd.isExpensive && !timeline.snapshots.has(absoluteIndex)) {
         // We should have a snapshot here but don't - create one
         // This can happen if we're replaying forward past an expensive op
@@ -550,8 +674,37 @@ export async function replayToPosition(
         // During replay, we're recreating state, so we create snapshot after reaching that state
       }
 
-      await applyCommand(tableName, cmd)
-      console.log('[REPLAY] Command applied')
+      try {
+        await applyCommand(tableName, cmd)
+        console.log('[REPLAY] Command applied successfully:', cmd.label)
+      } catch (replayError) {
+        console.error('[REPLAY] CRITICAL: Command replay failed:', {
+          command: cmd.label,
+          type: cmd.commandType,
+          error: replayError,
+        })
+        // Re-throw to let caller handle
+        throw new Error(`Failed to replay command "${cmd.label}": ${replayError}`)
+      }
+
+      // Verify the command was applied (for manual_edit only)
+      if (cmd.params.type === 'manual_edit') {
+        const params = cmd.params as ManualEditParams
+        try {
+          const verifyResult = await query<Record<string, unknown>>(
+            `SELECT "${params.columnName}" FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${params.csId}'`
+          )
+          console.log('[REPLAY] Verification after manual_edit:', {
+            csId: params.csId,
+            expectedValue: params.newValue,
+            actualValue: verifyResult[0]?.[params.columnName],
+            rowFound: verifyResult.length > 0,
+          })
+        } catch (verifyError) {
+          console.error('[REPLAY] Failed to verify manual_edit:', verifyError)
+        }
+      }
+
       store.setReplayProgress(progress)
     }
 
@@ -614,17 +767,32 @@ async function executeInverseUpdate(
   columnName: string,
   previousValue: unknown
 ): Promise<boolean> {
+  console.log('[FastPath] executeInverseUpdate: table=' + tableName + ', col=' + columnName + ', csId=' + csId.substring(0, 8) + '...')
+
   // SAFETY: Validate column exists before attempting update
   const columns = await getTableColumns(tableName)
   const columnExists = columns.some(c => c.name === columnName)
 
   if (!columnExists) {
-    console.warn(`[FastPath] Column "${columnName}" not found in table, falling back to Heavy Path`)
+    console.warn('[FastPath] Column "' + columnName + '" not found, falling back to Heavy Path')
     return false
+  }
+
+  // Check if the row exists before UPDATE
+  const checkResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csId}'`
+  )
+  const rowExists = Number(checkResult[0].count) > 0
+
+  if (!rowExists) {
+    console.error('[FastPath] CRITICAL: Row not found! csId=' + csId.substring(0, 8) + '...')
+    return false // Cannot update non-existent row
   }
 
   const sqlValue = toSqlValue(previousValue)
   await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csId}'`)
+
+  console.log('[FastPath] UPDATE completed successfully')
   return true
 }
 
@@ -664,13 +832,29 @@ export async function undoTimeline(
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
+  // Also log snapshot info with full details
+  const snapshotKeys = timeline ? [...timeline.snapshots.keys()] : []
+  const snapshotDetails = timeline ? [...timeline.snapshots.entries()].map(([idx, name]) => ({ index: idx, name })) : []
+
   console.log('[TIMELINE] Timeline found:', timeline ? {
     id: timeline.id,
     tableName: timeline.tableName,
     currentPosition: timeline.currentPosition,
     commandCount: timeline.commands.length,
+    snapshotIndices: snapshotKeys,
+    snapshotDetails: snapshotDetails,
     originalSnapshotName: timeline.originalSnapshotName,
-    commands: timeline.commands.map((c, i) => ({ index: i, label: c.label, type: c.commandType })),
+    commands: timeline.commands.map((c, i) => ({
+      index: i,
+      label: c.label,
+      type: c.commandType,
+      paramsType: c.params.type,
+      // For manual_edit, show the csId and columnName
+      ...(c.params.type === 'manual_edit' ? {
+        csId: (c.params as ManualEditParams).csId,
+        columnName: (c.params as ManualEditParams).columnName,
+      } : {})
+    })),
   } : null)
 
   if (!timeline || timeline.currentPosition < 0) {
@@ -800,6 +984,8 @@ async function executeForwardUpdate(
   columnName: string,
   newValue: unknown
 ): Promise<boolean> {
+  console.log('[FastPath] executeForwardUpdate:', { tableName, csId, columnName, newValue })
+
   // SAFETY: Validate column exists before attempting update
   const columns = await getTableColumns(tableName)
   const columnExists = columns.some(c => c.name === columnName)
@@ -809,8 +995,33 @@ async function executeForwardUpdate(
     return false
   }
 
+  // DEBUG: Check if the row exists before UPDATE
+  const checkResult = await query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csId}'`
+  )
+  const rowExists = Number(checkResult[0].count) > 0
+  console.log('[FastPath] Row exists check:', { csId, exists: rowExists })
+
+  if (!rowExists) {
+    console.error('[FastPath] CRITICAL: Row with csId not found in table!', { csId, tableName })
+    // List a few sample _cs_id values to help debug
+    const sampleIds = await query<Record<string, unknown>>(
+      `SELECT "${CS_ID_COLUMN}" FROM "${tableName}" LIMIT 5`
+    )
+    console.error('[FastPath] Sample _cs_id values in table:', sampleIds)
+  }
+
   const sqlValue = toSqlValue(newValue)
   await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csId}'`)
+
+  // DEBUG: Verify the value was actually set
+  if (rowExists) {
+    const verifyResult = await query<Record<string, unknown>>(
+      `SELECT "${columnName}" FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csId}'`
+    )
+    console.log('[FastPath] After UPDATE, value is:', verifyResult[0]?.[columnName])
+  }
+
   return true
 }
 

@@ -47,6 +47,7 @@ export interface AuditLogEntry {
   newValue?: unknown
   rowIndex?: number
   columnName?: string
+  csId?: string              // Stable cell identifier for manual edits (replaces rowIndex)
   // Enhanced audit fields
   rowsAffected?: number      // Actual count of modified rows
   hasRowDetails?: boolean    // Flag: row-level data exists in _audit_details
@@ -67,6 +68,7 @@ export interface SerializedAuditLogEntry {
   newValue?: unknown
   rowIndex?: number
   columnName?: string
+  csId?: string
   rowsAffected?: number
   hasRowDetails?: boolean
   auditEntryId?: string
