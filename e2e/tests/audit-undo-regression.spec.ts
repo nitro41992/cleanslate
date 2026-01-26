@@ -42,6 +42,11 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('whitespace_data', 3)
+
+    // Verify data has whitespace (at least one row should have "  John Doe  ")
+    const data = await inspector.getTableData('whitespace_data')
+    const hasJohnDoe = data.some(r => (r.name as string) === '  John Doe  ')
+    expect(hasJohnDoe).toBe(true)
   }
 
   test('FR-REGRESSION-1: Highlight button appears after transform', async () => {
@@ -157,12 +162,10 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     // Reload fresh data to ensure clean state
     await loadTestData()
 
-    // Get ORIGINAL data before transform
+    // Get ORIGINAL data before transform (find row with whitespace)
     const originalData = await inspector.getTableData('whitespace_data')
-    const originalValue = originalData[0]?.name as string
-    // Original should have whitespace: "  John Doe  "
-    // Rule 2: Assert exact whitespace value
-    expect(originalValue).toBe('  John Doe  ')
+    const originalRow = originalData.find(r => (r.name as string) === '  John Doe  ')
+    expect(originalRow).toBeDefined()
 
     // Apply Trim transform
     await laundromat.openCleanPanel()
@@ -173,51 +176,71 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Get data after transform (trimmed values)
     const afterTransform = await inspector.getTableData('whitespace_data')
-    const transformedValue = afterTransform[0]?.name as string
+    const transformedRow = afterTransform.find(r => (r.name as string) === 'John Doe')
     // After trim: "John Doe" (no whitespace)
     // Rule 2: Assert exact transformed value
-    expect(transformedValue).toBe('John Doe')
+    expect(transformedRow).toBeDefined()
 
     // Click somewhere to ensure focus isn't on an input
     await page.locator('body').click()
 
     // Press Ctrl+Z to undo
     await page.keyboard.press('Control+z')
-    await inspector.waitForTransformComplete()
 
-    // Get data after undo (should have whitespace restored)
-    const afterUndo = await inspector.getTableData('whitespace_data')
-    const afterUndoValue = afterUndo[0]?.name as string
+    // Wait for undo to complete - undo operations use isReplaying, not isLoading
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        // Wait for replay to complete
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    // After undo, value should match original (with whitespace)
-    expect(afterUndoValue).toEqual(originalValue)
+    // Poll the database until the data is restored (ensures DuckDB write has completed)
+    await expect.poll(
+      async () => {
+        const afterUndo = await inspector.getTableData('whitespace_data')
+        return afterUndo.some(r => (r.name as string) === '  John Doe  ')
+      },
+      { timeout: 10000, message: 'Undo did not restore original whitespace value' }
+    ).toBe(true)
   })
 
   test('FR-REGRESSION-5: Redo reapplies transform', async () => {
     // This test depends on the state from FR-REGRESSION-4 (undone transform)
-    // Get data before redo (untrimmed, whitespace present)
-    const beforeRedo = await inspector.getTableData('whitespace_data')
-    const beforeValue = beforeRedo[0]?.name as string
-
     // Verify we're in the undone state (has whitespace)
-    // If not, the test is invalid but we continue to check redo behavior
-    const hasWhitespace = beforeValue !== beforeValue.trim()
+    const beforeRedo = await inspector.getTableData('whitespace_data')
+    const hasWhitespace = beforeRedo.some(r => (r.name as string) === '  John Doe  ')
+    expect(hasWhitespace).toBe(true)
 
     // Press Ctrl+Y to redo
     await page.keyboard.press('Control+y')
-    await inspector.waitForTransformComplete()
 
-    // Get data after redo (should be trimmed again)
-    const afterRedo = await inspector.getTableData('whitespace_data')
-    const afterValue = afterRedo[0]?.name as string
+    // Wait for redo to complete - redo operations use isReplaying, not isLoading
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        // Wait for replay to complete
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    // Rule 2: Assert exact before/after states
-    if (hasWhitespace) {
-      expect(beforeValue).toBe('  John Doe  ')
-      expect(afterValue).toBe('John Doe')
-    }
-    // Verify it's actually trimmed
-    expect(afterValue).toBe(afterValue.trim())
+    // Poll the database until the trim is reapplied (ensures DuckDB write has completed)
+    await expect.poll(
+      async () => {
+        const afterRedo = await inspector.getTableData('whitespace_data')
+        return afterRedo.some(r => (r.name as string) === 'John Doe' && !afterRedo.some(x => (x.name as string) === '  John Doe  '))
+      },
+      { timeout: 10000, message: 'Redo did not reapply trim transform' }
+    ).toBe(true)
   })
 
   test('FR-REGRESSION-6: Audit sidebar reflects undo state with Undone badge', async () => {
@@ -229,7 +252,18 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Now undo to see the "Undone" badge
     await page.keyboard.press('Control+z')
-    await inspector.waitForTransformComplete()
+
+    // Wait for undo to complete
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     // Check for "Undone" badge or visual indicator
     // After undo, the transform entry should show "Undone" badge
@@ -242,7 +276,18 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Redo to restore for subsequent tests
     await page.keyboard.press('Control+y')
-    await inspector.waitForTransformComplete()
+
+    // Wait for redo to complete
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     // The "Undone" badge should no longer be visible - Rule 2: Use positive hidden assertion
     await expect(undoneBadge).toBeHidden({ timeout: 3000 })
@@ -280,6 +325,11 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('mixed_case', 3)
+
+    // Verify data has expected value (at least one row should have "John DOE")
+    const data = await inspector.getTableData('mixed_case')
+    const hasJohnDoe = data.some(r => (r.name as string) === 'John DOE')
+    expect(hasJohnDoe).toBe(true)
   }
 
   test('should sync multiple transforms to timeline correctly', async () => {
@@ -331,38 +381,78 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await inspector.waitForTransformComplete()
     await laundromat.closePanel()
 
-    // Get current data (uppercase + trimmed)
+    // Get current data (uppercase + trimmed) - should have "JOHN DOE"
     const step2Data = await inspector.getTableData('mixed_case')
-    const step2Value = step2Data[0]?.name as string
+    const step2HasJohnDoe = step2Data.some(r => (r.name as string) === 'JOHN DOE')
+    expect(step2HasJohnDoe).toBe(true)
 
     // Undo once (reverts trim)
     await page.keyboard.press('Control+z')
-    await inspector.waitForTransformComplete()
-
-    const step1Data = await inspector.getTableData('mixed_case')
-    const _step1Value = step1Data[0]?.name as string // Used to verify intermediate state
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     // Undo again (reverts uppercase)
     await page.keyboard.press('Control+z')
-    await inspector.waitForTransformComplete()
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    const step0Data = await inspector.getTableData('mixed_case')
-    const step0Value = step0Data[0]?.name as string
-
-    // After undoing uppercase, value should be original mixed case
-    // Original: "John DOE" (row 0)
-    expect(step0Value).toEqual('John DOE')
+    // Poll for the original mixed case value to be restored
+    await expect.poll(
+      async () => {
+        const step0Data = await inspector.getTableData('mixed_case')
+        return step0Data.some(r => (r.name as string) === 'John DOE')
+      },
+      { timeout: 10000, message: 'Undo did not restore original mixed case value' }
+    ).toBe(true)
 
     // Redo both transforms
     await page.keyboard.press('Control+y')
-    await inspector.waitForTransformComplete()
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
     await page.keyboard.press('Control+y')
-    await inspector.waitForTransformComplete()
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    // Verify we're back to fully transformed state
-    const finalData = await inspector.getTableData('mixed_case')
-    const finalValue = finalData[0]?.name as string
-    expect(finalValue).toEqual(step2Value)
+    // Poll to verify we're back to fully transformed state
+    await expect.poll(
+      async () => {
+        const finalData = await inspector.getTableData('mixed_case')
+        return finalData.some(r => (r.name as string) === 'JOHN DOE')
+      },
+      { timeout: 10000, message: 'Redo did not restore fully transformed state' }
+    ).toBe(true)
   })
 
   test('should update timeline position indicator after undo/redo', async () => {
@@ -382,7 +472,16 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Undo and check position changes
     await page.keyboard.press('Control+z')
-    await inspector.waitForTransformComplete()
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     const newPositionText = await positionBadge.first().textContent()
     // Rule 2: Assert exact timeline positions
@@ -391,7 +490,16 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Redo to restore
     await page.keyboard.press('Control+y')
-    await inspector.waitForTransformComplete()
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
   })
 })
 
