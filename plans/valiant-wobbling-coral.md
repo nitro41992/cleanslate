@@ -388,7 +388,7 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
 - [x] Cell edit undo is instant (no snapshot restore in logs)
 - [x] Transform undo still uses snapshot correctly
 - [x] Column order preserved through all undo/redo operations
-- [ ] Audit log always matches timeline position (Phase 6 - deferred)
+- [x] Audit log always matches timeline position (Phase 6 - completed)
 - [x] All existing E2E tests pass (column order tests pass)
 - [x] No references to `editStore.undo()` or `editStore.redo()` remain
 
@@ -465,11 +465,11 @@ export function getAuditEntriesFromTimeline(tableId: string): AuditLogEntry[] {
 
 ### Remaining Steps (None)
 
-### Large File Risk Mitigations (Noted for future work)
+### Large File Risk Mitigations
 
-1. **Mandatory**: Ensure `selectQuery` in `batchExecute` has `ORDER BY`
-2. **Recommended**: Add error handling to the Large Table path in timeline-engine.ts
-3. **Cleanup**: Align `batchSize` and `SNAPSHOT_THRESHOLD` constants (e.g., both to 50k)
+1. ~~**Mandatory**: Ensure `selectQuery` in `batchExecute` has `ORDER BY`~~ ✅ Done (Step 2)
+2. **Recommended**: Add error handling to the Large Table path in timeline-engine.ts (not done)
+3. ~~**Cleanup**: Align `batchSize` and `SNAPSHOT_THRESHOLD` constants (e.g., both to 50k)~~ ✅ Done (Step 3)
 
 ### Test Results
 
