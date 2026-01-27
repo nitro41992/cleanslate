@@ -795,6 +795,13 @@ npm run test:lint-patterns
 
 ### Additional Fixes (Post-Phase 3)
 - [x] Fix audit-details.spec.ts:486 (export CSV modal animation race)
+- [x] Systematic fix: all audit-detail-modal animations across test suite:
+  - audit-undo-regression.spec.ts:138 (row-level changes modal)
+  - audit-undo-regression.spec.ts:556 (standardize date modal)
+  - feature-coverage.spec.ts:809 (merge audit modal)
+  - feature-coverage.spec.ts:868 (special characters modal)
+  - feature-coverage.spec.ts:925 (export merge audit modal)
+  - value-standardization.spec.ts:534 (standardization details modal)
 
 ### Phase 2: Systematic Improvements (Priority 2 - Follow-up) ✅ CORE COMPLETE
 - [x] Run `grep -A5 "picker.apply()" e2e/tests/*.spec.ts` to find missing waits

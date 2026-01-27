@@ -138,6 +138,15 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible({ timeout: 5000 })
 
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
     // Verify modal title is visible (Row-Level Changes)
     await expect(modal.locator('text=Row-Level Changes')).toBeVisible()
 
@@ -555,6 +564,15 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     // Verify modal opens
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Verify modal shows row details (NOT "No row details available")
     // Rule 2: Use positive hidden assertion

@@ -759,6 +759,15 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Wait for the modal to open
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
 
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
     // Verify KEPT and DELETED sections are visible with actual data
     await expect(page.getByText('KEPT')).toBeVisible()
     await expect(page.getByText('DELETED')).toBeVisible()
@@ -809,6 +818,15 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
 
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
     // Verify data with special characters (quotes) is displayed correctly
     // The merged pairs are "John "Jack" Smith" and "Jon "Jackie" Smyth"
     await expect(page.locator('text=/Smith|Smyth/').first()).toBeVisible({ timeout: 5000 })
@@ -856,6 +874,15 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Click on an audit entry with details
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Setup download listener
     const downloadPromise = page.waitForEvent('download')

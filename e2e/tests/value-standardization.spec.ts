@@ -533,6 +533,15 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible({ timeout: 5000 })
 
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
     // Verify it shows "Standardization Details" title (not "Row-Level Changes")
     await expect(modal.locator('text=Standardization Details')).toBeVisible()
 
