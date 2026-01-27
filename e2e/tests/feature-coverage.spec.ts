@@ -1172,13 +1172,17 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   })
 })
 
-test.describe.serial('FR-E1: Combiner - Stack Files', () => {
+test.describe('FR-E1: Combiner - Stack Files', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Extended timeout for combiner operations (Tier 2 tests)
+  test.setTimeout(90000)
+
+  // Fresh page per test - required for Tier 2 (combiner) tests per e2e/CLAUDE.md
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -1187,13 +1191,9 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup (no table drops for fast tests)
     await coolHeapLight(page)
+    await page.close() // Force WASM worker garbage collection
   })
 
   test('should stack two CSV files with Union All', async () => {
@@ -1707,10 +1707,15 @@ test.describe.serial('Persist as Table', () => {
     await page.getByRole('button', { name: /create/i }).click()
     await inspector.waitForTableLoaded('basic_data_v3', 5)
 
-    // Verify audit entry was created
+    // Verify audit entry was created (use polling - audit writes are async)
+    // The action name is 'Table Persisted' (see App.tsx addAuditEntry call)
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.find((e) => e.action === 'Table Persisted')
+    }, { timeout: 10000 }).toBeDefined()
+
     const auditEntries = await inspector.getAuditEntries()
-    const persistEntry = auditEntries.find((e) => e.action.includes('Persist'))
-    expect(persistEntry).toBeDefined()
+    const persistEntry = auditEntries.find((e) => e.action === 'Table Persisted')
     expect(persistEntry?.entryType).toBe('A')
   })
 })
