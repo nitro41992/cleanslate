@@ -42,42 +42,47 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
   const replayProgress = useTimelineStore((s) => s.replayProgress)
   const updateTable = useTableStore((s) => s.updateTable)
   const refreshMemory = useUIStore((s) => s.refreshMemory)
+  const markTableDirty = useUIStore((s) => s.markTableDirty)
 
   const handleUndo = useCallback(async () => {
     if (!tableId || isReplaying) return
+    markTableDirty(tableId)
     const result = await undoTimeline(tableId)
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
     refreshMemory()
-  }, [tableId, isReplaying, updateTable, refreshMemory])
+  }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
 
   const handleRedo = useCallback(async () => {
     if (!tableId || isReplaying) return
+    markTableDirty(tableId)
     const result = await redoTimeline(tableId)
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
     refreshMemory()
-  }, [tableId, isReplaying, updateTable, refreshMemory])
+  }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
 
   const handleReset = useCallback(async () => {
     if (!tableId || isReplaying) return
+    markTableDirty(tableId)
     const result = await replayToPosition(tableId, -1)
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
     refreshMemory()
-  }, [tableId, isReplaying, updateTable, refreshMemory])
+  }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
 
   const handleStepClick = useCallback(async (stepIndex: number) => {
     if (!tableId || isReplaying) return
+    markTableDirty(tableId)
     const result = await replayToPosition(tableId, stepIndex)
     if (result) {
       updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
     }
     refreshMemory()
-  }, [tableId, isReplaying, updateTable, refreshMemory])
+  }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
 
   // Get commands and snapshots for rendering
   const commands = useMemo(() => timeline?.commands ?? [], [timeline])
@@ -338,6 +343,8 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
  * Should be added to a parent component that owns the timeline.
  */
 export function useTimelineKeyboardShortcuts(tableId: string | null) {
+  const markTableDirty = useUIStore((s) => s.markTableDirty)
+
   const handleKeyDown = useCallback(
     async (e: KeyboardEvent) => {
       if (!tableId) return
@@ -345,6 +352,7 @@ export function useTimelineKeyboardShortcuts(tableId: string | null) {
       // Undo: Ctrl+Z (not Cmd+Shift+Z for redo on Mac)
       if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
         e.preventDefault()
+        markTableDirty(tableId)
         await undoTimeline(tableId)
         return
       }
@@ -352,11 +360,12 @@ export function useTimelineKeyboardShortcuts(tableId: string | null) {
       // Redo: Ctrl+Y or Ctrl+Shift+Z
       if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
         e.preventDefault()
+        markTableDirty(tableId)
         await redoTimeline(tableId)
         return
       }
     },
-    [tableId]
+    [tableId, markTableDirty]
   )
 
   return handleKeyDown

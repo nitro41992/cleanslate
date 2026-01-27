@@ -8,6 +8,7 @@ interface UIState {
   sidebarCollapsed: boolean
   persistenceStatus: PersistenceStatus
   lastSavedAt: Date | null
+  dirtyTableIds: Set<string>  // Tables with unsaved changes
   memoryUsage: number
   memoryLimit: number
   memoryLevel: MemoryLevel
@@ -21,6 +22,10 @@ interface UIActions {
   setSidebarCollapsed: (collapsed: boolean) => void
   setPersistenceStatus: (status: PersistenceStatus) => void
   setLastSavedAt: (date: Date | null) => void
+  /** Mark a table as having unsaved changes (called immediately when command executes) */
+  markTableDirty: (tableId: string) => void
+  /** Mark a table as saved (called after Parquet export completes) */
+  markTableClean: (tableId: string) => void
   setMemoryUsage: (used: number, limit: number) => void
   setMemoryLevel: (level: MemoryLevel) => void
   /** Refresh memory status from DuckDB - call after operations that change data */
@@ -39,6 +44,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   sidebarCollapsed: false,
   persistenceStatus: 'idle',
   lastSavedAt: null,
+  dirtyTableIds: new Set<string>(),
   memoryUsage: 0,
   memoryLimit: MEMORY_LIMIT_BYTES, // 3GB (75% of 4GB WASM ceiling)
   memoryLevel: 'normal',
@@ -63,6 +69,40 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
 
   setLastSavedAt: (date) => {
     set({ lastSavedAt: date })
+  },
+
+  markTableDirty: (tableId) => {
+    const current = get().dirtyTableIds
+    if (!current.has(tableId)) {
+      const updated = new Set(current)
+      updated.add(tableId)
+      set({ dirtyTableIds: updated, persistenceStatus: 'dirty' })
+    } else if (get().persistenceStatus !== 'dirty' && get().persistenceStatus !== 'saving') {
+      // Ensure status is dirty if we have dirty tables
+      set({ persistenceStatus: 'dirty' })
+    }
+  },
+
+  markTableClean: (tableId) => {
+    const current = get().dirtyTableIds
+    if (current.has(tableId)) {
+      const updated = new Set(current)
+      updated.delete(tableId)
+      set({ dirtyTableIds: updated })
+
+      // Transition to 'saved' when all tables are clean
+      if (updated.size === 0) {
+        set({ persistenceStatus: 'saved', lastSavedAt: new Date() })
+
+        // Auto-reset to 'idle' after 3 seconds
+        setTimeout(() => {
+          // Only reset if still 'saved' (avoid race with new operations)
+          if (get().persistenceStatus === 'saved') {
+            set({ persistenceStatus: 'idle' })
+          }
+        }, 3000)
+      }
+    }
   },
 
   setMemoryUsage: (used, limit) => {

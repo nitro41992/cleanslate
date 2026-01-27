@@ -15,6 +15,9 @@ import {
   Merge,
   Plus,
   Copy,
+  Check,
+  X,
+  Circle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -33,6 +36,23 @@ import { duplicateTable } from '@/lib/duckdb'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
 import { formatNumber } from '@/lib/utils'
 import { usePersistence } from '@/hooks/usePersistence'
+
+/**
+ * Format a date as a relative time string (e.g., "just now", "2 min ago")
+ */
+function getRelativeTime(date: Date): string {
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffSecs = Math.floor(diffMs / 1000)
+  const diffMins = Math.floor(diffSecs / 60)
+  const diffHours = Math.floor(diffMins / 60)
+
+  if (diffSecs < 10) return 'just now'
+  if (diffSecs < 60) return `${diffSecs}s ago`
+  if (diffMins < 60) return `${diffMins} min ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  return date.toLocaleDateString()
+}
 
 const navItems = [
   {
@@ -81,6 +101,7 @@ export function AppShell({ children }: AppShellProps) {
   const checkpointTable = useTableStore((s) => s.checkpointTable)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
+  const lastSavedAt = useUIStore((s) => s.lastSavedAt)
 
   const { saveAllTables, isRestoring } = usePersistence()
 
@@ -330,17 +351,39 @@ export function AppShell({ children }: AppShellProps) {
                   </Tooltip>
                 </div>
 
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <HardDrive className="w-3.5 h-3.5" />
-                  <span>
-                    {persistenceStatus === 'saved'
-                      ? 'All changes saved'
-                      : persistenceStatus === 'saving'
-                      ? 'Saving...'
-                      : persistenceStatus === 'error'
-                      ? 'Save failed'
-                      : 'Ready'}
-                  </span>
+                <div className="flex items-center gap-2 text-xs">
+                  {persistenceStatus === 'dirty' && (
+                    <>
+                      <Circle className="w-3.5 h-3.5 fill-amber-500 text-amber-500 animate-pulse" />
+                      <span className="text-amber-500">Unsaved changes</span>
+                    </>
+                  )}
+                  {persistenceStatus === 'saving' && (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                      <span className="text-muted-foreground">Saving...</span>
+                    </>
+                  )}
+                  {persistenceStatus === 'saved' && (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-green-500" />
+                      <span className="text-green-500">
+                        {lastSavedAt ? `Saved ${getRelativeTime(lastSavedAt)}` : 'Saved'}
+                      </span>
+                    </>
+                  )}
+                  {persistenceStatus === 'error' && (
+                    <>
+                      <X className="w-3.5 h-3.5 text-red-500" />
+                      <span className="text-red-500">Save failed</span>
+                    </>
+                  )}
+                  {persistenceStatus === 'idle' && (
+                    <>
+                      <HardDrive className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="text-muted-foreground">Ready</span>
+                    </>
+                  )}
                 </div>
 
                 {/* Warning about clearing browser data */}

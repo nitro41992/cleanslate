@@ -165,7 +165,7 @@ export type ObfuscationMethod =
   | 'year_only'
   | 'jitter'
 
-export type PersistenceStatus = 'idle' | 'saving' | 'saved' | 'error'
+export type PersistenceStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 
 // Combiner types (FR-E)
 export type JoinType = 'left' | 'inner' | 'full_outer'

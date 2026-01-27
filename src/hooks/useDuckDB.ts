@@ -169,7 +169,23 @@ export function useDuckDB() {
           // Non-fatal - timeline will be created on first edit (old behavior)
         }
 
+        // Persist to Parquet BEFORE showing grid
+        // This ensures manual edits can happen instantly (no pending save in progress)
+        setLoadingMessage('Saving to storage...')
+        try {
+          const { exportTableToParquet } = await import('@/lib/opfs/snapshot-storage')
+          const { initDuckDB, getConnection } = await import('@/lib/duckdb')
+          const db = await initDuckDB()
+          const conn = await getConnection()
+          await exportTableToParquet(db, conn, tableName, tableName)
+          console.log('[Import] Table persisted to Parquet')
+        } catch (error) {
+          console.warn('[Import] Failed to persist to Parquet:', error)
+          // Non-fatal - usePersistence will retry on next change
+        }
+
         // NOW add to store - this triggers grid rendering
+        // Table is already persisted, so user can edit immediately
         setLoadingMessage('Rendering grid...')
         addTable(tableName, columns, result.rowCount, tableId)
 

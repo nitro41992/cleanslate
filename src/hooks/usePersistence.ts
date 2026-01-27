@@ -147,18 +147,33 @@ export function usePersistence() {
 
   // 2. SAVING: Call this to save a specific table to Parquet
   const saveTable = useCallback(async (tableName: string) => {
+    const { useUIStore } = await import('@/stores/uiStore')
+    const uiStore = useUIStore.getState()
+
     try {
       const db = await initDuckDB()
       const conn = await getConnection()
+
+      // Set saving status when export starts
+      if (uiStore.persistenceStatus === 'dirty') {
+        uiStore.setPersistenceStatus('saving')
+      }
 
       console.log(`[Persistence] Saving ${tableName}...`)
 
       // Export table to Parquet (overwrites existing snapshot)
       await exportTableToParquet(db, conn, tableName, tableName)
 
+      // Mark table as clean after successful Parquet export
+      const table = useTableStore.getState().tables.find(t => t.name === tableName)
+      if (table) {
+        uiStore.markTableClean(table.id)
+      }
+
       console.log(`[Persistence] ${tableName} saved`)
     } catch (err) {
       console.error(`[Persistence] Save failed for ${tableName}:`, err)
+      uiStore.setPersistenceStatus('error')
       toast.error(`Failed to save ${tableName}`)
     }
   }, [])
@@ -220,8 +235,8 @@ export function usePersistence() {
       lastDataVersions.set(t.id, t.dataVersion ?? 0)
     })
 
-    const unsubscribe = useTableStore.subscribe((state) => {
-      const tablesToSave: string[] = []
+    const unsubscribe = useTableStore.subscribe(async (state) => {
+      const tablesToSave: { id: string; name: string }[] = []
 
       for (const table of state.tables) {
         const isNewTable = !knownTableIds.has(table.id)
@@ -230,7 +245,7 @@ export function usePersistence() {
         const hasDataChanged = currentVersion > lastVersion
 
         if (isNewTable || hasDataChanged) {
-          tablesToSave.push(table.name)
+          tablesToSave.push({ id: table.id, name: table.name })
           knownTableIds.add(table.id)
           lastDataVersions.set(table.id, currentVersion)
 
@@ -243,21 +258,28 @@ export function usePersistence() {
       if (tablesToSave.length === 0) return
 
       // Filter out internal timeline tables from saving
-      const filteredTables = tablesToSave.filter(name => {
-        if (name.startsWith('original_')) return false  // timeline original snapshots
-        if (name.startsWith('snapshot_')) return false  // timeline snapshots
-        if (name.startsWith('_timeline_')) return false  // timeline internal
+      const filteredTables = tablesToSave.filter(t => {
+        if (t.name.startsWith('original_')) return false  // timeline original snapshots
+        if (t.name.startsWith('snapshot_')) return false  // timeline snapshots
+        if (t.name.startsWith('_timeline_')) return false  // timeline internal
         return true
       })
 
       if (filteredTables.length === 0) return
 
+      // Mark tables dirty IMMEDIATELY (before debounce)
+      // This shows the "Unsaved changes" indicator right away
+      const { useUIStore } = await import('@/stores/uiStore')
+      for (const table of filteredTables) {
+        useUIStore.getState().markTableDirty(table.id)
+      }
+
       // Debounce: save 2 seconds after last change
       if (saveTimeout) clearTimeout(saveTimeout)
       saveTimeout = setTimeout(() => {
-        console.log(`[Persistence] Saving tables: ${filteredTables.join(', ')}`)
-        filteredTables.forEach(name => {
-          saveTable(name).catch(console.error)
+        console.log(`[Persistence] Saving tables: ${filteredTables.map(t => t.name).join(', ')}`)
+        filteredTables.forEach(t => {
+          saveTable(t.name).catch(console.error)
         })
       }, 2000)
     })

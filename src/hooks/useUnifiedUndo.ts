@@ -78,6 +78,7 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
   const updateTable = useTableStore((s) => s.updateTable)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
   const refreshMemory = useUIStore((s) => s.refreshMemory)
+  const markTableDirty = useUIStore((s) => s.markTableDirty)
 
   // Persistence - for immediate save after undo/redo
   const { saveTable } = usePersistence()
@@ -115,6 +116,9 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
     if (!tableId || !canUndo || isReplaying) return
 
     console.log('[useUnifiedUndo] Executing undo', { tableId, position })
+
+    // Mark table dirty immediately (undo changes data)
+    markTableDirty(tableId)
 
     try {
       const result = await undoTimeline(tableId)
@@ -156,13 +160,16 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
     } catch (error) {
       console.error('[useUnifiedUndo] Undo failed:', error)
     }
-  }, [tableId, canUndo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory, saveTable])
+  }, [tableId, canUndo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory, saveTable, markTableDirty])
 
   // Redo handler - delegates to Timeline Engine
   const redo = useCallback(async () => {
     if (!tableId || !canRedo || isReplaying) return
 
     console.log('[useUnifiedUndo] Executing redo', { tableId, position })
+
+    // Mark table dirty immediately (redo changes data)
+    markTableDirty(tableId)
 
     try {
       const result = await redoTimeline(tableId)
@@ -204,7 +211,7 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
     } catch (error) {
       console.error('[useUnifiedUndo] Redo failed:', error)
     }
-  }, [tableId, canRedo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory, saveTable])
+  }, [tableId, canRedo, isReplaying, updateTable, addAuditEntry, activeTable, refreshMemory, saveTable, markTableDirty])
 
   return {
     canUndo,

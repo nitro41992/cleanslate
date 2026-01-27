@@ -78,12 +78,6 @@ let fallbackMetrics: FallbackMetrics = {
   allStrategiesFailed: 0,
 }
 
-/**
- * Timeout ID for auto-resetting persistence status from 'saved' to 'idle'
- * Cleared if a new operation starts during the countdown
- */
-let persistenceAutoResetTimer: NodeJS.Timeout | null = null
-
 // Per-table timeline of executed commands for undo/redo
 // Key: tableId, Value: { commands, position, snapshots }
 interface TableCommandTimeline {
@@ -175,6 +169,11 @@ export class CommandExecutor implements ICommandExecutor {
           error: 'tableId is required in command params',
         }
       }
+
+      // IMMEDIATELY mark table as dirty (before any async operations)
+      // This ensures the UI shows "Unsaved changes" during the 2s debounce window
+      const uiStoreModule = await import('@/stores/uiStore')
+      uiStoreModule.useUIStore.getState().markTableDirty(tableId)
 
       // CRITICAL: If there are future states (after undo), clear the column version store
       // before building context. This prevents stale expression chain metadata from causing
@@ -592,35 +591,14 @@ export class CommandExecutor implements ICommandExecutor {
       await this.pruneSnapshotsIfHighMemory()
 
       // Auto-persist to OPFS (debounced, non-blocking)
-      // Waits 1 second of idle time before flushing to prevent stuttering on bulk edits
+      // Note: This triggers DuckDB CHECKPOINT which is fast, but the actual Parquet export
+      // (in usePersistence) happens on a 2s debounce. Persistence status is managed by
+      // usePersistence, not here, to accurately reflect when data is truly saved.
       const { flushDuckDB } = await import('@/lib/duckdb')
-      const { useUIStore } = await import('@/stores/uiStore')
 
       flushDuckDB(false, {
-        onStart: () => {
-          // Clear any pending auto-reset timeout to prevent race condition
-          if (persistenceAutoResetTimer) {
-            clearTimeout(persistenceAutoResetTimer)
-            persistenceAutoResetTimer = null
-          }
-          useUIStore.getState().setPersistenceStatus('saving')
-        },
-        onComplete: () => {
-          const store = useUIStore.getState()
-          store.setPersistenceStatus('saved')
-
-          // Auto-reset to idle after 3 seconds
-          persistenceAutoResetTimer = setTimeout(() => {
-            // Only reset if still 'saved' (avoid race with new operations)
-            if (useUIStore.getState().persistenceStatus === 'saved') {
-              useUIStore.getState().setPersistenceStatus('idle')
-            }
-            persistenceAutoResetTimer = null
-          }, 3000)
-        },
         onError: (error) => {
-          useUIStore.getState().setPersistenceStatus('error')
-          console.error('[EXECUTOR] Flush error:', error)
+          console.error('[EXECUTOR] DuckDB flush error:', error)
         }
       })
 
@@ -683,6 +661,10 @@ export class CommandExecutor implements ICommandExecutor {
     }
 
     try {
+      // Mark table as dirty immediately (undo changes data)
+      const { useUIStore } = await import('@/stores/uiStore')
+      useUIStore.getState().markTableDirty(tableId)
+
       // Delegate to TimelineEngine for smart undo (Fast Path / Heavy Path)
       const result = await undoTimeline(tableId)
 
@@ -757,6 +739,10 @@ export class CommandExecutor implements ICommandExecutor {
     }
 
     try {
+      // Mark table as dirty immediately (redo changes data)
+      const { useUIStore } = await import('@/stores/uiStore')
+      useUIStore.getState().markTableDirty(tableId)
+
       // Delegate to TimelineEngine for smart redo (Fast Path / Heavy Path)
       const result = await redoTimeline(tableId)
 
