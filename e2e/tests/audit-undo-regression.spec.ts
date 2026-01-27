@@ -37,6 +37,21 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     await page.close()
   })
 
+  // Tier 2 cleanup: Keep tables and panels (tests depend on sidebar state), but prune audit
+  test.afterEach(async () => {
+    try {
+      await coolHeap(page, inspector, {
+        dropTables: false,     // Keep tables for serial group
+        closePanels: false,    // Don't close - tests depend on sidebar state
+        clearDiffState: true,
+        pruneAudit: true,
+        auditThreshold: 50
+      })
+    } catch (error) {
+      console.warn('[FR-REGRESSION-1 afterEach] Cleanup failed:', error)
+    }
+  })
+
   async function loadTestData() {
     await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
     await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
@@ -327,6 +342,21 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
   test.afterAll(async () => {
     await page.close()
+  })
+
+  // Tier 2 cleanup: Keep tables and panels (tests depend on sidebar state), but prune audit
+  test.afterEach(async () => {
+    try {
+      await coolHeap(page, inspector, {
+        dropTables: false,     // Keep tables for serial group
+        closePanels: false,    // Don't close - tests depend on sidebar state
+        clearDiffState: true,
+        pruneAudit: true,
+        auditThreshold: 50
+      })
+    } catch (error) {
+      console.warn('[FR-REGRESSION-2 afterEach] Cleanup failed:', error)
+    }
   })
 
   async function loadMixedCaseData() {
@@ -623,8 +653,13 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    const sidebar = page.locator('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
     await expect(sidebar).toBeVisible({ timeout: 5000 })
+
+    // Wait for sidebar content to be fully rendered before measuring bounding boxes
+    // (prevents flakiness from animation/render timing)
+    const auditEntry = sidebar.locator('[data-testid="audit-entry-with-details"]').first()
+    await expect(auditEntry).toBeVisible({ timeout: 5000 })
 
     // Get the sidebar bounding box
     const sidebarBox = await sidebar.boundingBox()

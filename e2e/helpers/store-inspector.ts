@@ -19,6 +19,7 @@ export interface AuditEntry {
   newValue?: unknown
   rowIndex?: number
   columnName?: string
+  csId?: string  // Stable cell identifier for manual edits (replaces rowIndex)
   hasRowDetails?: boolean
   auditEntryId?: string
   rowsAffected?: number

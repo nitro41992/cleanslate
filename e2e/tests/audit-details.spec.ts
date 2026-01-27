@@ -395,6 +395,8 @@ test.describe('Audit Row Details', () => {
 
     // Perform a manual cell edit on row 0, column 0 (id column)
     await laundromat.switchToDataPreviewTab()
+    // Wait for sidebar to be hidden before editing cell
+    await expect(page.getByTestId('audit-sidebar')).toBeHidden({ timeout: 3000 }).catch(() => {})
     await laundromat.editCell(0, 0, '99')
 
     // Wait for edit to be processed - poll for audit entry with Manual Edit
@@ -405,7 +407,8 @@ test.describe('Audit Row Details', () => {
 
     // Switch to audit log
     await laundromat.switchToAuditLogTab()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Get audit entries
     const auditEntries = await inspector.getAuditEntries()
@@ -420,12 +423,12 @@ test.describe('Audit Row Details', () => {
     expect(typeof manualEditEntry?.auditEntryId).toBe('string')
 
     // Find the Manual Edit entry in the UI (uses div with role="button", not actual button)
-    const manualEditElement = page
-      .locator('[data-testid="audit-sidebar"]')
-      .locator('[data-testid="audit-entry-with-details"]')
+    const manualEditElement = sidebar
+      .getByTestId('audit-entry-with-details')
       .filter({ hasText: 'Manual Edit' })
       .first()
 
+    // Wait for sidebar content to stabilize before interacting
     await expect(manualEditElement).toBeVisible({ timeout: 10000 })
 
     // This element SHOULD have the "View details" text since it now has drill-down

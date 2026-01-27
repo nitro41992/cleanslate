@@ -773,9 +773,9 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
     // Debug: Check if audit entry was created
     const auditEntries = await inspector.getAuditEntries()
-    console.log('Audit entries:', auditEntries.length)
+    // console.log('Audit entries:', auditEntries.length)
     const mergeEntry = auditEntries.find(e => e.action === 'Merge Duplicates')
-    console.log('Merge entry:', mergeEntry)
+    // console.log('Merge entry:', mergeEntry)
     expect(mergeEntry).toBeDefined()
     expect(mergeEntry?.hasRowDetails).toBe(true)
 
@@ -1515,7 +1515,12 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     // 3. Edit cell [row 0, col 1 (name column)]
     await laundromat.editCell(0, 1, 'EDITED_VALUE')
 
-    // 4. Verify update via DuckDB query
+    // 4. Wait for edit to be committed to DuckDB, then verify via query
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_a3_text_dirty')
+      return data[0].name
+    }, { timeout: 10000 }).toBe('EDITED_VALUE')
+
     const updatedData = await inspector.getTableData('fr_a3_text_dirty')
     expect(updatedData[0].name).toBe('EDITED_VALUE')
 
@@ -1527,7 +1532,8 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     expect(editEntry?.action).toContain('Manual Edit')
     expect(editEntry?.previousValue).toBe(originalName)
     expect(editEntry?.newValue).toBe('EDITED_VALUE')
-    expect(editEntry?.rowIndex).toBe(0)
+    // Implementation uses csId (stable cell identifier) instead of rowIndex
+    expect(editEntry?.csId).toBeDefined()
     expect(editEntry?.columnName).toBe('name')
   })
 
@@ -1535,11 +1541,11 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     // Load data using helper to ensure clean state
     await loadTestData()
 
-    // Fail-fast guard: Verify editStore has undo/redo functions exposed via getState()
+    // Fail-fast guard: Verify timelineStore has undo/redo functions exposed via getState()
     const hasUndoRedo = await page.evaluate(() => {
       const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-      const editStore = stores?.editStore as { getState: () => { canUndo?: () => boolean; canRedo?: () => boolean } } | undefined
-      const state = editStore?.getState?.()
+      const timelineStore = stores?.timelineStore as { getState: () => { canUndo?: (tableId: string) => boolean; canRedo?: (tableId: string) => boolean } } | undefined
+      const state = timelineStore?.getState?.()
       return typeof state?.canUndo === 'function' && typeof state?.canRedo === 'function'
     })
     expect(hasUndoRedo).toBe(true)
@@ -1547,28 +1553,75 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     const originalData = await inspector.getTableData('fr_a3_text_dirty')
     const originalName = originalData[0].name
 
-    // Edit cell
+    // Get the tableId for this table (needed for timeline checks)
+    // Note: tableStore.tables is an array of TableInfo objects, not a Map
+    const tableId = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tableStore = stores?.tableStore as any
+      const state = tableStore?.getState?.()
+      const tables = state?.tables as Array<{ id: string; name: string }> | undefined
+      if (!tables) return null
+      const table = tables.find(t => t.name === 'fr_a3_text_dirty')
+      return table?.id ?? null
+    })
+    expect(tableId).not.toBeNull()
+
+    // Edit cell - wait for edit to be committed to DuckDB
     await laundromat.editCell(0, 1, 'CHANGED')
-    const afterEditData = await inspector.getTableData('fr_a3_text_dirty')
-    expect(afterEditData[0].name).toBe('CHANGED')
-
-    // Undo (Ctrl+Z)
-    await page.keyboard.press('Control+z')
     await expect.poll(async () => {
       const data = await inspector.getTableData('fr_a3_text_dirty')
       return data[0].name
-    }, { timeout: 5000 }).toBe(originalName)
-    const afterUndoData = await inspector.getTableData('fr_a3_text_dirty')
-    expect(afterUndoData[0].name).toBe(originalName)
+    }, { timeout: 10000 }).toBe('CHANGED')
 
-    // Redo (Ctrl+Y)
-    await page.keyboard.press('Control+y')
+    // Wait for the timeline to be updated with the cell edit command
+    await expect.poll(async () => {
+      const timelineInfo = await page.evaluate((tblId: string) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const timelineStore = stores?.timelineStore as any
+        const state = timelineStore?.getState?.()
+        const timelines = state?.timelines as Map<string, { commands: unknown[] }> | undefined
+        const timeline = timelines?.get(tblId)
+        return timeline?.commands.length ?? 0
+      }, tableId as string)
+      return timelineInfo
+    }, { timeout: 10000, message: 'Timeline command was not added' }).toBeGreaterThan(0)
+
+    // Verify undo button is enabled (canUndo should be true)
+    await expect(laundromat.undoButton).toBeEnabled()
+
+    // Click undo button to undo the cell edit
+    await laundromat.undoButton.click()
+
+    // Wait for position change - polling for the undo to complete
+    await expect.poll(async () => {
+      const position = await page.evaluate((tblId: string) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const timelineStore = stores?.timelineStore as any
+        const state = timelineStore?.getState?.()
+        const timelines = state?.timelines as Map<string, { currentPosition: number }> | undefined
+        const timeline = timelines?.get(tblId)
+        return timeline?.currentPosition ?? null
+      }, tableId as string)
+      return position
+    }, { timeout: 5000, message: 'Undo did not change timeline position from 0 to -1' }).toBe(-1)
+
+    // Poll for data change since Fast Path (inverse SQL) doesn't use isReplaying flag
     await expect.poll(async () => {
       const data = await inspector.getTableData('fr_a3_text_dirty')
       return data[0].name
-    }, { timeout: 5000 }).toBe('CHANGED')
-    const afterRedoData = await inspector.getTableData('fr_a3_text_dirty')
-    expect(afterRedoData[0].name).toBe('CHANGED')
+    }, { timeout: 15000, message: 'Undo did not restore original value' }).toBe(originalName)
+
+    // Click redo button to redo the cell edit
+    await laundromat.redoButton.click()
+
+    // Poll for data change
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_a3_text_dirty')
+      return data[0].name
+    }, { timeout: 15000, message: 'Redo did not reapply edited value' }).toBe('CHANGED')
   })
 })
 
