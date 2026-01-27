@@ -124,11 +124,55 @@ expect(rowIds.sort()).toEqual(expectedIds.sort())  // Standardize order
 test.setTimeout(120000)  // 2 mins for heavy tests
 ```
 
-**Self-Cleaning:** Don't leave database full for next worker:
+**Tiered Cleanup Strategy:**
+
+Serial test groups accumulate state (audit log, snapshots, timeline, diff tables). Use tiered cleanup to prevent memory pressure and flaky assertions:
+
+**Tier 1 - Light Tests** (simple transforms: trim, uppercase, lowercase, replace)
 ```typescript
+import { coolHeapLight } from '../helpers/cleanup-helpers'
+
 test.afterEach(async () => {
-  await inspector.runQuery('DROP TABLE IF EXISTS test_table')
-  await page.close()
+  await coolHeapLight(page)  // Only closes panels
+})
+```
+
+**Tier 2 - Medium Tests** (joins, multiple transforms, some diffs)
+```typescript
+import { coolHeap } from '../helpers/cleanup-helpers'
+
+test.afterEach(async () => {
+  await coolHeap(page, inspector, {
+    dropTables: false,     // Keep tables for next test
+    closePanels: true,
+    clearDiffState: true,
+    pruneAudit: true,
+    auditThreshold: 50     // Prune if >50 entries
+  })
+})
+```
+
+**Tier 3 - Heavy Tests** (snapshots, matcher, large datasets)
+```typescript
+import { coolHeap } from '../helpers/cleanup-helpers'
+
+test.beforeEach(async ({ browser }) => {
+  page = await browser.newPage()
+  laundromat = new LaundromatPage(page)  // MUST re-init
+  inspector = createStoreInspector(page)  // MUST re-init
+  await page.goto('/')
+  await inspector.waitForDuckDBReady()
+})
+
+test.afterEach(async () => {
+  await coolHeap(page, inspector, {
+    dropTables: true,      // Full cleanup
+    closePanels: true,
+    clearDiffState: true,
+    pruneAudit: true,
+    auditThreshold: 30
+  })
+  await page.close()  // Force WASM worker garbage collection
 })
 ```
 
@@ -145,6 +189,10 @@ test.describe.serial('FR-A3: Text Cleaning', () => {
     await inspector.waitForDuckDBReady()
   })
 
+  test.afterEach(async () => {
+    await coolHeapLight(page)  // Tier 1 cleanup for simple transforms
+  })
+
   test.afterAll(async () => await page.close())
 })
 ```
@@ -158,6 +206,8 @@ test.describe.serial('FR-A3: Text Cleaning', () => {
 | `IngestionWizardPage` | `page-objects/ingestion-wizard.page.ts` | CSV import wizard |
 | `TransformationPickerPage` | `page-objects/transformation-picker.page.ts` | Transform selection |
 | `getFixturePath()` | `helpers/file-upload.ts` | Get path to CSV fixtures |
+| `coolHeap()` / `coolHeapLight()` | `helpers/cleanup-helpers.ts` | Tiered cleanup for serial tests |
+| Grid state helpers | `helpers/grid-state-helpers.ts` | Canvas grid state assertions |
 
 **Key StoreInspector Methods:**
 ```typescript
@@ -178,6 +228,36 @@ await inspector.runQuery(sql)                  // Execute SQL
 await inspector.getAuditEntries()              // Get audit log
 ```
 
+**Canvas Grid Testing:**
+
+Glide Data Grid uses canvas rendering. Use store-based assertions instead of DOM inspection:
+
+```typescript
+import { waitForCellSelected, getSelectedCell, waitForGridScrolled } from '../helpers/grid-state-helpers'
+
+// After clicking cell
+await page.getByRole('gridcell', { name: 'Cell A1' }).click()
+await waitForCellSelected(page, 0, 0)
+
+// After programmatic scroll
+await page.keyboard.press('PageDown')
+await waitForGridScrolled(page, 20)
+
+// Get current selection
+const selected = await getSelectedCell(page)
+expect(selected).toEqual({ row: 0, col: 1 })
+```
+
+**Always validate data via SQL, not canvas rendering:**
+```typescript
+// ✅ Good: Verify data in database
+const rows = await inspector.runQuery('SELECT * FROM my_table')
+expect(rows[0].name).toBe('John Doe')
+
+// ❌ Bad: Try to scrape canvas content
+// (Canvas content is not in DOM - this will fail)
+```
+
 **📚 Full documentation:** See `e2e/helpers/WAIT_HELPERS.md`, `WAIT_HELPERS_EXAMPLES.md`, `WAIT_HELPERS_QUICKREF.md`
 
 ## 7. Fixtures
@@ -191,9 +271,12 @@ Located in `fixtures/csv/`:
 
 - [ ] **Isolation:** Does the test load its own data?
 - [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh page if yes)
+- [ ] **Cleanup:** Using appropriate tier (1: light transforms, 2: joins/diffs, 3: snapshots/matcher)?
 - [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`?
 - [ ] **Timing:** Zero `waitForTimeout` calls?
+- [ ] **Promise.race:** Not using it for operation completion? (Use dedicated wait helpers instead)
 - [ ] **Dynamic Data:** UUIDs/Timestamps handled dynamically, not hardcoded?
+- [ ] **Canvas Grid:** Using SQL or store-based assertions, not DOM scraping?
 
 ## 9. Parameter Preservation Testing
 

@@ -710,12 +710,10 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await matchView.selectColumn('first_name')
     await matchView.findDuplicates()
 
-    // Wait for matching to complete - progress bar should disappear or pairs should appear
-    await Promise.race([
-      expect(page.locator('[data-testid="match-view"]').locator('role=progressbar')).toBeHidden({ timeout: 30000 }),
-      matchView.waitForPairs()
-    ])
-    // Ensure pairs are visible
+    // Wait for matching operation to complete (check store state)
+    await inspector.waitForMergeComplete()
+
+    // Wait for final results (UI reflects completion)
     await matchView.waitForPairs()
 
     // Merge a pair

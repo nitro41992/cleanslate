@@ -5,6 +5,7 @@ import { TransformationPickerPage } from '../page-objects/transformation-picker.
 import { downloadAndVerifyCSV } from '../helpers/download-helpers'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { coolHeap } from '../helpers/cleanup-helpers'
 
 /**
  * Export Tests
@@ -26,6 +27,17 @@ test.describe.serial('Export', () => {
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+  })
+
+  test.afterEach(async () => {
+    // Tier 2 cleanup - Clear state accumulation between tests
+    await coolHeap(page, inspector, {
+      dropTables: false,  // Each test manages its own tables
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 50
+    })
   })
 
   test.afterAll(async () => {

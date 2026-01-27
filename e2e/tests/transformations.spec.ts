@@ -4,6 +4,7 @@ import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { coolHeapLight } from '../helpers/cleanup-helpers'
 
 /**
  * Transformation Tests
@@ -30,6 +31,11 @@ test.describe.serial('Transformations: Whitespace Data', () => {
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+  })
+
+  test.afterEach(async () => {
+    // Tier 1 cleanup - Simple transforms (trim, uppercase, lowercase)
+    await coolHeapLight(page)
   })
 
   test.afterAll(async () => {
