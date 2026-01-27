@@ -185,10 +185,11 @@ export function createStoreInspector(page: Page): StoreInspector {
         async ({ tableName, limit }) => {
           const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<Record<string, unknown>[]>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
           if (!duckdb?.query) throw new Error('DuckDB not available')
-          // ORDER BY _cs_id for deterministic row ordering (matches src/lib/duckdb/index.ts)
+          // ORDER BY "_cs_id" for deterministic row ordering (matches src/lib/duckdb/index.ts)
+          // CRITICAL: Must use quotes around _cs_id for proper identifier resolution
           // Fall back to no ORDER BY if _cs_id doesn't exist (e.g., diff tables)
           try {
-            return await duckdb.query(`SELECT * FROM "${tableName}" ORDER BY _cs_id LIMIT ${limit}`)
+            return await duckdb.query(`SELECT * FROM "${tableName}" ORDER BY "_cs_id" LIMIT ${limit}`)
           } catch {
             return await duckdb.query(`SELECT * FROM "${tableName}" LIMIT ${limit}`)
           }

@@ -226,7 +226,8 @@ async function materializeColumn(
   }
 
   // Create temp table with materialized base
-  const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+  // CRITICAL: ORDER BY "_cs_id" ensures deterministic row ordering (row identity preserved)
+  const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)} ORDER BY "_cs_id"`
   await db.execute(ctasSQL)
 
   // Swap tables
@@ -295,7 +296,8 @@ export function createColumnVersionManager(
           }
 
           // Create temp table with new structure
-          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+          // CRITICAL: ORDER BY "_cs_id" ensures deterministic row ordering (row identity preserved)
+          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)} ORDER BY "_cs_id"`
           await db.execute(ctasSQL)
 
           // Swap tables
@@ -339,7 +341,8 @@ export function createColumnVersionManager(
             }
 
             // Create temp table with updated column
-            const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+            // CRITICAL: ORDER BY "_cs_id" ensures deterministic row ordering (row identity preserved)
+            const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)} ORDER BY "_cs_id"`
             await db.execute(ctasSQL)
 
             // Swap tables
@@ -455,7 +458,8 @@ export function createColumnVersionManager(
           }
 
           // Create temp table with restored structure
-          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+          // CRITICAL: ORDER BY "_cs_id" ensures deterministic row ordering (row identity preserved)
+          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)} ORDER BY "_cs_id"`
           await db.execute(ctasSQL)
 
           // Swap tables
@@ -498,7 +502,8 @@ export function createColumnVersionManager(
           }
 
           // Create temp table with reverted column
-          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)}`
+          // CRITICAL: ORDER BY "_cs_id" ensures deterministic row ordering (row identity preserved)
+          const ctasSQL = `CREATE TABLE ${quoteTable(tempTable)} AS SELECT ${selectParts.join(', ')} FROM ${quoteTable(tableName)} ORDER BY "_cs_id"`
           await db.execute(ctasSQL)
 
           // Swap tables

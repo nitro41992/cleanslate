@@ -28,6 +28,7 @@ import { createCommand } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
+import { stringifyJSON } from '@/lib/utils/json-serialization'
 
 interface MatchViewProps {
   open: boolean
@@ -299,7 +300,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               tableId,
               tableName,
               action: result.auditInfo.action,
-              details: JSON.stringify(result.auditInfo.details), // Stringify for deprecated audit store
+              details: stringifyJSON(result.auditInfo.details), // Stringify with BigInt support
               rowsAffected: result.auditInfo.rowsAffected,
               hasRowDetails: result.auditInfo.hasRowDetails,
               auditEntryId: result.auditInfo.auditEntryId,
