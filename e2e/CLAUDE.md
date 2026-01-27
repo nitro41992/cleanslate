@@ -267,7 +267,44 @@ Located in `fixtures/csv/`:
 - `fr_a3_*.csv` — Text cleaning | `fr_b2_*.csv` — Diff | `fr_c1_*.csv` — Dedupe
 - `fr_d2_*.csv` — PII/scrubbing | `fr_e1/e2_*.csv` — Combine | `fr_f_*.csv` — Standardization
 
-## 8. New Test Checklist
+## 8. Test Health Monitoring
+
+**Monitoring Scripts** (see `scripts/README.md` for full documentation):
+
+### Pattern Detection
+```bash
+npm run test:lint-patterns
+```
+Detects common flakiness patterns before commit:
+- `picker.apply()` without `waitForTransformComplete()`
+- `waitForTimeout()` usage (violates "No Sleep" rule)
+- `Promise.race()` for operation completion
+- `editCell()` without prior `waitForGridReady()`
+- Cardinality assertions instead of identity assertions
+
+### Flakiness Analysis
+```bash
+npx playwright test --reporter=json
+npm run test:analyze
+```
+Tracks flaky tests over time, fails if flakiness rate exceeds 5% threshold. Reports saved to `test-results/`.
+
+### Memory Monitoring
+```typescript
+import { logMemoryUsage, assertMemoryUnderLimit } from '../helpers/memory-monitor'
+
+test('heavy operation', async ({ page }) => {
+  await logMemoryUsage(page, 'before load')
+  // ... heavy operation
+  await logMemoryUsage(page, 'after operation')
+  await assertMemoryUnderLimit(page, 60, 'after cleanup')
+})
+```
+Use for heavy tests (Parquet, large CSVs, matcher) to catch memory leaks early.
+
+---
+
+## 9. New Test Checklist
 
 - [ ] **Isolation:** Does the test load its own data?
 - [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh page if yes)
@@ -277,8 +314,9 @@ Located in `fixtures/csv/`:
 - [ ] **Promise.race:** Not using it for operation completion? (Use dedicated wait helpers instead)
 - [ ] **Dynamic Data:** UUIDs/Timestamps handled dynamically, not hardcoded?
 - [ ] **Canvas Grid:** Using SQL or store-based assertions, not DOM scraping?
+- [ ] **Patterns Check:** Run `npm run test:lint-patterns` before committing
 
-## 9. Parameter Preservation Testing
+## 10. Parameter Preservation Testing
 
 Commands with custom parameters (e.g., `pad_zeros` with `length: 9`) must preserve those values through the undo/redo timeline system. Test failures indicate silent data corruption.
 

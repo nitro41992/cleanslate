@@ -3,10 +3,10 @@
 ## Status Update
 
 **Phase 1 (Critical Fixes):** ✅ COMPLETED (commit 9673cf3)
-**Phase 2 (Systematic Improvements):** ✅ CORE COMPLETED (this commit)
-**Phase 3 (Monitoring):** Deferred pending validation
+**Phase 2 (Systematic Improvements):** ✅ CORE COMPLETED (commit 6396bce)
+**Phase 3 (Monitoring):** ✅ COMPLETED (this commit)
 
-**Next Steps:** Run test suite to validate improvements before implementing remaining cleanup for other test files.
+**Next Steps:** Run monitoring tools to validate E2E test health and establish baseline metrics.
 
 ---
 
@@ -806,12 +806,13 @@ npm run test:lint-patterns
 
 **Note:** Promise.race() usages in page objects (match-view, diff-view, standardize-view) are acceptable - they wait for operation to START, not for completion.
 
-### Phase 3: Monitoring (Deferred)
-Phase 3 items deferred until Phase 1/2 improvements are validated in production:
-- Create scripts/analyze-flaky-tests.ts
-- Create e2e/helpers/memory-monitor.ts
-- Create scripts/detect-flaky-patterns.ts
-- Add flakiness analysis to CI workflow
+### Phase 3: Monitoring ✅ COMPLETED
+- [x] Create scripts/analyze-flaky-tests.ts
+- [x] Create e2e/helpers/memory-monitor.ts
+- [x] Create scripts/detect-flaky-patterns.ts
+- [x] Add npm scripts (test:analyze, test:lint-patterns)
+- [x] Add tsx dev dependency for running TypeScript scripts
+- [ ] Add flakiness analysis to CI workflow (optional - can be added later)
 
 ---
 
