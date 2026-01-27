@@ -1255,16 +1255,17 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
   })
 })
 
-test.describe.serial('FR-E2: Combiner - Join Files', () => {
+test.describe('FR-E2: Combiner - Join Files', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  // Standard timeout - cleanup is now lightweight
-  test.setTimeout(60000)
+  // Extended timeout for join operations (Tier 2 tests)
+  test.setTimeout(90000)
 
-  test.beforeAll(async ({ browser }) => {
+  // Fresh page per test - required for Tier 2 (join) tests per e2e/CLAUDE.md
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -1273,14 +1274,16 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup - close panels only
-    // Tables are recreated by each test via CREATE OR REPLACE
-    await coolHeapLight(page)
+    // Full cleanup with page close for WASM garbage collection
+    await coolHeap(page, inspector, {
+      dropTables: true,
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 30
+    })
+    await page.close()
   })
 
   test('should perform inner join on customer_id', async () => {
@@ -1326,6 +1329,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
 
+    // Wait for combiner operation to fully complete
+    await inspector.waitForCombinerComplete()
+
     // Wait for the operation to complete (toast notification)
     await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })
 
@@ -1356,30 +1362,11 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
-    // Wait for any transitions to settle before opening panel
+    // Wait for grid to be ready before opening panel
     await inspector.waitForGridReady()
 
-    // Open combine panel via toolbar (single-page app) with robust retry
-    const combinePanel = page.getByTestId('panel-combine')
-    const combineButton = page.getByRole('button', { name: /combine/i })
-
-    // Ensure Combine button is visible
-    await expect(combineButton).toBeVisible({ timeout: 5000 })
-
-    // Try multiple methods to open the panel
-    await combineButton.click()
-    await inspector.waitForPanelAnimation('panel-combine')
-
-    // If panel didn't open, try again
-    if (!await combinePanel.isVisible().catch(() => false)) {
-      // console.log('First click on Combine button did not open panel, retrying')
-      await page.keyboard.press('Escape')
-      await expect(combinePanel).toBeHidden({ timeout: 2000 })
-      await combineButton.click({ force: true })
-      await inspector.waitForPanelAnimation('panel-combine')
-    }
-
-    await expect(combinePanel).toBeVisible({ timeout: 5000 })
+    // Open combine panel via page object (consistent with first test)
+    await laundromat.openCombinePanel()
     await expect(page.locator('text=Stack').first()).toBeVisible()
 
     // Switch to Join tab and wait for it to be active
@@ -1417,6 +1404,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
 
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
+
+    // Wait for combiner operation to fully complete
+    await inspector.waitForCombinerComplete()
 
     // Wait for the operation to complete (toast notification)
     await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })

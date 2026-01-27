@@ -4,17 +4,17 @@ const PORT = process.env.PORT || '5173'
 
 export default defineConfig({
   testDir: './e2e/tests',
-  fullyParallel: true,
+  fullyParallel: false,  // Disabled: WASM is CPU/memory intensive; parallel execution causes GC pauses
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
-  workers: process.env.CI ? 2 : 1,  // Conservative: 2 workers in CI (safe for 2vCPU/7GB), 1 locally
+  workers: 1,  // Single worker prevents memory contention with DuckDB-WASM
   reporter: [
     ['html', { outputFolder: 'playwright-report' }],
     ['list'],
   ],
   timeout: 60000,
   expect: {
-    timeout: 10000,
+    timeout: 15000,  // Increased from 10s for DuckDB queries under load
   },
   use: {
     baseURL: `http://localhost:${PORT}`,

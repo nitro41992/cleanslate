@@ -39,6 +39,11 @@ export interface CleanupOptions {
  * })
  */
 export async function coolHeapLight(page: Page): Promise<void> {
+  // Force-close any stacked modals with Escape key
+  // (Twice for nested dialogs that may block panel cleanup)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+
   // Close all panels by checking for panel containers
   const panels = [
     'matcher-panel',
