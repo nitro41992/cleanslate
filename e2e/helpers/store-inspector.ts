@@ -195,6 +195,15 @@ export function createStoreInspector(page: Page): StoreInspector {
         },
         { timeout: 30000 }
       )
+      // CRITICAL: Wait for DuckDB isReady flag (set after initDuckDB() completes in main.tsx)
+      // This prevents "duckdb is not initialized" errors from recent COI bundle changes
+      await page.waitForFunction(
+        () => {
+          const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { isReady: boolean } }).__CLEANSLATE_DUCKDB__
+          return duckdb?.isReady === true
+        },
+        { timeout: 30000 }
+      )
     },
 
     async waitForTableLoaded(tableName: string, expectedRowCount?: number, timeout: number = 30000): Promise<void> {
