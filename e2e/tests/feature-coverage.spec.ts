@@ -323,30 +323,36 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
   })
 })
 
-test.describe.serial('FR-A3: Fill Down Transformation', () => {
+test.describe('FR-A3: Fill Down Transformation', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Use beforeEach with fresh page for better isolation (prevents cascade failures)
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup (no table drops for fast tests)
-    await coolHeapLight(page)
+    // Close page to force WASM worker garbage collection
+    // Check if page is already closed to prevent cascade failures
+    if (!page.isClosed()) {
+      try {
+        await page.close()
+      } catch {
+        // Ignore close errors - page may already be closed
+      }
+    }
   })
 
   test('should fill down empty cells from above', async () => {
@@ -965,32 +971,46 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     expect(Object.keys(deletedData!).length).toBeGreaterThan(0)
   })
 })
-test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
+test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Use beforeEach with fresh page for better isolation (Tier 2 scrubber operations)
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Aggressive cleanup after each obfuscation test
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-    })
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      return
+    }
+
+    // Aggressive cleanup with page close for WASM garbage collection
+    try {
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+      })
+    } catch {
+      // Ignore cleanup errors to prevent cascade failures
+    }
+
+    try {
+      await page.close()
+    } catch {
+      // Ignore close errors - page may already be closed
+    }
   })
 
   async function loadPIIData() {

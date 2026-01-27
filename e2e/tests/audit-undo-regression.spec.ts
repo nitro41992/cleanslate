@@ -16,39 +16,49 @@ import { coolHeap } from '../helpers/heap-cooling'
  * 3. Undo/Redo - Ctrl+Z/Ctrl+Y works correctly with UI updates
  */
 
-test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
+test.describe('FR-REGRESSION: Audit + Undo Features', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Use beforeEach with fresh page for Tier 2 tests (undo/redo, audit)
+  // per e2e/CLAUDE.md: "Test B should never depend on Test A's data"
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  // Tier 2 cleanup: Keep tables and panels (tests depend on sidebar state), but prune audit
   test.afterEach(async () => {
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      return
+    }
+
     try {
       await coolHeap(page, inspector, {
-        dropTables: false,     // Keep tables for serial group
-        closePanels: false,    // Don't close - tests depend on sidebar state
+        dropTables: true,
+        closePanels: true,
         clearDiffState: true,
         pruneAudit: true,
         auditThreshold: 50
       })
-    } catch (error) {
-      console.warn('[FR-REGRESSION-1 afterEach] Cleanup failed:', error)
+    } catch {
+      // Ignore cleanup errors - page may already be in bad state
+    }
+
+    try {
+      await page.close()
+    } catch {
+      // Ignore close errors - page may already be closed
     }
   })
 
@@ -90,12 +100,28 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
   })
 
   test('FR-REGRESSION-2: Clicking highlight shows grid highlighting and can be cleared', async () => {
+    // Each test must be self-contained - set up own state
+    await loadTestData()
+
+    // Apply Trim transform (creates audit entry with highlight capability)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
+
     // Click highlight button
     const highlightBtn = page
       .locator('[data-testid="audit-sidebar"]')
       .locator('button')
       .filter({ hasText: 'Highlight' })
       .first()
+    await expect(highlightBtn).toBeVisible({ timeout: 5000 })
     await highlightBtn.click()
 
     // Button should now say "Clear"
@@ -143,6 +169,20 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
   })
 
   test('FR-REGRESSION-3: Audit drill-down shows row details', async () => {
+    // Each test must be self-contained - set up own state
+    await loadTestData()
+
+    // Apply Trim transform (creates audit entry with row details)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
+    await expect(page.getByTestId('audit-sidebar')).toBeVisible({ timeout: 5000 })
+
     // Find entry with "View details" indicator (has hasRowDetails: true)
     const auditEntry = page.locator('[data-testid="audit-entry-with-details"]').first()
 
@@ -236,11 +276,37 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
   })
 
   test('FR-REGRESSION-5: Redo reapplies transform', async () => {
-    // This test depends on the state from FR-REGRESSION-4 (undone transform)
+    // Each test must be self-contained - set up own state
+    await loadTestData()
+
+    // Apply Trim transform
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Undo to set up the state for redo test
+    await page.locator('body').click()
+    await page.keyboard.press('Control+z')
+
+    // Wait for undo to complete
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
+
     // Verify we're in the undone state (has whitespace)
-    const beforeRedo = await inspector.getTableData('whitespace_data')
-    const hasWhitespace = beforeRedo.some(r => (r.name as string) === '  John Doe  ')
-    expect(hasWhitespace).toBe(true)
+    await expect.poll(async () => {
+      const beforeRedo = await inspector.getTableData('whitespace_data')
+      return beforeRedo.some(r => (r.name as string) === '  John Doe  ')
+    }, { timeout: 10000 }).toBe(true)
 
     // Press Ctrl+Y to redo
     await page.keyboard.press('Control+y')
@@ -269,7 +335,16 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
   })
 
   test('FR-REGRESSION-6: Audit sidebar reflects undo state with Undone badge', async () => {
-    // This test continues from FR-REGRESSION-5 where we have a redone transform
+    // Each test must be self-contained - set up own state
+    await loadTestData()
+
+    // Apply Trim transform
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
     // Open audit sidebar first
     await laundromat.openAuditSidebar()
     const sidebar = page.getByTestId('audit-sidebar')
@@ -323,39 +398,48 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
   })
 })
 
-test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
+test.describe('FR-REGRESSION: Timeline Sync Verification', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Use beforeEach with fresh page for Tier 2 tests
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  // Tier 2 cleanup: Keep tables and panels (tests depend on sidebar state), but prune audit
   test.afterEach(async () => {
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      return
+    }
+
     try {
       await coolHeap(page, inspector, {
-        dropTables: false,     // Keep tables for serial group
-        closePanels: false,    // Don't close - tests depend on sidebar state
+        dropTables: true,
+        closePanels: true,
         clearDiffState: true,
         pruneAudit: true,
         auditThreshold: 50
       })
-    } catch (error) {
-      console.warn('[FR-REGRESSION-2 afterEach] Cleanup failed:', error)
+    } catch {
+      // Ignore cleanup errors - page may already be in bad state
+    }
+
+    try {
+      await page.close()
+    } catch {
+      // Ignore close errors - page may already be closed
     }
   })
 
@@ -496,6 +580,27 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
   })
 
   test('should update timeline position indicator after undo/redo', async () => {
+    // Each test must be self-contained - set up own state
+    await loadMixedCaseData()
+
+    // Apply first transform: Uppercase
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Uppercase', { column: 'name' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Apply second transform: Trim
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Open audit sidebar to check position indicator
+    await laundromat.openAuditSidebar()
+    await expect(page.getByTestId('audit-sidebar')).toBeVisible({ timeout: 5000 })
+
     // The audit sidebar should show position indicator like "X/Y"
     // Look for the position badge in the header
     const positionBadge = page
@@ -572,6 +677,16 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
   })
 
   test.afterEach(async () => {
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
+      return
+    }
+
     try {
       await coolHeap(page, inspector, {
         dropTables: true,
@@ -579,10 +694,15 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
         clearDiffState: true,
         pruneAudit: true,
       })
-    } catch (error) {
-      console.warn('[FR-REGRESSION afterEach] Cleanup failed:', error)
+    } catch {
+      // Ignore cleanup errors - page may already be in bad state
     }
-    await context.close()
+
+    try {
+      await context.close()
+    } catch {
+      // Ignore close errors - context may already be closed
+    }
   })
 
   async function loadDateTestData() {

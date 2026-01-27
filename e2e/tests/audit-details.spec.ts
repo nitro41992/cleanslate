@@ -20,22 +20,46 @@ test.describe('Audit Row Details', () => {
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
+  // DuckDB WASM + transformation operations need more time than default 30s
+  test.setTimeout(90000)
+
   test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await page.goto('/')
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
   test.afterEach(async () => {
-    await page.close()
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      return
+    }
+
+    // Drop tables to reduce memory pressure
+    try {
+      await inspector.runQuery('DROP TABLE IF EXISTS case_sensitive_data')
+      await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    try {
+      await page.close()
+    } catch {
+      // Ignore close errors - page may already be closed
+    }
   })
 
   // Helper for case-sensitive data
   async function loadCaseSensitiveData() {
+    // Clean up any existing table first
+    await inspector.runQuery('DROP TABLE IF EXISTS case_sensitive_data')
     await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -44,6 +68,8 @@ test.describe('Audit Row Details', () => {
 
   // Helper for whitespace data
   async function loadWhitespaceData() {
+    // Clean up any existing table first
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
     await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()

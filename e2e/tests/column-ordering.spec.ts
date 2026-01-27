@@ -25,14 +25,18 @@ test.describe('Column Order Preservation', () => {
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
+  // DuckDB WASM + combiner operations need more time than default 30s
+  test.setTimeout(90000)
+
   test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
-    inspector = createStoreInspector(page)
 
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
+    inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 

@@ -34,6 +34,8 @@ test.describe('FR-F: Value Standardization', () => {
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     standardize = new StandardizeViewPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
