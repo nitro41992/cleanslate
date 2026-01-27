@@ -168,8 +168,8 @@ test.describe('FR-B2: Visual Diff - Heavy Regression', () => {
     // New: rows 10-110 (overlap 10-100, remove 1-9, add 101-110)
     const newCSV = generateOverlappingCSV(10, 110, 'New')
 
-    console.log(`[Diff Test] Generated Base CSV: ${(baseCSV.length / (1024 * 1024)).toFixed(2)}MB`)
-    console.log(`[Diff Test] Generated New CSV: ${(newCSV.length / (1024 * 1024)).toFixed(2)}MB`)
+    // console.log(`[Diff Test] Generated Base CSV: ${(baseCSV.length / (1024 * 1024)).toFixed(2)}MB`)
+    // console.log(`[Diff Test] Generated New CSV: ${(newCSV.length / (1024 * 1024)).toFixed(2)}MB`)
 
     // Clean up any existing tables
     await inspector.runQuery('DROP TABLE IF EXISTS diff_base_100')

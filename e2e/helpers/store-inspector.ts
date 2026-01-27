@@ -171,6 +171,13 @@ export interface StoreInspector {
    * @param timeout - Optional timeout in milliseconds (default 15000)
    */
   waitForGridReady: (timeout?: number) => Promise<void>
+  /**
+   * Wait for timeline replay to complete (Heavy Path undo/redo).
+   * When a Tier 3 command is undone, the timeline replays all commands from a snapshot.
+   * This helper waits for that replay to finish before asserting on data.
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForReplayComplete: (timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -613,6 +620,35 @@ export function createStoreInspector(page: Page): StoreInspector {
         .catch(() => {
           // Some grids may not have canvas immediately, which is OK
         })
+    },
+
+    async waitForReplayComplete(timeout = 30000): Promise<void> {
+      // Wait for timeline replay to complete (Heavy Path undo/redo)
+      // The timeline engine sets isReplaying=true during replay and false when done
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.timelineStore) return true  // No timeline store = nothing to wait for
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.timelineStore as any).getState()
+          // Wait for isReplaying to become false (or undefined if not set)
+          return state?.isReplaying !== true
+        },
+        { timeout }
+      )
+      // Also ensure tableStore is not loading (replay may trigger data refresh)
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.tableStore) return true
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.tableStore as any).getState()
+          return state?.isLoading !== true
+        },
+        { timeout: 5000 }
+      ).catch(() => {
+        // Ignore timeout - tableStore may not have isLoading flag set
+      })
     },
   }
 }

@@ -18,15 +18,22 @@ import { coolHeap } from '../helpers/cleanup-helpers'
  * 2. Apply unrelated transform (creates timeline entry)
  * 3. Undo the unrelated transform (triggers replay)
  * 4. Verify via SQL that original params are preserved
+ *
+ * Per e2e/CLAUDE.md Section 1: Heavy Tests (Tier 3 operations with snapshots)
+ * use beforeEach with fresh page to prevent "Target Closed" crashes.
  */
-test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
+test.describe('Bug: Tier 3 Undo Parameter Preservation', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Extended timeout for Tier 3 operations (snapshots + replay)
+  test.setTimeout(90000)
+
+  // Tier 3: Fresh page per test for heavy operations (per e2e/CLAUDE.md)
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
 
     // Capture browser console logs for debugging
@@ -40,28 +47,19 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
     picker = new TransformationPickerPage(page)
     await laundromat.goto()
 
-    // Force reload to ensure fresh code
-    await page.reload({ waitUntil: 'networkidle' })
-
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
   test.afterEach(async () => {
-    // Tier 3 cleanup - Heavy operations with snapshots
-    await coolHeap(page, inspector, {
-      dropTables: false,  // afterAll will handle final cleanup
-      closePanels: true,
-      clearDiffState: true,
-      pruneAudit: true,
-      auditThreshold: 30  // Lower threshold for snapshot-heavy tests
-    })
-  })
-
-  test.afterAll(async () => {
-    await inspector.runQuery('DROP TABLE IF EXISTS undo_param_test')
-    await inspector.runQuery('DROP TABLE IF EXISTS param_preservation_base')
-    await page.close()
+    // Tier 3 cleanup - drop tables and close page
+    try {
+      await inspector.runQuery('DROP TABLE IF EXISTS undo_param_test')
+      await inspector.runQuery('DROP TABLE IF EXISTS param_preservation_base')
+    } catch {
+      // Ignore errors during cleanup
+    }
+    await page.close()  // Force WASM worker garbage collection
   })
 
   test('pad zeros params should persist after unrelated rename undo', async () => {
@@ -132,7 +130,19 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
       return schema.map(c => c.column_name)
     }, { timeout: 5000 }).toContain('name')
 
+    // CRITICAL: Wait for Heavy Path replay to complete
+    // The undo triggers a snapshot restore + replay of all commands from that point.
+    // Without this wait, we may read data from the snapshot (before pad_zeros replay).
+    await inspector.waitForReplayComplete()
+
     // CRITICAL ASSERTIONS: Verify data still has 9 zeros (NOT 5!)
+    // Use polling to ensure replay has fully propagated to DuckDB
+    await expect.poll(async () => {
+      const rows = await inspector.runQuery(
+        'SELECT account_number FROM undo_param_test ORDER BY id'
+      )
+      return rows[0]?.account_number
+    }, { timeout: 15000, message: 'Pad zeros should preserve length=9 after undo replay' }).toBe('000000123')
 
     // Layer 1: Direct DuckDB query (bypass UI entirely)
     const dataAfterUndo = await inspector.runQuery(

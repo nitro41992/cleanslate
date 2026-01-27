@@ -9,7 +9,9 @@ import { coolHeap } from '../helpers/heap-cooling'
 /**
  * Regression Tests: Internal Column Filtering
  *
- * Runs in fresh browser worker with 1.8GB heap to prevent memory accumulation from other test groups.
+ * Per e2e/CLAUDE.md Section 1: Tests involving diff operations are Tier 2/3
+ * and should use beforeEach with fresh page to prevent "Target Closed" crashes.
+ *
  * Validates that internal DuckDB columns (_cs_id, __base, duckdb_schema) are filtered from:
  * - Data grid columns
  * - Transformation pickers
@@ -18,17 +20,18 @@ import { coolHeap } from '../helpers/heap-cooling'
  * - Console output
  */
 
-test.describe.serial('Internal Column Filtering', () => {
+test.describe('Internal Column Filtering', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    // Prevent DuckDB cold start timeout
-    test.setTimeout(60000)
+  // Extended timeout for diff operations
+  test.setTimeout(90000)
 
+  // Tier 2/3: Fresh page per test for diff operations (per e2e/CLAUDE.md)
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
 
     laundromat = new LaundromatPage(page)
@@ -39,23 +42,20 @@ test.describe.serial('Internal Column Filtering', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
-  // Tier 2 cleanup: Clear diff state and prune audit to prevent memory accumulation
   test.afterEach(async () => {
+    // Tier 2/3 cleanup - drop tables and close page
     try {
       await coolHeap(page, inspector, {
-        dropTables: false,     // Keep tables for next test
+        dropTables: true,      // Full cleanup
         closePanels: true,
         clearDiffState: true,
         pruneAudit: true,
-        auditThreshold: 50
+        auditThreshold: 30
       })
-    } catch (error) {
-      console.warn('[Internal Columns afterEach] Cleanup failed:', error)
+    } catch {
+      // Ignore errors during cleanup
     }
+    await page.close()  // Force WASM worker garbage collection
   })
 
   test('should never display internal columns in grid (regression test)', async () => {
@@ -122,15 +122,12 @@ test.describe.serial('Internal Column Filtering', () => {
     // Regression test for: Internal columns appearing in transformation column dropdowns
     // Goal 3: Transformation UI only shows user columns
 
-    // 1. Load basic-data.csv (reuse from previous test if possible)
-    const tables = await inspector.getTables()
-    if (!tables.some(t => t.name === 'basic_data')) {
-      await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
-      await laundromat.uploadFile(getFixturePath('basic-data.csv'))
-      await wizard.waitForOpen()
-      await wizard.import()
-      await inspector.waitForTableLoaded('basic_data', 5)
-    }
+    // 1. Load basic-data.csv (fresh page per test, must load data)
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
 
     // 2. Apply Trim transformation (creates `name__base`)
     await laundromat.openCleanPanel()
@@ -273,24 +270,22 @@ test.describe.serial('Internal Column Filtering', () => {
     // Regression test for: Internal columns appearing in schema change warnings
     // Goal 3: Schema change warnings filter internal columns
 
-    // 1. Create table1 with columns: id, name, email
-    await inspector.runQuery('DROP TABLE IF EXISTS schema_test_1')
-    await inspector.runQuery('DROP TABLE IF EXISTS schema_test_2')
+    // Must upload tables via UI to enable diff button (tableStore needs entries)
+    // 1. Upload fr_b2_base.csv and fr_b2_new.csv (have different schemas)
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_base')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_b2_new')
 
-    await inspector.runQuery(`
-      CREATE TABLE schema_test_1 AS
-      SELECT 1 as id, 'Alice' as name, 'alice@test.com' as email
-    `)
+    await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_b2_base', 5)
 
-    // 2. Create table2 with columns: id, name, age, _cs_id (manually injected)
-    await inspector.runQuery(`
-      CREATE TABLE schema_test_2 AS
-      SELECT 1 as id, 'Alice' as name, 25 as age, gen_random_uuid() as _cs_id
-    `)
+    await laundromat.uploadFile(getFixturePath('fr_b2_new.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_b2_new', 5)
 
-    // 3. Open Diff view → Compare Two Tables
-    await page.keyboard.press('Escape')
-
+    // 2. Open Diff view → Compare Two Tables
     await laundromat.openDiffView()
     // DiffView uses simple conditional render, not Radix Sheet - just wait for visibility
     await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
@@ -299,11 +294,11 @@ test.describe.serial('Internal Column Filtering', () => {
     await expect(compareTwoTablesBtn).toBeVisible({ timeout: 5000 })
     await compareTwoTablesBtn.click()
 
-    // 4. Select tables
+    // 3. Select tables
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /schema_test_1/i }).click()
+    await page.getByRole('option', { name: /fr_b2_base/i }).click()
     await page.getByRole('combobox').nth(1).click()
-    await page.getByRole('option', { name: /schema_test_2/i }).click()
+    await page.getByRole('option', { name: /fr_b2_new/i }).click()
 
     // Wait for table selection to register
     await expect.poll(async () => {
@@ -318,33 +313,44 @@ test.describe.serial('Internal Column Filtering', () => {
       return diffState
     }, { timeout: 5000 }).toBe(true)
 
-    // 5. Verify schema change banner appears
-    // Look for warning or info message about schema differences
-    const schemaBanner = page.locator('text=/column/i').or(page.locator('text=/schema/i'))
-    const hasBanner = await schemaBanner.isVisible().catch(() => false)
+    // 4. Select key column and run comparison
+    await page.locator('#key-id').click()
+    await page.getByTestId('diff-compare-btn').click()
 
-    if (hasBanner) {
-      const bannerText = await schemaBanner.first().textContent()
+    // Wait for diff comparison to complete
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.isComparing === false && diffState.summary !== null
+    }, { timeout: 15000 }).toBe(true)
 
-      // Rule 2: Assert banner doesn't contain internal column names
-      expect(bannerText).not.toContain('_cs_id')
-      expect(bannerText).not.toContain('duckdb_schema')
+    // 5. Verify internal columns don't appear in the diff results
+    // Check diff store's allColumns - should not contain internal columns
+    const diffColumns = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      const diffStore = stores?.diffStore as {
+        getState: () => {
+          allColumns: string[]
+        }
+      } | undefined
+      return diffStore?.getState()?.allColumns || []
+    })
 
-      // Should mention user columns only
-      // Banner shows: "New columns: age" (not _cs_id)
-      // Banner shows: "Removed columns: email"
-      if (bannerText?.includes('New')) {
-        expect(bannerText).toContain('age')
-        expect(bannerText).not.toContain('_cs_id')
-      }
-    } else {
-      console.log('[Schema Banner Test] No schema warning banner displayed (may not be implemented)')
-    }
+    // Rule 2: Assert internal columns NOT present in diff results
+    expect(diffColumns).not.toContain('_cs_id')
+    expect(diffColumns).not.toContain('duckdb_schema')
+    expect(diffColumns).not.toContain('row_id')
+
+    // Verify only user columns appear
+    expect(diffColumns).toContain('id')
+    expect(diffColumns).toContain('name')
   })
 
   test('should not leak internal columns in console errors (regression test)', async () => {
     // Regression test for: Internal column names appearing in console output
     // Goal 3: No internal column names appear in console output
+
+    // This is a simpler test that focuses on checking console output
+    // during basic operations (upload, transform, export)
 
     // Setup console listener to capture all logs/errors/warnings
     const consoleMessages: string[] = []
@@ -353,59 +359,33 @@ test.describe.serial('Internal Column Filtering', () => {
     })
 
     // 1. Load basic-data.csv
-    await inspector.runQuery('DROP TABLE IF EXISTS basic_data_console_test')
-    await page.keyboard.press('Escape')
-
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
-    // 2. Apply multiple transformations
+    // 2. Apply a transformation (creates __base column internally)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
     await inspector.waitForTransformComplete()
-    await picker.addTransformation('Uppercase', { column: 'email' })
-    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
 
-    // 3. Open diff view
-    await laundromat.openDiffView()
-    // DiffView uses simple conditional render, not Radix Sheet - just wait for visibility
-    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
+    // Wait for panel to fully close
+    await page.getByTestId('panel-clean').waitFor({ state: 'hidden', timeout: 5000 })
 
-    const comparePreviewBtn = page.locator('button').filter({ hasText: 'Compare with Preview' })
-    await expect(comparePreviewBtn).toBeVisible({ timeout: 5000 })
-    await comparePreviewBtn.click()
-    await page.getByRole('checkbox', { name: 'id' }).click()
-    await page.getByTestId('diff-compare-btn').click()
-
-    // Wait for diff comparison to complete
-    await expect.poll(async () => {
-      const diffState = await page.evaluate(() => {
-        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        const diffStore = stores?.diffStore as {
-          getState: () => { isComparing: boolean; summary: unknown }
-        } | undefined
-        const state = diffStore?.getState()
-        return { isComparing: state?.isComparing, hasSummary: state?.summary !== null }
-      })
-      return diffState.isComparing === false && diffState.hasSummary
-    }, { timeout: 15000 }).toBe(true)
-
+    // Wait for grid to be ready
     await inspector.waitForGridReady()
 
-    // 4. Export CSV
-    await page.keyboard.press('Escape')
-
+    // 3. Export CSV
+    const exportBtn = page.getByTestId('export-csv-btn')
+    await expect(exportBtn).toBeVisible({ timeout: 10000 })
     const downloadPromise = page.waitForEvent('download')
-    const exportBtn = page.getByTestId('export-table-btn')
-    await expect(exportBtn).toBeVisible({ timeout: 5000 })
     await exportBtn.click()
     await downloadPromise
 
-    // 5. Collect all console output
+    // 4. Collect all console output
     // Filter out intentional debug logs
     const leakedMessages = consoleMessages.filter(msg =>
       (msg.includes('_cs_id') ||

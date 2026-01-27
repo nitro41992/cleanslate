@@ -16,14 +16,15 @@ import { coolHeapLight } from '../helpers/cleanup-helpers'
  * is applied immediately when configured (no more recipe/run flow).
  */
 
-test.describe.serial('Transformations: Whitespace Data', () => {
+test.describe('Transformations: Whitespace Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Fresh page per test to prevent stale references if WASM worker crashes
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -34,11 +35,6 @@ test.describe.serial('Transformations: Whitespace Data', () => {
   })
 
   test.afterEach(async () => {
-    // Tier 1 cleanup - Simple transforms (trim, uppercase, lowercase)
-    await coolHeapLight(page)
-  })
-
-  test.afterAll(async () => {
     await page.close()
   })
 
@@ -101,14 +97,14 @@ test.describe.serial('Transformations: Whitespace Data', () => {
   })
 })
 
-test.describe.serial('Transformations: Mixed Case Data', () => {
+test.describe('Transformations: Mixed Case Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -118,7 +114,7 @@ test.describe.serial('Transformations: Mixed Case Data', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -157,14 +153,14 @@ test.describe.serial('Transformations: Mixed Case Data', () => {
   })
 })
 
-test.describe.serial('Transformations: Duplicates Data', () => {
+test.describe('Transformations: Duplicates Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -174,7 +170,7 @@ test.describe.serial('Transformations: Duplicates Data', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -212,14 +208,15 @@ test.describe.serial('Transformations: Duplicates Data', () => {
   })
 })
 
-test.describe.serial('Transformations: Empty Values Data', () => {
+test.describe('Transformations: Empty Values Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Fresh page per test to prevent stale references if previous test blocks crash
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -229,7 +226,7 @@ test.describe.serial('Transformations: Empty Values Data', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -255,14 +252,14 @@ test.describe.serial('Transformations: Empty Values Data', () => {
   })
 })
 
-test.describe.serial('Transformations: Find Replace Data', () => {
+test.describe('Transformations: Find Replace Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -272,7 +269,7 @@ test.describe.serial('Transformations: Find Replace Data', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -317,14 +314,14 @@ test.describe.serial('Transformations: Find Replace Data', () => {
   })
 })
 
-test.describe.serial('Transformations: Basic Data (Rename)', () => {
+test.describe('Transformations: Basic Data (Rename)', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -334,7 +331,7 @@ test.describe.serial('Transformations: Basic Data (Rename)', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -359,14 +356,15 @@ test.describe.serial('Transformations: Basic Data (Rename)', () => {
   })
 })
 
-test.describe.serial('Transformations: Numeric Strings Data', () => {
+test.describe('Transformations: Numeric Strings Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Fresh page per test to prevent stale references if previous test blocks crash
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -376,7 +374,7 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -444,14 +442,14 @@ test.describe.serial('Transformations: Numeric Strings Data', () => {
   })
 })
 
-test.describe.serial('Transformations: Case Sensitive Data', () => {
+test.describe('Transformations: Case Sensitive Data', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -461,7 +459,7 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -531,14 +529,14 @@ test.describe.serial('Transformations: Case Sensitive Data', () => {
   })
 })
 
-test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)', () => {
+test.describe('Transformations: _cs_id Lineage Preservation (Large File)', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
 
     // Block unnecessary resources to reduce memory usage
@@ -559,7 +557,7 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -593,7 +591,7 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     // 1. Generate CSV with duplicates (100 rows, 30 unique after dedup)
     const csvContent = await generateDuplicatesCSV(100, 30)
     const csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
-    console.log(`[_cs_id Lineage Test] Generated CSV: ${csvSizeMB}MB (100 rows, 30 unique)`)
+    // console.log(`[_cs_id Lineage Test] Generated CSV: ${csvSizeMB}MB (100 rows, 30 unique)`)
 
     // 2. Upload and import - write to temp file first
     await inspector.runQuery('DROP TABLE IF EXISTS dedup_large_test')
@@ -623,7 +621,7 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
       ) AS unique_ids
       ORDER BY id
     `)
-    console.log('[_cs_id Lineage Test] Sample _cs_id before dedup:', beforeData.slice(0, 3))
+    // console.log('[_cs_id Lineage Test] Sample _cs_id before dedup:', beforeData.slice(0, 3))
 
     // Rule 1: Assert we have actual _cs_id values (not null)
     expect(beforeData.length).toBe(10)
@@ -656,7 +654,7 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
       ORDER BY id
       LIMIT 10
     `)
-    console.log('[_cs_id Lineage Test] Sample _cs_id after dedup:', afterData.slice(0, 3))
+    // console.log('[_cs_id Lineage Test] Sample _cs_id after dedup:', afterData.slice(0, 3))
 
     // 6. Verify remaining rows have SAME _cs_id as before (FIRST aggregation preserved them)
     // Rule 1: Assert identity, not just cardinality
@@ -680,6 +678,6 @@ test.describe.serial('Transformations: _cs_id Lineage Preservation (Large File)'
     // This test validates the fix for the regression where remove_duplicates
     // was not preserving _cs_id, causing diff to show ADDED rows instead of REMOVED
 
-    console.log('[_cs_id Lineage Test] ✅ _cs_id preservation verified - lineage maintained through dedup')
+    // console.log('[_cs_id Lineage Test] ✅ _cs_id preservation verified - lineage maintained through dedup')
   })
 })
