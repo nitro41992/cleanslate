@@ -4,6 +4,7 @@ import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { coolHeap } from '../helpers/heap-cooling'
 
 /**
  * Regression Tests: Internal Column Filtering
@@ -42,22 +43,19 @@ test.describe.serial('Internal Column Filtering', () => {
     await page.close()
   })
 
+  // Tier 2 cleanup: Clear diff state and prune audit to prevent memory accumulation
   test.afterEach(async () => {
-    // Drop internal diff tables created during comparison to prevent memory accumulation
     try {
-      const internalTables = await inspector.runQuery(`
-        SELECT table_name FROM information_schema.tables
-        WHERE table_name LIKE 'v_diff_%' OR table_name LIKE '_timeline_%'
-      `)
-      for (const t of internalTables) {
-        await inspector.runQuery(`DROP TABLE IF EXISTS "${t.table_name}"`)
-      }
-    } catch {
-      // Ignore errors during cleanup
+      await coolHeap(page, inspector, {
+        dropTables: false,     // Keep tables for next test
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+        auditThreshold: 50
+      })
+    } catch (error) {
+      console.warn('[Internal Columns afterEach] Cleanup failed:', error)
     }
-    // Press Escape to close any open panels
-    await page.keyboard.press('Escape')
-    await page.keyboard.press('Escape')
   })
 
   test('should never display internal columns in grid (regression test)', async () => {
@@ -212,7 +210,8 @@ test.describe.serial('Internal Column Filtering', () => {
 
     // 2. Open Diff view → Compare Two Tables
     await laundromat.openDiffView()
-    await inspector.waitForPanelAnimation('match-view')
+    // DiffView uses simple conditional render, not Radix Sheet - just wait for visibility
+    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
 
     const compareTwoTablesBtn = page.locator('button').filter({ hasText: 'Compare Two Tables' })
     await expect(compareTwoTablesBtn).toBeVisible({ timeout: 5000 })
@@ -293,7 +292,8 @@ test.describe.serial('Internal Column Filtering', () => {
     await page.keyboard.press('Escape')
 
     await laundromat.openDiffView()
-    await inspector.waitForPanelAnimation('match-view')
+    // DiffView uses simple conditional render, not Radix Sheet - just wait for visibility
+    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
 
     const compareTwoTablesBtn = page.locator('button').filter({ hasText: 'Compare Two Tables' })
     await expect(compareTwoTablesBtn).toBeVisible({ timeout: 5000 })
@@ -372,7 +372,8 @@ test.describe.serial('Internal Column Filtering', () => {
 
     // 3. Open diff view
     await laundromat.openDiffView()
-    await inspector.waitForPanelAnimation('match-view')
+    // DiffView uses simple conditional render, not Radix Sheet - just wait for visibility
+    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
 
     const comparePreviewBtn = page.locator('button').filter({ hasText: 'Compare with Preview' })
     await expect(comparePreviewBtn).toBeVisible({ timeout: 5000 })

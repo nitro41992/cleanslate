@@ -198,6 +198,19 @@ test.describe('Manual Edit Undo Through Transform', () => {
 
     await page.keyboard.press('Control+z')
 
+    // Wait for undo to complete - undo operations use isReplaying, not isLoading
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        // Wait for replay to complete
+        return !state.isReplaying
+      },
+      { timeout: 15000 }
+    )
+
     // Check if table exists
     let tableExists = false
     try {
@@ -212,23 +225,25 @@ test.describe('Manual Edit Undo Through Transform', () => {
     }
 
     // Wait for undo to complete - table may be briefly dropped during restore
+    // Poll for the actual data we need (description with whitespace) rather than just table existence
+    // This avoids race conditions where the table exists but data isn't fully restored
+    let afterUndoDesc: { description: string }[] = []
     await expect.poll(async () => {
       try {
-        const result = await inspector.runQuery<{ cnt: number }>(
-          `SELECT COUNT(*) as cnt FROM temp_undo_test`
+        afterUndoDesc = await inspector.runQuery<{ description: string }>(
+          `SELECT description FROM temp_undo_test WHERE id = 1`
         )
-        // DuckDB returns BigInt for COUNT(*), so convert to Number for comparison
-        return Number(result[0]?.cnt) === 3
+        // After undo, should have leading/trailing whitespace again
+        const desc = afterUndoDesc[0]?.description
+        if (!desc) return false
+        // Check that whitespace was restored (trim changes the value)
+        return desc.trim() !== desc
       } catch {
         return false
       }
-    }, { timeout: 15000, message: 'Table should be restored after undo' }).toBe(true)
+    }, { timeout: 15000, message: 'Transform should be undone (whitespace restored)' }).toBe(true)
 
-    // Now check that the transform was undone (description should have whitespace again)
-    const afterUndoDesc = await inspector.runQuery<{ description: string }>(
-      `SELECT description FROM temp_undo_test WHERE id = 1`
-    )
-    // After undo, should have leading/trailing whitespace again
+    // Verify the description has whitespace (assertion for clarity)
     expect(afterUndoDesc[0]?.description?.trim()).not.toBe(afterUndoDesc[0]?.description)
 
     console.log('Transform undone: whitespace restored')

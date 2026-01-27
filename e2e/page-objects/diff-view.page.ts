@@ -1,4 +1,4 @@
-import { Page, Locator } from '@playwright/test'
+import { Page, Locator, expect } from '@playwright/test'
 
 /**
  * Page object for the DiffView full-screen overlay.
@@ -98,20 +98,22 @@ export class DiffViewPage {
    */
   async runComparison(): Promise<void> {
     await this.compareButton.click()
-    // Wait for comparison to complete - button disappears or stops showing "Comparing",
-    // or results appear (diff pills become visible)
-    await Promise.race([
-      this.page.waitForFunction(
-        () => {
-          const btn = document.querySelector('[data-testid="diff-compare-btn"]')
-          // Button either doesn't exist, or exists but not showing "Comparing"
-          return !btn || !btn.textContent?.includes('Comparing')
-        },
-        { timeout: 30000 }
-      ),
-      // Or wait for results to appear
-      this.page.getByTestId('diff-pill-added').waitFor({ state: 'visible', timeout: 30000 })
-    ])
+
+    // Poll for diff store to show comparison complete (not use Promise.race per e2e/CLAUDE.md)
+    await expect.poll(async () => {
+      const state = await this.page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.diffStore) return { isComparing: true, hasSummary: false }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const diffState = (stores.diffStore as any).getState()
+        return {
+          isComparing: diffState.isComparing,
+          hasSummary: diffState.summary !== null
+        }
+      })
+      return state.isComparing === false && state.hasSummary
+    }, { timeout: 30000, message: 'Diff comparison should complete' }).toBe(true)
+
     // Wait for summary pills to be fully visible and stable
     await expect(this.summaryPills.first()).toBeVisible({ timeout: 5000 })
   }

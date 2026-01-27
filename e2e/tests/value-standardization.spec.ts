@@ -294,9 +294,15 @@ test.describe.serial('FR-F: Value Standardization', () => {
     await standardize.apply()
 
     // Check audit log for standardization entry
-    const auditEntries = await inspector.getAuditEntries()
-    // Action is now 'Standardize Values in {column}' so use startsWith
-    const standardizeEntry = auditEntries.find((e) => e.action.startsWith('Standardize Values'))
+    // Use polling to handle timing - entry may not be immediately available
+    let standardizeEntry: { action: string; hasRowDetails: boolean } | undefined
+    await expect.poll(async () => {
+      const auditEntries = await inspector.getAuditEntries()
+      // Action is now 'Standardize Values in {column}' so use startsWith
+      standardizeEntry = auditEntries.find((e) => e.action.startsWith('Standardize Values'))
+      return standardizeEntry !== undefined
+    }, { timeout: 10000, message: 'Standardization audit entry should appear' }).toBe(true)
+
     expect(standardizeEntry).toBeDefined()
     expect(standardizeEntry?.hasRowDetails).toBe(true)
   })
@@ -411,7 +417,7 @@ test.describe.serial('FR-F: Value Standardization', () => {
  * - Audit drill-down (StandardizeDetailTable)
  * - Undo/Redo functionality
  */
-test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () => {
+test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -419,7 +425,11 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
   let diffView: DiffViewPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
+  // Extended timeout for heavy integration tests
+  test.setTimeout(90000)
+
+  // Tier 3: Fresh page per test for heavy operations (per e2e/CLAUDE.md)
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -430,33 +440,15 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
+    // Fresh page per test - just close it
     await page.close()
   })
 
-  test.afterEach(async () => {
-    // Drop internal tables to prevent memory accumulation
-    try {
-      const internalTables = await inspector.runQuery(`
-        SELECT table_name FROM information_schema.tables
-        WHERE table_name LIKE 'v_diff_%' OR table_name LIKE '_timeline_%'
-      `)
-      for (const t of internalTables) {
-        await inspector.runQuery(`DROP TABLE IF EXISTS "${t.table_name}"`)
-      }
-    } catch {
-      // Ignore errors during cleanup
-    }
-    // Press Escape to close any open overlays
-    await page.keyboard.press('Escape')
-    await page.keyboard.press('Escape')
-  })
-
   async function loadTestData() {
-    // Reload page to clear any stale state
-    await page.reload()
-    await inspector.waitForDuckDBReady()
+    // Fresh page per test - no need to reload
     await inspector.runQuery('DROP TABLE IF EXISTS fr_f_integration')
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_f_standardize')
     await laundromat.uploadFile(getFixturePath('fr_f_standardize.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -481,10 +473,15 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     await standardize.filterBy('actionable')
     await standardize.apply()
 
-    // Verify data was changed
-    const afterData = await inspector.getTableData('fr_f_standardize')
-    const afterUniqueNames = new Set(afterData.map((r) => r.name)).size
-    expect(afterUniqueNames).toBeLessThan(initialUniqueNames)
+    // Wait for transform to complete
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
+
+    // Poll for data to be changed (async write)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_f_standardize')
+      return new Set(data.map((r) => r.name)).size
+    }, { timeout: 10000 }).toBeLessThan(initialUniqueNames)
 
     // Open diff view
     await page.getByTestId('toolbar-diff').click()
@@ -493,15 +490,23 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     // Select "Compare with Preview" mode (compares current with original snapshot)
     await diffView.selectComparePreviewMode()
 
-    // Wait for mode change and verify original snapshot is available
-    await expect(page.locator('text=Original snapshot available')).toBeVisible({ timeout: 5000 })
+    // Wait for mode change in store
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.mode
+    }, { timeout: 5000 }).toBe('compare-preview')
 
-    // "Compare with Preview" mode automatically matches by internal _cs_id
-    // No key column selection needed - verify compare button is enabled
+    // Verify compare button is enabled (original snapshot should be available)
     await expect(diffView.compareButton).toBeEnabled({ timeout: 5000 })
 
     // Run comparison
     await diffView.runComparison()
+
+    // Wait for diff to complete
+    await expect.poll(async () => {
+      const diffState = await inspector.getDiffState()
+      return diffState.isComparing === false && diffState.summary !== null
+    }, { timeout: 15000 }).toBe(true)
 
     // Verify diff results show modified rows
     const summary = await diffView.getSummary()

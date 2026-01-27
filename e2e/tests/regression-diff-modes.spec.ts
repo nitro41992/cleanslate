@@ -78,7 +78,10 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-    await inspector.waitForTransformComplete()
+
+    // Wait for transform to complete before proceeding
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
     await laundromat.closePanel()
 
     // 3. Open Diff view

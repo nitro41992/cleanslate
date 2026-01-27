@@ -7,6 +7,12 @@
 **Phase 3 (Monitoring):** ✅ COMPLETED (commit eaf7aaa)
 **Additional Fix:** audit-details.spec.ts:486 modal animation wait
 **Additional Fix:** audit-undo-regression.spec.ts Tier 2 cleanup (commit bbf2957)
+**Additional Fix:** Multiple flaky test fixes (this commit):
+  - regression-diff-modes.spec.ts: Add waitForTransformComplete after uppercase
+  - regression-diff.spec.ts: Convert to Tier 3 (fresh page per test)
+  - regression-internal-columns.spec.ts: Add Tier 2 cleanup with coolHeap
+  - value-standardization.spec.ts: Convert integration tests to Tier 3, add polling
+  - manual-edit-undo-through-transform.spec.ts: Add isReplaying wait before undo polling
 
 **Next Steps:** Run monitoring tools to validate E2E test health and establish baseline metrics.
 
@@ -817,6 +823,11 @@ npm run test:lint-patterns
 - [x] Document tiered cleanup strategy in e2e/CLAUDE.md
 - [ ] Add cleanup to remaining 8 serial groups in transformations.spec.ts (deferred)
 - [x] Add Tier 2 cleanup to audit-undo-regression.spec.ts (2 serial groups with closePanels: false)
+- [x] Add Tier 2 cleanup to regression-internal-columns.spec.ts (coolHeap with clearDiffState)
+- [x] Convert regression-diff.spec.ts heavy test to Tier 3 (fresh page per test)
+- [x] Convert value-standardization.spec.ts integration tests to Tier 3 (fresh page per test)
+- [x] Fix manual-edit-undo-through-transform.spec.ts (add isReplaying wait)
+- [x] Fix regression-diff-modes.spec.ts (add waitForTransformComplete)
 - [ ] Add cleanup to other serial test files (deferred - evaluate after test run)
 
 **Note:** Promise.race() usages in page objects (match-view, diff-view, standardize-view) are acceptable - they wait for operation to START, not for completion.
@@ -853,6 +864,11 @@ npm run test:lint-patterns
 7. ✅ `e2e/page-objects/match-view.page.ts` - Simplified waitForPairs()
 8. ✅ `e2e/CLAUDE.md` - Tiered cleanup strategy, canvas grid testing patterns
 9. ✅ `e2e/tests/audit-undo-regression.spec.ts` - Tier 2 cleanup (2 serial groups)
+10. ✅ `e2e/tests/regression-diff-modes.spec.ts` - Add waitForTransformComplete
+11. ✅ `e2e/tests/regression-diff.spec.ts` - Convert to Tier 3 isolation
+12. ✅ `e2e/tests/regression-internal-columns.spec.ts` - Add Tier 2 cleanup
+13. ✅ `e2e/tests/value-standardization.spec.ts` - Convert integration tests to Tier 3, add polling
+14. ✅ `e2e/tests/manual-edit-undo-through-transform.spec.ts` - Add isReplaying wait
 
 ### Files Deferred (Phase 2 - Optional):
 - `e2e/tests/transformations.spec.ts` (8 remaining serial groups - low priority)
