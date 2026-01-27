@@ -175,9 +175,12 @@ export function useDuckDB() {
         try {
           const { exportTableToParquet } = await import('@/lib/opfs/snapshot-storage')
           const { initDuckDB, getConnection } = await import('@/lib/duckdb')
+          const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
           const db = await initDuckDB()
           const conn = await getConnection()
           await exportTableToParquet(db, conn, tableName, tableName)
+          // Tell auto-save system we already saved this table - prevents redundant save
+          markTableAsRecentlySaved(tableId)
           console.log('[Import] Table persisted to Parquet')
         } catch (error) {
           console.warn('[Import] Failed to persist to Parquet:', error)

@@ -485,12 +485,15 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
     let deletedCount = 0
 
     // Iterate over all files in the snapshots directory
+    // Parquet files need at least ~200 bytes for magic bytes + minimal schema
+    const MIN_PARQUET_SIZE = 200
+
     // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, handle] of snapshotsDir.entries()) {
       if (handle.kind === 'file' && name.endsWith('.parquet')) {
         const file = await handle.getFile()
-        if (file.size === 0) {
-          console.warn(`[Snapshot] Found corrupt 0-byte file: ${name}. Deleting...`)
+        if (file.size < MIN_PARQUET_SIZE) {
+          console.warn(`[Snapshot] Found corrupt file (${file.size} bytes): ${name}. Deleting...`)
           await snapshotsDir.removeEntry(name)
           deletedCount++
         }

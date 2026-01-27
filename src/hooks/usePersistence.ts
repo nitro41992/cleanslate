@@ -29,6 +29,33 @@ import { toast } from 'sonner'
 // Module-level flag to prevent double-hydration from React StrictMode
 let hydrationPromise: Promise<void> | null = null
 
+// Save queue to prevent concurrent exports and coalesce rapid changes
+const saveInProgress = new Map<string, Promise<void>>()
+const pendingSave = new Map<string, boolean>()
+
+// Track tables that were just saved (e.g., during import) to skip redundant auto-saves
+const recentlySavedTables = new Set<string>()
+
+/**
+ * Mark a table as recently saved to prevent redundant auto-save.
+ * Called by useDuckDB after direct Parquet export during import.
+ */
+export function markTableAsRecentlySaved(tableId: string): void {
+  recentlySavedTables.add(tableId)
+  console.log(`[Persistence] Marked ${tableId} as recently saved (will skip auto-save)`)
+}
+
+/**
+ * Get debounce time based on table row count.
+ * Larger tables get longer debounce to batch more edits per save.
+ */
+function getDebounceTime(rowCount: number): number {
+  if (rowCount > 1_000_000) return 10_000  // 10s for >1M rows
+  if (rowCount > 500_000) return 5_000     // 5s for >500k rows
+  if (rowCount > 100_000) return 3_000     // 3s for >100k rows
+  return 2_000                              // 2s default
+}
+
 export function usePersistence() {
   const [isRestoring, setIsRestoring] = useState(true)
   const addTable = useTableStore((s) => s.addTable)
@@ -146,36 +173,66 @@ export function usePersistence() {
   }, [addTable])
 
   // 2. SAVING: Call this to save a specific table to Parquet
-  const saveTable = useCallback(async (tableName: string) => {
-    const { useUIStore } = await import('@/stores/uiStore')
-    const uiStore = useUIStore.getState()
-
-    try {
-      const db = await initDuckDB()
-      const conn = await getConnection()
-
-      // Set saving status when export starts
-      if (uiStore.persistenceStatus === 'dirty') {
-        uiStore.setPersistenceStatus('saving')
-      }
-
-      console.log(`[Persistence] Saving ${tableName}...`)
-
-      // Export table to Parquet (overwrites existing snapshot)
-      await exportTableToParquet(db, conn, tableName, tableName)
-
-      // Mark table as clean after successful Parquet export
-      const table = useTableStore.getState().tables.find(t => t.name === tableName)
-      if (table) {
-        uiStore.markTableClean(table.id)
-      }
-
-      console.log(`[Persistence] ${tableName} saved`)
-    } catch (err) {
-      console.error(`[Persistence] Save failed for ${tableName}:`, err)
-      uiStore.setPersistenceStatus('error')
-      toast.error(`Failed to save ${tableName}`)
+  // Uses queue with coalescing to prevent concurrent exports
+  const saveTable = useCallback(async (tableName: string): Promise<void> => {
+    // If already saving this table, mark for re-save after completion
+    if (saveInProgress.has(tableName)) {
+      console.log(`[Persistence] ${tableName} save in progress, queuing...`)
+      pendingSave.set(tableName, true)
+      return saveInProgress.get(tableName)!
     }
+
+    // CRITICAL: Create and register promise SYNCHRONOUSLY before any await
+    // This prevents race conditions when multiple calls happen nearly simultaneously
+    const savePromise = (async () => {
+      // Dynamic import inside the IIFE - after promise is registered
+      const { useUIStore } = await import('@/stores/uiStore')
+      const uiStore = useUIStore.getState()
+
+      try {
+        const db = await initDuckDB()
+        const conn = await getConnection()
+
+        // Set saving status when export starts
+        if (uiStore.persistenceStatus === 'dirty') {
+          uiStore.setPersistenceStatus('saving')
+        }
+
+        console.log(`[Persistence] Saving ${tableName}...`)
+
+        // Export table to Parquet (overwrites existing snapshot)
+        await exportTableToParquet(db, conn, tableName, tableName)
+
+        // Mark table as clean after successful Parquet export
+        const table = useTableStore.getState().tables.find(t => t.name === tableName)
+        if (table) {
+          useUIStore.getState().markTableClean(table.id)
+        }
+
+        console.log(`[Persistence] ${tableName} saved`)
+      } catch (err) {
+        console.error(`[Persistence] Save failed for ${tableName}:`, err)
+        useUIStore.getState().setPersistenceStatus('error')
+        toast.error(`Failed to save ${tableName}`)
+      }
+    })()
+
+    // Register IMMEDIATELY (synchronous) - before the IIFE's first await yields
+    saveInProgress.set(tableName, savePromise)
+
+    // Handle cleanup and re-save after promise settles
+    savePromise.finally(() => {
+      saveInProgress.delete(tableName)
+
+      // If another save was requested while we were saving, save again with latest data
+      if (pendingSave.get(tableName)) {
+        console.log(`[Persistence] ${tableName} has pending changes, re-saving...`)
+        pendingSave.delete(tableName)
+        saveTable(tableName).catch(console.error)
+      }
+    })
+
+    return savePromise
   }, [])
 
   // 3. DELETE: Call this when a table is deleted to remove its Parquet file
@@ -244,6 +301,16 @@ export function usePersistence() {
         const lastVersion = lastDataVersions.get(table.id) ?? 0
         const hasDataChanged = currentVersion > lastVersion
 
+        // Skip tables that were just saved (e.g., during import)
+        // This prevents redundant saves - the table is already persisted
+        if (recentlySavedTables.has(table.id)) {
+          console.log(`[Persistence] Skipping ${table.name} - was just saved during import`)
+          recentlySavedTables.delete(table.id)  // Consume the flag
+          knownTableIds.add(table.id)           // Track it as known
+          lastDataVersions.set(table.id, currentVersion)
+          continue
+        }
+
         if (isNewTable || hasDataChanged) {
           tablesToSave.push({ id: table.id, name: table.name })
           knownTableIds.add(table.id)
@@ -274,14 +341,24 @@ export function usePersistence() {
         useUIStore.getState().markTableDirty(table.id)
       }
 
-      // Debounce: save 2 seconds after last change
+      // Compute adaptive debounce based on largest table being saved
+      // Larger tables get longer debounce to batch more edits per export
+      const maxRowCount = Math.max(
+        ...filteredTables.map(t => {
+          const tableData = state.tables.find(st => st.id === t.id)
+          return tableData?.rowCount ?? 0
+        })
+      )
+      const debounceTime = getDebounceTime(maxRowCount)
+
+      // Debounce: save after adaptive delay based on table size
       if (saveTimeout) clearTimeout(saveTimeout)
       saveTimeout = setTimeout(() => {
-        console.log(`[Persistence] Saving tables: ${filteredTables.map(t => t.name).join(', ')}`)
+        console.log(`[Persistence] Saving tables: ${filteredTables.map(t => t.name).join(', ')} (debounce: ${debounceTime}ms for ${maxRowCount.toLocaleString()} rows)`)
         filteredTables.forEach(t => {
           saveTable(t.name).catch(console.error)
         })
-      }, 2000)
+      }, debounceTime)
     })
 
     return () => {
