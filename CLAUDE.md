@@ -94,6 +94,51 @@ await getCommandExecutor().execute(command)
 if (executor.canUndo(tableId)) await executor.undo(tableId)
 ```
 
+### Persistence Architecture
+
+Data persists across browser refreshes via a **dual-layer** OPFS storage system:
+
+| Layer | Storage | Format | Purpose |
+|-------|---------|--------|---------|
+| Data | `cleanslate/snapshots/` | Parquet | Table rows (chunked for >250k rows) |
+| App State | `cleanslate/app-state.json` | JSON | Metadata, timelines, UI prefs |
+
+**Key Files:**
+| File | Purpose |
+|------|---------|
+| `src/lib/persistence/state-persistence.ts` | App-level JSON state (save/restore) |
+| `src/lib/opfs/snapshot-storage.ts` | Parquet I/O with chunking & cleanup |
+| `src/hooks/usePersistence.ts` | Lifecycle hook (hydration, auto-save) |
+
+**Restoration Flow (Page Load):**
+```
+initDuckDB() → cleanupCorruptSnapshots() → restoreAppState()
+     ↓
+usePersistence: listParquetSnapshots() → importTableFromParquet() → addTable()
+     ↓
+setIsReady(true) → render grid
+```
+
+**Save Mechanisms:**
+- **Adaptive debounce:** 2s default, 3s for >100k rows, 5s for >500k, 10s for >1M
+- **Save queue coalescing:** Prevents concurrent exports for same table
+- **Chunked exports:** Tables >250k rows split into ~50MB Parquet chunks
+- **Corrupt file cleanup:** Deletes <200 byte broken files on startup
+
+**Dirty State Tracking (`useUIStore`):**
+- `dirtyTables: Set<string>` — Tables with unsaved changes
+- `persistenceStatus: 'idle' | 'dirty' | 'saving' | 'error'`
+- UI shows amber pulse → spinner → green checkmark
+
+**OPFS Layout:**
+```
+cleanslate/
+├── app-state.json
+└── snapshots/
+    ├── table_name.parquet (or _part_N.parquet for chunked)
+    └── snapshot_timeline_*.parquet (undo snapshots)
+```
+
 ## 5. Engineering Directives
 
 ### 5.1 Golden Rule: "If it Mutates, It's a Command"
