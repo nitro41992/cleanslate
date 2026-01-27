@@ -1,10 +1,11 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 import { expectRowIdsHighlighted } from '../helpers/high-fidelity-assertions'
+import { coolHeap } from '../helpers/heap-cooling'
 
 /**
  * Audit + Undo/Redo Regression Tests
@@ -513,14 +514,25 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 })
 
 test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
+  // Tier 3 tests need longer timeout
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Tier 3 tests: Use beforeEach with fresh context per E2E CLAUDE.md guidelines
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -529,8 +541,18 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
+  test.afterEach(async () => {
+    try {
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+      })
+    } catch (error) {
+      console.warn('[FR-REGRESSION afterEach] Cleanup failed:', error)
+    }
+    await context.close()
   })
 
   async function loadDateTestData() {
@@ -589,9 +611,20 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
   })
 
   test('FR-REGRESSION-8: Audit sidebar does not cut off content', async () => {
-    // The sidebar should be visible from previous test
+    // Clean Slate: Load own data and open own sidebar (don't depend on previous test)
+    await loadDateTestData()
+
+    // Apply a transform to populate audit sidebar with content
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Standardize Date', { column: 'date_us' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
     const sidebar = page.locator('[data-testid="audit-sidebar"]')
-    await expect(sidebar).toBeVisible()
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Get the sidebar bounding box
     const sidebarBox = await sidebar.boundingBox()

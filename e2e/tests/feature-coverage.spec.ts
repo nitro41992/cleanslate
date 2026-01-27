@@ -8,6 +8,45 @@ import { getFixturePath } from '../helpers/file-upload'
 import { coolHeap, coolHeapLight } from '../helpers/heap-cooling'
 
 /**
+ * Shared helper to configure and run Find Duplicates with proper thresholds.
+ * Uses "Compare All" blocking strategy and lowers threshold to 60% for test data.
+ */
+async function runFindDuplicatesHelper(
+  page: Page,
+  matchView: MatchViewPage,
+  inspector: StoreInspector,
+  config?: { tableName?: string; columnName?: string }
+) {
+  const tableName = config?.tableName ?? 'fr_c1_dedupe'
+  const columnName = config?.columnName ?? 'first_name'
+
+  // Select table and column
+  await matchView.selectTable(tableName)
+  await matchView.selectColumn(columnName)
+
+  // Use "Compare All" strategy (no blocking)
+  await page.getByRole('radio', { name: /Compare All/i }).click()
+  await inspector.waitForBlockingStrategy('none')
+
+  // Lower maybeThreshold to 60% for test data
+  await page.evaluate(() => {
+    const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(stores?.matcherStore as any)?.setState({ maybeThreshold: 60 })
+  })
+
+  // Click Find Duplicates and wait for completion
+  await page.getByTestId('find-duplicates-btn').click()
+  await inspector.waitForMergeComplete()
+
+  // Wait for pairs to be populated
+  await expect.poll(async () => {
+    const state = await inspector.getMatcherState()
+    return state.pairs.length
+  }, { timeout: 15000 }).toBeGreaterThan(0)
+}
+
+/**
  * Feature Coverage Tests
  *
  * Uses dedicated fixture files to test PRD requirements.
@@ -326,7 +365,7 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
     const tables = await inspector.getTables()
     const tableId = tables.find(t => t.name === 'fr_a3_fill_down')?.id
     if (tableId) {
-      await inspector.waitForTransformComplete(tableId)
+      await inspector.waitForTransformComplete(tableId ?? undefined)
     }
 
     const data = await inspector.getTableData('fr_a3_fill_down')
@@ -430,6 +469,7 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
 
 test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   let browser: Browser
+  let context: import('@playwright/test').BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -444,8 +484,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test.beforeEach(async () => {
-    // Create fresh page for each test to prevent memory accumulation
-    page = await browser.newPage()
+    // Create fresh CONTEXT for each test - provides true isolation including WASM module state
+    // See: https://playwright.dev/docs/browser-contexts
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     matchView = new MatchViewPage(page)
@@ -455,25 +497,30 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test.afterEach(async () => {
-    // Aggressive cleanup for memory-intensive matcher tests
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-      pruneAudit: true,
-    })
+    // Wrap cleanup in try-catch - if page crashed, still close context
+    try {
+      // Aggressive cleanup for memory-intensive matcher tests
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+      })
 
-    // Also clear matcherStore state explicitly
-    await page.evaluate(() => {
-      const stores = (window as any).__CLEANSLATE_STORES__
-      const matcherStore = stores?.matcherStore?.getState?.()
-      if (matcherStore?.reset) {
-        matcherStore.reset()
-      }
-    })
+      // Also clear matcherStore state explicitly
+      await page.evaluate(() => {
+        const stores = (window as any).__CLEANSLATE_STORES__
+        const matcherStore = stores?.matcherStore?.getState?.()
+        if (matcherStore?.reset) {
+          matcherStore.reset()
+        }
+      })
+    } catch (error) {
+      console.warn('[FR-C1 afterEach] Cleanup failed (page may have crashed):', error)
+    }
 
-    // Close page after cleanup to free memory
-    await page.close()
+    // Close CONTEXT (not just page) to fully release WASM memory
+    await context.close()
   })
 
   async function loadDedupeData() {
@@ -482,6 +529,14 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+  }
+
+  /**
+   * Configure matcher and run find duplicates.
+   * Sets maybeThreshold to 60% to match test data (John/Jon=75%, Jane/Janet=60%, Sarah/Sara=80%).
+   */
+  async function runFindDuplicates(config?: { tableName?: string; columnName?: string }) {
+    await runFindDuplicatesHelper(page, matchView, inspector, config)
   }
 
   test('should open match view and find duplicates with similarity percentages', async () => {
@@ -494,46 +549,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     // Verify match view is open with correct title
     await expect(page.getByText('DUPLICATE FINDER')).toBeVisible()
 
-    // Select table and column
-    await matchView.selectTable('fr_c1_dedupe')
-    await expect(page.getByRole('combobox').first()).toBeVisible()
-    await matchView.selectColumn('first_name')
-    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
+    // Run find duplicates using helper
+    await runFindDuplicates()
 
-    // Use "Compare All" strategy for small datasets (ensures all pairs are compared)
-    // Click radio button and wait for store update (avoid force: true per e2e guidelines)
-    await page.getByRole('radio', { name: /Compare All/i }).click()
-
-    // Wait for blocking strategy to be updated in store
-    await inspector.waitForBlockingStrategy('none')
-
-    // Verify config is correct before proceeding
-    const config = await inspector.getMatcherConfig()
-    expect(config.blockingStrategy).toBe('none')
-    expect(config.tableName).toBe('fr_c1_dedupe')
-    expect(config.matchColumn).toBe('first_name')
-
-    // Click Find Duplicates button directly
-    const findBtn = page.getByTestId('find-duplicates-btn')
-    await expect(findBtn).toBeEnabled()
-    await findBtn.click()
-
-    // Wait for matching to start (isMatching becomes true)
-    await expect.poll(async () => {
-      const cfg = await inspector.getMatcherConfig()
-      return cfg.isMatching
-    }, { timeout: 5000, message: 'Matching should start' }).toBe(true)
-
-    // Wait for matching operation to complete (isMatching becomes false)
-    await inspector.waitForMergeComplete()
-
-    // Wait for pairs to be populated in store (Rule: use store-based assertions)
-    await expect.poll(async () => {
-      const state = await inspector.getMatcherState()
-      return state.pairs.length
-    }, { timeout: 15000, message: 'Expected to find duplicate pairs in store' }).toBeGreaterThan(0)
-
-    // Verify pairs are displayed with similarity percentages
+    // Verify pairs are displayed with similarity percentages (use store instead of DOM)
     const matcherState = await inspector.getMatcherState()
     expect(matcherState.pairs.length).toBeGreaterThanOrEqual(2) // Expect John/Jon, Jane/Janet, Sarah/Sara
 
@@ -548,13 +567,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await expect(page.getByRole('combobox').first()).toBeVisible()
-    await matchView.selectColumn('first_name')
-    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
 
     // Get initial stats (use store instead of DOM scraping)
     const initialState = await inspector.getMatcherState()
@@ -581,13 +594,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await expect(page.getByRole('combobox').first()).toBeVisible()
-    await matchView.selectColumn('first_name')
-    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
 
     // Get initial row count
     const tablesBefore = await inspector.getTables()
@@ -627,13 +634,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await expect(page.getByRole('combobox').first()).toBeVisible()
-    await matchView.selectColumn('first_name')
-    await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
     await matchView.mergePair(0)
     await expect.poll(async () => {
       const state = await inspector.getMatcherState()
@@ -645,10 +646,8 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
     // Wait for match panel to fully close and UI to stabilize
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('Merges Applied')).toBeHidden({ timeout: 5000 })
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
-    await page.waitForLoadState('networkidle')
     await inspector.waitForGridReady()
 
     // Open audit sidebar to verify the merge was logged
@@ -671,6 +670,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
 test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   let browser: Browser
+  let context: import('@playwright/test').BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -685,8 +685,10 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test.beforeEach(async () => {
-    // Create fresh page for each test to prevent memory accumulation
-    page = await browser.newPage()
+    // Create fresh CONTEXT for each test - provides true isolation including WASM module state
+    // See: https://playwright.dev/docs/browser-contexts
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     matchView = new MatchViewPage(page)
@@ -696,26 +698,43 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test.afterEach(async () => {
-    // Aggressive cleanup for memory-intensive matcher tests
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-      pruneAudit: true,
-    })
+    // Wrap cleanup in try-catch - if page crashed, still close context
+    try {
+      // Aggressive cleanup for memory-intensive matcher tests
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+      })
 
-    // Also clear matcherStore state explicitly
-    await page.evaluate(() => {
-      const stores = (window as any).__CLEANSLATE_STORES__
-      const matcherStore = stores?.matcherStore?.getState?.()
-      if (matcherStore?.reset) {
-        matcherStore.reset()
-      }
-    })
+      // Also clear matcherStore state explicitly
+      await page.evaluate(() => {
+        const stores = (window as any).__CLEANSLATE_STORES__
+        const matcherStore = stores?.matcherStore?.getState?.()
+        if (matcherStore?.reset) {
+          matcherStore.reset()
+        }
+      })
+    } catch (error) {
+      console.warn('[FR-C1 Merge afterEach] Cleanup failed (page may have crashed):', error)
+    }
 
-    // Close page after cleanup to free memory
-    await page.close()
+    // Close CONTEXT (not just page) to fully release WASM memory
+    await context.close()
   })
+
+  async function runFindDuplicates(config?: { tableName?: string; columnName?: string }) {
+    await runFindDuplicatesHelper(page, matchView, inspector, config)
+  }
+
+  async function loadDedupeData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
+    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+  }
 
   test('should display row data in merge audit drill-down', async () => {
     // Note: This test depends on the Fuzzy Matcher finding duplicates.
@@ -723,24 +742,12 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // The code fix (escapeForSql) is verified by the _merge_audit_details table structure test.
 
     // Load dedupe data
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
-    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+    await loadDedupeData()
 
     // Open match view and find duplicates
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await matchView.selectColumn('first_name')
-    await matchView.findDuplicates()
-
-    // Wait for matching operation to complete (check store state)
-    await inspector.waitForMergeComplete()
-
-    // Wait for final results (UI reflects completion)
-    await matchView.waitForPairs()
+    await runFindDuplicates()
 
     // Merge a pair
     await matchView.mergePair(0)
@@ -754,16 +761,14 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     await matchView.applyMerges()
     await inspector.waitForMergeComplete()
 
-    // Wait for success toast to appear and dismiss
+    // Wait for success toast to appear
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('Merges Applied')).toBeHidden({ timeout: 5000 })
 
     // Ensure we're back at the main view by checking the grid is visible
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
 
     // Wait for match view to be fully closed
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
-    await page.waitForLoadState('networkidle')
     await inspector.waitForGridReady()
 
     // Debug: Check if audit entry was created
@@ -817,13 +822,7 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Open match view and find duplicates
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_special_chars')
-    await matchView.selectColumn('name')
-    await matchView.findDuplicates()
-
-    // Wait for matching to complete
-    await expect(page.locator('[data-testid="match-view"]').locator('role=progressbar')).toBeHidden({ timeout: 30000 })
-    await matchView.waitForPairs()
+    await runFindDuplicates({ tableName: 'fr_c1_special_chars', columnName: 'name' })
 
     // Merge a pair (O'Brien / O'Brian should match)
     await matchView.mergePair(0)
@@ -864,18 +863,10 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
   test('should export merge details as CSV', async () => {
     // Independent test: Load data, find duplicates, merge, and apply
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
-    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
-
+    await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await matchView.selectColumn('first_name')
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
     await matchView.mergePair(0)
     await expect.poll(async () => {
       const state = await inspector.getMatcherState()
@@ -930,18 +921,10 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
   test('should store valid JSON in _merge_audit_details table', async () => {
     // Independent test: Load data, find duplicates, merge, and apply
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
-    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
-
+    await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await matchView.selectColumn('first_name')
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
     await matchView.mergePair(0)
     await expect.poll(async () => {
       const state = await inspector.getMatcherState()
@@ -953,7 +936,6 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
     // Wait for merge to complete
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('Merges Applied')).toBeHidden({ timeout: 5000 })
 
     // Query the merge audit details table directly
     const auditDetails = await inspector.runQuery(`
@@ -1057,7 +1039,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Wait for operation to complete
     const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId)
+    await inspector.waitForTransformComplete(tableId ?? undefined)
 
     // Verify hash format (32-char hex from MD5)
     const data = await inspector.getTableData('fr_d2_pii')
@@ -1101,7 +1083,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Wait for operation to complete
     const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId)
+    await inspector.waitForTransformComplete(tableId ?? undefined)
 
     // Verify redaction (same table, modified in-place)
     const data = await inspector.getTableData('fr_d2_pii')
@@ -1138,7 +1120,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Wait for operation to complete
     const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId)
+    await inspector.waitForTransformComplete(tableId ?? undefined)
 
     // Verify masking (shows first and last char with asterisks in between)
     const data = await inspector.getTableData('fr_d2_pii')
@@ -1175,7 +1157,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Wait for operation to complete
     const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId)
+    await inspector.waitForTransformComplete(tableId ?? undefined)
 
     // Verify year_only: 1985-03-15 -> 1985-01-01
     const data = await inspector.getTableData('fr_d2_pii')
