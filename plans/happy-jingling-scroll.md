@@ -798,10 +798,11 @@ npm run test:lint-patterns
 - [x] Systematic fix: all audit-detail-modal animations across test suite:
   - audit-undo-regression.spec.ts:138 (row-level changes modal)
   - audit-undo-regression.spec.ts:556 (standardize date modal)
-  - feature-coverage.spec.ts:809 (merge audit modal)
-  - feature-coverage.spec.ts:868 (special characters modal)
-  - feature-coverage.spec.ts:925 (export merge audit modal)
+  - feature-coverage.spec.ts:760 (merge audit modal)
+  - feature-coverage.spec.ts:810 (special characters modal)
+  - feature-coverage.spec.ts:876 (export merge audit modal)
   - value-standardization.spec.ts:534 (standardization details modal)
+- [x] Fix feature-coverage.spec.ts:313 (Fill Down missing waitForTransformComplete)
 
 ### Phase 2: Systematic Improvements (Priority 2 - Follow-up) ✅ CORE COMPLETE
 - [x] Run `grep -A5 "picker.apply()" e2e/tests/*.spec.ts` to find missing waits

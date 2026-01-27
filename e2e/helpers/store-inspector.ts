@@ -61,6 +61,13 @@ export interface MatcherStoreState {
   }
 }
 
+export interface MatcherConfigState {
+  tableName: string | null
+  matchColumn: string | null
+  blockingStrategy: string
+  isMatching: boolean
+}
+
 export interface StoreInspector {
   getTables: () => Promise<TableInfo[]>
   getActiveTableId: () => Promise<string | null>
@@ -87,6 +94,17 @@ export interface StoreInspector {
    * Get matcher store state (pairs count and stats)
    */
   getMatcherState: () => Promise<MatcherStoreState>
+  /**
+   * Get matcher store config (tableName, matchColumn, blockingStrategy)
+   */
+  getMatcherConfig: () => Promise<MatcherConfigState>
+  /**
+   * Wait for matcher blocking strategy to be set to a specific value.
+   * Use after clicking strategy radio buttons to ensure store is updated.
+   * @param strategy - The expected blocking strategy value
+   * @param timeout - Optional timeout in milliseconds (default 5000)
+   */
+  waitForBlockingStrategy: (strategy: string, timeout?: number) => Promise<void>
   /**
    * Get timeline position for undo/redo verification
    */
@@ -319,6 +337,42 @@ export function createStoreInspector(page: Page): StoreInspector {
           },
         }
       })
+    },
+
+    async getMatcherConfig(): Promise<MatcherConfigState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.matcherStore) {
+          return {
+            tableName: null,
+            matchColumn: null,
+            blockingStrategy: 'double_metaphone',
+            isMatching: false,
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.matcherStore as any).getState()
+        return {
+          tableName: state?.tableName ?? null,
+          matchColumn: state?.matchColumn ?? null,
+          blockingStrategy: state?.blockingStrategy ?? 'double_metaphone',
+          isMatching: state?.isMatching ?? false,
+        }
+      })
+    },
+
+    async waitForBlockingStrategy(strategy: string, timeout = 5000): Promise<void> {
+      await page.waitForFunction(
+        (expectedStrategy) => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.matcherStore) return false
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.matcherStore as any).getState()
+          return state?.blockingStrategy === expectedStrategy
+        },
+        strategy,
+        { timeout }
+      )
     },
 
     async getTimelinePosition(tableId?: string): Promise<TimelinePositionState> {

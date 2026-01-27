@@ -322,6 +322,13 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
 
     await picker.addTransformation('Fill Down', { column: 'region' })
 
+    // Wait for transform to complete
+    const tables = await inspector.getTables()
+    const tableId = tables.find(t => t.name === 'fr_a3_fill_down')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
+
     const data = await inspector.getTableData('fr_a3_fill_down')
     expect(data[0].region).toBe('North')
     expect(data[1].region).toBe('North') // Filled from above
@@ -494,22 +501,41 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await expect(page.getByRole('radio', { name: /Compare All/i })).toBeVisible()
 
     // Use "Compare All" strategy for small datasets (ensures all pairs are compared)
-    // The radio button name is "Compare All (Slowest)"
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
+    // Click radio button and wait for store update (avoid force: true per e2e guidelines)
+    await page.getByRole('radio', { name: /Compare All/i }).click()
 
-    // Click Find Duplicates - uses page object method with fallback for React issues
-    await matchView.findDuplicates()
+    // Wait for blocking strategy to be updated in store
+    await inspector.waitForBlockingStrategy('none')
 
-    // Wait for matching operation to complete (check store state)
+    // Verify config is correct before proceeding
+    const config = await inspector.getMatcherConfig()
+    expect(config.blockingStrategy).toBe('none')
+    expect(config.tableName).toBe('fr_c1_dedupe')
+    expect(config.matchColumn).toBe('first_name')
+
+    // Click Find Duplicates button directly
+    const findBtn = page.getByTestId('find-duplicates-btn')
+    await expect(findBtn).toBeEnabled()
+    await findBtn.click()
+
+    // Wait for matching to start (isMatching becomes true)
+    await expect.poll(async () => {
+      const cfg = await inspector.getMatcherConfig()
+      return cfg.isMatching
+    }, { timeout: 5000, message: 'Matching should start' }).toBe(true)
+
+    // Wait for matching operation to complete (isMatching becomes false)
     await inspector.waitForMergeComplete()
 
-    // Wait for final results (UI reflects completion)
-    await matchView.waitForPairs()
+    // Wait for pairs to be populated in store (Rule: use store-based assertions)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      return state.pairs.length
+    }, { timeout: 15000, message: 'Expected to find duplicate pairs in store' }).toBeGreaterThan(0)
 
     // Verify pairs are displayed with similarity percentages
-    // Rule 1: Verify expected pairs and names (use store instead of DOM scraping)
     const matcherState = await inspector.getMatcherState()
-    expect(matcherState.pairs.length).toBeGreaterThanOrEqual(2) // Expect specific count
+    expect(matcherState.pairs.length).toBeGreaterThanOrEqual(2) // Expect John/Jon, Jane/Janet, Sarah/Sara
 
     // Verify "% Similar" format is displayed in UI
     await expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible()
