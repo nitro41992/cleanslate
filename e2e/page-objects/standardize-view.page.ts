@@ -69,8 +69,17 @@ export class StandardizeViewPage {
   async analyze(): Promise<void> {
     await expect(this.analyzeButton).toBeEnabled()
     await this.analyzeButton.click()
-    // Wait for analysis to start
-    await this.page.waitForTimeout(500)
+    // Wait for analysis to start by checking button state or loading indicator
+    await Promise.race([
+      this.page.waitForFunction(
+        () => {
+          const btn = document.querySelector('[data-testid="standardize-analyze-btn"]')
+          return !btn || btn.textContent?.includes('Analyzing')
+        },
+        { timeout: 5000 }
+      ),
+      this.page.locator('[data-testid="standardize-view"]').locator('text=/Analyzing/').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+    ])
   }
 
   /**

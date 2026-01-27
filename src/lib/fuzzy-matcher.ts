@@ -883,9 +883,10 @@ export async function mergeDuplicates(
     await ensureMergeAuditTable()
 
     // Custom JSON serializer to handle BigInt values from DuckDB
+    // CRITICAL: Use String() not Number() to preserve precision for large integers
     const jsonReplacer = (_key: string, value: unknown) => {
       if (typeof value === 'bigint') {
-        return Number(value)
+        return String(value)
       }
       return value
     }

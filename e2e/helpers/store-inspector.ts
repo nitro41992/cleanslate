@@ -48,6 +48,26 @@ export interface EditDirtyState {
   dirtyCount: number
 }
 
+export interface MatcherStoreState {
+  pairs: Array<{ id: string; status: string }>
+  stats: {
+    total: number
+    merged: number
+    keptSeparate: number
+    pending: number
+    definiteCount: number
+    maybeCount: number
+    notMatchCount: number
+  }
+}
+
+export interface MatcherConfigState {
+  tableName: string | null
+  matchColumn: string | null
+  blockingStrategy: string
+  isMatching: boolean
+}
+
 export interface StoreInspector {
   getTables: () => Promise<TableInfo[]>
   /** Alias for getTables (backward compatibility) */
@@ -89,6 +109,21 @@ export interface StoreInspector {
    */
   getEditDirtyState: () => Promise<EditDirtyState>
   /**
+   * Get matcher store state (pairs count and stats)
+   */
+  getMatcherState: () => Promise<MatcherStoreState>
+  /**
+   * Get matcher store config (tableName, matchColumn, blockingStrategy)
+   */
+  getMatcherConfig: () => Promise<MatcherConfigState>
+  /**
+   * Wait for matcher blocking strategy to be set to a specific value.
+   * Use after clicking strategy radio buttons to ensure store is updated.
+   * @param strategy - The expected blocking strategy value
+   * @param timeout - Optional timeout in milliseconds (default 5000)
+   */
+  waitForBlockingStrategy: (strategy: string, timeout?: number) => Promise<void>
+  /**
    * Get timeline position for undo/redo verification
    */
   getTimelinePosition: (tableId?: string) => Promise<TimelinePositionState>
@@ -122,6 +157,37 @@ export interface StoreInspector {
    * Returns the number of commands that would be discarded if a new action is performed.
    */
   getFutureStatesCount: (tableId?: string) => Promise<number>
+  /**
+   * Wait for a transformation to complete by checking loading state and store updates.
+   * Polls tableStore.isLoading and dataVersion to detect when the operation finishes.
+   * @param tableId - The table ID to monitor (uses activeTableId if not specified)
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForTransformComplete: (tableId?: string, timeout?: number) => Promise<void>
+  /**
+   * Wait for a panel to be fully open with data-state="open" attribute.
+   * @param panelId - The data-testid of the panel (e.g., 'panel-clean', 'panel-match')
+   * @param timeout - Optional timeout in milliseconds (default 10000)
+   */
+  waitForPanelAnimation: (panelId: string, timeout?: number) => Promise<void>
+  /**
+   * Wait for matcher merge operation to complete.
+   * Polls matcherStore.isMatching to detect when the merge finishes.
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForMergeComplete: (timeout?: number) => Promise<void>
+  /**
+   * Wait for combiner operation (stack/join) to complete.
+   * Polls combinerStore.isProcessing to detect when the operation finishes.
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForCombinerComplete: (timeout?: number) => Promise<void>
+  /**
+   * Wait for the data grid to be fully initialized and ready for interaction.
+   * Checks for grid visibility, data loading completion, and stable state.
+   * @param timeout - Optional timeout in milliseconds (default 15000)
+   */
+  waitForGridReady: (timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -155,10 +221,11 @@ export function createStoreInspector(page: Page): StoreInspector {
         async ({ tableName, limit }) => {
           const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<Record<string, unknown>[]>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
           if (!duckdb?.query) throw new Error('DuckDB not available')
-          // ORDER BY _cs_id for deterministic row ordering (matches src/lib/duckdb/index.ts)
+          // ORDER BY "_cs_id" for deterministic row ordering (matches src/lib/duckdb/index.ts)
+          // CRITICAL: Must use quotes around _cs_id for proper identifier resolution
           // Fall back to no ORDER BY if _cs_id doesn't exist (e.g., diff tables)
           try {
-            return await duckdb.query(`SELECT * FROM "${tableName}" ORDER BY _cs_id LIMIT ${limit}`)
+            return await duckdb.query(`SELECT * FROM "${tableName}" ORDER BY "_cs_id" LIMIT ${limit}`)
           } catch {
             return await duckdb.query(`SELECT * FROM "${tableName}" LIMIT ${limit}`)
           }
@@ -171,9 +238,10 @@ export function createStoreInspector(page: Page): StoreInspector {
       return page.evaluate((tableId) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
         if (!stores?.auditStore) return []
-        const store = stores.auditStore as { getState: () => { entries: AuditEntry[] } }
-        const entries = store.getState().entries
-        return tableId ? entries.filter((e) => e.tableId === tableId) : entries
+        const store = stores.auditStore as { getState: () => { getAllEntries: () => AuditEntry[]; getEntriesForTable: (tableId: string) => AuditEntry[] } }
+        // Use getAllEntries() or getEntriesForTable() methods which derive from timeline
+        const entries = tableId ? store.getState().getEntriesForTable(tableId) : store.getState().getAllEntries()
+        return entries
       }, tableId)
     },
 
@@ -262,6 +330,76 @@ export function createStoreInspector(page: Page): StoreInspector {
           dirtyCount: dirtyCells?.size || 0,
         }
       })
+    },
+
+    async getMatcherState(): Promise<MatcherStoreState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.matcherStore) {
+          return {
+            pairs: [],
+            stats: {
+              total: 0,
+              merged: 0,
+              keptSeparate: 0,
+              pending: 0,
+              definiteCount: 0,
+              maybeCount: 0,
+              notMatchCount: 0,
+            },
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.matcherStore as any).getState()
+        return {
+          pairs: state?.pairs || [],
+          stats: state?.stats || {
+            total: 0,
+            merged: 0,
+            keptSeparate: 0,
+            pending: 0,
+            definiteCount: 0,
+            maybeCount: 0,
+            notMatchCount: 0,
+          },
+        }
+      })
+    },
+
+    async getMatcherConfig(): Promise<MatcherConfigState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.matcherStore) {
+          return {
+            tableName: null,
+            matchColumn: null,
+            blockingStrategy: 'double_metaphone',
+            isMatching: false,
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.matcherStore as any).getState()
+        return {
+          tableName: state?.tableName ?? null,
+          matchColumn: state?.matchColumn ?? null,
+          blockingStrategy: state?.blockingStrategy ?? 'double_metaphone',
+          isMatching: state?.isMatching ?? false,
+        }
+      })
+    },
+
+    async waitForBlockingStrategy(strategy: string, timeout = 5000): Promise<void> {
+      await page.waitForFunction(
+        (expectedStrategy) => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.matcherStore) return false
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.matcherStore as any).getState()
+          return state?.blockingStrategy === expectedStrategy
+        },
+        strategy,
+        { timeout }
+      )
     },
 
     async getTimelinePosition(tableId?: string): Promise<TimelinePositionState> {
@@ -394,7 +532,7 @@ export function createStoreInspector(page: Page): StoreInspector {
       }, { tableId })
     },
 
-    async getTableList(): Promise<TableInfo[]> {
+async getTableList(): Promise<TableInfo[]> {
       // Alias for getTables (backward compatibility)
       return this.getTables()
     },
@@ -438,6 +576,99 @@ export function createStoreInspector(page: Page): StoreInspector {
         const state = (stores.uiStore as any).getState()
         return state?.[prop]
       }, property)
+    },
+
+    async waitForTransformComplete(tableId?: string, timeout = 30000): Promise<void> {
+      await page.waitForFunction(
+        ({ tableId }) => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.tableStore) return false
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.tableStore as any).getState()
+
+          // Resolve table ID if not provided
+          const resolvedTableId = tableId || state.activeTableId
+          if (!resolvedTableId) return false
+
+          // Check that loading is complete
+          if (state.isLoading) return false
+
+          // Verify the table exists and has been updated
+          const table = state.tables?.find((t: { id: string }) => t.id === resolvedTableId)
+          return table !== undefined
+        },
+        { tableId },
+        { timeout }
+      )
+    },
+
+    async waitForPanelAnimation(panelId: string, timeout = 10000): Promise<void> {
+      // Wait for panel to exist and be visible
+      const panel = page.getByTestId(panelId)
+      await panel.waitFor({ state: 'visible', timeout })
+
+      // Wait for animation to complete by checking data-state attribute
+      await page.waitForFunction(
+        (id) => {
+          const element = document.querySelector(`[data-testid="${id}"]`)
+          return element?.getAttribute('data-state') === 'open'
+        },
+        panelId,
+        { timeout }
+      )
+    },
+
+    async waitForMergeComplete(timeout = 30000): Promise<void> {
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.matcherStore) return true  // If store doesn't exist, consider complete
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.matcherStore as any).getState()
+          // Wait for isMatching to become false
+          return state?.isMatching === false
+        },
+        { timeout }
+      )
+    },
+
+    async waitForCombinerComplete(timeout = 30000): Promise<void> {
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.combinerStore) return true  // If store doesn't exist, consider complete
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.combinerStore as any).getState()
+          // Wait for isProcessing to become false
+          return state?.isProcessing === false
+        },
+        { timeout }
+      )
+    },
+
+    async waitForGridReady(timeout = 15000): Promise<void> {
+      // Wait for grid container to be visible
+      const gridContainer = page.locator('[data-testid="data-grid"], .glide-canvas')
+      await gridContainer.first().waitFor({ state: 'visible', timeout })
+
+      // Wait for tableStore to not be loading
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.tableStore) return false
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.tableStore as any).getState()
+          return state?.isLoading === false && state?.tables?.length > 0
+        },
+        { timeout }
+      )
+
+      // Wait for grid canvas to be rendered (indicates Glide is ready)
+      await page.locator('canvas[data-testid="main-canvas"], .glide-canvas canvas').first()
+        .waitFor({ state: 'visible', timeout: 5000 })
+        .catch(() => {
+          // Some grids may not have canvas immediately, which is OK
+        })
     },
   }
 }

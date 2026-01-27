@@ -221,10 +221,9 @@ test.describe.serial('FR-F: Value Standardization', () => {
     await expect(setMasterButton).toBeVisible()
     await setMasterButton.click()
 
-    // Verify master changed (should now show two Master badges briefly, then one)
-    await page.waitForTimeout(300)
+    // Verify master changed (should now show Master badge)
     const masterBadges = page.locator('text=Master')
-    await expect(masterBadges.first()).toBeVisible()
+    await expect(masterBadges.first()).toBeVisible({ timeout: 5000 })
 
     await standardize.close()
   })
@@ -341,7 +340,12 @@ test.describe.serial('FR-F: Value Standardization', () => {
 
     // Search for "John"
     await standardize.search('John')
-    await page.waitForTimeout(300)
+
+    // Wait for search filter to apply
+    await expect.poll(async () => {
+      const clusters = await getClusterMasterValues(page)
+      return clusters.some(name => name.includes('John'))
+    }, { timeout: 5000 }).toBe(true)
 
     // Rule 1: Verify only clusters with "John" remain visible (identity check)
     const visibleClusters = await getClusterMasterValues(page)
@@ -367,12 +371,24 @@ test.describe.serial('FR-F: Value Standardization', () => {
 
     // Ensure we start with actionable filter
     await standardize.filterBy('actionable')
-    await page.waitForTimeout(300)
+
+    // Wait for filter to apply
+    await expect.poll(async () => {
+      const stats = await standardize.getStats()
+      return stats.actionable > 0
+    }, { timeout: 5000 }).toBe(true)
+
     const actionableClusters = await getClusterMasterValues(page)
 
     // Switch to "All" filter
     await standardize.filterBy('all')
-    await page.waitForTimeout(300)
+
+    // Wait for filter to apply
+    await expect.poll(async () => {
+      const stats = await standardize.getStats()
+      return stats.totalClusters > 0
+    }, { timeout: 5000 }).toBe(true)
+
     const allClusters = await getClusterMasterValues(page)
 
     // Rule 1: All filter shows more/equal clusters (includes singletons)
@@ -476,9 +492,8 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
 
     // Select "Compare with Preview" mode (compares current with original snapshot)
     await diffView.selectComparePreviewMode()
-    await page.waitForTimeout(500)
 
-    // Verify original snapshot is available
+    // Wait for mode change and verify original snapshot is available
     await expect(page.locator('text=Original snapshot available')).toBeVisible({ timeout: 5000 })
 
     // "Compare with Preview" mode automatically matches by internal _cs_id
@@ -518,6 +533,15 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible({ timeout: 5000 })
 
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
     // Verify it shows "Standardization Details" title (not "Row-Level Changes")
     await expect(modal.locator('text=Standardization Details')).toBeVisible()
 
@@ -552,11 +576,11 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
 
     // Click body to ensure no input is focused
     await page.locator('body').click()
-    await page.waitForTimeout(100)
 
     // Press Ctrl+Z to undo
+    const tableId = await inspector.getActiveTableId()
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(1000)
+    await inspector.waitForTransformComplete(tableId)
 
     // Get data after undo (should be original values)
     const afterUndo = await inspector.getTableData('fr_f_standardize')
@@ -574,8 +598,9 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
     const beforeUniqueNames = new Set(beforeRedo.map((r) => r.name)).size
 
     // Press Ctrl+Y to redo
+    const tableId = await inspector.getActiveTableId()
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(1000)
+    await inspector.waitForTransformComplete(tableId)
 
     // Get data after redo (should be standardized again)
     const afterRedo = await inspector.getTableData('fr_f_standardize')
@@ -587,16 +612,18 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
 
   test('FR-F-INT-5: Audit sidebar should show Undone badge after undo', async () => {
     // First redo to have a standardization in effect
+    const tableId = await inspector.getActiveTableId()
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete(tableId)
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Undo the standardization
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete(tableId)
 
     // Check for "Undone" badge
     const undoneBadge = page.locator('[data-testid="audit-sidebar"]').locator('text=Undone')
@@ -604,7 +631,7 @@ test.describe.serial('FR-F: Standardization Integration (Diff, Drill-down, Undo)
 
     // Redo to remove the badge
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete(tableId)
 
     // Badge should no longer be visible - Rule 2: Use positive hidden assertion
     await expect(undoneBadge).toBeHidden({ timeout: 3000 })

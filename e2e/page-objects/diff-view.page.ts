@@ -112,8 +112,8 @@ export class DiffViewPage {
       // Or wait for results to appear
       this.page.getByTestId('diff-pill-added').waitFor({ state: 'visible', timeout: 30000 })
     ])
-    // Wait for results to stabilize
-    await this.page.waitForTimeout(500)
+    // Wait for summary pills to be fully visible and stable
+    await expect(this.summaryPills.first()).toBeVisible({ timeout: 5000 })
   }
 
   /**

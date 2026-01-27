@@ -4,6 +4,7 @@ import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { coolHeap } from '../helpers/cleanup-helpers'
 
 /**
  * Bug Regression Tests: Tier 3 Undo Parameter Preservation
@@ -44,6 +45,17 @@ test.describe.serial('Bug: Tier 3 Undo Parameter Preservation', () => {
 
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+  })
+
+  test.afterEach(async () => {
+    // Tier 3 cleanup - Heavy operations with snapshots
+    await coolHeap(page, inspector, {
+      dropTables: false,  // afterAll will handle final cleanup
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 30  // Lower threshold for snapshot-heavy tests
+    })
   })
 
   test.afterAll(async () => {

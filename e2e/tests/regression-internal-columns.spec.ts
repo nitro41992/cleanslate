@@ -99,8 +99,8 @@ test.describe.serial('Internal Column Filtering', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // 4. Verify grid still doesn't show `name__base`
     const gridColumnsAfterTrim = await page.evaluate(() => {
@@ -138,7 +138,7 @@ test.describe.serial('Internal Column Filtering', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
-    await page.waitForTimeout(500)
+    await inspector.waitForTransformComplete()
 
     // 3. Open Clean panel → Add Transformation
     await laundromat.openCleanPanel()
@@ -152,7 +152,8 @@ test.describe.serial('Internal Column Filtering', () => {
     const columnSelect = page.getByTestId('column-selector')
     await columnSelect.waitFor({ state: 'visible', timeout: 5000 })
     await columnSelect.click()
-    await page.waitForTimeout(300)
+    // Wait for dropdown options to appear
+    await expect(page.locator('[role="option"]').first()).toBeVisible({ timeout: 5000 })
 
     // 6. Get column dropdown options from opened listbox
     const actualColumnOptions = await page.evaluate(() => {
@@ -211,10 +212,11 @@ test.describe.serial('Internal Column Filtering', () => {
 
     // 2. Open Diff view → Compare Two Tables
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('match-view')
 
-    await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(300)
+    const compareTwoTablesBtn = page.locator('button').filter({ hasText: 'Compare Two Tables' })
+    await expect(compareTwoTablesBtn).toBeVisible({ timeout: 5000 })
+    await compareTwoTablesBtn.click()
 
     // 3. Select tables
     await page.getByRole('combobox').first().click()
@@ -226,7 +228,21 @@ test.describe.serial('Internal Column Filtering', () => {
     // Checkbox has id="key-{columnName}" in DiffConfigPanel.tsx
     await page.locator('#key-id').click()
     await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)
+
+    // Wait for diff comparison to complete
+    await expect.poll(async () => {
+      const diffState = await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        const diffStore = stores?.diffStore as {
+          getState: () => { isComparing: boolean; summary: unknown }
+        } | undefined
+        const state = diffStore?.getState()
+        return { isComparing: state?.isComparing, hasSummary: state?.summary !== null }
+      })
+      return diffState.isComparing === false && diffState.hasSummary
+    }, { timeout: 15000 }).toBe(true)
+
+    await inspector.waitForGridReady()
 
     // 5. Get diff grid column headers
     const diffColumns = await page.evaluate(() => {
@@ -275,13 +291,13 @@ test.describe.serial('Internal Column Filtering', () => {
 
     // 3. Open Diff view → Compare Two Tables
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
 
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('match-view')
 
-    await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()
-    await page.waitForTimeout(300)
+    const compareTwoTablesBtn = page.locator('button').filter({ hasText: 'Compare Two Tables' })
+    await expect(compareTwoTablesBtn).toBeVisible({ timeout: 5000 })
+    await compareTwoTablesBtn.click()
 
     // 4. Select tables
     await page.getByRole('combobox').first().click()
@@ -289,7 +305,18 @@ test.describe.serial('Internal Column Filtering', () => {
     await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: /schema_test_2/i }).click()
 
-    await page.waitForTimeout(500)
+    // Wait for table selection to register
+    await expect.poll(async () => {
+      const diffState = await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        const diffStore = stores?.diffStore as {
+          getState: () => { tableA: unknown; tableB: unknown }
+        } | undefined
+        const state = diffStore?.getState()
+        return state?.tableA !== null && state?.tableB !== null
+      })
+      return diffState
+    }, { timeout: 5000 }).toBe(true)
 
     // 5. Verify schema change banner appears
     // Look for warning or info message about schema differences
@@ -328,7 +355,6 @@ test.describe.serial('Internal Column Filtering', () => {
     // 1. Load basic-data.csv
     await inspector.runQuery('DROP TABLE IF EXISTS basic_data_console_test')
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
 
     await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
@@ -339,28 +365,44 @@ test.describe.serial('Internal Column Filtering', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await picker.addTransformation('Uppercase', { column: 'email' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // 3. Open diff view
     await laundromat.openDiffView()
-    await page.waitForTimeout(500)
+    await inspector.waitForPanelAnimation('match-view')
 
-    await page.locator('button').filter({ hasText: 'Compare with Preview' }).click()
-    await page.waitForTimeout(300)
+    const comparePreviewBtn = page.locator('button').filter({ hasText: 'Compare with Preview' })
+    await expect(comparePreviewBtn).toBeVisible({ timeout: 5000 })
+    await comparePreviewBtn.click()
     await page.getByRole('checkbox', { name: 'id' }).click()
     await page.getByTestId('diff-compare-btn').click()
-    await page.waitForTimeout(2000)
+
+    // Wait for diff comparison to complete
+    await expect.poll(async () => {
+      const diffState = await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        const diffStore = stores?.diffStore as {
+          getState: () => { isComparing: boolean; summary: unknown }
+        } | undefined
+        const state = diffStore?.getState()
+        return { isComparing: state?.isComparing, hasSummary: state?.summary !== null }
+      })
+      return diffState.isComparing === false && diffState.hasSummary
+    }, { timeout: 15000 }).toBe(true)
+
+    await inspector.waitForGridReady()
 
     // 4. Export CSV
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
 
     const downloadPromise = page.waitForEvent('download')
-    await page.getByTestId('export-table-btn').click()
+    const exportBtn = page.getByTestId('export-table-btn')
+    await expect(exportBtn).toBeVisible({ timeout: 5000 })
+    await exportBtn.click()
     await downloadPromise
-    await page.waitForTimeout(500)
 
     // 5. Collect all console output
     // Filter out intentional debug logs

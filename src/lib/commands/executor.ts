@@ -26,6 +26,7 @@ import type {
   CellChange,
   SnapshotMetadata,
 } from './types'
+import { stringifyJSON } from '@/lib/utils/json-serialization'
 import { buildCommandContext, refreshTableContext } from './context'
 // Note: Column versioning is now handled by TimelineEngine's Fast Path
 import { getUndoTier, requiresSnapshot, getCommandMetadata } from './registry'
@@ -1118,7 +1119,7 @@ export class CommandExecutor implements ICommandExecutor {
       tableId,
       tableName,
       action: auditInfo.action,
-      details: JSON.stringify(auditInfo.details),
+      details: stringifyJSON(auditInfo.details),
       rowsAffected: auditInfo.rowsAffected,
       hasRowDetails: auditInfo.hasRowDetails,
       auditEntryId: auditInfo.auditEntryId,

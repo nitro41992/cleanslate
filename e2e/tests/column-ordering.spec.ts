@@ -92,14 +92,23 @@ test.describe('Column Order Preservation', () => {
     const initialColumns = await inspector.getTableColumns('column_order_test')
     const initialOrder = initialColumns.map(c => c.name)
 
+    // Get tableId BEFORE transform (ensures we have valid ID)
+    const tableId = (await inspector.getTables()).find(t => t.name === 'column_order_test')?.id
+    expect(tableId).toBeDefined()
+
     // Act: Remove duplicates (Tier 3 - uses snapshot)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates') // No column param - operates on all columns
-    await laundromat.closePanel()
 
-    // Wait for operation to complete (Tier 3 may take longer)
-    await page.waitForTimeout(1000) // Temporary until we have better loading indicator
+    // Wait for transformation to fully propagate - poll for columns to be stable
+    // (Tier 3 operations involve snapshots which can take longer than UI indicator)
+    await expect.poll(async () => {
+      const cols = await inspector.getTableColumns('column_order_test')
+      return cols.length
+    }, { timeout: 10000 }).toBeGreaterThan(0)
+
+    await inspector.waitForTransformComplete(tableId!)
 
     // Assert: Column order unchanged (only rows affected)
     const finalColumns = await inspector.getTableColumns('column_order_test')
@@ -121,6 +130,12 @@ test.describe('Column Order Preservation', () => {
     await picker.selectColumn('full_name')
     await picker.fillParam('Delimiter', ' ')
     await picker.apply()
+
+    // Wait for transform to complete
+    const tableId = (await inspector.getTables()).find(t => t.name === 'split_column_test')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
 
     // Assert: New columns at end, original kept (current implementation keeps original column)
     const finalColumns = await inspector.getTableColumns('split_column_test')
@@ -286,6 +301,12 @@ test.describe('Column Order Preservation', () => {
     await page.getByTestId('combiner-stack-btn').click()
     await expect(page.getByText('Tables Stacked', { exact: true })).toBeVisible({ timeout: 5000 })
 
+    // Wait for table to be loaded in the store (4 rows: 2 from each table)
+    await inspector.waitForTableLoaded('stacked_result', 4)
+
+    // Wait for combiner operation to fully complete before asserting
+    await inspector.waitForCombinerComplete()
+
     // Assert: Column order = union of source columns (first appearance)
     // Table 1: ['id', 'name', 'email']
     // Table 2: ['id', 'email', 'status']
@@ -334,9 +355,6 @@ test.describe('Column Order Preservation', () => {
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
 
-    // Wait a moment for the operation to start
-    await page.waitForTimeout(500)
-
     // Wait for join to complete by checking if table was created (longer timeout for join operations)
     await inspector.waitForTableLoaded('join_result', 2, 60000)
 
@@ -349,6 +367,8 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('transform after combiner preserves combined table order', async () => {
+    test.setTimeout(120000)  // 2 minutes for heavy combiner test
+
     // Arrange: Stack two tables
     await inspector.runQuery('DROP TABLE IF EXISTS stack_table_1')
     await inspector.runQuery('DROP TABLE IF EXISTS stack_table_2')
@@ -381,17 +401,21 @@ test.describe('Column Order Preservation', () => {
     // Wait for table to be loaded in the store
     await inspector.waitForTableLoaded('stacked_result', 4)
 
+    // Wait for combiner operation to fully complete before continuing
+    await inspector.waitForCombinerComplete()
+
     const orderAfterStack = await inspector.getTableColumns('stacked_result')
     const expectedOrder = orderAfterStack.map(c => c.name)
 
-    // Close combiner panel
+    // Close combiner panel and wait for it to be fully hidden
     await laundromat.closePanel()
+    await expect(page.getByTestId('combiner')).toBeHidden({ timeout: 5000 })
 
     // Act: Apply transformation to stacked table
     // First, switch to stacked_result table in the UI
     await page.getByTestId('table-selector').click()
-    // Match option by partial text since it includes row count
-    await page.getByRole('option', { name: /stacked_result/ }).click()
+    // Match menuitem by partial text since it includes row count
+    await page.getByRole('menuitem', { name: /stacked_result/ }).click()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()

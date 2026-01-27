@@ -52,9 +52,10 @@ export class ScrubYearOnlyCommand extends Tier3TransformCommand<ScrubYearOnlyPar
       const selectClause = otherCols.length > 0 ? `${selectCols}, ${transformExpr}` : transformExpr
 
       // Use CTAS pattern to recreate table with transformed column as VARCHAR
+      // CRITICAL: ORDER BY "_cs_id" preserves row order (prevents flaky tests)
       const tempTable = `_temp_year_only_${Date.now()}`
       await ctx.db.execute(
-        `CREATE TABLE "${tempTable}" AS SELECT ${selectClause} FROM "${tableName}"`
+        `CREATE TABLE "${tempTable}" AS SELECT ${selectClause} FROM "${tableName}" ORDER BY "_cs_id"`
       )
 
       // Drop original and rename temp

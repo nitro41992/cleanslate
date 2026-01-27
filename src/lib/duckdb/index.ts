@@ -469,9 +469,12 @@ export async function loadCSV(
       : `read_csv_auto('${file.name}')`
 
     // Create table from CSV with _cs_id for stable row identity
+    // CRITICAL: Use ROW_NUMBER() to preserve insertion order, not gen_random_uuid()
+    // Random UUIDs don't preserve order, causing rows to shuffle on CTAS operations
+    // Use BIGINT for proper numeric ordering
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
-      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM ${readCsvQuery}
+      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", * FROM ${readCsvQuery}
     `)
 
     // Get column info (excluding internal _cs_id column)
@@ -503,9 +506,10 @@ export async function loadJSON(
     await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
     // Create table from JSON with _cs_id for stable row identity
+    // CRITICAL: Use ROW_NUMBER() to preserve insertion order, not gen_random_uuid()
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
-      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_json_auto('${file.name}')
+      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", * FROM read_json_auto('${file.name}')
     `)
 
     const columnsResult = await connection.query(`
@@ -535,9 +539,10 @@ export async function loadParquet(
     await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
     // Create table from Parquet with _cs_id for stable row identity
+    // CRITICAL: Use ROW_NUMBER() to preserve insertion order, not gen_random_uuid()
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
-      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", * FROM read_parquet('${file.name}')
+      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", * FROM read_parquet('${file.name}')
     `)
 
     const columnsResult = await connection.query(`
@@ -585,17 +590,20 @@ export async function loadXLSX(
     const connection = await getConnection()
 
     // Create table with _cs_id column for stable row identity + user columns
-    const columnDefs = [`"${CS_ID_COLUMN}" UUID`, ...columns.map((col) => `"${col}" VARCHAR`)].join(', ')
+    // Use BIGINT for _cs_id for proper numeric ordering
+    const columnDefs = [`"${CS_ID_COLUMN}" BIGINT`, ...columns.map((col) => `"${col}" VARCHAR`)].join(', ')
     await connection.query(`CREATE OR REPLACE TABLE "${tableName}" (${columnDefs})`)
 
-    // Insert data in batches with generated UUIDs
+    // Insert data in batches with sequential IDs to preserve insertion order
     const batchSize = 500
     for (let i = 0; i < jsonData.length; i += batchSize) {
       const batch = jsonData.slice(i, i + batchSize)
       const values = batch
-        .map((row) => {
+        .map((row, idx) => {
+          // Use sequential ID based on position in jsonData array
+          const rowId = i + idx + 1 // 1-indexed to match ROW_NUMBER()
           const vals = [
-            'gen_random_uuid()', // _cs_id
+            `${rowId}`, // _cs_id as numeric BIGINT
             ...columns.map((col) => {
               const val = row[col]
               if (val === null || val === undefined || val === '') return 'NULL'
@@ -871,6 +879,7 @@ export async function tableHasCsId(tableName: string): Promise<boolean> {
 
 /**
  * Add _cs_id column to an existing table (migration for legacy tables)
+ * CRITICAL: Use ROW_NUMBER() to preserve insertion order
  */
 export async function addCsIdToTable(tableName: string): Promise<void> {
   const hasCsId = await tableHasCsId(tableName)
@@ -878,15 +887,17 @@ export async function addCsIdToTable(tableName: string): Promise<void> {
 
   const connection = await getConnection()
 
-  // Add the column with generated UUIDs for each row
+  // Rebuild table with sequential _cs_id to preserve row order
+  const tempTable = `${tableName}_csid_temp_${Date.now()}`
   await connection.query(`
-    ALTER TABLE "${tableName}" ADD COLUMN "${CS_ID_COLUMN}" UUID
+    CREATE TABLE "${tempTable}" AS
+    SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", *
+    FROM "${tableName}"
   `)
 
-  // Populate with UUIDs
-  await connection.query(`
-    UPDATE "${tableName}" SET "${CS_ID_COLUMN}" = gen_random_uuid()
-  `)
+  // Swap tables
+  await connection.query(`DROP TABLE "${tableName}"`)
+  await connection.query(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
 }
 
 /**
@@ -930,11 +941,12 @@ export async function duplicateTable(
     const cols = await getTableColumns(sourceName, true)
     const userCols = cols.filter(c => c.name !== CS_ID_COLUMN).map(c => `"${c.name}"`)
 
+    // CRITICAL: Use ROW_NUMBER() to preserve row order, not gen_random_uuid()
+    // Order by source _cs_id to maintain original ordering
     await connection.query(`
       CREATE TABLE "${targetName}" AS
-      SELECT gen_random_uuid() as "${CS_ID_COLUMN}", ${userCols.join(', ')}
+      SELECT ROW_NUMBER() OVER (ORDER BY "${CS_ID_COLUMN}") as "${CS_ID_COLUMN}", ${userCols.join(', ')}
       FROM "${sourceName}"
-      ORDER BY "${CS_ID_COLUMN}"
     `)
   } else {
     // Preserve _cs_id values (for timeline snapshots) or source has no _cs_id
@@ -1017,9 +1029,11 @@ export async function createOriginalSnapshot(tableName: string): Promise<boolean
   const connection = await getConnection()
 
   // Create a copy preserving _cs_id values for row tracking
+  // CRITICAL: ORDER BY "_cs_id" preserves row order (prevents flaky tests)
   await connection.query(`
     CREATE TABLE "${snapshotName}" AS
     SELECT * FROM "${tableName}"
+    ORDER BY "_cs_id"
   `)
 
   return true // New snapshot created
@@ -1059,10 +1073,12 @@ export async function restoreFromOriginalSnapshot(tableName: string): Promise<bo
   const connection = await getConnection()
 
   // Replace current table with original
+  // CRITICAL: ORDER BY "_cs_id" preserves row order (prevents flaky tests)
   await connection.query(`DROP TABLE IF EXISTS "${tableName}"`)
   await connection.query(`
     CREATE TABLE "${tableName}" AS
     SELECT * FROM "${snapshotName}"
+    ORDER BY "_cs_id"
   `)
 
   return true

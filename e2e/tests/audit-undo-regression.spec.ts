@@ -1,10 +1,11 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 import { expectRowIdsHighlighted } from '../helpers/high-fidelity-assertions'
+import { coolHeap } from '../helpers/heap-cooling'
 
 /**
  * Audit + Undo/Redo Regression Tests
@@ -42,6 +43,11 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('whitespace_data', 3)
+
+    // Verify data has whitespace (at least one row should have "  John Doe  ")
+    const data = await inspector.getTableData('whitespace_data')
+    const hasJohnDoe = data.some(r => (r.name as string) === '  John Doe  ')
+    expect(hasJohnDoe).toBe(true)
   }
 
   test('FR-REGRESSION-1: Highlight button appears after transform', async () => {
@@ -51,14 +57,13 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-
-    // Wait for transformation to complete
-    await page.waitForTimeout(500)
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Verify highlight button exists on the Trim entry
     // The button shows "Highlight" when not active
@@ -77,7 +82,6 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
       .filter({ hasText: 'Highlight' })
       .first()
     await highlightBtn.click()
-    await page.waitForTimeout(300)
 
     // Button should now say "Clear"
     const clearBtn = page
@@ -112,14 +116,15 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Click Clear to remove highlighting
     await clearBtn.first().click()
-    await page.waitForTimeout(300)
 
     // Button should be back to "Highlight"
     await expect(highlightBtn.first()).toBeVisible()
 
     // Verify highlight is cleared in store
-    const clearedState = await inspector.getTimelineHighlight()
-    expect(clearedState.commandId).toBeNull()
+    await expect.poll(async () => {
+      const state = await inspector.getTimelineHighlight()
+      return state.commandId
+    }, { timeout: 5000 }).toBeNull()
   })
 
   test('FR-REGRESSION-3: Audit drill-down shows row details', async () => {
@@ -133,6 +138,15 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     // Verify modal opens
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Verify modal title is visible (Row-Level Changes)
     await expect(modal.locator('text=Row-Level Changes')).toBeVisible()
@@ -158,79 +172,108 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
     // Reload fresh data to ensure clean state
     await loadTestData()
 
-    // Get ORIGINAL data before transform
+    // Get ORIGINAL data before transform (find row with whitespace)
     const originalData = await inspector.getTableData('whitespace_data')
-    const originalValue = originalData[0]?.name as string
-    // Original should have whitespace: "  John Doe  "
-    // Rule 2: Assert exact whitespace value
-    expect(originalValue).toBe('  John Doe  ')
+    const originalRow = originalData.find(r => (r.name as string) === '  John Doe  ')
+    expect(originalRow).toBeDefined()
 
     // Apply Trim transform
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Get data after transform (trimmed values)
     const afterTransform = await inspector.getTableData('whitespace_data')
-    const transformedValue = afterTransform[0]?.name as string
+    const transformedRow = afterTransform.find(r => (r.name as string) === 'John Doe')
     // After trim: "John Doe" (no whitespace)
     // Rule 2: Assert exact transformed value
-    expect(transformedValue).toBe('John Doe')
+    expect(transformedRow).toBeDefined()
 
     // Click somewhere to ensure focus isn't on an input
     await page.locator('body').click()
-    await page.waitForTimeout(100)
 
     // Press Ctrl+Z to undo
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(1000) // Give more time for undo
 
-    // Get data after undo (should have whitespace restored)
-    const afterUndo = await inspector.getTableData('whitespace_data')
-    const afterUndoValue = afterUndo[0]?.name as string
+    // Wait for undo to complete - undo operations use isReplaying, not isLoading
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        // Wait for replay to complete
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    // After undo, value should match original (with whitespace)
-    expect(afterUndoValue).toEqual(originalValue)
+    // Poll the database until the data is restored (ensures DuckDB write has completed)
+    await expect.poll(
+      async () => {
+        const afterUndo = await inspector.getTableData('whitespace_data')
+        return afterUndo.some(r => (r.name as string) === '  John Doe  ')
+      },
+      { timeout: 10000, message: 'Undo did not restore original whitespace value' }
+    ).toBe(true)
   })
 
   test('FR-REGRESSION-5: Redo reapplies transform', async () => {
     // This test depends on the state from FR-REGRESSION-4 (undone transform)
-    // Get data before redo (untrimmed, whitespace present)
-    const beforeRedo = await inspector.getTableData('whitespace_data')
-    const beforeValue = beforeRedo[0]?.name as string
-
     // Verify we're in the undone state (has whitespace)
-    // If not, the test is invalid but we continue to check redo behavior
-    const hasWhitespace = beforeValue !== beforeValue.trim()
+    const beforeRedo = await inspector.getTableData('whitespace_data')
+    const hasWhitespace = beforeRedo.some(r => (r.name as string) === '  John Doe  ')
+    expect(hasWhitespace).toBe(true)
 
     // Press Ctrl+Y to redo
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
 
-    // Get data after redo (should be trimmed again)
-    const afterRedo = await inspector.getTableData('whitespace_data')
-    const afterValue = afterRedo[0]?.name as string
+    // Wait for redo to complete - redo operations use isReplaying, not isLoading
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        // Wait for replay to complete
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    // Rule 2: Assert exact before/after states
-    if (hasWhitespace) {
-      expect(beforeValue).toBe('  John Doe  ')
-      expect(afterValue).toBe('John Doe')
-    }
-    // Verify it's actually trimmed
-    expect(afterValue).toBe(afterValue.trim())
+    // Poll the database until the trim is reapplied (ensures DuckDB write has completed)
+    await expect.poll(
+      async () => {
+        const afterRedo = await inspector.getTableData('whitespace_data')
+        return afterRedo.some(r => (r.name as string) === 'John Doe' && !afterRedo.some(x => (x.name as string) === '  John Doe  '))
+      },
+      { timeout: 10000, message: 'Redo did not reapply trim transform' }
+    ).toBe(true)
   })
 
   test('FR-REGRESSION-6: Audit sidebar reflects undo state with Undone badge', async () => {
     // This test continues from FR-REGRESSION-5 where we have a redone transform
     // Open audit sidebar first
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Now undo to see the "Undone" badge
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+
+    // Wait for undo to complete
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     // Check for "Undone" badge or visual indicator
     // After undo, the transform entry should show "Undone" badge
@@ -243,7 +286,18 @@ test.describe.serial('FR-REGRESSION: Audit + Undo Features', () => {
 
     // Redo to restore for subsequent tests
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+
+    // Wait for redo to complete
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     // The "Undone" badge should no longer be visible - Rule 2: Use positive hidden assertion
     await expect(undoneBadge).toBeHidden({ timeout: 3000 })
@@ -281,6 +335,11 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('mixed_case', 3)
+
+    // Verify data has expected value (at least one row should have "John DOE")
+    const data = await inspector.getTableData('mixed_case')
+    const hasJohnDoe = data.some(r => (r.name as string) === 'John DOE')
+    expect(hasJohnDoe).toBe(true)
   }
 
   test('should sync multiple transforms to timeline correctly', async () => {
@@ -290,19 +349,20 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Apply second transform: Trim
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Open audit sidebar and verify both transforms appear
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Both should have highlight buttons (meaning they're in timeline)
     const highlightBtns = page
@@ -321,48 +381,88 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Apply second transform: Trim
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
-    // Get current data (uppercase + trimmed)
+    // Get current data (uppercase + trimmed) - should have "JOHN DOE"
     const step2Data = await inspector.getTableData('mixed_case')
-    const step2Value = step2Data[0]?.name as string
+    const step2HasJohnDoe = step2Data.some(r => (r.name as string) === 'JOHN DOE')
+    expect(step2HasJohnDoe).toBe(true)
 
     // Undo once (reverts trim)
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
-
-    const step1Data = await inspector.getTableData('mixed_case')
-    const _step1Value = step1Data[0]?.name as string // Used to verify intermediate state
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     // Undo again (reverts uppercase)
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    const step0Data = await inspector.getTableData('mixed_case')
-    const step0Value = step0Data[0]?.name as string
-
-    // After undoing uppercase, value should be original mixed case
-    // Original: "John DOE" (row 0)
-    expect(step0Value).toEqual('John DOE')
+    // Poll for the original mixed case value to be restored
+    await expect.poll(
+      async () => {
+        const step0Data = await inspector.getTableData('mixed_case')
+        return step0Data.some(r => (r.name as string) === 'John DOE')
+      },
+      { timeout: 10000, message: 'Undo did not restore original mixed case value' }
+    ).toBe(true)
 
     // Redo both transforms
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
-    // Verify we're back to fully transformed state
-    const finalData = await inspector.getTableData('mixed_case')
-    const finalValue = finalData[0]?.name as string
-    expect(finalValue).toEqual(step2Value)
+    // Poll to verify we're back to fully transformed state
+    await expect.poll(
+      async () => {
+        const finalData = await inspector.getTableData('mixed_case')
+        return finalData.some(r => (r.name as string) === 'JOHN DOE')
+      },
+      { timeout: 10000, message: 'Redo did not restore fully transformed state' }
+    ).toBe(true)
   })
 
   test('should update timeline position indicator after undo/redo', async () => {
@@ -382,7 +482,16 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Undo and check position changes
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(500)
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
 
     const newPositionText = await positionBadge.first().textContent()
     // Rule 2: Assert exact timeline positions
@@ -391,19 +500,39 @@ test.describe.serial('FR-REGRESSION: Timeline Sync Verification', () => {
 
     // Redo to restore
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(500)
+    await page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
   })
 })
 
 test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
+  // Tier 3 tests need longer timeout
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Tier 3 tests: Use beforeEach with fresh context per E2E CLAUDE.md guidelines
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -412,8 +541,18 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
+  test.afterEach(async () => {
+    try {
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+      })
+    } catch (error) {
+      console.warn('[FR-REGRESSION afterEach] Cleanup failed:', error)
+    }
+    await context.close()
   })
 
   async function loadDateTestData() {
@@ -431,12 +570,13 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Standardize Date', { column: 'date_us' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Click on the audit entry (should have "View details" link)
     const auditEntry = page.locator('[data-testid="audit-entry-with-details"]').first()
@@ -446,6 +586,15 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     // Verify modal opens
     const modal = page.getByTestId('audit-detail-modal')
     await expect(modal).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Verify modal shows row details (NOT "No row details available")
     // Rule 2: Use positive hidden assertion
@@ -462,9 +611,20 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
   })
 
   test('FR-REGRESSION-8: Audit sidebar does not cut off content', async () => {
-    // The sidebar should be visible from previous test
+    // Clean Slate: Load own data and open own sidebar (don't depend on previous test)
+    await loadDateTestData()
+
+    // Apply a transform to populate audit sidebar with content
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Standardize Date', { column: 'date_us' })
+    await inspector.waitForTransformComplete()
+    await laundromat.closePanel()
+
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
     const sidebar = page.locator('[data-testid="audit-sidebar"]')
-    await expect(sidebar).toBeVisible()
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Get the sidebar bounding box
     const sidebarBox = await sidebar.boundingBox()
@@ -499,8 +659,8 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Calculate Age', { column: 'birth_date' })
+    await inspector.waitForTransformComplete()
     await laundromat.closePanel()
-    await page.waitForTimeout(500)
 
     // Get the audit entry from the auditStore to find the audit_entry_id
     const auditEntries = await inspector.getAuditEntries()

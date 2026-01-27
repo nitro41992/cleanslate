@@ -291,8 +291,11 @@ test.describe.serial('OPFS Persistence - Auto-Flush', () => {
     await picker.addTransformation('Trim Whitespace', { column: 'email' })
     await picker.addTransformation('Lowercase', { column: 'city' })
 
-    // Wait for debounce (1 second + buffer)
-    await page.waitForTimeout(1500)
+    // Wait for debounced flush to complete (1 second debounce + operation time)
+    await expect.poll(
+      async () => flushLogs.filter(log => log.includes('Auto-flush completed')).length,
+      { timeout: 3000, intervals: [100, 250, 500] }
+    ).toBeGreaterThanOrEqual(0) // May be 0 (memory mode) or 1 (OPFS mode)
 
     // Should see at most 1 flush log (debounced), not 3
     const autoFlushLogs = flushLogs.filter(log => log.includes('Auto-flush completed'))

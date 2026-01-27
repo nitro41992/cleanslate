@@ -5,6 +5,7 @@ import { TransformationPickerPage } from '../page-objects/transformation-picker.
 import { downloadAndVerifyCSV } from '../helpers/download-helpers'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
+import { coolHeap } from '../helpers/cleanup-helpers'
 
 /**
  * Export Tests
@@ -28,6 +29,17 @@ test.describe.serial('Export', () => {
     await inspector.waitForDuckDBReady()
   })
 
+  test.afterEach(async () => {
+    // Tier 2 cleanup - Clear state accumulation between tests
+    await coolHeap(page, inspector, {
+      dropTables: false,  // Each test manages its own tables
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 50
+    })
+  })
+
   test.afterAll(async () => {
     await page.close()
   })
@@ -39,6 +51,12 @@ test.describe.serial('Export', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
+
     const result = await downloadAndVerifyCSV(page)
     expect(result.filename).toBe('basic_data_cleaned.csv')
   })
@@ -49,6 +67,12 @@ test.describe.serial('Export', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -62,6 +86,12 @@ test.describe.serial('Export', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -84,6 +114,12 @@ test.describe.serial('Export', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -110,6 +146,12 @@ test.describe.serial('Export', () => {
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
 
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
+
     const result = await downloadAndVerifyCSV(page)
 
     // Verify trimmed and uppercased names
@@ -129,6 +171,12 @@ test.describe.serial('Export', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
     await laundromat.closePanel()
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 

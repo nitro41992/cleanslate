@@ -8,6 +8,45 @@ import { getFixturePath } from '../helpers/file-upload'
 import { coolHeap, coolHeapLight } from '../helpers/heap-cooling'
 
 /**
+ * Shared helper to configure and run Find Duplicates with proper thresholds.
+ * Uses "Compare All" blocking strategy and lowers threshold to 60% for test data.
+ */
+async function runFindDuplicatesHelper(
+  page: Page,
+  matchView: MatchViewPage,
+  inspector: StoreInspector,
+  config?: { tableName?: string; columnName?: string }
+) {
+  const tableName = config?.tableName ?? 'fr_c1_dedupe'
+  const columnName = config?.columnName ?? 'first_name'
+
+  // Select table and column
+  await matchView.selectTable(tableName)
+  await matchView.selectColumn(columnName)
+
+  // Use "Compare All" strategy (no blocking)
+  await page.getByRole('radio', { name: /Compare All/i }).click()
+  await inspector.waitForBlockingStrategy('none')
+
+  // Lower maybeThreshold to 60% for test data
+  await page.evaluate(() => {
+    const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(stores?.matcherStore as any)?.setState({ maybeThreshold: 60 })
+  })
+
+  // Click Find Duplicates and wait for completion
+  await page.getByTestId('find-duplicates-btn').click()
+  await inspector.waitForMergeComplete()
+
+  // Wait for pairs to be populated
+  await expect.poll(async () => {
+    const state = await inspector.getMatcherState()
+    return state.pairs.length
+  }, { timeout: 15000 }).toBeGreaterThan(0)
+}
+
+/**
  * Feature Coverage Tests
  *
  * Uses dedicated fixture files to test PRD requirements.
@@ -322,6 +361,13 @@ test.describe.serial('FR-A3: Fill Down Transformation', () => {
 
     await picker.addTransformation('Fill Down', { column: 'region' })
 
+    // Wait for transform to complete
+    const tables = await inspector.getTables()
+    const tableId = tables.find(t => t.name === 'fr_a3_fill_down')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId ?? undefined)
+    }
+
     const data = await inspector.getTableData('fr_a3_fill_down')
     expect(data[0].region).toBe('North')
     expect(data[1].region).toBe('North') // Filled from above
@@ -423,6 +469,7 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
 
 test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   let browser: Browser
+  let context: import('@playwright/test').BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -437,8 +484,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test.beforeEach(async () => {
-    // Create fresh page for each test to prevent memory accumulation
-    page = await browser.newPage()
+    // Create fresh CONTEXT for each test - provides true isolation including WASM module state
+    // See: https://playwright.dev/docs/browser-contexts
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     matchView = new MatchViewPage(page)
@@ -448,25 +497,30 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
   })
 
   test.afterEach(async () => {
-    // Aggressive cleanup for memory-intensive matcher tests
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-      pruneAudit: true,
-    })
+    // Wrap cleanup in try-catch - if page crashed, still close context
+    try {
+      // Aggressive cleanup for memory-intensive matcher tests
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+      })
 
-    // Also clear matcherStore state explicitly
-    await page.evaluate(() => {
-      const stores = (window as any).__CLEANSLATE_STORES__
-      const matcherStore = stores?.matcherStore?.getState?.()
-      if (matcherStore?.reset) {
-        matcherStore.reset()
-      }
-    })
+      // Also clear matcherStore state explicitly
+      await page.evaluate(() => {
+        const stores = (window as any).__CLEANSLATE_STORES__
+        const matcherStore = stores?.matcherStore?.getState?.()
+        if (matcherStore?.reset) {
+          matcherStore.reset()
+        }
+      })
+    } catch (error) {
+      console.warn('[FR-C1 afterEach] Cleanup failed (page may have crashed):', error)
+    }
 
-    // Close page after cleanup to free memory
-    await page.close()
+    // Close CONTEXT (not just page) to fully release WASM memory
+    await context.close()
   })
 
   async function loadDedupeData() {
@@ -475,6 +529,14 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+  }
+
+  /**
+   * Configure matcher and run find duplicates.
+   * Sets maybeThreshold to 60% to match test data (John/Jon=75%, Jane/Janet=60%, Sarah/Sara=80%).
+   */
+  async function runFindDuplicates(config?: { tableName?: string; columnName?: string }) {
+    await runFindDuplicatesHelper(page, matchView, inspector, config)
   }
 
   test('should open match view and find duplicates with similarity percentages', async () => {
@@ -487,36 +549,14 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     // Verify match view is open with correct title
     await expect(page.getByText('DUPLICATE FINDER')).toBeVisible()
 
-    // Select table and column
-    await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
-    await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
+    // Run find duplicates using helper
+    await runFindDuplicates()
 
-    // Use "Compare All" strategy for small datasets (ensures all pairs are compared)
-    // The radio button name is "Compare All (Slowest)"
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
+    // Verify pairs are displayed with similarity percentages (use store instead of DOM)
+    const matcherState = await inspector.getMatcherState()
+    expect(matcherState.pairs.length).toBeGreaterThanOrEqual(2) // Expect John/Jon, Jane/Janet, Sarah/Sara
 
-    // Click Find Duplicates - uses page object method with fallback for React issues
-    await matchView.findDuplicates()
-
-    // Wait for matching results - either pairs appear or progress indicator
-    await Promise.race([
-      expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 30000 }),
-      expect(page.getByText('No Duplicates Found').first()).toBeVisible({ timeout: 30000 }),
-      expect(page.locator('[role="progressbar"]')).toBeVisible({ timeout: 30000 })
-    ])
-
-    // Wait for final results
-    await matchView.waitForPairs()
-
-    // Verify pairs are displayed with similarity percentages
-    // Rule 1: Verify expected pairs and names
-    const pairCount = await matchView.getPairCount()
-    expect(pairCount).toBeGreaterThanOrEqual(2) // Expect specific count
-
-    // Verify "% Similar" format is displayed
+    // Verify "% Similar" format is displayed in UI
     await expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible()
     // Verify pair contains expected matches
     await expect(page.locator('text=/John/').first()).toBeVisible()
@@ -527,26 +567,22 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
-    await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
 
-    // Get initial stats
-    const initialStats = await matchView.getStats()
-    expect(initialStats.merged).toBe(0)
+    // Get initial stats (use store instead of DOM scraping)
+    const initialState = await inspector.getMatcherState()
+    expect(initialState.stats.merged).toBe(0)
 
     // Mark first pair as merged
     await matchView.mergePair(0)
-    await page.waitForTimeout(300) // Allow state update
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      return state.stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Verify stats updated
-    const afterMergeStats = await matchView.getStats()
-    expect(afterMergeStats.merged).toBe(1)
+    const afterMergeState = await inspector.getMatcherState()
+    expect(afterMergeState.stats.merged).toBe(1)
 
     // Verify Apply Merges bar is visible
     const hasApplyBar = await matchView.hasApplyMergesBar()
@@ -558,14 +594,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
-    await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
 
     // Get initial row count
     const tablesBefore = await inspector.getTables()
@@ -575,10 +604,15 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
     // Mark first pair as merged
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Apply merges (will close the match view)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Verify table row count decreased
     const tablesAfter = await inspector.getTables()
@@ -590,7 +624,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     expect(newRowCount).toBe(7) // 8 - 1 merged pair = 7
 
     // Verify DataGrid refresh - this tests the bug fix (rowCount dependency)
-    await page.waitForTimeout(500) // Allow grid to refresh
+    await inspector.waitForGridReady()
     const rowCountText = await laundromat.getRowCount()
     expect(rowCountText).toContain('7')
   })
@@ -600,36 +634,32 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await page.waitForTimeout(500)
-    await matchView.selectColumn('first_name')
-    await page.waitForTimeout(500)
-    await page.getByRole('radio', { name: /Compare All/i }).click({ force: true })
-    await page.waitForTimeout(300)
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for match panel to fully close and UI to stabilize
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await page.waitForTimeout(1000) // Wait for toast auto-dismiss
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
-    await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(1000) // Additional stabilization
+    await inspector.waitForGridReady()
 
     // Open audit sidebar to verify the merge was logged
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
 
     // Rule 1: Assert exact action text, not regex pattern (high-fidelity)
     const mergeAuditEntry = page.getByText('Merge Duplicates', { exact: true })
     await expect(mergeAuditEntry).toBeVisible({ timeout: 5000 })
 
     // Rule 3: Verify it has row details indicator (visual validation)
-    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
     const entryWithDetails = auditSidebar.locator('.cursor-pointer').filter({ hasText: 'Merge Duplicates' })
     await expect(entryWithDetails).toBeVisible()
 
@@ -640,6 +670,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
 test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   let browser: Browser
+  let context: import('@playwright/test').BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -654,8 +685,10 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test.beforeEach(async () => {
-    // Create fresh page for each test to prevent memory accumulation
-    page = await browser.newPage()
+    // Create fresh CONTEXT for each test - provides true isolation including WASM module state
+    // See: https://playwright.dev/docs/browser-contexts
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     matchView = new MatchViewPage(page)
@@ -665,26 +698,43 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test.afterEach(async () => {
-    // Aggressive cleanup for memory-intensive matcher tests
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-      pruneAudit: true,
-    })
+    // Wrap cleanup in try-catch - if page crashed, still close context
+    try {
+      // Aggressive cleanup for memory-intensive matcher tests
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+      })
 
-    // Also clear matcherStore state explicitly
-    await page.evaluate(() => {
-      const stores = (window as any).__CLEANSLATE_STORES__
-      const matcherStore = stores?.matcherStore?.getState?.()
-      if (matcherStore?.reset) {
-        matcherStore.reset()
-      }
-    })
+      // Also clear matcherStore state explicitly
+      await page.evaluate(() => {
+        const stores = (window as any).__CLEANSLATE_STORES__
+        const matcherStore = stores?.matcherStore?.getState?.()
+        if (matcherStore?.reset) {
+          matcherStore.reset()
+        }
+      })
+    } catch (error) {
+      console.warn('[FR-C1 Merge afterEach] Cleanup failed (page may have crashed):', error)
+    }
 
-    // Close page after cleanup to free memory
-    await page.close()
+    // Close CONTEXT (not just page) to fully release WASM memory
+    await context.close()
   })
+
+  async function runFindDuplicates(config?: { tableName?: string; columnName?: string }) {
+    await runFindDuplicatesHelper(page, matchView, inspector, config)
+  }
+
+  async function loadDedupeData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
+    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+  }
 
   test('should display row data in merge audit drill-down', async () => {
     // Note: This test depends on the Fuzzy Matcher finding duplicates.
@@ -692,45 +742,34 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // The code fix (escapeForSql) is verified by the _merge_audit_details table structure test.
 
     // Load dedupe data
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
-    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
+    await loadDedupeData()
 
     // Open match view and find duplicates
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await matchView.selectColumn('first_name')
-    await matchView.findDuplicates()
-
-    // Wait for matching to complete - progress bar should disappear or pairs should appear
-    await Promise.race([
-      expect(page.locator('[data-testid="match-view"]').locator('role=progressbar')).toBeHidden({ timeout: 30000 }),
-      matchView.waitForPairs()
-    ])
-    // Ensure pairs are visible
-    await matchView.waitForPairs()
+    await runFindDuplicates()
 
     // Merge a pair
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Apply merges
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
-    // Wait for success toast to appear and dismiss
+    // Wait for success toast to appear
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await page.waitForTimeout(1000) // Wait for toast to auto-dismiss
 
     // Ensure we're back at the main view by checking the grid is visible
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
 
     // Wait for match view to be fully closed
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
-    await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500) // Additional stabilization
+    await inspector.waitForGridReady()
 
     // Debug: Check if audit entry was created
     const auditEntries = await inspector.getAuditEntries()
@@ -742,13 +781,23 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
 
     // Click on the Apply Merges audit entry (it has row details)
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
 
     // Wait for the modal to open
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Verify KEPT and DELETED sections are visible with actual data
     await expect(page.getByText('KEPT')).toBeVisible()
@@ -773,26 +822,35 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     // Open match view and find duplicates
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_special_chars')
-    await matchView.selectColumn('name')
-    await matchView.findDuplicates()
-
-    // Wait for matching to complete
-    await expect(page.locator('[data-testid="match-view"]').locator('role=progressbar')).toBeHidden({ timeout: 30000 })
-    await matchView.waitForPairs()
+    await runFindDuplicates({ tableName: 'fr_c1_special_chars', columnName: 'name' })
 
     // Merge a pair (O'Brien / O'Brian should match)
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
 
     // Apply merges
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Open audit sidebar and drill-down
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Verify data with special characters (quotes) is displayed correctly
     // The merged pairs are "John "Jack" Smith" and "Jon "Jackie" Smyth"
@@ -805,36 +863,43 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
   test('should export merge details as CSV', async () => {
     // Independent test: Load data, find duplicates, merge, and apply
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
-    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
-
+    await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await matchView.selectColumn('first_name')
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for merge to complete and return to main view
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('data-grid')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('match-view')).toBeHidden({ timeout: 5000 })
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
+    await inspector.waitForGridReady()
 
     // Open audit sidebar
     await laundromat.openAuditSidebar()
-    await page.waitForTimeout(300)
+    const auditSidebar = page.locator('[data-testid="audit-sidebar"]')
+    await expect(auditSidebar).toBeVisible({ timeout: 5000 })
 
     // Click on an audit entry with details
     await page.locator('[data-testid="audit-entry-with-details"]').first().click()
     await expect(page.getByTestId('audit-detail-modal')).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Setup download listener
     const downloadPromise = page.waitForEvent('download')
@@ -856,25 +921,21 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
 
   test('should store valid JSON in _merge_audit_details table', async () => {
     // Independent test: Load data, find duplicates, merge, and apply
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_c1_dedupe')
-    await laundromat.uploadFile(getFixturePath('fr_c1_dedupe.csv'))
-    await wizard.waitForOpen()
-    await wizard.import()
-    await inspector.waitForTableLoaded('fr_c1_dedupe', 8)
-
+    await loadDedupeData()
     await laundromat.openMatchView()
     await matchView.waitForOpen()
-    await matchView.selectTable('fr_c1_dedupe')
-    await matchView.selectColumn('first_name')
-    await matchView.findDuplicates()
-    await matchView.waitForPairs()
+    await runFindDuplicates()
     await matchView.mergePair(0)
-    await page.waitForTimeout(300)
+    await expect.poll(async () => {
+      const state = await inspector.getMatcherState()
+      const stats = state.stats
+      return stats.merged
+    }, { timeout: 5000 }).toBe(1)
     await matchView.applyMerges()
+    await inspector.waitForMergeComplete()
 
     // Wait for merge to complete
     await expect(page.getByText('Merges Applied')).toBeVisible({ timeout: 5000 })
-    await page.waitForTimeout(1000)
 
     // Query the merge audit details table directly
     const auditDetails = await inspector.runQuery(`
@@ -947,28 +1008,28 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Open scrub panel via toolbar (single-page app)
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
   })
 
   test('should hash sensitive columns', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-ssn')).toBeVisible()
 
     // Select hash method for SSN column using data-testid
     await page.getByTestId('method-select-ssn').click()
     await page.getByRole('option', { name: /Hash/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -976,13 +1037,16 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    // Wait for scrubbing to complete by polling for hashed data
+    // (waitForTransformComplete doesn't work for scrub operations)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.ssn
+    }, { timeout: 15000 }).toMatch(/^[a-f0-9]{32}$/)
 
     // Verify hash format (32-char hex from MD5)
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].ssn).toMatch(/^[a-f0-9]{32}$/)
 
     // Rule 2: Assert specific hash format for both and explicit uniqueness check
     const hash0 = data[0].ssn as string
@@ -996,22 +1060,22 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should redact PII patterns', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-email')).toBeVisible()
 
     // Select redact method for email column
     await page.getByTestId('method-select-email').click()
     await page.getByRole('option', { name: /Redact/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -1019,35 +1083,37 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    // Wait for scrubbing to complete by polling for redacted data
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.email
+    }, { timeout: 15000 }).toBe('[REDACTED]')
 
     // Verify redaction (same table, modified in-place)
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].email).toBe('[REDACTED]')
     expect(data[1].email).toBe('[REDACTED]')
   })
 
   test('should mask partial values', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-full_name')).toBeVisible()
 
     // Select mask method for full_name column
     await page.getByTestId('method-select-full_name').click()
     await page.getByRole('option', { name: /Mask/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -1055,35 +1121,37 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    // Wait for scrubbing to complete by polling for masked data
+    // "John Smith" should become something like "J*******h"
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.full_name
+    }, { timeout: 15000 }).toMatch(/^J\*+h$/)
 
-    // Verify masking (shows first and last char with asterisks in between)
+    // Verify masking complete
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    // "John Smith" should become something like "J*******h"
-    expect(data[0].full_name).toMatch(/^J\*+h$/)
   })
 
   test('should extract year only from dates', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await page.waitForTimeout(300)
+    await expect(page.getByTestId('method-select-birth_date')).toBeVisible()
 
     // Select year_only method for birth_date column
     await page.getByTestId('method-select-birth_date').click()
     await page.getByRole('option', { name: /Year Only/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
 
     // Enter project secret (needed for the panel to enable Apply button)
     await page.getByPlaceholder(/secret/i).fill('test-secret-123')
@@ -1091,13 +1159,15 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    await page.waitForTimeout(1000)
+    // Wait for scrubbing to complete by polling for year_only data
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.birth_date
+    }, { timeout: 15000 }).toBe('1985-01-01')
 
     // Verify year_only: 1985-03-15 -> 1985-01-01
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].birth_date).toBe('1985-01-01') // Original: 1985-03-15
     expect(data[1].birth_date).toBe('1990-01-01') // Original: 1990-07-22
   })
 })
@@ -1185,16 +1255,17 @@ test.describe.serial('FR-E1: Combiner - Stack Files', () => {
   })
 })
 
-test.describe.serial('FR-E2: Combiner - Join Files', () => {
+test.describe('FR-E2: Combiner - Join Files', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  // Standard timeout - cleanup is now lightweight
-  test.setTimeout(60000)
+  // Extended timeout for join operations (Tier 2 tests)
+  test.setTimeout(90000)
 
-  test.beforeAll(async ({ browser }) => {
+  // Fresh page per test - required for Tier 2 (join) tests per e2e/CLAUDE.md
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -1203,14 +1274,16 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup - close panels only
-    // Tables are recreated by each test via CREATE OR REPLACE
-    await coolHeapLight(page)
+    // Full cleanup with page close for WASM garbage collection
+    await coolHeap(page, inspector, {
+      dropTables: true,
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 30
+    })
+    await page.close()
   })
 
   test('should perform inner join on customer_id', async () => {
@@ -1256,6 +1329,9 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
 
+    // Wait for combiner operation to fully complete
+    await inspector.waitForCombinerComplete()
+
     // Wait for the operation to complete (toast notification)
     await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })
 
@@ -1286,51 +1362,32 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('fr_e2_customers', 4)
 
-    // Wait for any transitions to settle before opening panel
-    await page.waitForTimeout(500)
+    // Wait for grid to be ready before opening panel
+    await inspector.waitForGridReady()
 
-    // Open combine panel via toolbar (single-page app) with robust retry
-    const combinePanel = page.getByTestId('panel-combine')
-    const combineButton = page.getByRole('button', { name: /combine/i })
-
-    // Ensure Combine button is visible
-    await expect(combineButton).toBeVisible({ timeout: 5000 })
-
-    // Try multiple methods to open the panel
-    await combineButton.click()
-    await page.waitForTimeout(500)
-
-    // If panel didn't open, try again
-    if (!await combinePanel.isVisible().catch(() => false)) {
-      // console.log('First click on Combine button did not open panel, retrying')
-      await page.keyboard.press('Escape')
-      await page.waitForTimeout(300)
-      await combineButton.click({ force: true })
-      await page.waitForTimeout(500)
-    }
-
-    await expect(combinePanel).toBeVisible({ timeout: 5000 })
+    // Open combine panel via page object (consistent with first test)
+    await laundromat.openCombinePanel()
     await expect(page.locator('text=Stack').first()).toBeVisible()
 
     // Switch to Join tab and wait for it to be active
     await page.getByRole('tab', { name: 'Join' }).click()
     await expect(page.locator('text=Join Tables').first()).toBeVisible()
-    await page.waitForTimeout(300)  // Wait for tab switch animation
+    await expect(page.getByRole('combobox').first()).toBeVisible()
 
     // Select left table (orders) - use .first() to handle duplicate entries from previous tests
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_e2_orders/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByRole('combobox').nth(1)).toBeVisible()
 
     // Select right table (customers)
     await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: /fr_e2_customers/i }).first().click()
-    await page.waitForTimeout(200)
+    await expect(page.getByRole('combobox').nth(2)).toBeVisible()
 
     // Select key column
     await page.getByRole('combobox').nth(2).click()
     await page.getByRole('option', { name: 'customer_id' }).click()
-    await page.waitForTimeout(300)
+    await expect(page.getByLabel(/left/i)).toBeVisible()
 
     // The dropdown should auto-close after selection, no need to press Escape
     // Just verify Join tab is still visible
@@ -1340,13 +1397,16 @@ test.describe.serial('FR-E2: Combiner - Join Files', () => {
     const leftRadio = page.getByLabel(/left/i)
     await expect(leftRadio).toBeVisible({ timeout: 5000 })
     await leftRadio.click({ force: true })
-    await page.waitForTimeout(200)  // Wait for selection to register
+    await expect(page.getByPlaceholder('e.g., orders_with_customers')).toBeVisible()
 
     // Enter result table name
     await page.getByPlaceholder('e.g., orders_with_customers').fill('join_result')
 
     // Click Join Tables button
     await page.getByTestId('combiner-join-btn').click()
+
+    // Wait for combiner operation to fully complete
+    await inspector.waitForCombinerComplete()
 
     // Wait for the operation to complete (toast notification)
     await expect(page.getByText('Tables Joined', { exact: true })).toBeVisible({ timeout: 5000 })
@@ -1424,7 +1484,12 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
 
     // Rule 3: Actually perform a cell edit and verify dirty state in store
     await laundromat.editCell(0, 1, 'EDITED_VALUE')
-    await page.waitForTimeout(300)
+
+    // Wait for edit to complete by polling the store
+    await expect.poll(async () => {
+      const dirtyState = await inspector.getEditDirtyState()
+      return dirtyState.hasDirtyEdits
+    }, { timeout: 5000 }).toBe(true)
 
     // Verify dirty state via store inspection (canvas grid has no DOM dirty indicators)
     const dirtyState = await inspector.getEditDirtyState()
@@ -1489,13 +1554,19 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
 
     // Undo (Ctrl+Z)
     await page.keyboard.press('Control+z')
-    await page.waitForTimeout(100)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_a3_text_dirty')
+      return data[0].name
+    }, { timeout: 5000 }).toBe(originalName)
     const afterUndoData = await inspector.getTableData('fr_a3_text_dirty')
     expect(afterUndoData[0].name).toBe(originalName)
 
     // Redo (Ctrl+Y)
     await page.keyboard.press('Control+y')
-    await page.waitForTimeout(100)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_a3_text_dirty')
+      return data[0].name
+    }, { timeout: 5000 }).toBe('CHANGED')
     const afterRedoData = await inspector.getTableData('fr_a3_text_dirty')
     expect(afterRedoData[0].name).toBe('CHANGED')
   })
