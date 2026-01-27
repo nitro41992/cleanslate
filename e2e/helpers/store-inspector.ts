@@ -269,6 +269,15 @@ export function createStoreInspector(page: Page): StoreInspector {
         },
         { timeout: 30000 }
       )
+      // Wait for DuckDB connection to be fully ready for queries
+      // This prevents "Missing DB manager" errors from race conditions
+      await page.waitForFunction(
+        () => {
+          const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { isReady: boolean } }).__CLEANSLATE_DUCKDB__
+          return duckdb?.isReady === true
+        },
+        { timeout: 30000 }
+      )
     },
 
     async waitForTableLoaded(tableName: string, expectedRowCount?: number, timeout: number = 30000): Promise<void> {

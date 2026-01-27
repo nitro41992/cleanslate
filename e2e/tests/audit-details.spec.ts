@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -14,6 +14,8 @@ import { downloadAndVerifyTXT } from '../helpers/download-helpers'
  */
 
 test.describe('Audit Row Details', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -23,8 +25,15 @@ test.describe('Audit Row Details', () => {
   // DuckDB WASM + transformation operations need more time than default 30s
   test.setTimeout(90000)
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: DuckDB-WASM runs in WebWorker, context isolation cleans up SharedArrayBuffer
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -38,6 +47,11 @@ test.describe('Audit Row Details', () => {
   test.afterEach(async () => {
     // Skip cleanup if page is already closed (prevents cascade failures)
     if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
       return
     }
 
@@ -50,9 +64,9 @@ test.describe('Audit Row Details', () => {
     }
 
     try {
-      await page.close()
+      await context.close() // Terminates all pages + WebWorkers
     } catch {
-      // Ignore close errors - page may already be closed
+      // Ignore close errors - context may already be closed
     }
   })
 

@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page, type Browser, type BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -19,6 +19,8 @@ import { getFixturePath } from '../helpers/file-upload'
  */
 
 test.describe('Column Order Preservation', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -28,8 +30,21 @@ test.describe('Column Order Preservation', () => {
   // DuckDB WASM + combiner operations need more time than default 30s
   test.setTimeout(90000)
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: Tier 3 tests (remove_duplicates, split_column, combiner) need context isolation
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
+
+    // Add crash handler to detect page crashes during initialization
+    page.on('crash', () => {
+      console.error('[column-ordering] Page crashed during initialization')
+    })
+
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -41,7 +56,11 @@ test.describe('Column Order Preservation', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close() // Terminates all pages + WebWorkers
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   test('Tier 1 (trim) preserves original column order', async () => {

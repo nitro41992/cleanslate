@@ -241,15 +241,27 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
   })
 })
 
-test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
+test.describe('FR-A3: Dates & Structure Transformations', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
+  // Tier 3 tests (Standardize Date, Split Column) need longer timeout
+  test.setTimeout(120000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: Standardize Date and Split Column are Tier 3 operations requiring snapshot
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -258,13 +270,17 @@ test.describe.serial('FR-A3: Dates & Structure Transformations', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup (no table drops for fast tests)
-    await coolHeapLight(page)
+    try {
+      await coolHeapLight(page)
+    } catch {
+      // Ignore cleanup errors - page may be in bad state
+    }
+    try {
+      await context.close() // Terminates all pages + WebWorkers
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   async function loadTestData() {
@@ -709,6 +725,16 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 
   test.afterEach(async () => {
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
+      return
+    }
+
     // Wrap cleanup in try-catch - if page crashed, still close context
     try {
       // Aggressive cleanup for memory-intensive matcher tests
@@ -732,7 +758,11 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     }
 
     // Close CONTEXT (not just page) to fully release WASM memory
-    await context.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   async function runFindDuplicates(config?: { tableName?: string; columnName?: string }) {
@@ -977,14 +1007,22 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
   })
 })
 test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  // Use beforeEach with fresh page for better isolation (Tier 2 scrubber operations)
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: Scrubber operations need context isolation to clean up WebWorker state
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
 
@@ -997,10 +1035,15 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test.afterEach(async () => {
     // Skip cleanup if page is already closed (prevents cascade failures)
     if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
       return
     }
 
-    // Aggressive cleanup with page close for WASM garbage collection
+    // Aggressive cleanup for WASM garbage collection
     try {
       await coolHeap(page, inspector, {
         dropTables: true,
@@ -1012,9 +1055,9 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     }
 
     try {
-      await page.close()
+      await context.close() // Terminates all pages + WebWorkers
     } catch {
-      // Ignore close errors - page may already be closed
+      // Ignore - context may already be closed from crash
     }
   })
 
@@ -1198,6 +1241,8 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
 })
 
 test.describe('FR-E1: Combiner - Stack Files', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -1206,9 +1251,15 @@ test.describe('FR-E1: Combiner - Stack Files', () => {
   // Extended timeout for combiner operations (Tier 2 tests)
   test.setTimeout(90000)
 
-  // Fresh page per test - required for Tier 2 (combiner) tests per e2e/CLAUDE.md
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: Combiner operations need context isolation to clean up WebWorker state
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     await laundromat.goto()
@@ -1217,8 +1268,16 @@ test.describe('FR-E1: Combiner - Stack Files', () => {
   })
 
   test.afterEach(async () => {
-    await coolHeapLight(page)
-    await page.close() // Force WASM worker garbage collection
+    try {
+      await coolHeapLight(page)
+    } catch {
+      // Ignore cleanup errors - page may be in bad state
+    }
+    try {
+      await context.close() // Terminates all pages + WebWorkers
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   test('should stack two CSV files with Union All', async () => {
@@ -1281,6 +1340,8 @@ test.describe('FR-E1: Combiner - Stack Files', () => {
 })
 
 test.describe('FR-E2: Combiner - Join Files', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -1289,9 +1350,15 @@ test.describe('FR-E2: Combiner - Join Files', () => {
   // Extended timeout for join operations (Tier 2 tests)
   test.setTimeout(90000)
 
-  // Fresh page per test - required for Tier 2 (join) tests per e2e/CLAUDE.md
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: Combiner operations need context isolation to clean up WebWorker state
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     await laundromat.goto()
@@ -1300,15 +1367,32 @@ test.describe('FR-E2: Combiner - Join Files', () => {
   })
 
   test.afterEach(async () => {
-    // Full cleanup with page close for WASM garbage collection
-    await coolHeap(page, inspector, {
-      dropTables: true,
-      closePanels: true,
-      clearDiffState: true,
-      pruneAudit: true,
-      auditThreshold: 30
-    })
-    await page.close()
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
+      return
+    }
+
+    try {
+      await coolHeap(page, inspector, {
+        dropTables: true,
+        closePanels: true,
+        clearDiffState: true,
+        pruneAudit: true,
+        auditThreshold: 30
+      })
+    } catch {
+      // Ignore cleanup errors - page may be in bad state
+    }
+    try {
+      await context.close() // Terminates all pages + WebWorkers
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   test('should perform inner join on customer_id', async () => {

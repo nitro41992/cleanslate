@@ -1,4 +1,4 @@
-import { test, expect, Page, Browser } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -12,13 +12,13 @@ import { getFixturePath } from '../helpers/file-upload'
  * Process-Level Isolation: This file runs in a separate Playwright worker process from regression-diff.spec.ts
  * to prevent WASM memory fragmentation accumulation.
  *
- * Page-Level Isolation: Each test gets its own fresh browser page to prevent memory accumulation from
- * transformation snapshots and diff operations. This prevents "Target page, context or browser has been closed"
- * errors that occur when running multiple diff-heavy tests in sequence on the same page.
+ * Context-Level Isolation: Each test gets its own fresh browser CONTEXT to prevent WASM WebWorker state
+ * from leaking between tests. This is stronger than page-level isolation per e2e/CLAUDE.md guidelines.
  */
 
 test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
   let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -33,9 +33,11 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     browser = b
   })
 
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: Diff operations are Tier 3 and need context isolation
   test.beforeEach(async () => {
-    // Create fresh page for each test to prevent memory accumulation
-    page = await browser.newPage()
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -46,6 +48,16 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
   })
 
   test.afterEach(async () => {
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
+      return
+    }
+
     // Drop internal diff tables created during comparison to prevent memory accumulation
     try {
       const internalTables = await inspector.runQuery(`
@@ -58,11 +70,21 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     } catch {
       // Ignore errors during cleanup
     }
+
     // Press Escape to close any open panels
-    await page.keyboard.press('Escape')
-    await page.keyboard.press('Escape')
-    // Close page after each test to free memory
-    await page.close()
+    try {
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape')
+    } catch {
+      // Ignore - page may be in bad state
+    }
+
+    // Close CONTEXT (not just page) to fully release WASM memory
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   test('should support Compare with Preview mode', async () => {
