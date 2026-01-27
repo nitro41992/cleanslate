@@ -500,14 +500,10 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     // Click Find Duplicates - uses page object method with fallback for React issues
     await matchView.findDuplicates()
 
-    // Wait for matching results - either pairs appear or progress indicator
-    await Promise.race([
-      expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 30000 }),
-      expect(page.getByText('No Duplicates Found').first()).toBeVisible({ timeout: 30000 }),
-      expect(page.locator('[role="progressbar"]')).toBeVisible({ timeout: 30000 })
-    ])
+    // Wait for matching operation to complete (check store state)
+    await inspector.waitForMergeComplete()
 
-    // Wait for final results
+    // Wait for final results (UI reflects completion)
     await matchView.waitForPairs()
 
     // Verify pairs are displayed with similarity percentages

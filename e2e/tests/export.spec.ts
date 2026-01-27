@@ -39,6 +39,12 @@ test.describe.serial('Export', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
+
     const result = await downloadAndVerifyCSV(page)
     expect(result.filename).toBe('basic_data_cleaned.csv')
   })
@@ -49,6 +55,12 @@ test.describe.serial('Export', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -62,6 +74,12 @@ test.describe.serial('Export', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -84,6 +102,12 @@ test.describe.serial('Export', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 
@@ -110,6 +134,12 @@ test.describe.serial('Export', () => {
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
 
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
+
     const result = await downloadAndVerifyCSV(page)
 
     // Verify trimmed and uppercased names
@@ -129,6 +159,12 @@ test.describe.serial('Export', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates')
     await laundromat.closePanel()
+
+    // Wait for grid to be ready (canvas initialization)
+    await inspector.waitForGridReady()
+
+    // Ensure export button is enabled before attempting download
+    await expect(page.getByTestId('export-csv-btn')).toBeEnabled({ timeout: 5000 })
 
     const result = await downloadAndVerifyCSV(page)
 

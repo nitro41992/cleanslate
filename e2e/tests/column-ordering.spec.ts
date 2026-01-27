@@ -125,6 +125,12 @@ test.describe('Column Order Preservation', () => {
     await picker.fillParam('Delimiter', ' ')
     await picker.apply()
 
+    // Wait for transform to complete
+    const tableId = (await inspector.getTables()).find(t => t.name === 'split_column_test')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
+
     // Assert: New columns at end, original kept (current implementation keeps original column)
     const finalColumns = await inspector.getTableColumns('split_column_test')
     expect(finalColumns.map(c => c.name)).toEqual(['id', 'full_name', 'email', 'full_name_1', 'full_name_2'])

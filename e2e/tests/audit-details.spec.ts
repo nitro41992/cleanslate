@@ -434,7 +434,16 @@ test.describe('Audit Row Details', () => {
 
     // Verify modal opens
     const modal = page.getByTestId('audit-detail-modal')
-    await expect(modal).toBeVisible()
+    await expect(modal).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
 
     // Verify modal title shows "Manual Edit Details"
     await expect(modal.locator('text=Manual Edit Details')).toBeVisible()

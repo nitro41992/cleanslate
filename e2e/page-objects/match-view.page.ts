@@ -158,19 +158,14 @@ export class MatchViewPage {
   }
 
   /**
-   * Wait for duplicate pairs to appear
+   * Wait for duplicate pairs to appear OR "No Duplicates Found" message
    */
   async waitForPairs(): Promise<void> {
-    // Wait for matching to complete - either "Finding matches" disappears or pairs appear
+    // Wait for final results - either pairs appear or "No Duplicates Found" message
     await Promise.race([
-      this.page.waitForFunction(
-        () => !document.body.innerText.includes('Finding matches'),
-        { timeout: 30000 }
-      ),
-      expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 30000 })
+      expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 30000 }),
+      expect(this.page.getByText('No Duplicates Found').first()).toBeVisible({ timeout: 30000 })
     ])
-    // Then ensure pairs are visible
-    await expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 15000 })
   }
 
   /**
