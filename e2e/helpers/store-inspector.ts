@@ -221,10 +221,26 @@ export function createStoreInspector(page: Page): StoreInspector {
       return page.evaluate((tableId) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
         if (!stores?.auditStore) return []
-        const store = stores.auditStore as { getState: () => { getAllEntries: () => AuditEntry[]; getEntriesForTable: (tableId: string) => AuditEntry[] } }
+        const store = stores.auditStore as {
+          getState: () => {
+            getAllEntries: () => AuditEntry[]
+            getEntriesForTable: (tableId: string) => AuditEntry[]
+            _legacyEntries: AuditEntry[]
+          }
+        }
         // Use getAllEntries() or getEntriesForTable() methods which derive from timeline
-        const entries = tableId ? store.getState().getEntriesForTable(tableId) : store.getState().getAllEntries()
-        return entries
+        const timelineEntries = tableId ? store.getState().getEntriesForTable(tableId) : store.getState().getAllEntries()
+        // Also include legacy entries (used by persist operation which doesn't go through CommandExecutor)
+        const legacyEntries = store.getState()._legacyEntries || []
+        // Merge and dedupe by id, preferring timeline entries
+        const entryMap = new Map<string, AuditEntry>()
+        for (const entry of legacyEntries) {
+          entryMap.set(entry.id, entry)
+        }
+        for (const entry of timelineEntries) {
+          entryMap.set(entry.id, entry)
+        }
+        return Array.from(entryMap.values())
       }, tableId)
     },
 
