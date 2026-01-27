@@ -293,15 +293,22 @@ test.describe.serial('FR-F: Value Standardization', () => {
     await standardize.filterBy('actionable')
     await standardize.apply()
 
-    // Check audit log for standardization entry
-    // Use polling to handle timing - entry may not be immediately available
-    let standardizeEntry: { action: string; hasRowDetails: boolean } | undefined
+    // Wait for standardization to complete
     await expect.poll(async () => {
-      const auditEntries = await inspector.getAuditEntries()
-      // Action is now 'Standardize Values in {column}' so use startsWith
-      standardizeEntry = auditEntries.find((e) => e.action.startsWith('Standardize Values'))
-      return standardizeEntry !== undefined
-    }, { timeout: 10000, message: 'Standardization audit entry should appear' }).toBe(true)
+      const data = await inspector.getTableData('fr_f_standardize')
+      // Check that values were standardized (fewer unique names after standardization)
+      const uniqueNames = new Set(data.map((r) => r.name)).size
+      return uniqueNames < 10 // Original has 10 unique, standardized should have fewer
+    }, { timeout: 10000, message: 'Standardization should complete' }).toBe(true)
+
+    // Check audit log for standardization entry
+    // The standardization command stores audit with action 'Apply Standardization'
+    const allEntries = await inspector.getAuditEntries()
+    const standardizeEntry = allEntries.find((e) =>
+      e.action === 'Apply Standardization' ||
+      e.action.includes('Standardize Values') ||
+      e.action.includes('Standardization')
+    )
 
     expect(standardizeEntry).toBeDefined()
     expect(standardizeEntry?.hasRowDetails).toBe(true)

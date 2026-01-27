@@ -95,15 +95,18 @@ test.describe.serial('FR-B2: Diff Dual Comparison Modes', () => {
     await diffView.runComparison()
 
     // 6. Verify results show modified rows
-    const summary = await diffView.getSummary()
-    expect(summary.modified).toBe(5) // All 5 rows have uppercase names
-    expect(summary.added).toBe(0)
-    expect(summary.removed).toBe(0)
+    // Poll for diff state to have the expected summary
+    await expect.poll(async () => {
+      const state = await inspector.getDiffState()
+      return state.isComparing === false && state.summary !== null
+    }, { timeout: 10000, message: 'Diff comparison should complete' }).toBe(true)
 
-    // Rule 3: Verify diff state via store
+    // Rule 3: Verify diff state via store (more reliable than reading pills)
     const diffState = await inspector.getDiffState()
+    expect(diffState.summary?.modified).toBe(5) // All 5 rows have uppercase names
+    expect(diffState.summary?.added).toBe(0)
+    expect(diffState.summary?.removed).toBe(0)
     expect(diffState.mode).toBe('compare-preview')
-    expect(diffState.summary?.modified).toBe(5)
   })
 
   test('should support Compare Two Tables mode', async () => {

@@ -82,7 +82,7 @@ export interface StoreInspector {
    * @param sql - SQL query to execute
    * @returns Query result rows
    */
-  runQuery: (sql: string) => Promise<Record<string, unknown>[]>
+  runQuery: <T = Record<string, unknown>>(sql: string) => Promise<T[]>
   /**
    * Get diff highlighting state from diffStore
    */
@@ -281,12 +281,12 @@ export function createStoreInspector(page: Page): StoreInspector {
       )
     },
 
-    async runQuery(sql: string): Promise<Record<string, unknown>[]> {
+    async runQuery<T = Record<string, unknown>>(sql: string): Promise<T[]> {
       return page.evaluate(async (sql) => {
         const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<Record<string, unknown>[]>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
         if (!duckdb?.query) throw new Error('DuckDB not available')
         return duckdb.query(sql)
-      }, sql)
+      }, sql) as Promise<T[]>
     },
 
     async getDiffState(): Promise<DiffStoreState> {

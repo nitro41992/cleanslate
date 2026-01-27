@@ -92,7 +92,7 @@ test.describe('Manual Edit Undo Through Transform', () => {
     expect(initialData[0].description).toContain('needs trim')
 
     // ===== STEP 1: Manual Edit 1 - Edit the name in row 1 =====
-    console.log('STEP 1: Manual Edit 1 - Editing name in row 1')
+    // console.log('STEP 1: Manual Edit 1 - Editing name in row 1')
 
     // Edit row 1's name: Alice -> Alice_EDITED
     // Column 0 = id, Column 1 = name, Column 2 = description
@@ -106,10 +106,10 @@ test.describe('Manual Edit Undo Through Transform', () => {
       return result[0]?.name
     }, { timeout: 10000 }).toBe('Alice_EDITED')
 
-    console.log('Manual Edit 1 applied: Alice -> Alice_EDITED')
+    // console.log('Manual Edit 1 applied: Alice -> Alice_EDITED')
 
     // ===== STEP 2: Apply Transform (Trim Whitespace) =====
-    console.log('STEP 2: Applying Trim Whitespace transform')
+    // console.log('STEP 2: Applying Trim Whitespace transform')
 
     // Open the Clean panel and apply transform
     await laundromat.openCleanPanel()
@@ -124,7 +124,7 @@ test.describe('Manual Edit Undo Through Transform', () => {
       return result[0]?.description
     }, { timeout: 15000 }).toBe('needs trim')
 
-    console.log('Transform applied: whitespace trimmed')
+    // console.log('Transform applied: whitespace trimmed')
 
     // Close the panel
     await laundromat.closePanel()
@@ -134,10 +134,10 @@ test.describe('Manual Edit Undo Through Transform', () => {
       `SELECT name FROM temp_undo_test WHERE id = 1`
     )
     expect(afterTransform[0].name).toBe('Alice_EDITED')
-    console.log('Manual Edit 1 still present after transform')
+    // console.log('Manual Edit 1 still present after transform')
 
     // ===== STEP 3: Manual Edit 2 - Edit the name in row 2 =====
-    console.log('STEP 3: Manual Edit 2 - Editing name in row 2')
+    // console.log('STEP 3: Manual Edit 2 - Editing name in row 2')
 
     // Edit row 2's name: Bob -> Bob_EDITED
     await laundromat.editCell(1, 1, 'Bob_EDITED')
@@ -150,10 +150,10 @@ test.describe('Manual Edit Undo Through Transform', () => {
       return result[0]?.name
     }, { timeout: 10000 }).toBe('Bob_EDITED')
 
-    console.log('Manual Edit 2 applied: Bob -> Bob_EDITED')
+    // console.log('Manual Edit 2 applied: Bob -> Bob_EDITED')
 
     // ===== STEP 4: Undo Manual Edit 2 =====
-    console.log('STEP 4: Undo Manual Edit 2')
+    // console.log('STEP 4: Undo Manual Edit 2')
 
     await page.keyboard.press('Control+z')
 
@@ -165,17 +165,17 @@ test.describe('Manual Edit Undo Through Transform', () => {
       return result[0]?.name
     }, { timeout: 10000 }).toBe('Bob')
 
-    console.log('Manual Edit 2 undone: Bob_EDITED -> Bob')
+    // console.log('Manual Edit 2 undone: Bob_EDITED -> Bob')
 
     // Verify Manual Edit 1 still exists
     const afterUndo2 = await inspector.runQuery<{ name: string }>(
       `SELECT name FROM temp_undo_test WHERE id = 1`
     )
     expect(afterUndo2[0].name).toBe('Alice_EDITED')
-    console.log('Manual Edit 1 still present after undoing Manual Edit 2')
+    // console.log('Manual Edit 1 still present after undoing Manual Edit 2')
 
     // ===== STEP 5: Undo Transform =====
-    console.log('STEP 5: Undo Transform')
+    // console.log('STEP 5: Undo Transform')
 
     // Collect ALL console logs to understand what's happening during undo
     const consoleLogs: string[] = []
@@ -212,16 +212,16 @@ test.describe('Manual Edit Undo Through Transform', () => {
     )
 
     // Check if table exists
-    let tableExists = false
+    let _tableExists = false
     try {
       const result = await inspector.runQuery<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM temp_undo_test`
       )
       // DuckDB returns BigInt for COUNT(*), so convert to Number for comparison
-      tableExists = Number(result[0]?.cnt) === 3
-      console.log('Table exists with', Number(result[0]?.cnt), 'rows')
-    } catch (err) {
-      console.log('Table does not exist:', err)
+      _tableExists = Number(result[0]?.cnt) === 3
+      // console.log('Table exists with', Number(result[0]?.cnt), 'rows')
+    } catch {
+      // console.log('Table does not exist')
     }
 
     // Wait for undo to complete - table may be briefly dropped during restore
@@ -246,10 +246,10 @@ test.describe('Manual Edit Undo Through Transform', () => {
     // Verify the description has whitespace (assertion for clarity)
     expect(afterUndoDesc[0]?.description?.trim()).not.toBe(afterUndoDesc[0]?.description)
 
-    console.log('Transform undone: whitespace restored')
+    // console.log('Transform undone: whitespace restored')
 
     // ===== CRITICAL CHECK: Manual Edit 1 should STILL exist =====
-    console.log('CRITICAL CHECK: Manual Edit 1 should still exist after undoing transform')
+    // console.log('CRITICAL CHECK: Manual Edit 1 should still exist after undoing transform')
 
     const afterUndoTransform = await inspector.runQuery<{ name: string }>(
       `SELECT name FROM temp_undo_test WHERE id = 1`
@@ -260,10 +260,10 @@ test.describe('Manual Edit Undo Through Transform', () => {
     // Actual (bug): 'Alice' (reverted to original)
     expect(afterUndoTransform[0].name).toBe('Alice_EDITED')
 
-    console.log('Manual Edit 1 persisted after undoing transform')
+    // console.log('Manual Edit 1 persisted after undoing transform')
 
     // ===== STEP 6: Redo Transform =====
-    console.log('STEP 6: Redo Transform')
+    // console.log('STEP 6: Redo Transform')
 
     await page.keyboard.press('Control+y')
 
@@ -275,7 +275,7 @@ test.describe('Manual Edit Undo Through Transform', () => {
       return result[0]?.description
     }, { timeout: 15000 }).toBe('needs trim')
 
-    console.log('Transform redone')
+    // console.log('Transform redone')
 
     // Manual Edit 1 should still exist after redo transform
     const afterRedoTransform = await inspector.runQuery<{ name: string }>(
@@ -284,7 +284,7 @@ test.describe('Manual Edit Undo Through Transform', () => {
     expect(afterRedoTransform[0].name).toBe('Alice_EDITED')
 
     // ===== STEP 7: Redo Manual Edit 2 =====
-    console.log('STEP 7: Redo Manual Edit 2')
+    // console.log('STEP 7: Redo Manual Edit 2')
 
     await page.keyboard.press('Control+y')
 
@@ -296,7 +296,7 @@ test.describe('Manual Edit Undo Through Transform', () => {
       return result[0]?.name
     }, { timeout: 10000 }).toBe('Bob_EDITED')
 
-    console.log('Manual Edit 2 redone: Bob -> Bob_EDITED')
+    // console.log('Manual Edit 2 redone: Bob -> Bob_EDITED')
 
     // Final verification: both edits should be present
     const finalState = await inspector.runQuery<{ id: number; name: string; description: string }>(
@@ -307,6 +307,6 @@ test.describe('Manual Edit Undo Through Transform', () => {
     expect(finalState[1].name).toBe('Bob_EDITED')
     expect(finalState[0].description).toBe('needs trim')
 
-    console.log('TEST PASSED: All manual edits persisted through undo/redo cycle')
+    // console.log('TEST PASSED: All manual edits persisted through undo/redo cycle')
   })
 })
