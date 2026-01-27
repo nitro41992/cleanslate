@@ -486,13 +486,26 @@ test.describe('Audit Row Details', () => {
 
     // Verify modal opens
     const modal = page.getByTestId('audit-detail-modal')
-    await expect(modal).toBeVisible()
+    await expect(modal).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete (Radix UI pattern)
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
+    // Ensure export button is visible and ready
+    const exportBtn = page.getByTestId('audit-detail-export-csv-btn')
+    await expect(exportBtn).toBeVisible({ timeout: 5000 })
 
     // Start waiting for download before clicking
     const downloadPromise = page.waitForEvent('download')
 
     // Click export CSV button in modal
-    await page.getByTestId('audit-detail-export-csv-btn').click()
+    await exportBtn.click()
 
     // Wait for download
     const download = await downloadPromise

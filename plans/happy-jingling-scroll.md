@@ -4,7 +4,8 @@
 
 **Phase 1 (Critical Fixes):** ✅ COMPLETED (commit 9673cf3)
 **Phase 2 (Systematic Improvements):** ✅ CORE COMPLETED (commit 6396bce)
-**Phase 3 (Monitoring):** ✅ COMPLETED (this commit)
+**Phase 3 (Monitoring):** ✅ COMPLETED (commit eaf7aaa)
+**Additional Fix:** audit-details.spec.ts:486 modal animation wait (this commit)
 
 **Next Steps:** Run monitoring tools to validate E2E test health and establish baseline metrics.
 
@@ -15,11 +16,12 @@
 This plan addresses 5 failing tests and systematic flakiness issues in the CleanSlate E2E test suite, incorporating 2025-2026 best practices while strictly adhering to e2e/CLAUDE.md guidelines.
 
 **Failing Tests:**
-1. `audit-details.spec.ts:417` - Modal visibility race
-2. `column-ordering.spec.ts:111` - Missing transform completion wait
-3. `column-ordering.spec.ts:321` - Panel close + table selection race
-4. `export.spec.ts:34` - Export button readiness assumption
-5. `feature-coverage.spec.ts:438` - Promise.race completion detection
+1. `audit-details.spec.ts:417` - Modal visibility race (fixed Phase 1)
+2. `audit-details.spec.ts:486` - Export CSV modal animation race (fixed post-Phase 3)
+3. `column-ordering.spec.ts:111` - Missing transform completion wait (fixed Phase 1)
+4. `column-ordering.spec.ts:321` - Panel close + table selection race (fixed Phase 1)
+5. `export.spec.ts:34` - Export button readiness assumption (fixed Phase 1)
+6. `feature-coverage.spec.ts:438` - Promise.race completion detection (fixed Phase 1)
 
 **Root Causes:**
 - Missing explicit wait helpers (waitForTransformComplete, waitForGridReady)
@@ -790,6 +792,9 @@ npm run test:lint-patterns
 - [x] Fix feature-coverage.spec.ts:438 (replace Promise.race with waitForMergeComplete)
 - [x] Update e2e/CLAUDE.md with new patterns learned
 - [ ] Run tests 3x to verify fixes are stable (pending verification)
+
+### Additional Fixes (Post-Phase 3)
+- [x] Fix audit-details.spec.ts:486 (export CSV modal animation race)
 
 ### Phase 2: Systematic Improvements (Priority 2 - Follow-up) ✅ CORE COMPLETE
 - [x] Run `grep -A5 "picker.apply()" e2e/tests/*.spec.ts` to find missing waits
