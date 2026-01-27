@@ -1008,7 +1008,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Open scrub panel via toolbar (single-page app)
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
   })
 
   test('should hash sensitive columns', async () => {
@@ -1019,7 +1019,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
@@ -1037,14 +1037,16 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId ?? undefined)
+    // Wait for scrubbing to complete by polling for hashed data
+    // (waitForTransformComplete doesn't work for scrub operations)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.ssn
+    }, { timeout: 15000 }).toMatch(/^[a-f0-9]{32}$/)
 
     // Verify hash format (32-char hex from MD5)
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].ssn).toMatch(/^[a-f0-9]{32}$/)
 
     // Rule 2: Assert specific hash format for both and explicit uniqueness check
     const hash0 = data[0].ssn as string
@@ -1063,7 +1065,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
@@ -1081,14 +1083,15 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId ?? undefined)
+    // Wait for scrubbing to complete by polling for redacted data
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.email
+    }, { timeout: 15000 }).toBe('[REDACTED]')
 
     // Verify redaction (same table, modified in-place)
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].email).toBe('[REDACTED]')
     expect(data[1].email).toBe('[REDACTED]')
   })
 
@@ -1100,7 +1103,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
@@ -1118,15 +1121,16 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId ?? undefined)
+    // Wait for scrubbing to complete by polling for masked data
+    // "John Smith" should become something like "J*******h"
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.full_name
+    }, { timeout: 15000 }).toMatch(/^J\*+h$/)
 
-    // Verify masking (shows first and last char with asterisks in between)
+    // Verify masking complete
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    // "John Smith" should become something like "J*******h"
-    expect(data[0].full_name).toMatch(/^J\*+h$/)
   })
 
   test('should extract year only from dates', async () => {
@@ -1137,7 +1141,7 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
 
     // Open scrub panel
     await laundromat.openScrubPanel()
-    await expect(page.locator('text=Scrub Data')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
     // Select the table (use first() to avoid strict mode issues with duplicates)
     await page.getByRole('combobox').first().click()
@@ -1155,14 +1159,15 @@ test.describe.serial('FR-D2: Obfuscation (Smart Scrubber)', () => {
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
-    // Wait for operation to complete
-    const tableId = await inspector.getActiveTableId()
-    await inspector.waitForTransformComplete(tableId ?? undefined)
+    // Wait for scrubbing to complete by polling for year_only data
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_d2_pii')
+      return data[0]?.birth_date
+    }, { timeout: 15000 }).toBe('1985-01-01')
 
     // Verify year_only: 1985-03-15 -> 1985-01-01
     const data = await inspector.getTableData('fr_d2_pii')
     expect(data.length).toBeGreaterThan(0)
-    expect(data[0].birth_date).toBe('1985-01-01') // Original: 1985-03-15
     expect(data[1].birth_date).toBe('1990-01-01') // Original: 1990-07-22
   })
 })
