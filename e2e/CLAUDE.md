@@ -58,6 +58,15 @@ await inspector.waitForTableLoaded('my_table', expectedRows)
 - `await expect(locator).toBeHidden()` — Spinners disappear
 - `await expect.poll(...)` — Data persistence checks
 
+**Network Idleness for Large File Uploads:**
+
+For heavy Parquet/CSV uploads, ensure `uploadFile` waits for network to settle, not just the file input change:
+```typescript
+await laundromat.uploadFile(getFixturePath('large-dataset.parquet'))
+await page.waitForLoadState('networkidle')  // Wait for upload to complete
+await inspector.waitForTableLoaded('my_table', expectedRows)
+```
+
 **📚 See also:** `e2e/helpers/WAIT_HELPERS_QUICKREF.md` for detailed usage patterns
 
 ```typescript
@@ -93,6 +102,21 @@ await page.getByRole('checkbox', { name: 'id' }).click()
 await page.getByTestId('column-selector-id').click()
 ```
 
+**Strict Mode — Avoid Ambiguous Locators:**
+
+Playwright throws if a locator matches multiple elements. If your UI has duplicate labels (e.g., "Cancel" in both a modal and background page), scope locators to a container or use `.first()`:
+
+```typescript
+// ❌ Bad: Fails if "Save" exists in modal AND page background
+await page.getByRole('button', { name: 'Save' }).click()
+
+// ✅ Good: Scope to the visible dialog
+await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click()
+
+// ✅ Also OK: Explicit first match (when order is predictable)
+await page.getByRole('button', { name: 'Cancel' }).first().click()
+```
+
 ## 4. Data Assertions
 
 **Static Values — Assert Identity, Not Cardinality:**
@@ -115,6 +139,20 @@ expect(rowIds.sort()).toEqual(expectedIds.sort())  // Standardize order
 ```typescript
 // ❌ Bad: expect(valueAfterUndo).not.toBe(valueBeforeUndo)
 // ✅ Good: expect(valueAfterUndo).toBe('Original Value')
+```
+
+**Clock Stability for Time-Sensitive Tests:**
+
+If testing features that display relative times (e.g., "Modified 5 minutes ago"), use Playwright's clock API to prevent flakiness from CI slowness:
+
+```typescript
+// ❌ Bad: System clock ticks during slow CI run
+expect(await page.getByText('Modified just now')).toBeVisible()
+
+// ✅ Good: Freeze time for deterministic assertions
+await page.clock.setFixedTime(new Date('2024-01-15T10:00:00Z'))
+await performAction()
+expect(await page.getByText('Modified just now')).toBeVisible()
 ```
 
 ## 5. Infrastructure & Timeouts
@@ -309,8 +347,9 @@ Use for heavy tests (Parquet, large CSVs, matcher) to catch memory leaks early.
 - [ ] **Isolation:** Does the test load its own data?
 - [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh page if yes)
 - [ ] **Cleanup:** Using appropriate tier (1: light transforms, 2: joins/diffs, 3: snapshots/matcher)?
-- [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`?
-- [ ] **Timing:** Zero `waitForTimeout` calls?
+- [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`? Scoped to container if ambiguous?
+- [ ] **Timing:** Zero `waitForTimeout` calls? Using `networkidle` for large uploads?
+- [ ] **Clock:** Time-sensitive tests using `page.clock.setFixedTime()`?
 - [ ] **Promise.race:** Not using it for operation completion? (Use dedicated wait helpers instead)
 - [ ] **Dynamic Data:** UUIDs/Timestamps handled dynamically, not hardcoded?
 - [ ] **Canvas Grid:** Using SQL or store-based assertions, not DOM scraping?
