@@ -17,16 +17,26 @@ import { coolHeap } from '../helpers/heap-cooling'
  */
 
 test.describe('FR-REGRESSION: Audit + Undo Features', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Use beforeEach with fresh page for Tier 2 tests (undo/redo, audit)
+  // Extended timeout for undo/redo operations with DuckDB WASM
+  test.setTimeout(120000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
   // per e2e/CLAUDE.md: "Test B should never depend on Test A's data"
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -40,6 +50,11 @@ test.describe('FR-REGRESSION: Audit + Undo Features', () => {
   test.afterEach(async () => {
     // Skip cleanup if page is already closed (prevents cascade failures)
     if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
       return
     }
 
@@ -56,9 +71,9 @@ test.describe('FR-REGRESSION: Audit + Undo Features', () => {
     }
 
     try {
-      await page.close()
+      await context.close()
     } catch {
-      // Ignore close errors - page may already be closed
+      // Ignore close errors - context may already be closed
     }
   })
 
@@ -399,15 +414,25 @@ test.describe('FR-REGRESSION: Audit + Undo Features', () => {
 })
 
 test.describe('FR-REGRESSION: Timeline Sync Verification', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Use beforeEach with fresh page for Tier 2 tests
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  // Extended timeout for undo/redo operations with DuckDB WASM
+  test.setTimeout(120000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -421,6 +446,11 @@ test.describe('FR-REGRESSION: Timeline Sync Verification', () => {
   test.afterEach(async () => {
     // Skip cleanup if page is already closed (prevents cascade failures)
     if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
       return
     }
 
@@ -437,9 +467,9 @@ test.describe('FR-REGRESSION: Timeline Sync Verification', () => {
     }
 
     try {
-      await page.close()
+      await context.close()
     } catch {
-      // Ignore close errors - page may already be closed
+      // Ignore close errors - context may already be closed
     }
   })
 
@@ -657,8 +687,8 @@ test.describe.serial('FR-REGRESSION: Tier 2/3 Audit Drill-Down', () => {
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Tier 3 tests need longer timeout
-  test.setTimeout(90000)
+  // Tier 3 tests need longer timeout (120s for CI slowness)
+  test.setTimeout(120000)
 
   test.beforeAll(async ({ browser: b }) => {
     browser = b

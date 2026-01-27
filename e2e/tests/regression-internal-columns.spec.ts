@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -21,18 +21,26 @@ import { coolHeap } from '../helpers/heap-cooling'
  */
 
 test.describe('Internal Column Filtering', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Extended timeout for diff operations
-  test.setTimeout(90000)
+  // Extended timeout for diff operations (CI can be slow with WASM cold start)
+  test.setTimeout(120000)
 
-  // Tier 2/3: Fresh page per test for diff operations (per e2e/CLAUDE.md)
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Tier 2/3: Fresh context per test for diff operations (per e2e/CLAUDE.md)
+  // Using context (not just page) prevents cascade failures from WASM crashes
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
 
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
@@ -43,7 +51,7 @@ test.describe('Internal Column Filtering', () => {
   })
 
   test.afterEach(async () => {
-    // Tier 2/3 cleanup - drop tables and close page
+    // Tier 2/3 cleanup - drop tables and close context
     try {
       await coolHeap(page, inspector, {
         dropTables: true,      // Full cleanup
@@ -55,7 +63,11 @@ test.describe('Internal Column Filtering', () => {
     } catch {
       // Ignore errors during cleanup
     }
-    await page.close()  // Force WASM worker garbage collection
+    try {
+      await context.close()  // Force WASM worker garbage collection
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   test('should never display internal columns in grid (regression test)', async () => {

@@ -1,4 +1,4 @@
-import { test, expect, Page, Browser } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -383,14 +383,26 @@ test.describe('FR-A3: Fill Down Transformation', () => {
   })
 })
 
-test.describe.serial('FR-A6: Ingestion Wizard', () => {
+test.describe('FR-A6: Ingestion Wizard', () => {
+  // Tier 3: Fresh context per test to prevent DuckDB-WASM state corruption
+  // (wizard.cancel() in one test can corrupt shared DuckDB context)
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
+  // Extended timeout for DuckDB WASM cold start
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     await laundromat.goto()
@@ -398,22 +410,25 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup (no table drops for fast tests)
-    await coolHeapLight(page)
+    try {
+      await coolHeapLight(page)
+    } catch {
+      // Ignore cleanup errors
+    }
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   test('should show raw preview of file content', async () => {
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a6_legacy_garbage')
     await laundromat.uploadFile(getFixturePath('fr_a6_legacy_garbage.csv'))
     await wizard.waitForOpen()
 
     // Fail-fast guard: Assert raw-preview element exists before proceeding
-    await expect(page.getByTestId('raw-preview')).toBeVisible({ timeout: 1000 })
+    await expect(page.getByTestId('raw-preview')).toBeVisible({ timeout: 5000 })
 
     // Verify raw preview content
     const previewText = await wizard.getRawPreviewText()
@@ -424,11 +439,6 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
   })
 
   test('should detect and skip garbage header rows', async () => {
-    // Refresh page to ensure clean state after wizard cancel
-    await laundromat.goto()
-    await inspector.waitForDuckDBReady()
-
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a6_legacy_garbage')
     await laundromat.uploadFile(getFixturePath('fr_a6_legacy_garbage.csv'))
     await wizard.waitForOpen()
 
@@ -450,11 +460,6 @@ test.describe.serial('FR-A6: Ingestion Wizard', () => {
   })
 
   test('should handle Row 1 header selection (boundary)', async () => {
-    // Refresh page to ensure clean state
-    await laundromat.goto()
-    await inspector.waitForDuckDBReady()
-
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
     // Upload file where row 1 IS the header (standard CSV)
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()

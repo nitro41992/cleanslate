@@ -8,7 +8,8 @@ import { getFixturePath } from '../helpers/file-upload'
 
 test.describe('Full E2E Flow', () => {
   // DuckDB WASM + transformation operations need more time than default 30s
-  test.setTimeout(90000)
+  // CI environments can be slower, so use 120s timeout
+  test.setTimeout(120000)
 
   test('upload → configure → transform → verify → export', async ({ page }) => {
     const laundromat = new LaundromatPage(page)

@@ -6,12 +6,23 @@
 
 **Do NOT rely on `test.describe.serial` for data dependency.** Test B should never depend on Test A's data.
 
-**Heavy Tests (Parquet/Large CSVs):** Use `beforeEach` with fresh page + re-initialized Page Objects:
+**Heavy Tests (Parquet/Large CSVs, Diff, Matcher):** Use `beforeEach` with fresh **browser context** + re-initialized Page Objects.
+
+> **Why context, not just page?** DuckDB-WASM runs in a WebWorker. When WASM crashes, the worker state persists at the browser level. Closing just the page doesn't fully clean up SharedArrayBuffer memory or terminated workers. Browser contexts provide complete isolation including service workers and WebWorker state. See [Playwright Isolation Docs](https://playwright.dev/docs/browser-contexts).
 
 ```typescript
-// ✅ Good: Fresh page per test
-test.beforeEach(async ({ browser }) => {
-  page = await browser.newPage()
+// ✅ Good: Fresh context per test (strongest isolation for WASM)
+let browser: Browser
+let context: BrowserContext
+let page: Page
+
+test.beforeAll(async ({ browser: b }) => {
+  browser = b
+})
+
+test.beforeEach(async () => {
+  context = await browser.newContext()
+  page = await context.newPage()
   laundromat = new LaundromatPage(page)  // MUST re-init
   inspector = createStoreInspector(page)  // MUST re-init
   await page.goto('/')
@@ -19,7 +30,11 @@ test.beforeEach(async ({ browser }) => {
 })
 
 test.afterEach(async () => {
-  await page.close()  // Force garbage collection
+  try {
+    await context.close()  // Terminates all pages + WebWorkers
+  } catch {
+    // Ignore - context may already be closed from crash
+  }
 })
 ```
 
@@ -31,6 +46,17 @@ test.beforeAll(async ({ browser }) => {
   inspector = createStoreInspector(page)
 })
 // If Test A crashes WASM worker, Test B fails with stale reference
+```
+
+```typescript
+// ⚠️ Less robust: Fresh page only (OK for light tests, not for WASM-heavy)
+test.beforeEach(async ({ browser }) => {
+  page = await browser.newPage()
+  // ...
+})
+test.afterEach(async () => {
+  await page.close()  // May not fully clean up WebWorker state
+})
 ```
 
 **Light Tests (shared context OK):**
@@ -190,12 +216,25 @@ test.afterEach(async () => {
 })
 ```
 
-**Tier 3 - Heavy Tests** (snapshots, matcher, large datasets)
+**Tier 3 - Heavy Tests** (snapshots, matcher, large datasets, diff operations)
+
+Use fresh browser context per test for complete WASM isolation:
 ```typescript
 import { coolHeap } from '../helpers/cleanup-helpers'
 
-test.beforeEach(async ({ browser }) => {
-  page = await browser.newPage()
+let browser: Browser
+let context: BrowserContext
+let page: Page
+
+test.setTimeout(120000)  // 2 mins for heavy WASM operations
+
+test.beforeAll(async ({ browser: b }) => {
+  browser = b
+})
+
+test.beforeEach(async () => {
+  context = await browser.newContext()
+  page = await context.newPage()
   laundromat = new LaundromatPage(page)  // MUST re-init
   inspector = createStoreInspector(page)  // MUST re-init
   await page.goto('/')
@@ -203,14 +242,22 @@ test.beforeEach(async ({ browser }) => {
 })
 
 test.afterEach(async () => {
-  await coolHeap(page, inspector, {
-    dropTables: true,      // Full cleanup
-    closePanels: true,
-    clearDiffState: true,
-    pruneAudit: true,
-    auditThreshold: 30
-  })
-  await page.close()  // Force WASM worker garbage collection
+  try {
+    await coolHeap(page, inspector, {
+      dropTables: true,      // Full cleanup
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 30
+    })
+  } catch {
+    // Ignore cleanup errors - page may be in bad state
+  }
+  try {
+    await context.close()  // Terminates all WebWorkers, clears SharedArrayBuffer
+  } catch {
+    // Ignore - context may already be closed from crash
+  }
 })
 ```
 
@@ -345,8 +392,10 @@ Use for heavy tests (Parquet, large CSVs, matcher) to catch memory leaks early.
 ## 9. New Test Checklist
 
 - [ ] **Isolation:** Does the test load its own data?
-- [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh page if yes)
+- [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh context for Tier 3 tests)
+- [ ] **Context vs Page:** Heavy tests (diff, matcher, large files) using `browser.newContext()` + `context.close()`?
 - [ ] **Cleanup:** Using appropriate tier (1: light transforms, 2: joins/diffs, 3: snapshots/matcher)?
+- [ ] **Timeout:** Heavy tests have `test.setTimeout(120000)` for WASM cold start?
 - [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`? Scoped to container if ambiguous?
 - [ ] **Timing:** Zero `waitForTimeout` calls? Using `networkidle` for large uploads?
 - [ ] **Clock:** Time-sensitive tests using `page.clock.setFixedTime()`?

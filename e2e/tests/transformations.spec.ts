@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -17,15 +17,25 @@ import { coolHeapLight } from '../helpers/cleanup-helpers'
  */
 
 test.describe('Transformations: Whitespace Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Fresh page per test to prevent stale references if WASM worker crashes
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  // Extended timeout for DuckDB WASM cold start on CI
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Fresh context per test to prevent stale references if WASM worker crashes
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -35,7 +45,11 @@ test.describe('Transformations: Whitespace Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   async function loadTestData() {
@@ -98,14 +112,23 @@ test.describe('Transformations: Whitespace Data', () => {
 })
 
 test.describe('Transformations: Mixed Case Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -115,7 +138,11 @@ test.describe('Transformations: Mixed Case Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   async function loadTestData() {
@@ -154,14 +181,23 @@ test.describe('Transformations: Mixed Case Data', () => {
 })
 
 test.describe('Transformations: Duplicates Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -171,7 +207,11 @@ test.describe('Transformations: Duplicates Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   test('should remove duplicates', async () => {
@@ -209,15 +249,24 @@ test.describe('Transformations: Duplicates Data', () => {
 })
 
 test.describe('Transformations: Empty Values Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Fresh page per test to prevent stale references if previous test blocks crash
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Fresh context per test to prevent stale references if previous test blocks crash
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -227,7 +276,11 @@ test.describe('Transformations: Empty Values Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   test('should replace empty values', async () => {
@@ -253,14 +306,23 @@ test.describe('Transformations: Empty Values Data', () => {
 })
 
 test.describe('Transformations: Find Replace Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -270,7 +332,11 @@ test.describe('Transformations: Find Replace Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   async function loadTestData() {
@@ -315,14 +381,23 @@ test.describe('Transformations: Find Replace Data', () => {
 })
 
 test.describe('Transformations: Basic Data (Rename)', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -332,7 +407,11 @@ test.describe('Transformations: Basic Data (Rename)', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   test('should rename column', async () => {
@@ -357,15 +436,24 @@ test.describe('Transformations: Basic Data (Rename)', () => {
 })
 
 test.describe('Transformations: Numeric Strings Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  // Fresh page per test to prevent stale references if previous test blocks crash
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Fresh context per test to prevent stale references if previous test blocks crash
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -375,7 +463,11 @@ test.describe('Transformations: Numeric Strings Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   async function loadTestData() {
@@ -443,14 +535,23 @@ test.describe('Transformations: Numeric Strings Data', () => {
 })
 
 test.describe('Transformations: Case Sensitive Data', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
@@ -460,7 +561,11 @@ test.describe('Transformations: Case Sensitive Data', () => {
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   async function loadTestData() {
@@ -530,14 +635,24 @@ test.describe('Transformations: Case Sensitive Data', () => {
 })
 
 test.describe('Transformations: _cs_id Lineage Preservation (Large File)', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  // Extended timeout for large file operations
+  test.setTimeout(120000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
 
     // Block unnecessary resources to reduce memory usage
     await page.route('**/*', (route) => {
@@ -558,7 +673,11 @@ test.describe('Transformations: _cs_id Lineage Preservation (Large File)', () =>
   })
 
   test.afterEach(async () => {
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
   })
 
   /**
