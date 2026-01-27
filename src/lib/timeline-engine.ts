@@ -763,11 +763,13 @@ function toSqlValue(value: unknown): string {
  */
 async function executeInverseUpdate(
   tableName: string,
-  csId: string,
+  csId: string | number | bigint,
   columnName: string,
   previousValue: unknown
 ): Promise<boolean> {
-  console.log('[FastPath] executeInverseUpdate: table=' + tableName + ', col=' + columnName + ', csId=' + csId.substring(0, 8) + '...')
+  // Normalize csId to string (DuckDB returns BigInt for ROW_NUMBER())
+  const csIdStr = String(csId)
+  console.log('[FastPath] executeInverseUpdate: table=' + tableName + ', col=' + columnName + ', csId=' + csIdStr.substring(0, 8) + (csIdStr.length > 8 ? '...' : ''))
 
   // SAFETY: Validate column exists before attempting update
   const columns = await getTableColumns(tableName)
@@ -780,17 +782,17 @@ async function executeInverseUpdate(
 
   // Check if the row exists before UPDATE
   const checkResult = await query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csId}'`
+    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csIdStr}'`
   )
   const rowExists = Number(checkResult[0].count) > 0
 
   if (!rowExists) {
-    console.error('[FastPath] CRITICAL: Row not found! csId=' + csId.substring(0, 8) + '...')
+    console.error('[FastPath] CRITICAL: Row not found! csId=' + csIdStr.substring(0, 8) + '...')
     return false // Cannot update non-existent row
   }
 
   const sqlValue = toSqlValue(previousValue)
-  await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csId}'`)
+  await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csIdStr}'`)
 
   console.log('[FastPath] UPDATE completed successfully')
   return true
@@ -980,11 +982,13 @@ export async function redoTimeline(
  */
 async function executeForwardUpdate(
   tableName: string,
-  csId: string,
+  csId: string | number | bigint,
   columnName: string,
   newValue: unknown
 ): Promise<boolean> {
-  console.log('[FastPath] executeForwardUpdate:', { tableName, csId, columnName, newValue })
+  // Normalize csId to string (DuckDB returns BigInt for ROW_NUMBER())
+  const csIdStr = String(csId)
+  console.log('[FastPath] executeForwardUpdate:', { tableName, csId: csIdStr, columnName, newValue })
 
   // SAFETY: Validate column exists before attempting update
   const columns = await getTableColumns(tableName)
@@ -997,13 +1001,13 @@ async function executeForwardUpdate(
 
   // DEBUG: Check if the row exists before UPDATE
   const checkResult = await query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csId}'`
+    `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csIdStr}'`
   )
   const rowExists = Number(checkResult[0].count) > 0
-  console.log('[FastPath] Row exists check:', { csId, exists: rowExists })
+  console.log('[FastPath] Row exists check:', { csId: csIdStr, exists: rowExists })
 
   if (!rowExists) {
-    console.error('[FastPath] CRITICAL: Row with csId not found in table!', { csId, tableName })
+    console.error('[FastPath] CRITICAL: Row with csId not found in table!', { csId: csIdStr, tableName })
     // List a few sample _cs_id values to help debug
     const sampleIds = await query<Record<string, unknown>>(
       `SELECT "${CS_ID_COLUMN}" FROM "${tableName}" LIMIT 5`
@@ -1012,12 +1016,12 @@ async function executeForwardUpdate(
   }
 
   const sqlValue = toSqlValue(newValue)
-  await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csId}'`)
+  await execute(`UPDATE "${tableName}" SET "${columnName}" = ${sqlValue} WHERE "${CS_ID_COLUMN}" = '${csIdStr}'`)
 
   // DEBUG: Verify the value was actually set
   if (rowExists) {
     const verifyResult = await query<Record<string, unknown>>(
-      `SELECT "${columnName}" FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csId}'`
+      `SELECT "${columnName}" FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = '${csIdStr}'`
     )
     console.log('[FastPath] After UPDATE, value is:', verifyResult[0]?.[columnName])
   }

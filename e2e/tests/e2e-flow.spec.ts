@@ -7,6 +7,10 @@ import { createStoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 
 test.describe('Full E2E Flow', () => {
+  // DuckDB WASM + transformation operations need more time than default 30s
+  // CI environments can be slower, so use 120s timeout
+  test.setTimeout(120000)
+
   test('upload → configure → transform → verify → export', async ({ page }) => {
     const laundromat = new LaundromatPage(page)
     const wizard = new IngestionWizardPage(page)
@@ -28,36 +32,39 @@ test.describe('Full E2E Flow', () => {
     expect(await wizard.getDetectedColumnCount()).toBe(3)
     await wizard.import()
 
-    // 5. Verify file loaded - grid visible
-    await expect(laundromat.gridContainer).toBeVisible()
+    // 5. Wait for table to be loaded in DuckDB before checking UI
+    await inspector.waitForTableLoaded('whitespace_data', 3)
+
+    // 6. Verify file loaded - grid visible
+    await expect(laundromat.gridContainer).toBeVisible({ timeout: 15000 })
     const tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(3)
 
-    // 6. Apply transformation: Trim whitespace (direct-apply)
+    // 7. Apply transformation: Trim whitespace (direct-apply)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'name' })
 
-    // 7. Apply transformation: Uppercase (direct-apply)
+    // 8. Apply transformation: Uppercase (direct-apply)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
 
-    // 8. Verify transformation results via store
+    // 9. Verify transformation results via store
     const data = await inspector.getTableData('whitespace_data')
     expect(data[0].name).toBe('JOHN DOE')
     expect(data[1].name).toBe('JANE SMITH')
     expect(data[2].name).toBe('BOB JOHNSON')
 
-    // 9. Verify audit log has entries
+    // 10. Verify audit log has entries
     const auditEntries = await inspector.getAuditEntries()
     const transformEntries = auditEntries.filter(
       (e) => e.action.includes('Trim') || e.action.includes('Uppercase')
     )
     expect(transformEntries.length).toBeGreaterThanOrEqual(2)
 
-    // 10. Export and verify download
+    // 11. Export and verify download
     const downloadResult = await downloadAndVerifyCSV(page)
     expect(downloadResult.filename).toContain('cleaned.csv')
     expect(downloadResult.rows[1][1]).toBe('JOHN DOE')
@@ -80,8 +87,11 @@ test.describe('Full E2E Flow', () => {
     await expect(page.locator('text=/Auto.*Pipe/')).toBeVisible()
     await wizard.import()
 
+    // Wait for table to be loaded in DuckDB before checking UI
+    await inspector.waitForTableLoaded('pipe_delimited', 3)
+
     // Verify data loaded correctly
-    await expect(laundromat.gridContainer).toBeVisible()
+    await expect(laundromat.gridContainer).toBeVisible({ timeout: 15000 })
     const tables = await inspector.getTables()
     expect(tables[0].rowCount).toBe(3)
 

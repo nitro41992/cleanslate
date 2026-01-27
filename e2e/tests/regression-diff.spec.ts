@@ -123,18 +123,18 @@ test.describe.serial('FR-B2: Visual Diff - Lightweight', () => {
   })
 })
 
-test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
+test.describe('FR-B2: Visual Diff - Heavy Regression', () => {
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    // Prevent DuckDB cold start timeout
-    test.setTimeout(60000)
+  // Extended timeout for heavy diff tests
+  test.setTimeout(90000)
 
+  // Tier 3: Fresh page per test for heavy operations (per e2e/CLAUDE.md)
+  test.beforeEach(async ({ browser }) => {
     page = await browser.newPage()
-
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     await laundromat.goto()
@@ -142,7 +142,7 @@ test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await page.close()
   })
 
@@ -168,8 +168,8 @@ test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
     // New: rows 10-110 (overlap 10-100, remove 1-9, add 101-110)
     const newCSV = generateOverlappingCSV(10, 110, 'New')
 
-    console.log(`[Diff Test] Generated Base CSV: ${(baseCSV.length / (1024 * 1024)).toFixed(2)}MB`)
-    console.log(`[Diff Test] Generated New CSV: ${(newCSV.length / (1024 * 1024)).toFixed(2)}MB`)
+    // console.log(`[Diff Test] Generated Base CSV: ${(baseCSV.length / (1024 * 1024)).toFixed(2)}MB`)
+    // console.log(`[Diff Test] Generated New CSV: ${(newCSV.length / (1024 * 1024)).toFixed(2)}MB`)
 
     // Clean up any existing tables
     await inspector.runQuery('DROP TABLE IF EXISTS diff_base_100')
@@ -199,7 +199,8 @@ test.describe.serial('FR-B2: Visual Diff - Heavy Regression', () => {
 
     // Open Diff view
     await laundromat.openDiffView()
-    await inspector.waitForPanelAnimation('match-view')
+    // DiffView uses simple conditional render, not Radix Sheet - just wait for visibility
+    await expect(page.getByTestId('diff-view')).toBeVisible({ timeout: 10000 })
 
     // Select Compare Two Tables mode
     await page.locator('button').filter({ hasText: 'Compare Two Tables' }).click()

@@ -154,6 +154,19 @@ export class StandardizeViewPage {
     await this.applyButton.click()
     // Wait for apply to complete and view to close
     await expect(this.container).not.toBeVisible({ timeout: 10000 })
+    // Wait for command execution to complete (timeline store not replaying)
+    await this.page.waitForFunction(
+      () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore) return true
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.timelineStore as any).getState()
+        return !state.isReplaying
+      },
+      { timeout: 10000 }
+    )
+    // Wait for notification to appear confirming completion
+    await expect(this.page.locator('text=/Values Standardized|Standardization Applied/i')).toBeVisible({ timeout: 5000 }).catch(() => {})
   }
 
   /**

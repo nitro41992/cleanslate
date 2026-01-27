@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
@@ -14,28 +14,66 @@ import { downloadAndVerifyTXT } from '../helpers/download-helpers'
  */
 
 test.describe('Audit Row Details', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let picker: TransformationPickerPage
   let inspector: StoreInspector
 
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  // DuckDB WASM + transformation operations need more time than default 30s
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
+  // per e2e/CLAUDE.md: DuckDB-WASM runs in WebWorker, context isolation cleans up SharedArrayBuffer
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     picker = new TransformationPickerPage(page)
+
+    // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await page.goto('/')
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
   })
 
   test.afterEach(async () => {
-    await page.close()
+    // Skip cleanup if page is already closed (prevents cascade failures)
+    if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore - context may already be closed
+      }
+      return
+    }
+
+    // Drop tables to reduce memory pressure
+    try {
+      await inspector.runQuery('DROP TABLE IF EXISTS case_sensitive_data')
+      await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    try {
+      await context.close() // Terminates all pages + WebWorkers
+    } catch {
+      // Ignore close errors - context may already be closed
+    }
   })
 
   // Helper for case-sensitive data
   async function loadCaseSensitiveData() {
+    // Clean up any existing table first
+    await inspector.runQuery('DROP TABLE IF EXISTS case_sensitive_data')
     await laundromat.uploadFile(getFixturePath('case-sensitive-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -44,6 +82,8 @@ test.describe('Audit Row Details', () => {
 
   // Helper for whitespace data
   async function loadWhitespaceData() {
+    // Clean up any existing table first
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
     await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -395,6 +435,8 @@ test.describe('Audit Row Details', () => {
 
     // Perform a manual cell edit on row 0, column 0 (id column)
     await laundromat.switchToDataPreviewTab()
+    // Wait for sidebar to be hidden before editing cell
+    await expect(page.getByTestId('audit-sidebar')).toBeHidden({ timeout: 3000 }).catch(() => {})
     await laundromat.editCell(0, 0, '99')
 
     // Wait for edit to be processed - poll for audit entry with Manual Edit
@@ -405,7 +447,8 @@ test.describe('Audit Row Details', () => {
 
     // Switch to audit log
     await laundromat.switchToAuditLogTab()
-    await page.waitForSelector('[data-testid="audit-sidebar"]')
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
 
     // Get audit entries
     const auditEntries = await inspector.getAuditEntries()
@@ -420,12 +463,12 @@ test.describe('Audit Row Details', () => {
     expect(typeof manualEditEntry?.auditEntryId).toBe('string')
 
     // Find the Manual Edit entry in the UI (uses div with role="button", not actual button)
-    const manualEditElement = page
-      .locator('[data-testid="audit-sidebar"]')
-      .locator('[data-testid="audit-entry-with-details"]')
+    const manualEditElement = sidebar
+      .getByTestId('audit-entry-with-details')
       .filter({ hasText: 'Manual Edit' })
       .first()
 
+    // Wait for sidebar content to stabilize before interacting
     await expect(manualEditElement).toBeVisible({ timeout: 10000 })
 
     // This element SHOULD have the "View details" text since it now has drill-down

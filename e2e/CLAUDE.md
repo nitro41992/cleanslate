@@ -6,12 +6,23 @@
 
 **Do NOT rely on `test.describe.serial` for data dependency.** Test B should never depend on Test A's data.
 
-**Heavy Tests (Parquet/Large CSVs):** Use `beforeEach` with fresh page + re-initialized Page Objects:
+**Heavy Tests (Parquet/Large CSVs, Diff, Matcher):** Use `beforeEach` with fresh **browser context** + re-initialized Page Objects.
+
+> **Why context, not just page?** DuckDB-WASM runs in a WebWorker. When WASM crashes, the worker state persists at the browser level. Closing just the page doesn't fully clean up SharedArrayBuffer memory or terminated workers. Browser contexts provide complete isolation including service workers and WebWorker state. See [Playwright Isolation Docs](https://playwright.dev/docs/browser-contexts).
 
 ```typescript
-// ✅ Good: Fresh page per test
-test.beforeEach(async ({ browser }) => {
-  page = await browser.newPage()
+// ✅ Good: Fresh context per test (strongest isolation for WASM)
+let browser: Browser
+let context: BrowserContext
+let page: Page
+
+test.beforeAll(async ({ browser: b }) => {
+  browser = b
+})
+
+test.beforeEach(async () => {
+  context = await browser.newContext()
+  page = await context.newPage()
   laundromat = new LaundromatPage(page)  // MUST re-init
   inspector = createStoreInspector(page)  // MUST re-init
   await page.goto('/')
@@ -19,7 +30,11 @@ test.beforeEach(async ({ browser }) => {
 })
 
 test.afterEach(async () => {
-  await page.close()  // Force garbage collection
+  try {
+    await context.close()  // Terminates all pages + WebWorkers
+  } catch {
+    // Ignore - context may already be closed from crash
+  }
 })
 ```
 
@@ -31,6 +46,17 @@ test.beforeAll(async ({ browser }) => {
   inspector = createStoreInspector(page)
 })
 // If Test A crashes WASM worker, Test B fails with stale reference
+```
+
+```typescript
+// ⚠️ Less robust: Fresh page only (OK for light tests, not for WASM-heavy)
+test.beforeEach(async ({ browser }) => {
+  page = await browser.newPage()
+  // ...
+})
+test.afterEach(async () => {
+  await page.close()  // May not fully clean up WebWorker state
+})
 ```
 
 **Light Tests (shared context OK):**
@@ -57,6 +83,15 @@ await inspector.waitForTableLoaded('my_table', expectedRows)
 - `await expect(locator).toBeVisible()` — UI elements
 - `await expect(locator).toBeHidden()` — Spinners disappear
 - `await expect.poll(...)` — Data persistence checks
+
+**Network Idleness for Large File Uploads:**
+
+For heavy Parquet/CSV uploads, ensure `uploadFile` waits for network to settle, not just the file input change:
+```typescript
+await laundromat.uploadFile(getFixturePath('large-dataset.parquet'))
+await page.waitForLoadState('networkidle')  // Wait for upload to complete
+await inspector.waitForTableLoaded('my_table', expectedRows)
+```
 
 **📚 See also:** `e2e/helpers/WAIT_HELPERS_QUICKREF.md` for detailed usage patterns
 
@@ -93,6 +128,21 @@ await page.getByRole('checkbox', { name: 'id' }).click()
 await page.getByTestId('column-selector-id').click()
 ```
 
+**Strict Mode — Avoid Ambiguous Locators:**
+
+Playwright throws if a locator matches multiple elements. If your UI has duplicate labels (e.g., "Cancel" in both a modal and background page), scope locators to a container or use `.first()`:
+
+```typescript
+// ❌ Bad: Fails if "Save" exists in modal AND page background
+await page.getByRole('button', { name: 'Save' }).click()
+
+// ✅ Good: Scope to the visible dialog
+await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click()
+
+// ✅ Also OK: Explicit first match (when order is predictable)
+await page.getByRole('button', { name: 'Cancel' }).first().click()
+```
+
 ## 4. Data Assertions
 
 **Static Values — Assert Identity, Not Cardinality:**
@@ -115,6 +165,20 @@ expect(rowIds.sort()).toEqual(expectedIds.sort())  // Standardize order
 ```typescript
 // ❌ Bad: expect(valueAfterUndo).not.toBe(valueBeforeUndo)
 // ✅ Good: expect(valueAfterUndo).toBe('Original Value')
+```
+
+**Clock Stability for Time-Sensitive Tests:**
+
+If testing features that display relative times (e.g., "Modified 5 minutes ago"), use Playwright's clock API to prevent flakiness from CI slowness:
+
+```typescript
+// ❌ Bad: System clock ticks during slow CI run
+expect(await page.getByText('Modified just now')).toBeVisible()
+
+// ✅ Good: Freeze time for deterministic assertions
+await page.clock.setFixedTime(new Date('2024-01-15T10:00:00Z'))
+await performAction()
+expect(await page.getByText('Modified just now')).toBeVisible()
 ```
 
 ## 5. Infrastructure & Timeouts
@@ -152,12 +216,25 @@ test.afterEach(async () => {
 })
 ```
 
-**Tier 3 - Heavy Tests** (snapshots, matcher, large datasets)
+**Tier 3 - Heavy Tests** (snapshots, matcher, large datasets, diff operations)
+
+Use fresh browser context per test for complete WASM isolation:
 ```typescript
 import { coolHeap } from '../helpers/cleanup-helpers'
 
-test.beforeEach(async ({ browser }) => {
-  page = await browser.newPage()
+let browser: Browser
+let context: BrowserContext
+let page: Page
+
+test.setTimeout(120000)  // 2 mins for heavy WASM operations
+
+test.beforeAll(async ({ browser: b }) => {
+  browser = b
+})
+
+test.beforeEach(async () => {
+  context = await browser.newContext()
+  page = await context.newPage()
   laundromat = new LaundromatPage(page)  // MUST re-init
   inspector = createStoreInspector(page)  // MUST re-init
   await page.goto('/')
@@ -165,14 +242,22 @@ test.beforeEach(async ({ browser }) => {
 })
 
 test.afterEach(async () => {
-  await coolHeap(page, inspector, {
-    dropTables: true,      // Full cleanup
-    closePanels: true,
-    clearDiffState: true,
-    pruneAudit: true,
-    auditThreshold: 30
-  })
-  await page.close()  // Force WASM worker garbage collection
+  try {
+    await coolHeap(page, inspector, {
+      dropTables: true,      // Full cleanup
+      closePanels: true,
+      clearDiffState: true,
+      pruneAudit: true,
+      auditThreshold: 30
+    })
+  } catch {
+    // Ignore cleanup errors - page may be in bad state
+  }
+  try {
+    await context.close()  // Terminates all WebWorkers, clears SharedArrayBuffer
+  } catch {
+    // Ignore - context may already be closed from crash
+  }
 })
 ```
 
@@ -307,10 +392,13 @@ Use for heavy tests (Parquet, large CSVs, matcher) to catch memory leaks early.
 ## 9. New Test Checklist
 
 - [ ] **Isolation:** Does the test load its own data?
-- [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh page if yes)
+- [ ] **State:** If test crashes, will it affect the next? (Use `beforeEach` + fresh context for Tier 3 tests)
+- [ ] **Context vs Page:** Heavy tests (diff, matcher, large files) using `browser.newContext()` + `context.close()`?
 - [ ] **Cleanup:** Using appropriate tier (1: light transforms, 2: joins/diffs, 3: snapshots/matcher)?
-- [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`?
-- [ ] **Timing:** Zero `waitForTimeout` calls?
+- [ ] **Timeout:** Heavy tests have `test.setTimeout(120000)` for WASM cold start?
+- [ ] **Selectors:** All using `getByRole`, `getByLabel`, or `getByTestId`? Scoped to container if ambiguous?
+- [ ] **Timing:** Zero `waitForTimeout` calls? Using `networkidle` for large uploads?
+- [ ] **Clock:** Time-sensitive tests using `page.clock.setFixedTime()`?
 - [ ] **Promise.race:** Not using it for operation completion? (Use dedicated wait helpers instead)
 - [ ] **Dynamic Data:** UUIDs/Timestamps handled dynamically, not hardcoded?
 - [ ] **Canvas Grid:** Using SQL or store-based assertions, not DOM scraping?

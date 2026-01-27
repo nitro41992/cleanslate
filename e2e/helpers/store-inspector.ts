@@ -19,6 +19,7 @@ export interface AuditEntry {
   newValue?: unknown
   rowIndex?: number
   columnName?: string
+  csId?: string  // Stable cell identifier for manual edits (replaces rowIndex)
   hasRowDetails?: boolean
   auditEntryId?: string
   rowsAffected?: number
@@ -83,7 +84,7 @@ export interface StoreInspector {
    * @param sql - SQL query to execute
    * @returns Query result rows
    */
-  runQuery: (sql: string) => Promise<Record<string, unknown>[]>
+  runQuery: <T = Record<string, unknown>>(sql: string) => Promise<T[]>
   /**
    * Execute SQL statement without returning results (CREATE, INSERT, DROP, etc.)
    */
@@ -188,6 +189,13 @@ export interface StoreInspector {
    * @param timeout - Optional timeout in milliseconds (default 15000)
    */
   waitForGridReady: (timeout?: number) => Promise<void>
+  /**
+   * Wait for timeline replay to complete (Heavy Path undo/redo).
+   * When a Tier 3 command is undone, the timeline replays all commands from a snapshot.
+   * This helper waits for that replay to finish before asserting on data.
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForReplayComplete: (timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -238,10 +246,26 @@ export function createStoreInspector(page: Page): StoreInspector {
       return page.evaluate((tableId) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
         if (!stores?.auditStore) return []
-        const store = stores.auditStore as { getState: () => { getAllEntries: () => AuditEntry[]; getEntriesForTable: (tableId: string) => AuditEntry[] } }
+        const store = stores.auditStore as {
+          getState: () => {
+            getAllEntries: () => AuditEntry[]
+            getEntriesForTable: (tableId: string) => AuditEntry[]
+            _legacyEntries: AuditEntry[]
+          }
+        }
         // Use getAllEntries() or getEntriesForTable() methods which derive from timeline
-        const entries = tableId ? store.getState().getEntriesForTable(tableId) : store.getState().getAllEntries()
-        return entries
+        const timelineEntries = tableId ? store.getState().getEntriesForTable(tableId) : store.getState().getAllEntries()
+        // Also include legacy entries (used by persist operation which doesn't go through CommandExecutor)
+        const legacyEntries = store.getState()._legacyEntries || []
+        // Merge and dedupe by id, preferring timeline entries
+        const entryMap = new Map<string, AuditEntry>()
+        for (const entry of legacyEntries) {
+          entryMap.set(entry.id, entry)
+        }
+        for (const entry of timelineEntries) {
+          entryMap.set(entry.id, entry)
+        }
+        return Array.from(entryMap.values())
       }, tableId)
     },
 
@@ -264,7 +288,7 @@ export function createStoreInspector(page: Page): StoreInspector {
         { timeout: 30000 }
       )
       // CRITICAL: Wait for DuckDB isReady flag (set after initDuckDB() completes in main.tsx)
-      // This prevents "duckdb is not initialized" errors from recent COI bundle changes
+      // This prevents "duckdb is not initialized" errors from COI bundle changes and race conditions
       await page.waitForFunction(
         () => {
           const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { isReady: boolean } }).__CLEANSLATE_DUCKDB__
@@ -291,12 +315,12 @@ export function createStoreInspector(page: Page): StoreInspector {
       )
     },
 
-    async runQuery(sql: string): Promise<Record<string, unknown>[]> {
+    async runQuery<T = Record<string, unknown>>(sql: string): Promise<T[]> {
       return page.evaluate(async (sql) => {
         const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<Record<string, unknown>[]>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
         if (!duckdb?.query) throw new Error('DuckDB not available')
         return duckdb.query(sql)
-      }, sql)
+      }, sql) as Promise<T[]>
     },
 
     async getDiffState(): Promise<DiffStoreState> {
@@ -669,6 +693,35 @@ async getTableList(): Promise<TableInfo[]> {
         .catch(() => {
           // Some grids may not have canvas immediately, which is OK
         })
+    },
+
+    async waitForReplayComplete(timeout = 30000): Promise<void> {
+      // Wait for timeline replay to complete (Heavy Path undo/redo)
+      // The timeline engine sets isReplaying=true during replay and false when done
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.timelineStore) return true  // No timeline store = nothing to wait for
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.timelineStore as any).getState()
+          // Wait for isReplaying to become false (or undefined if not set)
+          return state?.isReplaying !== true
+        },
+        { timeout }
+      )
+      // Also ensure tableStore is not loading (replay may trigger data refresh)
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.tableStore) return true
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.tableStore as any).getState()
+          return state?.isLoading !== true
+        },
+        { timeout: 5000 }
+      ).catch(() => {
+        // Ignore timeout - tableStore may not have isLoading flag set
+      })
     },
   }
 }
