@@ -61,10 +61,12 @@ test.describe('Audit Row Details', () => {
       params: { Find: 'hello', 'Replace with': 'hi' },
       selectParams: { 'Case Sensitive': 'No' },
     })
-    await laundromat.closePanel()
 
-    // Wait for transformation to complete
-    await inspector.waitForTransformComplete()
+    // Wait for transformation to be processed - poll for audit entry
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action.includes('Find & Replace'))
+    }, { timeout: 10000 }).toBe(true)
 
     // Verify audit entry has hasRowDetails and auditEntryId set
     const auditEntries = await inspector.getAuditEntries()

@@ -92,17 +92,23 @@ test.describe('Column Order Preservation', () => {
     const initialColumns = await inspector.getTableColumns('column_order_test')
     const initialOrder = initialColumns.map(c => c.name)
 
+    // Get tableId BEFORE transform (ensures we have valid ID)
+    const tableId = (await inspector.getTables()).find(t => t.name === 'column_order_test')?.id
+    expect(tableId).toBeDefined()
+
     // Act: Remove duplicates (Tier 3 - uses snapshot)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates') // No column param - operates on all columns
-    await laundromat.closePanel()
 
-    // Wait for operation to complete - poll for transformation to be reflected
-    const tableId = (await inspector.getTables()).find(t => t.name === 'column_order_test')?.id
-    if (tableId) {
-      await inspector.waitForTransformComplete(tableId)
-    }
+    // Wait for transformation to fully propagate - poll for columns to be stable
+    // (Tier 3 operations involve snapshots which can take longer than UI indicator)
+    await expect.poll(async () => {
+      const cols = await inspector.getTableColumns('column_order_test')
+      return cols.length
+    }, { timeout: 10000 }).toBeGreaterThan(0)
+
+    await inspector.waitForTransformComplete(tableId!)
 
     // Assert: Column order unchanged (only rows affected)
     const finalColumns = await inspector.getTableColumns('column_order_test')
@@ -251,6 +257,12 @@ test.describe('Column Order Preservation', () => {
     // Click Stack Tables button
     await page.getByTestId('combiner-stack-btn').click()
     await expect(page.getByText('Tables Stacked', { exact: true })).toBeVisible({ timeout: 5000 })
+
+    // Wait for table to be loaded in the store (4 rows: 2 from each table)
+    await inspector.waitForTableLoaded('stacked_result', 4)
+
+    // Wait for combiner operation to fully complete before asserting
+    await inspector.waitForCombinerComplete()
 
     // Assert: Column order = union of source columns (first appearance)
     // Table 1: ['id', 'name', 'email']
