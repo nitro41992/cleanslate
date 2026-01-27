@@ -587,47 +587,118 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
     await laundromat.closeAuditSidebar()
   })
 
-  test.fixme('FR-F-INT-3: Undo should revert standardization', async () => {
-    // This test continues from FR-F-INT-2
+  test('FR-F-INT-3: Undo should revert standardization', async () => {
+    // Fresh page per test - must set up data and apply standardization first
+    await loadTestData()
 
-    // Get data before undo (standardized values)
-    const beforeUndo = await inspector.getTableData('fr_f_standardize')
-    const beforeUniqueNames = new Set(beforeUndo.map((r) => r.name)).size
+    // Get original unique names count before standardization
+    const originalData = await inspector.getTableData('fr_f_standardize')
+    const originalUniqueNames = new Set(originalData.map((r) => r.name)).size
+
+    // Apply standardization
+    await page.getByTestId('toolbar-standardize').click()
+    await standardize.waitForOpen()
+    await standardize.selectTable('fr_f_standardize')
+    await standardize.selectColumn('name')
+    await standardize.selectAlgorithm('fingerprint')
+    await standardize.analyze()
+    await standardize.waitForClusters()
+    await standardize.filterBy('actionable')
+    await standardize.apply()
+
+    // Wait for transform to complete
+    const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
+
+    // Verify standardization reduced unique names
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_f_standardize')
+      return new Set(data.map((r) => r.name)).size
+    }, { timeout: 10000 }).toBeLessThan(originalUniqueNames)
+
+    // Get standardized data for comparison
+    const standardizedData = await inspector.getTableData('fr_f_standardize')
+    const standardizedUniqueNames = new Set(standardizedData.map((r) => r.name)).size
 
     // Click body to ensure no input is focused
     await page.locator('body').click()
 
     // Press Ctrl+Z to undo
-    const tableId = await inspector.getActiveTableId()
     await page.keyboard.press('Control+z')
     await inspector.waitForTransformComplete(tableId)
 
-    // Get data after undo (should be original values)
+    // Poll for undo to complete - should have more unique names (original state)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_f_standardize')
+      return new Set(data.map((r) => r.name)).size
+    }, { timeout: 10000 }).toBeGreaterThan(standardizedUniqueNames)
+
+    // Verify we're back to original count
     const afterUndo = await inspector.getTableData('fr_f_standardize')
     const afterUniqueNames = new Set(afterUndo.map((r) => r.name)).size
-
-    // After undo, there should be more unique names (original unstandardized state)
-    expect(afterUniqueNames).toBeGreaterThan(beforeUniqueNames)
+    expect(afterUniqueNames).toBe(originalUniqueNames)
   })
 
-  test.fixme('FR-F-INT-4: Redo should reapply standardization', async () => {
-    // This test continues from FR-F-INT-3 (undone state)
+  test('FR-F-INT-4: Redo should reapply standardization', async () => {
+    // Fresh page per test - must set up data, apply standardization, then undo first
+    await loadTestData()
 
-    // Get data before redo (original values)
-    const beforeRedo = await inspector.getTableData('fr_f_standardize')
-    const beforeUniqueNames = new Set(beforeRedo.map((r) => r.name)).size
+    // Get original unique names count before standardization
+    const originalData = await inspector.getTableData('fr_f_standardize')
+    const originalUniqueNames = new Set(originalData.map((r) => r.name)).size
 
-    // Press Ctrl+Y to redo
+    // Apply standardization
+    await page.getByTestId('toolbar-standardize').click()
+    await standardize.waitForOpen()
+    await standardize.selectTable('fr_f_standardize')
+    await standardize.selectColumn('name')
+    await standardize.selectAlgorithm('fingerprint')
+    await standardize.analyze()
+    await standardize.waitForClusters()
+    await standardize.filterBy('actionable')
+    await standardize.apply()
+
+    // Wait for transform to complete
     const tableId = await inspector.getActiveTableId()
+    await inspector.waitForTransformComplete(tableId)
+
+    // Verify standardization reduced unique names
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_f_standardize')
+      return new Set(data.map((r) => r.name)).size
+    }, { timeout: 10000 }).toBeLessThan(originalUniqueNames)
+
+    // Get standardized unique name count for later comparison
+    const standardizedData = await inspector.getTableData('fr_f_standardize')
+    const standardizedUniqueNames = new Set(standardizedData.map((r) => r.name)).size
+
+    // Click body to ensure no input is focused
+    await page.locator('body').click()
+
+    // Press Ctrl+Z to undo first
+    await page.keyboard.press('Control+z')
+    await inspector.waitForTransformComplete(tableId)
+
+    // Wait for undo to complete - should have original unique names count
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_f_standardize')
+      return new Set(data.map((r) => r.name)).size
+    }, { timeout: 10000 }).toBe(originalUniqueNames)
+
+    // Now press Ctrl+Y to redo
     await page.keyboard.press('Control+y')
     await inspector.waitForTransformComplete(tableId)
 
-    // Get data after redo (should be standardized again)
-    const afterRedo = await inspector.getTableData('fr_f_standardize')
-    const afterUniqueNames = new Set(afterRedo.map((r) => r.name)).size
+    // Poll for redo to complete - should have fewer unique names (standardized state)
+    await expect.poll(async () => {
+      const data = await inspector.getTableData('fr_f_standardize')
+      return new Set(data.map((r) => r.name)).size
+    }, { timeout: 10000 }).toBe(standardizedUniqueNames)
 
-    // After redo, there should be fewer unique names (standardized state)
-    expect(afterUniqueNames).toBeLessThan(beforeUniqueNames)
+    // Final verification
+    const afterRedo = await inspector.getTableData('fr_f_standardize')
+    const afterRedoUniqueNames = new Set(afterRedo.map((r) => r.name)).size
+    expect(afterRedoUniqueNames).toBeLessThan(originalUniqueNames)
   })
 
   test('FR-F-INT-5: Audit sidebar should show Undone badge after undo', async () => {
