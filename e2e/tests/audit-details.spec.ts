@@ -583,3 +583,164 @@ test.describe('Audit Row Details', () => {
     await expect(modal).toBeHidden()
   })
 })
+
+/**
+ * Batch Edit Drill-Down Tests
+ *
+ * These tests verify that batch edits (rapid successive cell changes that get
+ * coalesced into a single audit entry) show all cell changes in the drill-down modal.
+ *
+ * IMPORTANT: These tests do NOT disable edit batching, unlike the tests above.
+ * This tests the real batch edit behavior as experienced by users.
+ */
+test.describe('Batch Edit Drill-Down', () => {
+  let browser: Browser
+  let context: BrowserContext
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let inspector: StoreInspector
+
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+
+    await page.goto('/')
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+    // NOTE: We do NOT disable edit batching here - we want to test real batch behavior
+  })
+
+  test.afterEach(async () => {
+    if (page.isClosed()) {
+      try {
+        await context.close()
+      } catch {
+        // Ignore
+      }
+      return
+    }
+
+    try {
+      await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    try {
+      await context.close()
+    } catch {
+      // Ignore
+    }
+  })
+
+  async function loadWhitespaceData() {
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('whitespace_data', 3)
+  }
+
+  test('should show all cell changes in drill-down for rapid batch edits', async () => {
+    await loadWhitespaceData()
+
+    // Close audit sidebar before editing
+    await laundromat.closeAuditSidebar()
+
+    // Wait for grid to be ready before editing
+    await inspector.waitForGridReady()
+
+    // Make 3 rapid edits (within the 500ms batch window)
+    // These should be coalesced into a single "Batch Edit (3 cells)" audit entry
+    // Edit column 1 (name - string column), not column 0 (id - integer column)
+    await laundromat.editCell(0, 1, 'BatchEdit1')
+    await laundromat.editCell(1, 1, 'BatchEdit2')
+    await laundromat.editCell(2, 1, 'BatchEdit3')
+
+    // Wait for batch to flush (500ms batch window + buffer for processing)
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action?.includes('Batch Edit'))
+    }, { timeout: 10000 }).toBe(true)
+
+    // Open audit sidebar
+    await laundromat.openAuditSidebar()
+    const sidebar = page.getByTestId('audit-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 5000 })
+
+    // Find the Batch Edit entry
+    const batchEditEntry = sidebar
+      .getByTestId('audit-entry-with-details')
+      .filter({ hasText: /Batch Edit/i })
+      .first()
+
+    await expect(batchEditEntry).toBeVisible({ timeout: 10000 })
+
+    // Click to open the drill-down modal
+    await batchEditEntry.click()
+
+    // Verify modal opens
+    const modal = page.getByTestId('audit-detail-modal')
+    await expect(modal).toBeVisible({ timeout: 5000 })
+
+    // Wait for modal animation to complete
+    await page.waitForFunction(
+      () => {
+        const modalEl = document.querySelector('[data-testid="audit-detail-modal"]')
+        return modalEl?.getAttribute('data-state') === 'open'
+      },
+      { timeout: 3000 }
+    )
+
+    // KEY ASSERTION: The modal should show ManualEditDetailView (not AuditDetailTable)
+    // This is the core of the bug - batch edits were showing the wrong view
+    await expect(page.getByTestId('manual-edit-detail-view')).toBeVisible({ timeout: 5000 })
+
+    // Verify all 3 cell changes are shown
+    const rows = page.getByTestId('manual-edit-detail-row')
+    await expect(rows).toHaveCount(3)
+
+    // Verify the changes contain our batch edit values
+    await expect(page.getByTestId('manual-edit-detail-table')).toContainText('BatchEdit1')
+    await expect(page.getByTestId('manual-edit-detail-table')).toContainText('BatchEdit2')
+    await expect(page.getByTestId('manual-edit-detail-table')).toContainText('BatchEdit3')
+
+    // Close modal
+    await page.keyboard.press('Escape')
+    await expect(modal).toBeHidden()
+  })
+
+  test('batch edit entry should have correct entryType B', async () => {
+    await loadWhitespaceData()
+
+    await laundromat.closeAuditSidebar()
+
+    // Make 2 rapid edits
+    await laundromat.editCell(0, 1, 'Value1')
+    await laundromat.editCell(1, 1, 'Value2')
+
+    // Wait for batch to flush
+    await expect.poll(async () => {
+      const entries = await inspector.getAuditEntries()
+      return entries.some(e => e.action?.includes('Batch Edit'))
+    }, { timeout: 10000 }).toBe(true)
+
+    // Verify the batch edit entry has entryType 'B' (manual edit type)
+    const entries = await inspector.getAuditEntries()
+    const batchEntry = entries.find(e => e.action?.includes('Batch Edit'))
+
+    expect(batchEntry).toBeDefined()
+    // This is the key assertion - batch edits should have entryType 'B'
+    // Currently they incorrectly have entryType 'A' due to the bug
+    expect(batchEntry?.entryType).toBe('B')
+  })
+})

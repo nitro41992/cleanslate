@@ -22,7 +22,14 @@ export function convertCommandToAuditEntry(
   command: TimelineCommand,
   _index: number
 ): AuditLogEntry {
-  const isManualEdit = command.params.type === 'manual_edit'
+  // Check for both single manual edits AND batch edits
+  // - params.type is set by syncExecuteToTimelineStore in timelineStore.ts
+  // - commandType is set by the command executor
+  const isManualEdit =
+    command.params.type === 'manual_edit' ||
+    command.params.type === 'batch_edit' ||
+    command.commandType === 'manual_edit' ||
+    command.commandType === 'batch_edit'
 
   // For manual edits, extract the previous/new values from params
   let previousValue: unknown
