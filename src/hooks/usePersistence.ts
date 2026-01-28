@@ -366,6 +366,10 @@ export async function compactChangelog(force = false): Promise<number> {
       // Get table names for each tableId
       const tableState = useTableStore.getState()
 
+      // Initialize DuckDB connection once for all checks
+      const db = await initDuckDB()
+      const conn = await getConnection()
+
       for (const tableId of tableIds) {
         const table = tableState.tables.find((t) => t.id === tableId)
         if (!table) {
@@ -375,9 +379,19 @@ export async function compactChangelog(force = false): Promise<number> {
         }
 
         try {
+          // Skip tables that are currently being transformed (have staging table)
+          // During transforms, the table is temporarily renamed to _staging_{tableName}
+          const stagingCheck = await conn.query(`
+            SELECT COUNT(*) as cnt FROM information_schema.tables
+            WHERE table_name = '_staging_${table.name}'
+          `)
+          const hasStagingTable = Number(stagingCheck.toArray()[0]?.toJSON()?.cnt ?? 0) > 0
+          if (hasStagingTable) {
+            console.log(`[Persistence] Compaction: skipping ${table.name} - transform in progress`)
+            continue
+          }
+
           // Export table to Parquet (includes all changes since changelog is already in DuckDB)
-          const db = await initDuckDB()
-          const conn = await getConnection()
           await exportTableToParquet(db, conn, table.name, table.name)
 
           // Clear changelog for this table
