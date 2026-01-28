@@ -26,8 +26,100 @@ import { toast } from '@/hooks/use-toast'
 import { generateId } from '@/lib/utils'
 import type { ColumnInfo, CSVIngestionSettings } from '@/types'
 
+// ===== SINGLETON INITIALIZATION =====
+// This ensures DuckDB + state restoration only runs ONCE regardless of how many
+// components call useDuckDB(). Without this, each component's useEffect would
+// run restoreAppState() independently, causing 6x duplication on page load.
+
+let fullInitPromise: Promise<void> | null = null
+let isFullyInitialized = false
+
+/**
+ * Full initialization sequence (DuckDB + state restoration).
+ * Runs exactly once - all useDuckDB() callers share this promise.
+ */
+async function runFullInitialization(): Promise<void> {
+  // Initialize DuckDB engine
+  await initDuckDB()
+
+  // Cleanup any corrupt snapshot files from failed exports
+  try {
+    const { cleanupCorruptSnapshots } = await import('@/lib/opfs/snapshot-storage')
+    await cleanupCorruptSnapshots()
+  } catch (e) {
+    console.warn('[DuckDB] Failed to run snapshot cleanup:', e)
+  }
+
+  // Get persistence status
+  const isPersistent = isDuckDBPersistent()
+  const isReadOnly = isDuckDBReadOnly()
+
+  // Restore timelines and UI preferences from app-state.json
+  // This runs regardless of DuckDB persistence mode since app-state.json uses OPFS directly
+  try {
+    const { restoreAppState } = await import('@/lib/persistence/state-persistence')
+    const savedState = await restoreAppState()
+
+    if (savedState) {
+      // Restore timelines (for undo/redo history)
+      const { useTimelineStore } = await import('@/stores/timelineStore')
+      useTimelineStore.getState().loadTimelines(savedState.timelines)
+
+      // Restore UI preferences
+      useUIStore.getState().setSidebarCollapsed(savedState.uiPreferences.sidebarCollapsed)
+
+      // Expose saved table metadata for usePersistence to use
+      // This ensures tableIds remain consistent across refreshes
+      const tableIdMap: Record<string, string> = {}
+      for (const table of savedState.tables) {
+        tableIdMap[table.name] = table.id
+      }
+      ;(window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__ = tableIdMap
+
+      // Expose saved activeTableId for usePersistence to restore after hydration
+      ;(window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__ = savedState.activeTableId
+
+      console.log('[Persistence] Timelines and UI restored from app-state.json', {
+        tableIdMap,
+      })
+    }
+  } catch (error) {
+    console.warn('[Persistence] Failed to restore timelines:', error)
+  }
+
+  // Log ready status (only once)
+  if (isPersistent && !isReadOnly) {
+    console.log('[DuckDB] Ready with persistent storage (auto-save enabled)')
+  } else if (isPersistent && isReadOnly) {
+    console.log('[DuckDB] Ready with persistent storage (read-only mode)')
+  } else {
+    console.log('[DuckDB] Ready (in-memory - data will not persist)')
+    toast({
+      title: 'In-Memory Mode',
+      description: 'Your browser does not support persistent storage. Data will be lost on refresh.',
+      variant: 'default',
+    })
+  }
+
+  isFullyInitialized = true
+}
+
+/**
+ * Get the singleton initialization promise.
+ * Creates a new one if not already running.
+ */
+function getFullInitPromise(): Promise<void> {
+  if (!fullInitPromise) {
+    fullInitPromise = runFullInitialization()
+  }
+  return fullInitPromise
+}
+
+// ===== HOOK =====
+
 export function useDuckDB() {
-  const [isReady, setIsReady] = useState(false)
+  // Start with true if already initialized (prevents flash of loading state)
+  const [isReady, setIsReady] = useState(isFullyInitialized)
   const [isLoading, setIsLoading] = useState(false)
   const addTable = useTableStore((s) => s.addTable)
   const removeTable = useTableStore((s) => s.removeTable)
@@ -36,68 +128,16 @@ export function useDuckDB() {
   const setLoadingMessage = useUIStore((s) => s.setLoadingMessage)
 
   useEffect(() => {
-    initDuckDB()
-      .then(async () => {
+    // Skip if already initialized (component re-mount or HMR)
+    if (isFullyInitialized) {
+      setIsReady(true)
+      return
+    }
+
+    // Chain off the singleton promise - all components share this
+    getFullInitPromise()
+      .then(() => {
         setIsReady(true)
-
-        // Cleanup any corrupt snapshot files from failed exports
-        try {
-          const { cleanupCorruptSnapshots } = await import('@/lib/opfs/snapshot-storage')
-          await cleanupCorruptSnapshots()
-        } catch (e) {
-          console.warn('[DuckDB] Failed to run snapshot cleanup:', e)
-        }
-
-        // Show persistence status
-        const isPersistent = isDuckDBPersistent()
-        const isReadOnly = isDuckDBReadOnly()
-
-        // Restore timelines and UI preferences from app-state.json
-        // This runs regardless of DuckDB persistence mode since app-state.json uses OPFS directly
-        try {
-          const { restoreAppState } = await import('@/lib/persistence/state-persistence')
-          const savedState = await restoreAppState()
-
-          if (savedState) {
-            // Restore timelines (for undo/redo history)
-            const { useTimelineStore } = await import('@/stores/timelineStore')
-            useTimelineStore.getState().loadTimelines(savedState.timelines)
-
-            // Restore UI preferences
-            useUIStore.getState().setSidebarCollapsed(savedState.uiPreferences.sidebarCollapsed)
-
-            // Expose saved table metadata for usePersistence to use
-            // This ensures tableIds remain consistent across refreshes
-            const tableIdMap: Record<string, string> = {}
-            for (const table of savedState.tables) {
-              tableIdMap[table.name] = table.id
-            }
-            ;(window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__ = tableIdMap
-
-            // Expose saved activeTableId for usePersistence to restore after hydration
-            ;(window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__ = savedState.activeTableId
-
-            console.log('[Persistence] Timelines and UI restored from app-state.json', {
-              tableIdMap,
-            })
-          }
-        } catch (error) {
-          console.warn('[Persistence] Failed to restore timelines:', error)
-        }
-
-        if (isPersistent && !isReadOnly) {
-          console.log('[DuckDB] Ready with persistent storage (auto-save enabled)')
-        } else if (isPersistent && isReadOnly) {
-          console.log('[DuckDB] Ready with persistent storage (read-only mode)')
-          // Read-only toast already shown in initDuckDB()
-        } else {
-          console.log('[DuckDB] Ready (in-memory - data will not persist)')
-          toast({
-            title: 'In-Memory Mode',
-            description: 'Your browser does not support persistent storage. Data will be lost on refresh.',
-            variant: 'default',
-          })
-        }
       })
       .catch((err) => {
         console.error('Failed to initialize DuckDB:', err)
