@@ -1686,17 +1686,10 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     }, { timeout: 10000 }).toBe('CHANGED')
 
     // Wait for the timeline to be updated with the cell edit command
+    // Use inspector.getTimelinePosition for consistent Map access pattern
     await expect.poll(async () => {
-      const timelineInfo = await page.evaluate((tblId: string) => {
-        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const timelineStore = stores?.timelineStore as any
-        const state = timelineStore?.getState?.()
-        const timelines = state?.timelines as Map<string, { commands: unknown[] }> | undefined
-        const timeline = timelines?.get(tblId)
-        return timeline?.commands.length ?? 0
-      }, tableId as string)
-      return timelineInfo
+      const position = await inspector.getTimelinePosition(tableId as string)
+      return position.total
     }, { timeout: 10000, message: 'Timeline command was not added' }).toBeGreaterThan(0)
 
     // Verify undo button is enabled (canUndo should be true)

@@ -72,6 +72,9 @@ export function useDuckDB() {
             }
             ;(window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__ = tableIdMap
 
+            // Expose saved activeTableId for usePersistence to restore after hydration
+            ;(window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__ = savedState.activeTableId
+
             console.log('[Persistence] Timelines and UI restored from app-state.json', {
               tableIdMap,
             })

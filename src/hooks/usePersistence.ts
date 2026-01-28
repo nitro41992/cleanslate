@@ -159,6 +159,20 @@ export function usePersistence() {
 
         if (restoredCount > 0) {
           toast.success(`Restored ${restoredCount} table(s) from storage`)
+
+          // Restore the active table selection from saved state
+          // This must happen AFTER all tables are added, since addTable() overwrites activeTableId
+          const savedActiveTableId = (window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__
+          if (savedActiveTableId) {
+            const restoredTables = useTableStore.getState().tables
+            const activeTableExists = restoredTables.some(t => t.id === savedActiveTableId)
+            if (activeTableExists) {
+              useTableStore.getState().setActiveTable(savedActiveTableId)
+              console.log(`[Persistence] Restored active table: ${savedActiveTableId}`)
+            } else {
+              console.log(`[Persistence] Saved active table ${savedActiveTableId} not found in restored tables`)
+            }
+          }
         }
       } catch (err) {
         console.error('[Persistence] Critical hydration failure:', err)
