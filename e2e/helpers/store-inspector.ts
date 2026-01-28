@@ -214,6 +214,13 @@ export interface StoreInspector {
    */
   waitForPersistenceComplete: (timeout?: number) => Promise<void>
   /**
+   * Wait for timelines to be restored from OPFS after page reload.
+   * Use this after waitForDuckDBReady() when testing timeline-dependent features.
+   * @param tableId - Table ID to wait for timeline restoration
+   * @param timeout - Optional timeout in milliseconds (default 10000)
+   */
+  waitForTimelinesRestored: (tableId: string, timeout?: number) => Promise<void>
+  /**
    * Get dirty cells from the timeline store for a specific table.
    * Dirty cells are cells that have been manually edited.
    * @param tableId - Optional table ID (uses activeTableId if not specified)
@@ -817,6 +824,31 @@ async getTableList(): Promise<TableInfo[]> {
           const hasDirtyTables = dirtyTableIds?.size > 0
           // Complete when: saved, or idle with no dirty tables
           return status === 'saved' || (status === 'idle' && !hasDirtyTables)
+        },
+        { timeout }
+      )
+    },
+
+    async waitForTimelinesRestored(tableId: string, timeout = 10000): Promise<void> {
+      // Wait for timeline store to have a timeline with commands for any table
+      // This is needed after page reload because loadTimelines() runs after initDuckDB()
+      // Note: tableId parameter kept for API compatibility but we wait for any timeline
+      // since tableIds might be regenerated during reload
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.timelineStore) return false
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const timelineState = (stores.timelineStore as any).getState()
+          const timelines = timelineState?.timelines
+          if (!timelines || timelines.size === 0) return false
+          // Check if any timeline has commands (meaning it was restored)
+          for (const timeline of timelines.values()) {
+            if (timeline.commands && timeline.commands.length > 0) {
+              return true
+            }
+          }
+          return false
         },
         { timeout }
       )

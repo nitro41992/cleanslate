@@ -117,9 +117,14 @@ test.describe('Dirty Cell Indicator Persistence', () => {
     await inspector.waitForDuckDBReady()
     await inspector.waitForTableLoaded('basic_data', 5)
     await inspector.waitForGridReady()
+    // Wait for timelines to be restored from OPFS (loadTimelines runs after initDuckDB)
+    await inspector.waitForTimelinesRestored(tableId!)
+
+    // Get the new tableId after reload (may have changed)
+    const tableIdAfterReload = await inspector.getActiveTableId()
 
     // 7. Verify dirty cells in timeline store still > 0
-    const dirtyStateAfter = await inspector.getTimelineDirtyCells()
+    const dirtyStateAfter = await inspector.getTimelineDirtyCells(tableIdAfterReload!)
     expect(dirtyStateAfter.count).toBeGreaterThan(0)
     expect(dirtyStateAfter.dirtyCells.length).toBeGreaterThan(0)
 
@@ -185,9 +190,14 @@ test.describe('Dirty Cell Indicator Persistence', () => {
     await inspector.waitForDuckDBReady()
     await inspector.waitForTableLoaded('with_duplicates', 5)
     await inspector.waitForGridReady()
+    // Wait for timelines to be restored from OPFS
+    await inspector.waitForTimelinesRestored(tableId!)
+
+    // Get the new tableId after reload (may have changed)
+    const tableIdAfterReload = await inspector.getActiveTableId()
 
     // Verify dirty cells still tracked after reload
-    const dirtyStateAfter = await inspector.getTimelineDirtyCells()
+    const dirtyStateAfter = await inspector.getTimelineDirtyCells(tableIdAfterReload!)
     expect(dirtyStateAfter.count).toBe(1)
     // Verify it's still tracking the 'name' column
     const hasNameDirtyCell = dirtyStateAfter.dirtyCells.some(key => key.endsWith(':name'))
@@ -248,9 +258,14 @@ test.describe('Dirty Cell Indicator Persistence', () => {
     await inspector.waitForDuckDBReady()
     await inspector.waitForTableLoaded('basic_data', 5)
     await inspector.waitForGridReady()
+    // Wait for timelines to be restored from OPFS
+    await inspector.waitForTimelinesRestored(tableId!)
+
+    // Get the new tableId after reload (may have changed)
+    const tableIdAfterReload = await inspector.getActiveTableId()
 
     // Verify both dirty cells still tracked
-    const dirtyStateAfter = await inspector.getTimelineDirtyCells()
+    const dirtyStateAfter = await inspector.getTimelineDirtyCells(tableIdAfterReload!)
     expect(dirtyStateAfter.count).toBe(2)
     // Verify both are for the 'name' column
     const nameDirtyCells = dirtyStateAfter.dirtyCells.filter(key => key.endsWith(':name'))

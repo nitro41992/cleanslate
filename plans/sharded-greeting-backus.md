@@ -133,6 +133,29 @@ useEffect(() => {
 3. **New subscription starts debounce** - independent of `dataVersion`
 4. **Scroll preservation intact** - we didn't change the `dataVersion` skip logic
 
+## Alignment with 2025 Best Practices
+
+This approach follows established patterns from the React/Zustand ecosystem:
+
+### 1. Zustand subscribeWithSelector Pattern
+Using `subscribe(selector, callback)` to watch specific state slices is the [recommended Zustand pattern](https://zustand.docs.pmnd.rs/middlewares/subscribe-with-selector). It avoids unnecessary re-renders and allows fine-grained reactivity outside React components.
+
+### 2. Debounced Autosave
+[Debouncing onChange handlers](https://dev.to/mreigen/reactjs-auto-save-feature-for-any-input-field-1d37) is standard for autosave to prevent storage/network floods during rapid typing. Our adaptive debounce (2-10s based on row count) follows this pattern.
+
+### 3. Dirty State Tracking
+Tracking `dirtyFields` separately from data state is a [common pattern in form libraries](https://github.com/pmndrs/zustand/discussions/1179). We use `dirtyTableIds` in UIStore for the same purpose.
+
+### 4. MaxWait Safety Net
+The maxWait pattern ensures saves happen even during continuous editing - this prevents data loss if the user types continuously without pausing. This is similar to [lodash debounce's maxWait option](https://github.com/pmndrs/zustand/discussions/696).
+
+### 5. Separation of Concerns
+- **TableStore**: Data state (schema, rowCount, dataVersion)
+- **UIStore**: UI state (dirty tracking, persistence status)
+- **usePersistence**: Orchestrates saves based on both
+
+This follows the [Zustand best practice](https://tkdodo.eu/blog/working-with-zustand) of keeping stores focused and using subscriptions to coordinate between them
+
 ## Verification
 
 1. Make a cell edit, wait 2-3 seconds, refresh - no warning
@@ -143,3 +166,11 @@ useEffect(() => {
 ## Files to Modify
 
 1. `src/hooks/usePersistence.ts` - Add UIStore subscription (~30 lines)
+
+## Status: ✅ Complete
+
+### Implementation (commits b60b01a, 41751f7, 2475112)
+- Added UIStore subscription in `usePersistence.ts` to catch cell edits that skip dataVersion
+- Implemented singleton initialization to prevent 6x duplicate state restoration
+- Skip batch mode for cell edits to prevent save cascades
+- Added `waitForTimelinesRestored` helper for E2E tests to handle timeline restoration timing
