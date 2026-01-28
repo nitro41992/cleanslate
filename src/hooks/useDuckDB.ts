@@ -242,15 +242,33 @@ export function useDuckDB() {
           const { exportTableToParquet } = await import('@/lib/opfs/snapshot-storage')
           const { initDuckDB, getConnection } = await import('@/lib/duckdb')
           const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
+          const { useUIStore } = await import('@/stores/uiStore')
           const db = await initDuckDB()
           const conn = await getConnection()
-          await exportTableToParquet(db, conn, tableName, tableName)
+
+          // Track save progress in UI store for status bar indicator
+          useUIStore.getState().addSavingTable(tableName)
+          useUIStore.getState().setPersistenceStatus('saving')
+
+          await exportTableToParquet(db, conn, tableName, tableName, {
+            onChunkProgress: (current, total, table) => {
+              useUIStore.getState().setChunkProgress({ tableName: table, currentChunk: current, totalChunks: total })
+            },
+          })
+
+          // Clear save progress
+          useUIStore.getState().removeSavingTable(tableName)
+          useUIStore.getState().setPersistenceStatus('saved')
+
           // Tell auto-save system we already saved this table - prevents redundant save
           markTableAsRecentlySaved(tableId)
           console.log('[Import] Table persisted to Parquet')
         } catch (error) {
           console.warn('[Import] Failed to persist to Parquet:', error)
           // Non-fatal - usePersistence will retry on next change
+          const { useUIStore } = await import('@/stores/uiStore')
+          useUIStore.getState().removeSavingTable(tableName)
+          useUIStore.getState().setPersistenceStatus('error')
         }
 
         // NOW add to store - this triggers grid rendering

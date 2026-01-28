@@ -200,6 +200,17 @@ async function getOrderByColumn(
 }
 
 /**
+ * Options for Parquet export operations
+ */
+export interface ExportOptions {
+  /**
+   * Callback for chunk progress during large (>250k row) exports.
+   * Called after each chunk is written with current/total progress.
+   */
+  onChunkProgress?: (current: number, total: number, tableName: string) => void
+}
+
+/**
  * Export a table to Parquet file in OPFS
  *
  * CRITICAL MEMORY SAFETY: Uses in-memory buffer pattern with chunking.
@@ -215,6 +226,7 @@ async function getOrderByColumn(
  * @param conn - Active DuckDB connection (for COPY TO)
  * @param tableName - Source table to export
  * @param snapshotId - Unique snapshot identifier (e.g., "snapshot_abc_1234567890")
+ * @param options - Optional export options (chunk progress callback)
  *
  * Performance: ~2-3 seconds for 1M rows (includes compression + OPFS write)
  */
@@ -222,7 +234,8 @@ export async function exportTableToParquet(
   db: AsyncDuckDB,
   conn: AsyncDuckDBConnection,
   tableName: string,
-  snapshotId: string
+  snapshotId: string,
+  options?: ExportOptions
 ): Promise<void> {
   // Use global export queue to serialize COPY TO operations (prevents RAM spikes)
   return withGlobalExportLock(async () => {
@@ -250,6 +263,7 @@ export async function exportTableToParquet(
       console.log('[Snapshot] Using chunked Parquet export for large table')
 
       const batchSize = CHUNK_THRESHOLD
+      const totalChunks = Math.ceil(rowCount / batchSize)
       let offset = 0
       let partIndex = 0
 
@@ -323,8 +337,18 @@ export async function exportTableToParquet(
           partIndex++
           console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
 
+          // Report chunk progress via callback (for UI status bar)
+          if (options?.onChunkProgress) {
+            options.onChunkProgress(partIndex, totalChunks, tableName)
+          }
+
           // Yield to browser between chunks to prevent UI freezing during large exports
           await yieldToMain()
+        }
+
+        // Clear chunk progress when done
+        if (options?.onChunkProgress) {
+          options.onChunkProgress(totalChunks, totalChunks, tableName)
         }
 
         console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)

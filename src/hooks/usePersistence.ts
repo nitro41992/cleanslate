@@ -339,6 +339,10 @@ export async function compactChangelog(force = false): Promise<number> {
   // Check if compaction is needed
   const totalEntries = await changelog.getTotalChangelogCount()
 
+  // Update pending count in UI store (for status bar indicator)
+  const { useUIStore } = await import('@/stores/uiStore')
+  useUIStore.getState().setPendingChangelogCount(totalEntries)
+
   if (!force && totalEntries === 0) {
     return 0
   }
@@ -353,6 +357,9 @@ export async function compactChangelog(force = false): Promise<number> {
   }
 
   console.log(`[Persistence] Starting changelog compaction (${totalEntries} entries, idle ${Math.round(idleTime / 1000)}s)...`)
+
+  // Mark compaction as running
+  useUIStore.getState().setCompactionStatus('running')
 
   // Use Web Locks to prevent concurrent compaction across tabs
   let compactedCount = 0
@@ -392,7 +399,16 @@ export async function compactChangelog(force = false): Promise<number> {
           }
 
           // Export table to Parquet (includes all changes since changelog is already in DuckDB)
-          await exportTableToParquet(db, conn, table.name, table.name)
+          // Track in UI store for status bar indicator
+          useUIStore.getState().addSavingTable(table.name)
+
+          await exportTableToParquet(db, conn, table.name, table.name, {
+            onChunkProgress: (current, total, tableName) => {
+              useUIStore.getState().setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
+            },
+          })
+
+          useUIStore.getState().removeSavingTable(table.name)
 
           // Clear changelog for this table
           await changelog.clearChangelog(tableId)
@@ -407,6 +423,11 @@ export async function compactChangelog(force = false): Promise<number> {
   } catch (err) {
     console.error('[Persistence] Compaction lock acquisition failed:', err)
   }
+
+  // Mark compaction as idle and update pending count
+  const updatedCount = await changelog.getTotalChangelogCount()
+  useUIStore.getState().setCompactionStatus('idle')
+  useUIStore.getState().setPendingChangelogCount(updatedCount)
 
   if (compactedCount > 0) {
     console.log(`[Persistence] Compaction complete: ${compactedCount} table(s)`)
@@ -650,6 +671,9 @@ export function usePersistence() {
     if (saveInProgress.has(tableName)) {
       console.log(`[Persistence] ${tableName} save in progress, queuing...`)
       pendingSave.set(tableName, true)
+      // Track pending in UI store for indicator
+      const { useUIStore } = await import('@/stores/uiStore')
+      useUIStore.getState().addPendingTable(tableName)
       return saveInProgress.get(tableName)!
     }
 
@@ -659,6 +683,10 @@ export function usePersistence() {
       // Dynamic import inside the IIFE - after promise is registered
       const { useUIStore } = await import('@/stores/uiStore')
       const uiStore = useUIStore.getState()
+
+      // Track in UI store: add to saving, remove from pending
+      uiStore.addSavingTable(tableName)
+      uiStore.removePendingTable(tableName)
 
       try {
         // CRITICAL: Flush any pending batch edits for this table before exporting
@@ -685,7 +713,12 @@ export function usePersistence() {
         console.log(`[Persistence] Saving ${tableName}...`)
 
         // Export table to Parquet (overwrites existing snapshot)
-        await exportTableToParquet(db, conn, tableName, tableName)
+        // Pass chunk progress callback for large table UI feedback
+        await exportTableToParquet(db, conn, tableName, tableName, {
+          onChunkProgress: (current, total, table) => {
+            useUIStore.getState().setChunkProgress({ tableName: table, currentChunk: current, totalChunks: total })
+          },
+        })
 
         // Mark table as clean after successful Parquet export
         const tableForClean = useTableStore.getState().tables.find(t => t.name === tableName)
@@ -705,8 +738,12 @@ export function usePersistence() {
     saveInProgress.set(tableName, savePromise)
 
     // Handle cleanup and re-save after promise settles
-    savePromise.finally(() => {
+    savePromise.finally(async () => {
       saveInProgress.delete(tableName)
+
+      // Remove from saving tables in UI store
+      const { useUIStore } = await import('@/stores/uiStore')
+      useUIStore.getState().removeSavingTable(tableName)
 
       // If another save was requested while we were saving, save again with latest data
       if (pendingSave.get(tableName)) {

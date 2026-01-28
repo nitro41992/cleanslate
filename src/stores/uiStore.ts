@@ -1,8 +1,39 @@
 import { create } from 'zustand'
 import type { PersistenceStatus } from '@/types'
-import { getMemoryStatus, MEMORY_LIMIT_BYTES } from '@/lib/duckdb/memory'
+import { getMemoryStatus, getMemoryBreakdown, MEMORY_LIMIT_BYTES } from '@/lib/duckdb/memory'
 
 export type MemoryLevel = 'normal' | 'warning' | 'critical'
+export type CompactionStatus = 'idle' | 'running'
+
+/**
+ * Chunk progress for large Parquet exports (>250k rows)
+ */
+export interface ChunkProgress {
+  tableName: string
+  currentChunk: number
+  totalChunks: number
+}
+
+/**
+ * Memory breakdown by category for UI tooltip
+ */
+export interface MemoryBreakdown {
+  tableDataBytes: number   // User tables
+  timelineBytes: number    // _timeline_*, snapshot_*, _original_*
+  diffBytes: number        // _diff_* tables
+  overheadBytes: number    // Buffer pool, indexes, temp storage
+}
+
+/**
+ * Usage metrics for future analytics/monetization
+ */
+export interface UsageMetrics {
+  totalTables: number
+  totalRows: number
+  opfsUsedBytes: number
+  peakMemoryBytes: number
+  transformCount: number
+}
 
 interface UIState {
   sidebarCollapsed: boolean
@@ -17,6 +48,16 @@ interface UIState {
   loadingMessage: string | null  // Dynamic loading message for file imports
   skipNextGridReload: boolean  // Flag to skip next DataGrid reload (e.g., after diff close)
   transformingTables: Set<string>  // Tables currently undergoing transforms (prevents edit flushes)
+  // Snapshot queue state (for persistence indicator)
+  savingTables: string[]           // Tables currently being saved (Parquet export in progress)
+  pendingTables: string[]          // Tables queued for next save (coalescing)
+  chunkProgress: ChunkProgress | null  // Chunked export progress (null if not chunking)
+  compactionStatus: CompactionStatus   // Changelog compaction status
+  pendingChangelogCount: number        // Cell edits pending compaction
+  // Memory breakdown (for memory indicator tooltip)
+  memoryBreakdown: MemoryBreakdown
+  // Usage metrics (for future analytics)
+  usageMetrics: UsageMetrics
 }
 
 interface UIActions {
@@ -52,6 +93,27 @@ interface UIActions {
   hasPrioritySave: (tableId: string) => boolean
   /** Get all tables with priority save requested */
   getPrioritySaveTables: () => string[]
+  // Snapshot queue actions
+  /** Add a table to the saving list (call when Parquet export starts) */
+  addSavingTable: (tableName: string) => void
+  /** Remove a table from the saving list (call when Parquet export completes) */
+  removeSavingTable: (tableName: string) => void
+  /** Add a table to the pending list (call when save is queued for coalescing) */
+  addPendingTable: (tableName: string) => void
+  /** Remove a table from the pending list (call when save begins or cancelled) */
+  removePendingTable: (tableName: string) => void
+  /** Set chunk progress for large exports (null to clear) */
+  setChunkProgress: (progress: ChunkProgress | null) => void
+  /** Set compaction status */
+  setCompactionStatus: (status: CompactionStatus) => void
+  /** Set pending changelog entry count */
+  setPendingChangelogCount: (count: number) => void
+  // Memory breakdown actions
+  /** Set memory breakdown from memory.ts getMemoryBreakdown() */
+  setMemoryBreakdown: (breakdown: MemoryBreakdown) => void
+  // Usage metrics actions
+  /** Update usage metrics (merges partial update into existing) */
+  updateUsageMetrics: (metrics: Partial<UsageMetrics>) => void
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -67,6 +129,27 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   loadingMessage: null,
   skipNextGridReload: false,
   transformingTables: new Set<string>(),
+  // Snapshot queue initial state
+  savingTables: [],
+  pendingTables: [],
+  chunkProgress: null,
+  compactionStatus: 'idle',
+  pendingChangelogCount: 0,
+  // Memory breakdown initial state
+  memoryBreakdown: {
+    tableDataBytes: 0,
+    timelineBytes: 0,
+    diffBytes: 0,
+    overheadBytes: 0,
+  },
+  // Usage metrics initial state
+  usageMetrics: {
+    totalTables: 0,
+    totalRows: 0,
+    opfsUsedBytes: 0,
+    peakMemoryBytes: 0,
+    transformCount: 0,
+  },
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
@@ -133,12 +216,27 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
     // Skip if any DuckDB operation is in progress (prevents race condition)
     if (get().busyCount > 0) return
     try {
-      const status = await getMemoryStatus()
+      // Fetch both status and breakdown in parallel
+      const [status, breakdown] = await Promise.all([
+        getMemoryStatus(),
+        getMemoryBreakdown(),
+      ])
       set({
         memoryUsage: status.usedBytes,
         memoryLimit: status.limitBytes,
         memoryLevel: status.level,
+        memoryBreakdown: breakdown,
       })
+      // Track peak memory for usage metrics
+      const current = get()
+      if (status.usedBytes > current.usageMetrics.peakMemoryBytes) {
+        set({
+          usageMetrics: {
+            ...current.usageMetrics,
+            peakMemoryBytes: status.usedBytes,
+          },
+        })
+      }
     } catch (error) {
       console.warn('Failed to refresh memory status:', error)
     }
@@ -190,6 +288,67 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
 
   getPrioritySaveTables: () => {
     return Array.from(get().prioritySaveTableIds)
+  },
+
+  // Snapshot queue actions
+  addSavingTable: (tableName) => {
+    set((state) => {
+      if (state.savingTables.includes(tableName)) return state
+      return { savingTables: [...state.savingTables, tableName] }
+    })
+  },
+
+  removeSavingTable: (tableName) => {
+    set((state) => ({
+      savingTables: state.savingTables.filter((t) => t !== tableName),
+      // Clear chunk progress if this was the table being chunked
+      chunkProgress: state.chunkProgress?.tableName === tableName ? null : state.chunkProgress,
+    }))
+  },
+
+  addPendingTable: (tableName) => {
+    set((state) => {
+      if (state.pendingTables.includes(tableName)) return state
+      return { pendingTables: [...state.pendingTables, tableName] }
+    })
+  },
+
+  removePendingTable: (tableName) => {
+    set((state) => ({
+      pendingTables: state.pendingTables.filter((t) => t !== tableName),
+    }))
+  },
+
+  setChunkProgress: (progress) => {
+    set({ chunkProgress: progress })
+  },
+
+  setCompactionStatus: (status) => {
+    set({ compactionStatus: status })
+  },
+
+  setPendingChangelogCount: (count) => {
+    set({ pendingChangelogCount: count })
+  },
+
+  // Memory breakdown actions
+  setMemoryBreakdown: (breakdown) => {
+    set({ memoryBreakdown: breakdown })
+  },
+
+  // Usage metrics actions
+  updateUsageMetrics: (metrics) => {
+    set((state) => ({
+      usageMetrics: {
+        ...state.usageMetrics,
+        ...metrics,
+        // Track peak memory
+        peakMemoryBytes: Math.max(
+          state.usageMetrics.peakMemoryBytes,
+          metrics.peakMemoryBytes ?? state.memoryUsage
+        ),
+      },
+    }))
   },
 }))
 
