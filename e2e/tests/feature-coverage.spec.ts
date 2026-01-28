@@ -1578,6 +1578,8 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     await wizard.waitForOpen()
     await wizard.import()
     await inspector.waitForTableLoaded('fr_a3_text_dirty', 8)
+    // Wait for grid to be fully ready for editing after data load
+    await inspector.waitForGridReady()
   }
 
   test('should show dirty indicator on edited cells', async () => {

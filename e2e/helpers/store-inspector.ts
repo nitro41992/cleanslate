@@ -146,6 +146,11 @@ export interface StoreInspector {
    */
   flushToOPFS: () => Promise<void>
   /**
+   * Save app state (timelines, UI state) to OPFS immediately
+   * Must be called before page reload if transforms or UI state should persist
+   */
+  saveAppState: () => Promise<void>
+  /**
    * Get column information for a specific table
    */
   getTableColumns: (tableName: string) => Promise<{ name: string; type: string }[]>
@@ -196,6 +201,13 @@ export interface StoreInspector {
    * @param timeout - Optional timeout in milliseconds (default 30000)
    */
   waitForReplayComplete: (timeout?: number) => Promise<void>
+  /**
+   * Wait for Parquet persistence to complete (debounce + save).
+   * The app auto-saves tables as Parquet files with a 2-3 second debounce.
+   * This helper waits for all pending saves to finish.
+   * @param timeout - Optional timeout in milliseconds (default 10000)
+   */
+  waitForPersistenceComplete: (timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -270,14 +282,19 @@ export function createStoreInspector(page: Page): StoreInspector {
     },
 
     async waitForDuckDBReady(): Promise<void> {
-      // Wait for the "Initializing data engine..." text to disappear
-      // This indicates DuckDB is ready in the UI
+      // Wait for ALL loading states to complete:
+      // 1. "Initializing data engine..." - DuckDB WASM initialization
+      // 2. "Restoring your workspace..." - OPFS restore phase
+      // Both must complete before DuckDB is ready to accept queries
       await page.waitForFunction(
         () => {
-          const initText = document.body.innerText
-          return !initText.includes('Initializing data engine')
+          const bodyText = document.body.innerText
+          // Check for any loading state that blocks DuckDB queries
+          const isInitializing = bodyText.includes('Initializing data engine')
+          const isRestoring = bodyText.includes('Restoring your workspace')
+          return !isInitializing && !isRestoring
         },
-        { timeout: 30000 }
+        { timeout: 60000 }  // Increased timeout for OPFS restore
       )
       // Also ensure the stores are exposed
       await page.waitForFunction(
@@ -293,6 +310,22 @@ export function createStoreInspector(page: Page): StoreInspector {
         () => {
           const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { isReady: boolean } }).__CLEANSLATE_DUCKDB__
           return duckdb?.isReady === true
+        },
+        { timeout: 30000 }
+      )
+      // CRITICAL: Verify DuckDB is truly ready by executing a test query
+      // The isReady flag can be set before the WebWorker connection is fully initialized
+      // This test query ensures the WASM connection is actually ready to accept queries
+      await page.waitForFunction(
+        async () => {
+          try {
+            const duckdb = (window as Window & { __CLEANSLATE_DUCKDB__?: { query: (sql: string) => Promise<unknown>; isReady: boolean } }).__CLEANSLATE_DUCKDB__
+            if (!duckdb?.query || !duckdb.isReady) return false
+            await duckdb.query('SELECT 1')
+            return true
+          } catch {
+            return false
+          }
         },
         { timeout: 30000 }
       )
@@ -490,6 +523,17 @@ export function createStoreInspector(page: Page): StoreInspector {
         if (duckdb?.flushDuckDB) {
           // immediate=true bypasses test environment check
           await duckdb.flushDuckDB(true)
+        }
+      })
+    },
+
+    async saveAppState(): Promise<void> {
+      await page.evaluate(async () => {
+        const persistence = (window as Window & { __CLEANSLATE_PERSISTENCE__?: { saveNow: () => Promise<void> } }).__CLEANSLATE_PERSISTENCE__
+        if (persistence?.saveNow) {
+          await persistence.saveNow()
+        } else {
+          throw new Error('Persistence module not available')
         }
       })
     },
@@ -722,6 +766,48 @@ async getTableList(): Promise<TableInfo[]> {
       ).catch(() => {
         // Ignore timeout - tableStore may not have isLoading flag set
       })
+    },
+
+    async waitForPersistenceComplete(timeout = 10000): Promise<void> {
+      // Wait for Parquet persistence to complete
+      // The app uses a 2-3 second debounce before auto-saving
+      //
+      // Two-phase wait:
+      // 1. First wait for dirty state to be acknowledged (subscription fires)
+      // 2. Then wait for save to complete (status becomes 'saved' or back to 'idle')
+
+      // Phase 1: Wait briefly for the subscription to fire and mark table dirty
+      // This prevents returning early if we check before the store subscription runs
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.uiStore) return true
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.uiStore as any).getState()
+          const status = state?.persistenceStatus
+          // Wait until we see dirty, saving, or saved (not initial idle)
+          return status === 'dirty' || status === 'saving' || status === 'saved'
+        },
+        { timeout: 5000 }
+      ).catch(() => {
+        // If no dirty state after 5s, maybe nothing to persist - that's OK
+      })
+
+      // Phase 2: Now wait for persistence to complete
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.uiStore) return true
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.uiStore as any).getState()
+          const status = state?.persistenceStatus
+          const dirtyTableIds = state?.dirtyTableIds
+          const hasDirtyTables = dirtyTableIds?.size > 0
+          // Complete when: saved, or idle with no dirty tables
+          return status === 'saved' || (status === 'idle' && !hasDirtyTables)
+        },
+        { timeout }
+      )
     },
   }
 }
