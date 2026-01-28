@@ -5,3 +5,4 @@
  */
 
 export { EditCellCommand, type EditCellParams } from './cell'
+export { BatchEditCommand, type BatchEditParams, type BatchEditChange } from './batch'

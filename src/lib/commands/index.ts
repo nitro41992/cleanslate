@@ -207,7 +207,7 @@ import { StandardizeApplyCommand } from './standardize'
 import { MatchMergeCommand } from './match'
 import { CombineStackCommand, CombineJoinCommand } from './combine'
 import { ScrubHashCommand, ScrubMaskCommand, ScrubRedactCommand, ScrubYearOnlyCommand } from './scrub'
-import { EditCellCommand } from './edit'
+import { EditCellCommand, BatchEditCommand } from './edit'
 
 // Register all commands
 registerCommand('transform:trim', TrimCommand)
@@ -251,3 +251,4 @@ registerCommand('scrub:year_only', ScrubYearOnlyCommand)
 
 // Edit commands
 registerCommand('edit:cell', EditCellCommand)
+registerCommand('edit:batch', BatchEditCommand)

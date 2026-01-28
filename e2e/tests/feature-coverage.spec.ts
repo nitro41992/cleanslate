@@ -1566,6 +1566,8 @@ test.describe('FR-A4: Manual Cell Editing', () => {
     await laundromat.goto()
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+    // Disable edit batching for immediate audit log entries
+    await inspector.disableEditBatching()
   })
 
   test.afterEach(async () => {

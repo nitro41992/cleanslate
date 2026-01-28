@@ -227,6 +227,22 @@ export interface StoreInspector {
    * @returns Array of dirty cell keys in format "csId:columnName"
    */
   getTimelineDirtyCells: (tableId?: string) => Promise<TimelineDirtyCellsState>
+  /**
+   * Disable cell edit batching for tests.
+   * When batching is disabled, cell edits are executed immediately (no 500ms debounce).
+   * Call this at the start of tests that expect immediate audit log entries.
+   */
+  disableEditBatching: () => Promise<void>
+  /**
+   * Flush any pending cell edits immediately.
+   * Use this after making cell edits if you need to verify audit log entries.
+   */
+  flushEditBatch: () => Promise<void>
+  /**
+   * Wait for edit batch to be flushed (all pending edits committed).
+   * @param timeout - Optional timeout in milliseconds (default 2000)
+   */
+  waitForEditBatchFlush: (timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -874,6 +890,44 @@ async getTableList(): Promise<TableInfo[]> {
           count: dirtyCells.size,
         }
       }, { tableId })
+    },
+
+    async disableEditBatching(): Promise<void> {
+      await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (stores?.setBatchWindow) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (stores.setBatchWindow as any)(0)
+        }
+      })
+    },
+
+    async flushEditBatch(): Promise<void> {
+      await page.evaluate(async () => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (stores?.editBatchStore) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.editBatchStore as any).getState()
+          if (state?.flushAll) {
+            await state.flushAll()
+          }
+        }
+      })
+    },
+
+    async waitForEditBatchFlush(timeout = 2000): Promise<void> {
+      // Wait for pending edits to be flushed
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.editBatchStore) return true  // No batch store = nothing to wait for
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.editBatchStore as any).getState()
+          // Check that no tables have pending edits
+          return state?.pendingEdits?.size === 0
+        },
+        { timeout }
+      )
     },
   }
 }

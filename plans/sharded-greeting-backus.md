@@ -174,3 +174,129 @@ This follows the [Zustand best practice](https://tkdodo.eu/blog/working-with-zus
 - Implemented singleton initialization to prevent 6x duplicate state restoration
 - Skip batch mode for cell edits to prevent save cascades
 - Added `waitForTimelinesRestored` helper for E2E tests to handle timeline restoration timing
+
+---
+
+# Part 2: Audit Log Batching for Rapid Cell Edits
+
+## Problem
+
+When users make rapid cell edits, each edit creates a separate audit log entry. 10 quick edits = 10 entries cluttering the audit sidebar.
+
+## Goal
+
+Batch rapid cell edits into a single audit entry with drill-down showing all changes:
+
+**Before:** 10 separate "Edit Cell" entries
+
+**After:** 1 entry "Batch edited 10 cells" with drill-down table:
+| Cell ID | Column | Before | After |
+|---------|--------|--------|-------|
+| Row 42 | name | "John" | "Johnny" |
+| Row 42 | email | null | "j@x.com" |
+| ... | ... | ... | ... |
+
+## Implementation Plan
+
+### 1. Edit Batching Store (`src/stores/editBatchStore.ts`)
+Create a new store to accumulate rapid edits before committing to timeline:
+
+```typescript
+interface PendingEdit {
+  csId: string
+  columnName: string
+  previousValue: unknown
+  newValue: unknown
+  timestamp: number
+}
+
+interface EditBatchState {
+  pendingEdits: Map<string, PendingEdit[]>  // tableId -> edits
+  batchTimeout: NodeJS.Timeout | null
+
+  addEdit: (tableId: string, edit: PendingEdit) => void
+  flushBatch: (tableId: string) => void
+  clearBatch: (tableId: string) => void
+}
+```
+
+### 2. Modify DataGrid Cell Edit Flow
+Instead of executing `edit:cell` immediately:
+1. Add edit to `editBatchStore`
+2. Apply change to local grid state (instant feedback)
+3. Debounce flush (500ms window)
+4. On flush: execute single `edit:batch` command
+
+### 3. Implement `edit:batch` Command
+Already defined in types (`CommandType = 'edit:batch'`), needs implementation:
+
+```typescript
+interface BatchEditParams {
+  tableId: string
+  tableName: string
+  edits: Array<{
+    csId: string
+    columnName: string
+    previousValue: unknown
+    newValue: unknown
+  }>
+}
+```
+
+### 4. Update ManualEditDetailView
+Currently hard-coded for single cell. Update to handle `cellChanges[]` array:
+
+```typescript
+// If multiple changes, render table
+if (cellChanges && cellChanges.length > 1) {
+  return <BatchEditTable changes={cellChanges} />
+}
+// Otherwise single cell view (existing)
+```
+
+## Files to Modify
+
+1. `src/stores/editBatchStore.ts` - NEW: Accumulate rapid edits
+2. `src/components/grid/DataGrid.tsx` - Use batch store instead of direct execute
+3. `src/lib/commands/edit/batch.ts` - NEW: Implement batch edit command
+4. `src/lib/commands/registry.ts` - Register batch command
+5. `src/components/common/ManualEditDetailView.tsx` - Handle multi-cell display
+6. `src/lib/audit-from-timeline.ts` - Generate "Batch edited N cells" label
+
+## Verification
+
+1. Make 5 rapid edits in <500ms - see single "Batch edited 5 cells" entry
+2. Make edits with >500ms gaps - see individual entries
+3. Drill-down shows all cell changes in table format
+4. Undo reverts entire batch at once
+
+## Status: ✅ Implemented
+
+### Files Created
+- `src/stores/editBatchStore.ts` - Zustand store for accumulating rapid edits with 500ms debounce
+- `src/lib/commands/edit/batch.ts` - BatchEditCommand class for executing batched edits
+
+### Files Modified
+- `src/lib/commands/edit/index.ts` - Export BatchEditCommand
+- `src/lib/commands/index.ts` - Import and register BatchEditCommand
+- `src/components/grid/DataGrid.tsx` - Use batch store when batching enabled, direct `edit:cell` when disabled
+- `src/components/common/ManualEditDetailView.tsx` - Support multiple cell changes in drill-down
+- `src/main.tsx` - Expose editBatchStore and helpers for E2E tests
+- `src/lib/audit-from-timeline.ts` - Already had batch_edit support in buildDetails()
+
+### Test Support
+- `e2e/helpers/store-inspector.ts` - Added `disableEditBatching()`, `flushEditBatch()`, `waitForEditBatchFlush()`
+- Updated test files to disable batching for immediate audit log verification
+
+### How Batching Works
+1. User makes cell edit → Local state updated immediately (UI feedback)
+2. Edit added to batch store → 500ms debounce timer starts
+3. More edits within 500ms → Timer resets, edits accumulated
+4. Timer fires → `edit:batch` command executed with all edits
+5. Single audit log entry shows "Batch Edit (N cells)" with drill-down table
+
+### Test Behavior
+When `disableEditBatching()` is called:
+- Batching is bypassed entirely
+- Each cell edit executes `edit:cell` command immediately
+- Audit log entries appear instantly (original behavior)

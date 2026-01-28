@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useEditBatchStore, type PendingEdit, isBatchingEnabled } from '@/stores/editBatchStore'
 import { updateCell, estimateCsIdForRow } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
@@ -138,7 +139,8 @@ export function DataGrid({
   const recordEdit = useEditStore((s) => s.recordEdit)
 
   // Hook for executing commands with confirmation when discarding redo states
-  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
+  // Note: executeWithConfirmation kept for potential future use (e.g., undo confirmation during batch)
+  const { executeWithConfirmation: _executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   // Track CommandExecutor timeline version for triggering re-renders
   const [executorTimelineVersion, setExecutorTimelineVersion] = useState(0)
@@ -189,6 +191,49 @@ export function DataGrid({
   )
 
   // Audit store for logging edits
+
+  // Edit batch store for batching rapid edits
+  const addEditToBatch = useEditBatchStore((s) => s.addEdit)
+
+  // Set up the batch flush callback - executes when batch timer fires
+  useEffect(() => {
+    if (!tableId || !tableName) return
+
+    useEditBatchStore.getState()._setFlushCallback(async (batchTableId: string, edits: PendingEdit[]) => {
+      // Only process if this is our table
+      if (batchTableId !== tableId) return
+      if (edits.length === 0) return
+
+      console.log(`[DATAGRID] Flushing batch of ${edits.length} edits for ${tableName}`)
+
+      try {
+        // Create batch command with all accumulated edits
+        const command = createCommand('edit:batch', {
+          tableId,
+          tableName,
+          changes: edits.map((e) => ({
+            csId: e.csId,
+            columnName: e.columnName,
+            previousValue: e.previousValue,
+            newValue: e.newValue,
+          })),
+        })
+
+        // Execute via CommandExecutor (handles database, timeline, audit)
+        const result = await getCommandExecutor().execute(command)
+
+        if (result.success) {
+          console.log(`[DATAGRID] Batch edit successful: ${edits.length} cells`)
+          // Trigger re-render for dirty cell tracking
+          setExecutorTimelineVersion((v) => v + 1)
+        } else {
+          console.error('[DATAGRID] Batch edit failed:', result.error)
+        }
+      } catch (error) {
+        console.error('[DATAGRID] Failed to execute batch edit:', error)
+      }
+    })
+  }, [tableId, tableName])
 
   const gridColumns: GridColumn[] = useMemo(
     () =>
@@ -668,30 +713,11 @@ export function DataGrid({
       }
 
       try {
-        console.log('[DATAGRID] Creating edit:cell command...')
+        // Check if batching is enabled
+        if (isBatchingEnabled()) {
+          console.log('[DATAGRID] Adding cell edit to batch...')
 
-        // Create and execute the edit:cell command with confirmation if discarding redo states
-        const command = createCommand('edit:cell', {
-          tableId,
-          tableName,
-          csId,
-          columnName: colName,
-          previousValue,
-          newValue: newCellValue,
-        })
-
-        // Execute command - audit info (including hasRowDetails) will be captured for timeline
-        const result = await executeWithConfirmation(command, tableId)
-
-        // User cancelled the confirmation dialog
-        if (!result) {
-          return
-        }
-
-        if (result.success) {
-          console.log('[DATAGRID] Cell edit successful via CommandExecutor')
-
-          // Update local data state
+          // Update local data state immediately (UI feedback)
           setData((prevData) => {
             const newData = [...prevData]
             if (newData[adjustedRow]) {
@@ -714,16 +740,72 @@ export function DataGrid({
             timestamp: new Date(),
           })
 
-          // Trigger re-render for dirty cell tracking
-          setExecutorTimelineVersion((v) => v + 1)
+          // Mark table as dirty immediately (shows "unsaved changes" indicator)
+          useUIStore.getState().markTableDirty(tableId)
+
+          // Add edit to batch store (will be flushed after 500ms of no edits)
+          // This batches rapid edits into a single audit log entry
+          addEditToBatch(tableId, {
+            csId,
+            columnName: colName,
+            previousValue,
+            newValue: newCellValue,
+            timestamp: Date.now(),
+          })
+
+          console.log('[DATAGRID] Cell edit added to batch')
         } else {
-          console.error('[DATAGRID] Cell edit failed:', result.error)
+          // Batching disabled - execute immediately (for tests)
+          console.log('[DATAGRID] Creating edit:cell command (batching disabled)...')
+
+          const command = createCommand('edit:cell', {
+            tableId,
+            tableName,
+            csId,
+            columnName: colName,
+            previousValue,
+            newValue: newCellValue,
+          })
+
+          const result = await getCommandExecutor().execute(command)
+
+          if (result.success) {
+            console.log('[DATAGRID] Cell edit successful via CommandExecutor')
+
+            // Update local data state
+            setData((prevData) => {
+              const newData = [...prevData]
+              if (newData[adjustedRow]) {
+                newData[adjustedRow] = {
+                  ...newData[adjustedRow],
+                  [colName]: newCellValue,
+                }
+              }
+              return newData
+            })
+
+            // Record to legacy editStore for backward compatibility
+            recordEdit({
+              tableId,
+              tableName,
+              rowIndex: row,
+              columnName: colName,
+              previousValue,
+              newValue: newCellValue,
+              timestamp: new Date(),
+            })
+
+            // Trigger re-render for dirty cell tracking
+            setExecutorTimelineVersion((v) => v + 1)
+          } else {
+            console.error('[DATAGRID] Cell edit failed:', result.error)
+          }
         }
       } catch (error) {
-        console.error('Failed to update cell:', error)
+        console.error('Failed to process cell edit:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, executeWithConfirmation]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch]
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights

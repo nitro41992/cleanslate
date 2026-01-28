@@ -63,6 +63,14 @@ if (import.meta.env.DEV) {
     ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.uiStore = useUIStore
   })
 
+  import('./stores/editBatchStore').then(({ useEditBatchStore, setBatchWindow, isBatchingEnabled }) => {
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ =
+      (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ || {}
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.editBatchStore = useEditBatchStore
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.setBatchWindow = setBatchWindow
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.isBatchingEnabled = isBatchingEnabled
+  })
+
   // Expose fuzzy matcher for E2E testing
   import('./lib/fuzzy-matcher').then((fuzzyMatcher) => {
     ;(window as Window & { __CLEANSLATE_FUZZY_MATCHER__?: typeof fuzzyMatcher }).__CLEANSLATE_FUZZY_MATCHER__ = fuzzyMatcher

@@ -38,6 +38,8 @@ test.describe('Manual Edit Undo Through Transform', () => {
 
     await page.goto('/')
     await inspector.waitForDuckDBReady()
+    // Disable edit batching for immediate audit log entries
+    await inspector.disableEditBatching()
 
     // Clean up any existing test table
     await inspector.runQuery('DROP TABLE IF EXISTS undo_test')

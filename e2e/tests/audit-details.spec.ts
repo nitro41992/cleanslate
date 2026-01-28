@@ -42,6 +42,8 @@ test.describe('Audit Row Details', () => {
     await page.goto('/')
     inspector = createStoreInspector(page)
     await inspector.waitForDuckDBReady()
+    // Disable edit batching for immediate audit log entries
+    await inspector.disableEditBatching()
   })
 
   test.afterEach(async () => {
