@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
-import { updateCell } from '@/lib/duckdb'
+import { updateCell, estimateCsIdForRow } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
@@ -73,6 +73,20 @@ interface DataGridProps {
 }
 
 const PAGE_SIZE = 500
+const PREFETCH_BUFFER = 1000 // Increased from 500 to 1000 rows for smoother scrolling
+const MAX_CACHED_PAGES = 10  // LRU cache: 10 pages = ~5000 rows
+
+/**
+ * LRU page cache entry for keyset pagination.
+ * Caches pages by their starting row index for O(1) lookup.
+ */
+interface CachedPage {
+  startRow: number
+  rows: { csId: string; data: Record<string, unknown> }[]
+  firstCsId: string | null
+  lastCsId: string | null
+  timestamp: number          // For LRU eviction
+}
 
 export function DataGrid({
   tableName,
@@ -87,7 +101,7 @@ export function DataGrid({
   ghostRows: _ghostRows = [],
   dataVersion,
 }: DataGridProps) {
-  const { getData, getDataWithRowIds } = useDuckDB()
+  const { getData, getDataWithRowIds, getDataWithKeyset } = useDuckDB()
   const [data, setData] = useState<Record<string, unknown>[]>([])
   // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
@@ -100,6 +114,17 @@ export function DataGrid({
   // Track scroll position for restore after data reload (transforms, not cell edits)
   // This preserves the user's view position across structural changes (column adds, transforms)
   const scrollPositionRef = useRef<{ col: number; row: number } | null>(null)
+
+  // LRU page cache for efficient scrolling (keyed by approximate start row)
+  // Caches up to MAX_CACHED_PAGES pages (~5000 rows) for instant access on scroll-back
+  const pageCacheRef = useRef<Map<number, CachedPage>>(new Map())
+
+  // Debounce timer for scroll handling - prevents excessive fetches during rapid scrolling
+  const scrollDebounceRef = useRef<NodeJS.Timeout | null>(null)
+  // Abort controller for cancelling in-flight fetches when scroll position changes
+  const fetchAbortRef = useRef<AbortController | null>(null)
+  // Track the last requested range to avoid applying stale data
+  const pendingRangeRef = useRef<{ start: number; end: number } | null>(null)
 
   // Timeline store for highlight state and replay status
   const storeHighlight = useTimelineStore((s) => s.highlight)
@@ -213,14 +238,15 @@ export function DataGrid({
     setData([]) // Clear stale data immediately
     setLoadedRange({ start: 0, end: 0 }) // Reset loaded range
     setCsIdToRowIndex(new Map()) // Reset row ID mapping
+    pageCacheRef.current.clear() // Clear LRU cache on data reload
 
-    // Load data with row IDs for timeline highlighting
-    getDataWithRowIds(tableName, 0, PAGE_SIZE)
-      .then((rowsWithIds) => {
-        console.log('[DATAGRID] Data fetched, row count:', rowsWithIds.length)
+    // Load initial data using keyset pagination for O(1) performance
+    getDataWithKeyset(tableName, { direction: 'forward', csId: null }, PAGE_SIZE)
+      .then((pageResult) => {
+        console.log('[DATAGRID] Data fetched with keyset, row count:', pageResult.rows.length)
         // Build _cs_id -> row index map
         const idMap = new Map<string, number>()
-        const rows = rowsWithIds.map((row, index) => {
+        const rows = pageResult.rows.map((row, index) => {
           if (row.csId) {
             idMap.set(row.csId, index)
           }
@@ -231,6 +257,15 @@ export function DataGrid({
         if (rows.length > 0) {
           console.log('[DATAGRID] First row sample:', rows[0])
         }
+
+        // Cache this initial page
+        pageCacheRef.current.set(0, {
+          startRow: 0,
+          rows: pageResult.rows,
+          firstCsId: pageResult.firstCsId,
+          lastCsId: pageResult.lastCsId,
+          timestamp: Date.now(),
+        })
 
         setData(rows)
         setCsIdToRowIndex(idMap)
@@ -252,11 +287,19 @@ export function DataGrid({
         }
       })
       .catch((err) => {
-        console.error('Error loading data:', err)
-        // Fallback to regular getData if getDataWithRowIds fails
-        getData(tableName, 0, PAGE_SIZE)
-          .then((rows) => {
+        console.error('Error loading data with keyset:', err)
+        // Fallback to OFFSET-based getData if keyset fails
+        getDataWithRowIds(tableName, 0, PAGE_SIZE)
+          .then((rowsWithIds) => {
+            const idMap = new Map<string, number>()
+            const rows = rowsWithIds.map((row, index) => {
+              if (row.csId) {
+                idMap.set(row.csId, index)
+              }
+              return row.data
+            })
             setData(rows)
+            setCsIdToRowIndex(idMap)
             setLoadedRange({ start: 0, end: rows.length })
             setIsLoading(false)
           })
@@ -265,7 +308,7 @@ export function DataGrid({
             setIsLoading(false)
           })
       })
-  }, [tableName, columns, getData, getDataWithRowIds, rowCount, dataVersion, isReplaying, isBusy])
+  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, rowCount, dataVersion, isReplaying, isBusy])
 
   // Track previous values to detect changes
   const prevHighlightCommandId = useRef<string | null | undefined>(undefined)
@@ -305,42 +348,218 @@ export function DataGrid({
     prevTimelinePosition.current = timelinePosition
   }, [timelinePosition, invalidateVisibleCells])
 
-  // Load more data on scroll (with row ID tracking for timeline highlighting)
+  // Debounce delay for scroll handling (ms) - shorter for responsive feel
+  const SCROLL_DEBOUNCE_MS = 50
+
+  // Load more data on scroll with LRU cache and keyset pagination
+  // Uses prefetch buffer of ±PREFETCH_BUFFER rows for smooth scrolling
+  // Debounced to prevent excessive fetches during rapid scrolling (e.g., scrollbar drag)
   const onVisibleRegionChanged = useCallback(
-    async (range: { x: number; y: number; width: number; height: number }) => {
+    (range: { x: number; y: number; width: number; height: number }) => {
       // Save current scroll position for restore after data reload (transforms)
-      // This captures the user's view position before any structural change
       scrollPositionRef.current = { col: range.x, row: range.y }
 
       // Skip if DuckDB is busy with heavy operations
       if (useUIStore.getState().busyCount > 0) return
 
-      const needStart = Math.max(0, range.y - PAGE_SIZE)
-      const needEnd = Math.min(rowCount, range.y + range.height + PAGE_SIZE)
+      // Calculate the range we need to cover (visible + prefetch buffer)
+      const needStart = Math.max(0, range.y - PREFETCH_BUFFER)
+      const needEnd = Math.min(rowCount, range.y + range.height + PREFETCH_BUFFER)
 
-      if (needStart < loadedRange.start || needEnd > loadedRange.end) {
-        try {
-          const rowsWithIds = await getDataWithRowIds(tableName, needStart, needEnd - needStart)
-          const idMap = new Map<string, number>()
-          const rows = rowsWithIds.map((row: { csId: string; data: Record<string, unknown> }, index: number) => {
-            if (row.csId) {
-              idMap.set(row.csId, needStart + index)
-            }
-            return row.data
-          })
-          setData(rows)
-          setCsIdToRowIndex(idMap)
-          setLoadedRange({ start: needStart, end: needStart + rows.length })
-        } catch {
-          // Fallback to regular getData
-          const newData = await getData(tableName, needStart, needEnd - needStart)
-          setData(newData)
-          setLoadedRange({ start: needStart, end: needStart + newData.length })
-        }
+      // Check if we already have this range fully loaded (no fetch needed)
+      if (needStart >= loadedRange.start && needEnd <= loadedRange.end) {
+        return // Already have all needed data
       }
+
+      // Clear any pending debounce timer
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current)
+      }
+
+      // Cancel any in-flight fetch for a different region
+      if (fetchAbortRef.current) {
+        fetchAbortRef.current.abort()
+      }
+
+      // Track this as the pending range
+      pendingRangeRef.current = { start: needStart, end: needEnd }
+
+      // Debounce the fetch - wait for scrolling to settle
+      scrollDebounceRef.current = setTimeout(async () => {
+        // Create new abort controller for this fetch
+        const abortController = new AbortController()
+        fetchAbortRef.current = abortController
+
+        // Calculate which pages we need to cover the range
+        const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
+        const lastPageIdx = Math.floor((needEnd - 1) / PAGE_SIZE)
+
+        // Collect all cached pages that cover our range
+        const cachedPages: CachedPage[] = []
+        const missingPageIndices: number[] = []
+
+        for (let pageIdx = firstPageIdx; pageIdx <= lastPageIdx; pageIdx++) {
+          const pageStartRow = pageIdx * PAGE_SIZE
+          const cached = pageCacheRef.current.get(pageStartRow)
+          if (cached && cached.rows.length > 0) {
+            cached.timestamp = Date.now() // Update LRU timestamp
+            cachedPages.push(cached)
+          } else {
+            missingPageIndices.push(pageIdx)
+          }
+        }
+
+        // If we have all pages cached, merge them immediately
+        if (missingPageIndices.length === 0 && cachedPages.length > 0) {
+          // Sort by startRow and merge
+          cachedPages.sort((a, b) => a.startRow - b.startRow)
+          const mergedRows: Record<string, unknown>[] = []
+          const idMap = new Map<string, number>()
+          const rangeStart = cachedPages[0].startRow
+
+          for (const page of cachedPages) {
+            for (let i = 0; i < page.rows.length; i++) {
+              const row = page.rows[i]
+              const globalIdx = page.startRow + i
+              if (row.csId) {
+                idMap.set(row.csId, globalIdx)
+              }
+              mergedRows.push(row.data)
+            }
+          }
+
+          const rangeEnd = rangeStart + mergedRows.length
+          console.log(`[DATAGRID] Cache hit: merged ${cachedPages.length} pages (rows ${rangeStart}-${rangeEnd})`)
+          setData(mergedRows)
+          setCsIdToRowIndex(idMap)
+          setLoadedRange({ start: rangeStart, end: rangeEnd })
+          pendingRangeRef.current = null
+          return
+        }
+
+        // Fetch missing pages using keyset pagination
+        try {
+          for (const pageIdx of missingPageIndices) {
+            // Check if this fetch was aborted (user scrolled to different position)
+            if (abortController.signal.aborted) {
+              console.log('[DATAGRID] Fetch aborted - scroll position changed')
+              return
+            }
+
+            const pageStartRow = pageIdx * PAGE_SIZE
+            const targetCsId = pageStartRow > 0 ? estimateCsIdForRow(pageStartRow - 1) : null
+
+            const pageResult = await getDataWithKeyset(
+              tableName,
+              { direction: 'forward', csId: targetCsId },
+              PAGE_SIZE
+            )
+
+            // Check abort again after async operation
+            if (abortController.signal.aborted) {
+              console.log('[DATAGRID] Fetch aborted after page load - scroll position changed')
+              return
+            }
+
+            // Add to LRU cache
+            const newPage: CachedPage = {
+              startRow: pageStartRow,
+              rows: pageResult.rows,
+              firstCsId: pageResult.firstCsId,
+              lastCsId: pageResult.lastCsId,
+              timestamp: Date.now(),
+            }
+            pageCacheRef.current.set(pageStartRow, newPage)
+            cachedPages.push(newPage)
+
+            // Evict oldest pages if cache is full
+            while (pageCacheRef.current.size > MAX_CACHED_PAGES) {
+              let oldestKey = -1
+              let oldestTime = Infinity
+              for (const [key, page] of pageCacheRef.current.entries()) {
+                if (page.timestamp < oldestTime) {
+                  oldestTime = page.timestamp
+                  oldestKey = key
+                }
+              }
+              if (oldestKey >= 0) {
+                pageCacheRef.current.delete(oldestKey)
+              } else {
+                break
+              }
+            }
+          }
+
+          // Final abort check before updating state
+          if (abortController.signal.aborted) {
+            console.log('[DATAGRID] Fetch aborted before state update')
+            return
+          }
+
+          // Merge all pages (cached + newly fetched)
+          cachedPages.sort((a, b) => a.startRow - b.startRow)
+          const mergedRows: Record<string, unknown>[] = []
+          const idMap = new Map<string, number>()
+          const rangeStart = cachedPages[0].startRow
+
+          for (const page of cachedPages) {
+            for (let i = 0; i < page.rows.length; i++) {
+              const row = page.rows[i]
+              const globalIdx = page.startRow + i
+              if (row.csId) {
+                idMap.set(row.csId, globalIdx)
+              }
+              mergedRows.push(row.data)
+            }
+          }
+
+          const rangeEnd = rangeStart + mergedRows.length
+          console.log(`[DATAGRID] Fetched ${missingPageIndices.length} pages, merged ${cachedPages.length} total (rows ${rangeStart}-${rangeEnd})`)
+          setData(mergedRows)
+          setCsIdToRowIndex(idMap)
+          setLoadedRange({ start: rangeStart, end: rangeEnd })
+          pendingRangeRef.current = null
+        } catch (err) {
+          // Check if this was an intentional abort
+          if (abortController.signal.aborted) {
+            return
+          }
+          // Fallback to OFFSET-based getData if keyset fails
+          console.log('[DATAGRID] Keyset pagination failed, falling back to OFFSET:', err)
+          try {
+            const rowsWithIds = await getDataWithRowIds(tableName, needStart, needEnd - needStart)
+            if (abortController.signal.aborted) return
+            const idMap = new Map<string, number>()
+            const rows = rowsWithIds.map((row, index) => {
+              if (row.csId) {
+                idMap.set(row.csId, needStart + index)
+              }
+              return row.data
+            })
+            setData(rows)
+            setCsIdToRowIndex(idMap)
+            setLoadedRange({ start: needStart, end: needStart + rows.length })
+            pendingRangeRef.current = null
+          } catch (fallbackErr) {
+            console.error('[DATAGRID] Fallback fetch also failed:', fallbackErr)
+          }
+        }
+      }, SCROLL_DEBOUNCE_MS)
     },
-    [getData, getDataWithRowIds, tableName, rowCount, loadedRange]
+    [getData, getDataWithRowIds, getDataWithKeyset, tableName, rowCount, loadedRange]
   )
+
+  // Cleanup debounce timer and abort controller on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current)
+      }
+      if (fetchAbortRef.current) {
+        fetchAbortRef.current.abort()
+      }
+    }
+  }, [])
 
   const getCellContent = useCallback(
     ([col, row]: Item) => {

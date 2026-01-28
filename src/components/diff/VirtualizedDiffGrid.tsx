@@ -59,6 +59,18 @@ interface VirtualizedDiffGridProps {
 }
 
 const PAGE_SIZE = 500
+const PREFETCH_BUFFER = 1000   // Increased from 500 to 1000 rows for smoother scrolling
+const MAX_CACHED_PAGES = 8     // LRU cache: 8 pages for diff (diff rows are larger)
+
+/**
+ * LRU page cache entry for diff grid.
+ * Caches pages by their starting offset for O(1) lookup.
+ */
+interface CachedDiffPage {
+  startRow: number
+  rows: DiffRow[]
+  timestamp: number          // For LRU eviction
+}
 
 export function VirtualizedDiffGrid({
   diffTableName,
@@ -80,6 +92,8 @@ export function VirtualizedDiffGrid({
   const containerSize = useContainerSize(containerRef)
   // Prevent concurrent fetch requests during rapid scrolling
   const fetchLockRef = useRef(false)
+  // LRU page cache for efficient scrolling (keyed by page start offset)
+  const pageCacheRef = useRef<Map<number, CachedDiffPage>>(new Map())
 
   // IMPORTANT: Perspective swap for display
   // The diff engine computes columns from tableA's perspective where A=original, B=current:
@@ -163,12 +177,20 @@ export function VirtualizedDiffGrid({
     setIsLoading(true)
     setData([])
     setLoadedRange({ start: 0, end: 0 })
+    pageCacheRef.current.clear() // Clear LRU cache on data reload
 
     fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, 0, PAGE_SIZE, keyOrderBy, storageType)
       .then((rows) => {
         setData(rows)
         setLoadedRange({ start: 0, end: rows.length })
         setIsLoading(false)
+
+        // Cache the initial page
+        pageCacheRef.current.set(0, {
+          startRow: 0,
+          rows,
+          timestamp: Date.now(),
+        })
       })
       .catch((err) => {
         console.error('Error loading diff data:', err)
@@ -176,7 +198,9 @@ export function VirtualizedDiffGrid({
       })
   }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType])
 
-  // Load more data on scroll
+  // Load more data on scroll with LRU cache
+  // Uses prefetch buffer of ±PREFETCH_BUFFER rows for smooth scrolling
+  // Loads multiple pages to cover the visible region + buffer
   const onVisibleRegionChanged = useCallback(
     async (range: Rectangle) => {
       if (!diffTableName || totalRows === 0) return
@@ -184,20 +208,106 @@ export function VirtualizedDiffGrid({
       // Skip if a fetch is already in progress (prevents concurrent requests during rapid scroll)
       if (fetchLockRef.current) return
 
-      const needStart = Math.max(0, range.y - PAGE_SIZE)
-      const needEnd = Math.min(totalRows, range.y + range.height + PAGE_SIZE)
+      // Calculate the range we need to cover (visible + prefetch buffer)
+      const needStart = Math.max(0, range.y - PREFETCH_BUFFER)
+      const needEnd = Math.min(totalRows, range.y + range.height + PREFETCH_BUFFER)
 
-      if (needStart < loadedRange.start || needEnd > loadedRange.end) {
-        fetchLockRef.current = true
-        try {
-          const newData = await fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, needStart, needEnd - needStart, keyOrderBy, storageType)
-          setData(newData)
-          setLoadedRange({ start: needStart, end: needStart + newData.length })
-        } catch (err) {
-          console.error('Error loading diff page:', err)
-        } finally {
-          fetchLockRef.current = false
+      // Check if we already have this range fully loaded
+      if (needStart >= loadedRange.start && needEnd <= loadedRange.end) {
+        return // Already have all needed data
+      }
+
+      // Calculate which pages we need to cover the range
+      const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
+      const lastPageIdx = Math.floor((needEnd - 1) / PAGE_SIZE)
+
+      // Collect all cached pages that cover our range
+      const cachedPages: CachedDiffPage[] = []
+      const missingPageIndices: number[] = []
+
+      for (let pageIdx = firstPageIdx; pageIdx <= lastPageIdx; pageIdx++) {
+        const pageStartRow = pageIdx * PAGE_SIZE
+        const cached = pageCacheRef.current.get(pageStartRow)
+        if (cached && cached.rows.length > 0) {
+          cached.timestamp = Date.now() // Update LRU timestamp
+          cachedPages.push(cached)
+        } else {
+          missingPageIndices.push(pageIdx)
         }
+      }
+
+      // If we have all pages cached, merge them
+      if (missingPageIndices.length === 0 && cachedPages.length > 0) {
+        cachedPages.sort((a, b) => a.startRow - b.startRow)
+        const mergedRows: DiffRow[] = []
+        const rangeStart = cachedPages[0].startRow
+
+        for (const page of cachedPages) {
+          mergedRows.push(...page.rows)
+        }
+
+        const rangeEnd = rangeStart + mergedRows.length
+        console.log(`[DIFFGRID] Cache hit: merged ${cachedPages.length} pages (rows ${rangeStart}-${rangeEnd})`)
+        setData(mergedRows)
+        setLoadedRange({ start: rangeStart, end: rangeEnd })
+        return
+      }
+
+      // Fetch missing pages
+      fetchLockRef.current = true
+      try {
+        for (const pageIdx of missingPageIndices) {
+          const pageStartRow = pageIdx * PAGE_SIZE
+          const newData = await fetchDiffPage(
+            diffTableName, sourceTableName, targetTableName,
+            allColumns, newColumns, removedColumns,
+            pageStartRow, PAGE_SIZE, keyOrderBy, storageType
+          )
+
+          // Add to LRU cache
+          const newPage: CachedDiffPage = {
+            startRow: pageStartRow,
+            rows: newData,
+            timestamp: Date.now(),
+          }
+          pageCacheRef.current.set(pageStartRow, newPage)
+          cachedPages.push(newPage)
+
+          // Evict oldest pages if cache is full
+          while (pageCacheRef.current.size > MAX_CACHED_PAGES) {
+            let oldestKey = -1
+            let oldestTime = Infinity
+            for (const [key, page] of pageCacheRef.current.entries()) {
+              if (page.timestamp < oldestTime) {
+                oldestTime = page.timestamp
+                oldestKey = key
+              }
+            }
+            if (oldestKey >= 0) {
+              pageCacheRef.current.delete(oldestKey)
+            } else {
+              break
+            }
+          }
+        }
+
+        // Merge all pages (cached + newly fetched)
+        cachedPages.sort((a, b) => a.startRow - b.startRow)
+        const mergedRows: DiffRow[] = []
+        const rangeStart = cachedPages[0].startRow
+
+        for (const page of cachedPages) {
+          mergedRows.push(...page.rows)
+        }
+
+        const rangeEnd = rangeStart + mergedRows.length
+        console.log(`[DIFFGRID] Fetched ${missingPageIndices.length} pages, merged ${cachedPages.length} total (rows ${rangeStart}-${rangeEnd})`)
+        setData(mergedRows)
+        setLoadedRange({ start: rangeStart, end: rangeEnd })
+      } catch (err) {
+        console.error('Error loading diff page:', err)
+      } finally {
+        fetchLockRef.current = false
       }
     },
     [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType, loadedRange]

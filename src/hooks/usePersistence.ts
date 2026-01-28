@@ -36,6 +36,10 @@ const pendingSave = new Map<string, boolean>()
 // Track tables that were just saved (e.g., during import) to skip redundant auto-saves
 const recentlySavedTables = new Set<string>()
 
+// Track when each table first became dirty (for maxWait enforcement)
+// This ensures saves happen even during continuous rapid editing
+const firstDirtyAt = new Map<string, number>()
+
 /**
  * Mark a table as recently saved to prevent redundant auto-save.
  * Called by useDuckDB after direct Parquet export during import.
@@ -54,6 +58,18 @@ function getDebounceTime(rowCount: number): number {
   if (rowCount > 500_000) return 5_000     // 5s for >500k rows
   if (rowCount > 100_000) return 3_000     // 3s for >100k rows
   return 2_000                              // 2s default
+}
+
+/**
+ * Get maximum wait time before forcing a save.
+ * This ensures saves happen even during continuous rapid editing.
+ * Larger tables get more time to batch edits before forcing a save.
+ */
+function getMaxWaitTime(rowCount: number): number {
+  if (rowCount > 1_000_000) return 45_000  // 45s for >1M rows
+  if (rowCount > 500_000) return 30_000    // 30s for >500k rows
+  if (rowCount > 100_000) return 20_000    // 20s for >100k rows
+  return 15_000                             // 15s default
 }
 
 export function usePersistence() {
@@ -293,10 +309,12 @@ export function usePersistence() {
 
   // 6. SAVE ON CHANGE: Debounced save when table data changes OR new tables added
   // This ensures edits are persisted quickly rather than waiting for 30s interval
+  // Uses maxWait to guarantee saves happen even during continuous rapid editing
   useEffect(() => {
     if (isRestoring) return
 
     let saveTimeout: NodeJS.Timeout | null = null
+    let maxWaitTimeout: NodeJS.Timeout | null = null
     const knownTableIds = new Set<string>()
     const lastDataVersions = new Map<string, number>()
 
@@ -306,8 +324,21 @@ export function usePersistence() {
       lastDataVersions.set(t.id, t.dataVersion ?? 0)
     })
 
+    // Helper to execute save and clear firstDirtyAt tracking
+    const executeSave = (tables: { id: string; name: string }[], reason: string, rowCount: number) => {
+      console.log(`[Persistence] ${reason}: ${tables.map(t => t.name).join(', ')} (${rowCount.toLocaleString()} rows)`)
+      tables.forEach(t => {
+        saveTable(t.name)
+          .then(() => {
+            // Clear firstDirtyAt after successful save
+            firstDirtyAt.delete(t.id)
+          })
+          .catch(console.error)
+      })
+    }
+
     const unsubscribe = useTableStore.subscribe(async (state) => {
-      const tablesToSave: { id: string; name: string }[] = []
+      const tablesToSave: { id: string; name: string; rowCount: number }[] = []
 
       for (const table of state.tables) {
         const isNewTable = !knownTableIds.has(table.id)
@@ -326,7 +357,7 @@ export function usePersistence() {
         }
 
         if (isNewTable || hasDataChanged) {
-          tablesToSave.push({ id: table.id, name: table.name })
+          tablesToSave.push({ id: table.id, name: table.name, rowCount: table.rowCount })
           knownTableIds.add(table.id)
           lastDataVersions.set(table.id, currentVersion)
 
@@ -353,31 +384,80 @@ export function usePersistence() {
       const { useUIStore } = await import('@/stores/uiStore')
       for (const table of filteredTables) {
         useUIStore.getState().markTableDirty(table.id)
+
+        // Track when table first became dirty (for maxWait enforcement)
+        if (!firstDirtyAt.has(table.id)) {
+          firstDirtyAt.set(table.id, Date.now())
+        }
       }
 
       // Compute adaptive debounce based on largest table being saved
       // Larger tables get longer debounce to batch more edits per export
-      const maxRowCount = Math.max(
-        ...filteredTables.map(t => {
-          const tableData = state.tables.find(st => st.id === t.id)
-          return tableData?.rowCount ?? 0
-        })
-      )
+      const maxRowCount = Math.max(...filteredTables.map(t => t.rowCount))
       const debounceTime = getDebounceTime(maxRowCount)
+      const maxWait = getMaxWaitTime(maxRowCount)
 
-      // Debounce: save after adaptive delay based on table size
+      // Check if any table has exceeded maxWait - force immediate save
+      const now = Date.now()
+      const tablesExceedingMaxWait = filteredTables.filter(t => {
+        const dirtyTime = firstDirtyAt.get(t.id)
+        return dirtyTime && (now - dirtyTime >= maxWait)
+      })
+
+      if (tablesExceedingMaxWait.length > 0) {
+        // Force immediate save for tables that exceeded maxWait
+        if (saveTimeout) clearTimeout(saveTimeout)
+        if (maxWaitTimeout) clearTimeout(maxWaitTimeout)
+
+        executeSave(
+          tablesExceedingMaxWait,
+          `Forcing save (exceeded maxWait ${maxWait}ms)`,
+          maxRowCount
+        )
+
+        // Still schedule debounced save for remaining tables
+        const remainingTables = filteredTables.filter(
+          t => !tablesExceedingMaxWait.some(e => e.id === t.id)
+        )
+        if (remainingTables.length > 0) {
+          saveTimeout = setTimeout(() => {
+            executeSave(remainingTables, 'Debounced save', maxRowCount)
+          }, debounceTime)
+        }
+        return
+      }
+
+      // Normal debounced save path
       if (saveTimeout) clearTimeout(saveTimeout)
       saveTimeout = setTimeout(() => {
-        console.log(`[Persistence] Saving tables: ${filteredTables.map(t => t.name).join(', ')} (debounce: ${debounceTime}ms for ${maxRowCount.toLocaleString()} rows)`)
-        filteredTables.forEach(t => {
-          saveTable(t.name).catch(console.error)
-        })
+        executeSave(filteredTables, 'Debounced save', maxRowCount)
       }, debounceTime)
+
+      // Also schedule maxWait timeout as a safety net
+      // This ensures save happens even if debounce keeps resetting
+      if (maxWaitTimeout) clearTimeout(maxWaitTimeout)
+      const oldestDirtyTime = Math.min(
+        ...filteredTables
+          .map(t => firstDirtyAt.get(t.id) ?? now)
+      )
+      const timeUntilMaxWait = Math.max(0, maxWait - (now - oldestDirtyTime))
+
+      if (timeUntilMaxWait > 0 && timeUntilMaxWait < maxWait) {
+        maxWaitTimeout = setTimeout(() => {
+          // Re-check which tables still need saving
+          const stillDirtyTables = filteredTables.filter(t => firstDirtyAt.has(t.id))
+          if (stillDirtyTables.length > 0) {
+            if (saveTimeout) clearTimeout(saveTimeout)
+            executeSave(stillDirtyTables, `MaxWait triggered (${maxWait}ms)`, maxRowCount)
+          }
+        }, timeUntilMaxWait)
+      }
     })
 
     return () => {
       unsubscribe()
       if (saveTimeout) clearTimeout(saveTimeout)
+      if (maxWaitTimeout) clearTimeout(maxWaitTimeout)
     }
   }, [isRestoring, saveTable])
 

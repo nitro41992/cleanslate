@@ -7,6 +7,7 @@ import {
   loadXLSX,
   getTableData,
   getTableDataWithRowIds,
+  getTableDataWithKeyset,
   exportToCSV,
   dropTable,
   query,
@@ -15,6 +16,7 @@ import {
   duplicateTable as duplicateTableDb,
   isDuckDBPersistent,
   isDuckDBReadOnly,
+  type KeysetCursor,
 } from '@/lib/duckdb'
 import { checkMemoryCapacity } from '@/lib/duckdb/memory'
 import { useTableStore } from '@/stores/tableStore'
@@ -264,6 +266,13 @@ export function useDuckDB() {
     []
   )
 
+  const getDataWithKeyset = useCallback(
+    async (tableName: string, cursor: KeysetCursor, limit = 500) => {
+      return getTableDataWithKeyset(tableName, cursor, limit)
+    },
+    []
+  )
+
   const runQuery = useCallback(async (sql: string) => {
     return query(sql)
   }, [])
@@ -319,6 +328,7 @@ export function useDuckDB() {
     loadFile,
     getData,
     getDataWithRowIds,
+    getDataWithKeyset,
     runQuery,
     runExecute,
     exportTable,

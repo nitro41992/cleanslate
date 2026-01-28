@@ -710,6 +710,109 @@ export async function getTableDataWithRowIds(
   })
 }
 
+/**
+ * Keyset pagination cursor for efficient O(1) queries at any table depth.
+ * Uses WHERE _cs_id > X instead of OFFSET for consistent performance.
+ */
+export interface KeysetCursor {
+  direction: 'forward' | 'backward'
+  csId: string | null
+}
+
+/**
+ * Result from keyset pagination query.
+ * Includes boundary csIds for cursor management.
+ */
+export interface KeysetPageResult {
+  rows: { csId: string; data: Record<string, unknown> }[]
+  firstCsId: string | null
+  lastCsId: string | null
+  hasMore: boolean
+}
+
+/**
+ * Get table data using keyset pagination for O(1) performance at any depth.
+ *
+ * Unlike OFFSET-based pagination which degrades linearly with depth,
+ * keyset pagination uses WHERE _cs_id > X to jump directly to the target position.
+ *
+ * @param tableName - Name of the table to query
+ * @param cursor - Pagination cursor (null csId for first page)
+ * @param limit - Number of rows to fetch (default 500)
+ * @returns Page of rows with boundary csIds for next/prev navigation
+ */
+export async function getTableDataWithKeyset(
+  tableName: string,
+  cursor: KeysetCursor,
+  limit = 500
+): Promise<KeysetPageResult> {
+  return withMutex(async () => {
+    const connection = await getConnection()
+    let query: string
+
+    if (!cursor.csId) {
+      // First page - no cursor, start from beginning
+      query = `SELECT * FROM "${tableName}" ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit + 1}`
+    } else if (cursor.direction === 'forward') {
+      // Scroll down - get rows after cursor
+      query = `SELECT * FROM "${tableName}" WHERE "${CS_ID_COLUMN}" > ${cursor.csId} ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit + 1}`
+    } else {
+      // Scroll up - get rows before cursor, then reverse
+      query = `SELECT * FROM "${tableName}" WHERE "${CS_ID_COLUMN}" < ${cursor.csId} ORDER BY "${CS_ID_COLUMN}" DESC LIMIT ${limit + 1}`
+    }
+
+    const result = await connection.query(query)
+    let rawRows = result.toArray().map((row) => row.toJSON())
+
+    // Check if there are more rows beyond this page
+    const hasMore = rawRows.length > limit
+    if (hasMore) {
+      rawRows = rawRows.slice(0, limit)
+    }
+
+    // Reverse if scrolling backward (we queried DESC)
+    if (cursor.direction === 'backward') {
+      rawRows = rawRows.reverse()
+    }
+
+    // Map to output format with csId separation
+    const rows = rawRows.map((row) => {
+      const csId = normalizeCsId(row[CS_ID_COLUMN])
+      const data: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(row)) {
+        if (!isInternalColumn(key)) {
+          data[key] = value
+        }
+      }
+      return { csId, data }
+    })
+
+    return {
+      rows,
+      firstCsId: rows[0]?.csId ?? null,
+      lastCsId: rows[rows.length - 1]?.csId ?? null,
+      hasMore,
+    }
+  })
+}
+
+/**
+ * Estimate the _cs_id for a given row index.
+ *
+ * Since _cs_id is sequential starting from 1 (ROW_NUMBER()),
+ * row N approximately maps to _cs_id = N + 1.
+ *
+ * This is approximate if rows were deleted mid-session (gaps in sequence),
+ * but is acceptable for data exploration and jump-to-row functionality.
+ *
+ * @param rowIndex - 0-based row index to estimate
+ * @returns Estimated _cs_id value as string
+ */
+export function estimateCsIdForRow(rowIndex: number): string {
+  // _cs_id uses ROW_NUMBER() which is 1-indexed
+  return String(rowIndex + 1)
+}
+
 export async function getTableColumns(
   tableName: string,
   includeInternal = false
