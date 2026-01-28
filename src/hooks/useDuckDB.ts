@@ -34,11 +34,22 @@ import type { ColumnInfo, CSVIngestionSettings } from '@/types'
 let fullInitPromise: Promise<void> | null = null
 let isFullyInitialized = false
 
+// Exposed promise that resolves when state restoration is complete
+// usePersistence.hydrate() awaits this to ensure __CLEANSLATE_SAVED_TABLE_IDS__ is set
+let stateRestorationResolve: (() => void) | null = null
+export let stateRestorationPromise: Promise<void> | null = null
+
 /**
  * Full initialization sequence (DuckDB + state restoration).
  * Runs exactly once - all useDuckDB() callers share this promise.
  */
 async function runFullInitialization(): Promise<void> {
+  // Create the state restoration promise that usePersistence will await
+  // This ensures __CLEANSLATE_SAVED_TABLE_IDS__ is set before hydration reads it
+  stateRestorationPromise = new Promise<void>((resolve) => {
+    stateRestorationResolve = resolve
+  })
+
   // Initialize DuckDB engine
   await initDuckDB()
 
@@ -83,8 +94,17 @@ async function runFullInitialization(): Promise<void> {
         tableIdMap,
       })
     }
+
+    // Signal that state restoration is complete (saved table IDs are now available)
+    if (stateRestorationResolve) {
+      stateRestorationResolve()
+    }
   } catch (error) {
     console.warn('[Persistence] Failed to restore timelines:', error)
+    // Still resolve to unblock hydration even on error
+    if (stateRestorationResolve) {
+      stateRestorationResolve()
+    }
   }
 
   // Log ready status (only once)

@@ -610,6 +610,58 @@ export async function listParquetSnapshots(): Promise<string[]> {
 }
 
 /**
+ * Clean up orphaned diff files from OPFS
+ *
+ * Diff tables (_diff_*) are temporary tables created during diff operations.
+ * They should be cleaned up when the diff view is closed, but if the user
+ * refreshes the page before cleanup completes, orphaned files can remain.
+ *
+ * This function removes any _diff_* Parquet files from OPFS to prevent
+ * them from being restored as regular tables on next page load.
+ *
+ * Call this once at application startup, after cleanupCorruptSnapshots().
+ */
+export async function cleanupOrphanedDiffFiles(): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory()
+
+    let appDir: FileSystemDirectoryHandle
+    try {
+      appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    } catch {
+      return // Directory doesn't exist, nothing to clean
+    }
+
+    let snapshotsDir: FileSystemDirectoryHandle
+    try {
+      snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    } catch {
+      return // Snapshots directory doesn't exist, nothing to clean
+    }
+
+    let deletedCount = 0
+
+    // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
+    for await (const [name, handle] of snapshotsDir.entries()) {
+      if (handle.kind !== 'file') continue
+
+      // Delete any _diff_* Parquet files (including chunked _diff_*_part_N.parquet)
+      if (name.startsWith('_diff_') && name.endsWith('.parquet')) {
+        console.log(`[Snapshot] Removing orphaned diff file: ${name}`)
+        await snapshotsDir.removeEntry(name)
+        deletedCount++
+      }
+    }
+
+    if (deletedCount > 0) {
+      console.log(`[Snapshot] Cleaned up ${deletedCount} orphaned diff file(s)`)
+    }
+  } catch (error) {
+    console.warn('[Snapshot] Failed to clean up orphaned diff files:', error)
+  }
+}
+
+/**
  * Scans the snapshots directory and deletes corrupt and orphaned files:
  * 1. 0-byte Parquet files (corrupt from failed writes)
  * 2. Orphaned .tmp files (from interrupted atomic writes)

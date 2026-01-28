@@ -194,7 +194,8 @@ async function reconcileTablesWithDuckDB(tables: TableInfo[]): Promise<TableInfo
        FROM duckdb_tables()
        WHERE NOT internal
        AND table_name NOT LIKE '_timeline%'
-       AND table_name NOT LIKE '_audit%'`
+       AND table_name NOT LIKE '_audit%'
+       AND table_name NOT LIKE '_diff%'`
     )
 
     const duckdbTableNames = new Set(duckdbTables.map(t => t.table_name))

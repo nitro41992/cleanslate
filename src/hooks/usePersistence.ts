@@ -23,6 +23,7 @@ import {
   exportTableToParquet,
   deleteParquetSnapshot,
   cleanupCorruptSnapshots,
+  cleanupOrphanedDiffFiles,
 } from '@/lib/opfs/snapshot-storage'
 import { toast } from 'sonner'
 
@@ -100,8 +101,19 @@ export function usePersistence() {
         const db = await initDuckDB()
         const conn = await getConnection()
 
+        // Wait for state restoration to complete (sets __CLEANSLATE_SAVED_TABLE_IDS__)
+        // This prevents a race condition where hydration reads saved table IDs before they're set
+        const { stateRestorationPromise } = await import('@/hooks/useDuckDB')
+        if (stateRestorationPromise) {
+          await stateRestorationPromise
+          console.log('[Persistence] State restoration complete, proceeding with hydration')
+        }
+
         // Clean up any corrupt 0-byte files from failed writes
         await cleanupCorruptSnapshots()
+
+        // Clean up any orphaned diff files that survived browser refresh
+        await cleanupOrphanedDiffFiles()
 
         // List all saved Parquet files
         const snapshots = await listParquetSnapshots()
@@ -130,6 +142,7 @@ export function usePersistence() {
               if (name.startsWith('original_')) return false  // timeline original snapshots
               if (name.startsWith('snapshot_')) return false  // timeline snapshots
               if (name.startsWith('_timeline_')) return false  // timeline internal
+              if (name.startsWith('_diff_')) return false      // diff temporary tables
               return true
             })
         )]
@@ -369,11 +382,12 @@ export function usePersistence() {
 
       if (tablesToSave.length === 0) return
 
-      // Filter out internal timeline tables from saving
+      // Filter out internal timeline tables and diff tables from saving
       const filteredTables = tablesToSave.filter(t => {
         if (t.name.startsWith('original_')) return false  // timeline original snapshots
         if (t.name.startsWith('snapshot_')) return false  // timeline snapshots
         if (t.name.startsWith('_timeline_')) return false  // timeline internal
+        if (t.name.startsWith('_diff_')) return false      // diff temporary tables
         return true
       })
 
