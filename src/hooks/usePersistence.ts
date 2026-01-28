@@ -30,9 +30,129 @@ import { toast } from 'sonner'
 // Module-level flag to prevent double-hydration from React StrictMode
 let hydrationPromise: Promise<void> | null = null
 
+// Flag to signal that re-hydration is needed (after worker restart)
+let rehydrationRequested = false
+
 // Save queue to prevent concurrent exports and coalesce rapid changes
 const saveInProgress = new Map<string, Promise<void>>()
 const pendingSave = new Map<string, boolean>()
+
+/**
+ * Perform hydration - import tables from Parquet files into DuckDB.
+ * Can be called from useEffect (initial load) or after worker restart.
+ *
+ * @param isRehydration - If true, skips state restoration (already done) and clears tableStore
+ * @returns Promise that resolves when hydration is complete
+ */
+export async function performHydration(isRehydration = false): Promise<void> {
+  console.log('[Persistence] Starting hydration...', isRehydration ? '(re-hydration after restart)' : '')
+
+  // Clear tables if this is a re-hydration (worker was restarted)
+  // The tableStore still has metadata but DuckDB tables are gone
+  if (isRehydration) {
+    const existingTables = useTableStore.getState().tables
+    if (existingTables.length > 0) {
+      console.log(`[Persistence] Re-hydration: clearing ${existingTables.length} stale table(s) from store`)
+      useTableStore.getState().clearTables()
+    }
+  }
+
+  const { initDuckDB, getConnection, getTableColumns } = await import('@/lib/duckdb')
+  const db = await initDuckDB()
+  const conn = await getConnection()
+
+  // Wait for state restoration to complete (only on initial load, not re-hydration)
+  if (!isRehydration) {
+    const { stateRestorationPromise } = await import('@/hooks/useDuckDB')
+    if (stateRestorationPromise) {
+      await stateRestorationPromise
+      console.log('[Persistence] State restoration complete, proceeding with hydration')
+    }
+  }
+
+  // Clean up corrupt and orphaned files
+  await cleanupCorruptSnapshots()
+  await cleanupOrphanedDiffFiles()
+
+  // List all saved Parquet files
+  const snapshots = await listParquetSnapshots()
+
+  if (snapshots.length === 0) {
+    console.log('[Persistence] No saved snapshots found.')
+    return
+  }
+
+  // Filter to user tables only (exclude internal timeline/diff tables)
+  const uniqueTables = [...new Set(
+    snapshots
+      .map(name => name.replace(/_part_\d+$/, ''))
+      .filter(name => {
+        if (name.startsWith('original_')) return false
+        if (name.startsWith('snapshot_')) return false
+        if (name.startsWith('_timeline_')) return false
+        if (name.startsWith('_diff_')) return false
+        return true
+      })
+  )]
+
+  console.log(`[Persistence] Found ${uniqueTables.length} tables to restore:`, uniqueTables)
+
+  const addTable = useTableStore.getState().addTable
+  let restoredCount = 0
+
+  for (const tableName of uniqueTables) {
+    try {
+      // Skip if already exists (prevents duplicates)
+      const existingTables = useTableStore.getState().tables
+      if (existingTables.some(t => t.name === tableName || t.id === tableName)) {
+        console.log(`[Persistence] Skipping ${tableName} - already in store`)
+        continue
+      }
+
+      // Import from Parquet into DuckDB
+      await importTableFromParquet(db, conn, tableName, tableName)
+
+      // Get metadata
+      const cols = await getTableColumns(tableName)
+      const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+      const rowCount = Number(countResult.toArray()[0].toJSON().count)
+
+      // Get saved tableId for consistency
+      const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
+      const tableId = savedTableIds?.[tableName] ?? tableName
+
+      addTable(tableName, cols, rowCount, tableId)
+      restoredCount++
+      console.log(`[Persistence] Restored ${tableName} (${rowCount.toLocaleString()} rows)`)
+    } catch (err) {
+      console.error(`[Persistence] Failed to restore ${tableName}:`, err)
+    }
+  }
+
+  if (restoredCount > 0) {
+    console.log(`[Persistence] Hydration complete: restored ${restoredCount} table(s)`)
+
+    // Restore active table selection (for re-hydration, use the first table)
+    if (isRehydration) {
+      const restoredTables = useTableStore.getState().tables
+      if (restoredTables.length > 0) {
+        useTableStore.getState().setActiveTable(restoredTables[0].id)
+        console.log(`[Persistence] Set active table to first restored: ${restoredTables[0].id}`)
+      }
+    }
+  }
+}
+
+/**
+ * Request re-hydration after a worker restart.
+ * This resets the hydration flag so the next usePersistence effect can re-run.
+ * Called by useDuckDB after terminateAndReinitialize().
+ */
+export function requestRehydration(): void {
+  hydrationPromise = null
+  rehydrationRequested = true
+  console.log('[Persistence] Re-hydration requested - will import from Parquet on next effect')
+}
 
 // Track tables that were just saved (e.g., during import) to skip redundant auto-saves
 const recentlySavedTables = new Set<string>()
@@ -78,22 +198,32 @@ export function usePersistence() {
   const addTable = useTableStore((s) => s.addTable)
 
   // 1. HYDRATION: Run once on mount to restore data from Parquet files
+  //    Can also be triggered after worker restart via requestRehydration()
   useEffect(() => {
     // Prevent double-hydration from React StrictMode
-    if (hydrationPromise) {
+    // BUT allow re-hydration if explicitly requested (after worker restart)
+    if (hydrationPromise && !rehydrationRequested) {
       console.log('[Persistence] Hydration already in progress, waiting...')
       hydrationPromise.then(() => setIsRestoring(false))
       return
     }
 
+    // Clear the re-hydration flag if set
+    const isRehydration = rehydrationRequested
+    if (rehydrationRequested) {
+      rehydrationRequested = false
+      console.log('[Persistence] Re-hydration triggered after worker restart')
+    }
+
     const hydrate = async () => {
-      console.log('[Persistence] Starting hydration...')
+      console.log('[Persistence] Starting hydration...', isRehydration ? '(re-hydration)' : '')
 
       try {
         // Clear any existing tables to prevent duplicates
         // This ensures Parquet files are the single source of truth
+        // Skip during re-hydration - tables were already cleared by worker restart
         const existingTables = useTableStore.getState().tables
-        if (existingTables.length > 0) {
+        if (existingTables.length > 0 && !isRehydration) {
           console.log(`[Persistence] Clearing ${existingTables.length} existing table(s) before hydration`)
           useTableStore.getState().clearTables()
         }
@@ -102,11 +232,13 @@ export function usePersistence() {
         const conn = await getConnection()
 
         // Wait for state restoration to complete (sets __CLEANSLATE_SAVED_TABLE_IDS__)
-        // This prevents a race condition where hydration reads saved table IDs before they're set
-        const { stateRestorationPromise } = await import('@/hooks/useDuckDB')
-        if (stateRestorationPromise) {
-          await stateRestorationPromise
-          console.log('[Persistence] State restoration complete, proceeding with hydration')
+        // Skip during re-hydration - state restoration already happened
+        if (!isRehydration) {
+          const { stateRestorationPromise } = await import('@/hooks/useDuckDB')
+          if (stateRestorationPromise) {
+            await stateRestorationPromise
+            console.log('[Persistence] State restoration complete, proceeding with hydration')
+          }
         }
 
         // Clean up any corrupt 0-byte files from failed writes

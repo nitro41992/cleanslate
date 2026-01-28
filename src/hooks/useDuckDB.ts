@@ -16,9 +16,10 @@ import {
   duplicateTable as duplicateTableDb,
   isDuckDBPersistent,
   isDuckDBReadOnly,
+  terminateAndReinitialize,
   type KeysetCursor,
 } from '@/lib/duckdb'
-import { checkMemoryCapacity } from '@/lib/duckdb/memory'
+import { checkMemoryCapacity, getMemoryStatus, WARNING_THRESHOLD } from '@/lib/duckdb/memory'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -363,6 +364,57 @@ export function useDuckDB() {
       await dropTable(tableName)
       removeTable(tableId)
       addAuditEntry(tableId, tableName, 'Table Deleted', `Removed table ${tableName}`)
+
+      // Check memory after deletion - WASM heap doesn't shrink automatically
+      // If memory is still high after dropping a table, we need to restart
+      // the worker to truly release the memory
+      try {
+        const memStatus = await getMemoryStatus()
+        const remainingTables = useTableStore.getState().tables.length
+
+        // If memory > 60% (WARNING_THRESHOLD) AND we dropped a table,
+        // the WASM heap is likely fragmented with unreclaimable memory
+        if (memStatus.percentage > WARNING_THRESHOLD * 100 && remainingTables > 0) {
+          console.log(
+            `[DuckDB] Memory still at ${memStatus.percentage.toFixed(0)}% after table deletion - ` +
+            `restarting worker to reclaim WASM heap (${remainingTables} tables will restore from Parquet)`
+          )
+
+          // Show toast to inform user
+          toast({
+            title: 'Reclaiming memory...',
+            description: 'Restarting database engine. Your data will be restored automatically.',
+          })
+
+          // Set not ready - this prevents UI from making queries during restart
+          setIsReady(false)
+
+          // Terminate the worker to release WASM memory
+          await terminateAndReinitialize()
+
+          // Reinitialize DuckDB with fresh worker
+          await initDuckDB()
+
+          // Re-hydrate tables from Parquet snapshots
+          const { performHydration } = await import('@/hooks/usePersistence')
+          await performHydration(true)  // true = re-hydration mode
+
+          // Set ready again
+          setIsReady(true)
+
+          toast({
+            title: 'Memory reclaimed',
+            description: `Database restarted. ${remainingTables} table(s) restored.`,
+          })
+
+          console.log('[DuckDB] Worker restart complete - tables reimported from Parquet')
+        }
+      } catch (memError) {
+        // Don't fail the delete if memory check fails
+        console.warn('[DuckDB] Memory check after delete failed:', memError)
+        // Ensure we're in a ready state even if memory reclaim failed
+        setIsReady(true)
+      }
     },
     [removeTable, addAuditEntry]
   )

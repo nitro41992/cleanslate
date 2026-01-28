@@ -424,6 +424,68 @@ export async function checkConnectionHealth(): Promise<boolean> {
   })
 }
 
+/**
+ * Terminate the DuckDB worker to release WASM memory.
+ *
+ * WebAssembly memory can grow but never shrink - this is a fundamental WASM limitation.
+ * After dropping large tables, the WASM heap stays allocated even though DuckDB freed
+ * the data internally. The only way to truly release this memory back to the browser
+ * is to terminate the WebWorker.
+ *
+ * After calling this function:
+ * - The worker is terminated and all WASM memory is released
+ * - All module state (db, conn) is reset to null
+ * - The next call to getConnection() will reinitialize DuckDB
+ * - usePersistence will automatically reimport tables from Parquet snapshots
+ *
+ * @returns Promise that resolves when termination is complete
+ */
+export async function terminateAndReinitialize(): Promise<void> {
+  return withMutex(async () => {
+    console.log('[DuckDB] Terminating worker to release WASM memory...')
+
+    // Close connection first
+    if (conn) {
+      try {
+        await conn.close()
+      } catch (error) {
+        console.warn('[DuckDB] Failed to close connection during terminate:', error)
+      }
+      conn = null
+    }
+
+    // Terminate the worker - this releases all WASM memory
+    if (db) {
+      try {
+        await db.terminate()
+        console.log('[DuckDB] Worker terminated successfully')
+      } catch (error) {
+        console.warn('[DuckDB] Failed to terminate worker:', error)
+      }
+      db = null
+    }
+
+    // Clear any pending flush timer
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+
+    // Reset all module state
+    isPersistent = false
+    isReadOnly = false
+    initPromise = null
+
+    // Clear window reference
+    if (typeof window !== 'undefined') {
+      // @ts-ignore
+      window.__db = null
+    }
+
+    console.log('[DuckDB] Module state reset - next getConnection() will reinitialize')
+  })
+}
+
 export async function query<T = Record<string, unknown>>(
   sql: string
 ): Promise<T[]> {
