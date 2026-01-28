@@ -196,21 +196,28 @@ export function DataGrid({
   const addEditToBatch = useEditBatchStore((s) => s.addEdit)
 
   // Set up the batch flush callback - executes when batch timer fires
+  // NOTE: This callback is global and handles ALL tables' edits, not just the current one.
+  // This is critical for deferred flushes - if user switches tables during a transform,
+  // edits for the original table must still be flushed when the transform completes.
   useEffect(() => {
     if (!tableId || !tableName) return
 
     useEditBatchStore.getState()._setFlushCallback(async (batchTableId: string, edits: PendingEdit[]) => {
-      // Only process if this is our table
-      if (batchTableId !== tableId) return
       if (edits.length === 0) return
 
-      console.log(`[DATAGRID] Flushing batch of ${edits.length} edits for ${tableName}`)
+      // Look up the table name from the store (handles edits for any table, not just current)
+      const { useTableStore } = await import('@/stores/tableStore')
+      const table = useTableStore.getState().tables.find((t) => t.id === batchTableId)
+      const batchTableName = table?.name ?? 'unknown'
+
+      console.log(`[DATAGRID] Flushing batch of ${edits.length} edits for ${batchTableName}`)
 
       try {
         // Create batch command with all accumulated edits
+        // Use batchTableId/batchTableName to handle edits for any table
         const command = createCommand('edit:batch', {
-          tableId,
-          tableName,
+          tableId: batchTableId,
+          tableName: batchTableName,
           changes: edits.map((e) => ({
             csId: e.csId,
             columnName: e.columnName,
@@ -237,6 +244,12 @@ export function DataGrid({
               newValue: e.newValue,
             }))
           )
+
+          // Mark table clean after successful changelog write
+          // This is critical for deferred flushes where Effect 6b can't mark clean
+          // (because pending edits existed at the time)
+          const { useUIStore } = await import('@/stores/uiStore')
+          useUIStore.getState().markTableClean(batchTableId)
 
           // Trigger re-render for dirty cell tracking
           setExecutorTimelineVersion((v) => v + 1)

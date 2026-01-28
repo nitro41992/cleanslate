@@ -28,8 +28,15 @@ export function AuditSidebar() {
 
   // Derive audit entries from timeline (updates on undo/redo)
   const entries = useMemo(() => {
+    console.log('[AuditSidebar] Computing entries:', {
+      activeTableId,
+      timelinesSize: timelines.size,
+      timelinesRef: timelines,
+    })
     if (activeTableId) {
-      return getAuditEntriesForTable(activeTableId)
+      const result = getAuditEntriesForTable(activeTableId)
+      console.log('[AuditSidebar] Entries for table:', { activeTableId, count: result.length })
+      return result
     }
     return getAllAuditEntries()
   }, [activeTableId, timelines])

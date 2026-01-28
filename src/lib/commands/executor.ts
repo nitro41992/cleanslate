@@ -663,6 +663,10 @@ export class CommandExecutor implements ICommandExecutor {
           console.log('[Executor] Flushing deferred edits after transform')
           await useEditBatchStore.getState().flushIfSafe(tableId)
         }
+
+        // Request IMMEDIATE save for transforms (bypass debounce)
+        // This prevents data loss if user refreshes before debounce completes
+        uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
       }
 
       return {
@@ -1454,6 +1458,13 @@ export class CommandExecutor implements ICommandExecutor {
       cellChanges = commandWithCellChanges.getCellChanges()
     }
 
+    console.log('[EXECUTOR] syncExecuteToTimelineStore called:', {
+      tableId,
+      commandType: legacyCommandType,
+      label: command.label,
+      paramsType: timelineParams.type,
+    })
+
     timelineStoreState.appendCommand(tableId, legacyCommandType, command.label, timelineParams, {
       auditEntryId: auditInfo?.auditEntryId ?? command.id,
       affectedColumns: auditInfo?.affectedColumns ?? (column ? [column] : []),
@@ -1463,6 +1474,14 @@ export class CommandExecutor implements ICommandExecutor {
       cellChanges,
       columnOrderBefore,
       columnOrderAfter,
+    })
+
+    // Verify the command was added
+    const updatedTimeline = timelineStoreState.getTimeline(tableId)
+    console.log('[EXECUTOR] Timeline after append:', {
+      tableId,
+      commandCount: updatedTimeline?.commands.length,
+      currentPosition: updatedTimeline?.currentPosition,
     })
   }
 }

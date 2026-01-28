@@ -816,6 +816,41 @@ export function usePersistence() {
       const debounceTime = getDebounceTime(maxRowCount)
       const maxWait = getMaxWaitTime(maxRowCount)
 
+      // Check for PRIORITY saves (transforms) - these bypass debounce entirely
+      // This prevents data loss when user refreshes immediately after a transform
+      const prioritySaveIds = useUIStore.getState().getPrioritySaveTables()
+      const priorityTables = filteredTables.filter(t => prioritySaveIds.includes(t.id))
+
+      if (priorityTables.length > 0) {
+        // Force IMMEDIATE save for priority tables (e.g., after transform completion)
+        if (saveTimeout) clearTimeout(saveTimeout)
+        if (maxWaitTimeout) clearTimeout(maxWaitTimeout)
+
+        console.log(`[Persistence] Priority save triggered for: ${priorityTables.map(t => t.name).join(', ')}`)
+
+        // Clear priority flags before saving
+        for (const table of priorityTables) {
+          useUIStore.getState().clearPrioritySave(table.id)
+        }
+
+        executeSave(
+          priorityTables,
+          'Priority save (transform completed)',
+          maxRowCount
+        )
+
+        // Still schedule debounced save for remaining non-priority tables
+        const remainingTables = filteredTables.filter(
+          t => !priorityTables.some(p => p.id === t.id)
+        )
+        if (remainingTables.length > 0) {
+          saveTimeout = setTimeout(() => {
+            executeSave(remainingTables, 'Debounced save', maxRowCount)
+          }, debounceTime)
+        }
+        return
+      }
+
       // Check if any table has exceeded maxWait - force immediate save
       const now = Date.now()
       const tablesExceedingMaxWait = filteredTables.filter(t => {
@@ -880,6 +915,61 @@ export function usePersistence() {
     }
   }, [isRestoring, saveTable])
 
+  // 6a. WATCH PRIORITY SAVES: Transforms trigger immediate save (bypass debounce)
+  // When a transform completes, the executor calls requestPrioritySave(tableId).
+  // This effect watches for those requests and triggers immediate Parquet save.
+  // This prevents data loss when user refreshes immediately after a transform.
+  useEffect(() => {
+    if (isRestoring) return
+
+    const setupPrioritySaveWatcher = async () => {
+      const { useUIStore } = await import('@/stores/uiStore')
+
+      // Track previously seen priority saves to detect new ones
+      let prevPrioritySaves = new Set(useUIStore.getState().prioritySaveTableIds)
+
+      const unsubscribe = useUIStore.subscribe((state) => {
+        const currentPrioritySaves = state.prioritySaveTableIds
+
+        // Find newly added priority saves
+        const newPrioritySaves: string[] = []
+        for (const tableId of currentPrioritySaves) {
+          if (!prevPrioritySaves.has(tableId)) {
+            newPrioritySaves.push(tableId)
+          }
+        }
+        prevPrioritySaves = new Set(currentPrioritySaves)
+
+        if (newPrioritySaves.length === 0) return
+
+        // Look up table names and trigger immediate save
+        const tableState = useTableStore.getState()
+        const tablesToSave = newPrioritySaves
+          .map(id => tableState.tables.find(t => t.id === id))
+          .filter((t): t is NonNullable<typeof t> => t !== undefined)
+
+        if (tablesToSave.length === 0) return
+
+        console.log(`[Persistence] Priority save detected for: ${tablesToSave.map(t => t.name).join(', ')}`)
+
+        // Clear priority flags and trigger immediate save
+        for (const table of tablesToSave) {
+          useUIStore.getState().clearPrioritySave(table.id)
+          saveTable(table.name).catch(console.error)
+        }
+      })
+
+      return unsubscribe
+    }
+
+    let unsubscribePromise: Promise<() => void> | null = null
+    unsubscribePromise = setupPrioritySaveWatcher()
+
+    return () => {
+      unsubscribePromise?.then(unsub => unsub()).catch(() => {})
+    }
+  }, [isRestoring, saveTable])
+
   // 6b. WATCH DIRTY TABLES: Cell edits are persisted to changelog (fast path)
   // Cell edits skip dataVersion increment to preserve grid scroll position,
   // but they DO call markTableDirty(). This subscription marks the table
@@ -905,9 +995,10 @@ export function usePersistence() {
       lastSeenDataVersions.set(t.id, t.dataVersion ?? 0)
     })
 
-    // Import UIStore dynamically to avoid circular dependencies
+    // Import stores dynamically to avoid circular dependencies
     const setupSubscription = async () => {
       const { useUIStore } = await import('@/stores/uiStore')
+      const { useEditBatchStore } = await import('@/stores/editBatchStore')
 
       // Initialize with current dirty tables
       prevDirtyTableIds = new Set(useUIStore.getState().dirtyTableIds)
@@ -946,16 +1037,27 @@ export function usePersistence() {
 
           if (cellEditTables.length === 0) return
 
-          // For cell edits: data is already saved to changelog in DataGrid.tsx
-          // Mark as clean (or keep dirty for visual indicator until compaction)
+          // For cell edits: data should be saved to changelog in DataGrid.tsx
+          // BUT if there are pending edits in editBatchStore (deferred during transforms),
+          // the changelog write hasn't happened yet - DON'T mark clean!
+          //
           // We DON'T trigger Parquet export here - that's wasteful for cell edits.
           // Compaction (Effect 9) will merge changelog into Parquet periodically.
-          console.log(`[Persistence] Cell edit detected for ${cellEditTables.map(t => t.name).join(', ')} - saved to changelog (fast path)`)
 
-          // Mark tables as "saved" since changelog write is durable
+          // Mark tables as "saved" ONLY if no pending edits waiting to be flushed
           // This gives the user immediate feedback that their edit is safe
           for (const table of cellEditTables) {
-            useUIStore.getState().markTableClean(table.id)
+            const hasPending = useEditBatchStore.getState().hasPendingEdits(table.id)
+            if (hasPending) {
+              // Edits are deferred (e.g., transform in progress) - don't mark clean yet
+              // The edits will be flushed when the transform completes, and markTableClean
+              // will be called after the changelog write succeeds
+              console.log(`[Persistence] Cell edit detected for ${table.name} - pending flush (deferred)`)
+            } else {
+              // No pending edits - changelog write has completed
+              console.log(`[Persistence] Cell edit detected for ${table.name} - saved to changelog (fast path)`)
+              useUIStore.getState().markTableClean(table.id)
+            }
           }
         }
       )

@@ -9,6 +9,7 @@ interface UIState {
   persistenceStatus: PersistenceStatus
   lastSavedAt: Date | null
   dirtyTableIds: Set<string>  // Tables with unsaved changes
+  prioritySaveTableIds: Set<string>  // Tables that need IMMEDIATE saving (bypass debounce)
   memoryUsage: number
   memoryLimit: number
   memoryLevel: MemoryLevel
@@ -43,6 +44,14 @@ interface UIActions {
   setTableTransforming: (tableId: string, isTransforming: boolean) => void
   /** Check if a table is currently undergoing transformation */
   isTableTransforming: (tableId: string) => boolean
+  /** Request immediate (non-debounced) save for a table - call after transforms complete */
+  requestPrioritySave: (tableId: string) => void
+  /** Clear priority save flag after save completes */
+  clearPrioritySave: (tableId: string) => void
+  /** Check if a table has priority save requested */
+  hasPrioritySave: (tableId: string) => boolean
+  /** Get all tables with priority save requested */
+  getPrioritySaveTables: () => string[]
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -50,6 +59,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   persistenceStatus: 'idle',
   lastSavedAt: null,
   dirtyTableIds: new Set<string>(),
+  prioritySaveTableIds: new Set<string>(),
   memoryUsage: 0,
   memoryLimit: MEMORY_LIMIT_BYTES, // 3GB (75% of 4GB WASM ceiling)
   memoryLevel: 'normal',
@@ -137,7 +147,10 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   incrementBusy: () => set((state) => ({ busyCount: state.busyCount + 1 })),
   decrementBusy: () => set((state) => ({ busyCount: Math.max(0, state.busyCount - 1) })),
   setLoadingMessage: (message) => set({ loadingMessage: message }),
-  setSkipNextGridReload: (skip) => set({ skipNextGridReload: skip }),
+  setSkipNextGridReload: (skip) => {
+    console.log('[UIStore] setSkipNextGridReload called:', skip, new Error().stack?.split('\n').slice(1, 4).join('\n'))
+    set({ skipNextGridReload: skip })
+  },
 
   setTableTransforming: (tableId, isTransforming) => {
     set((state) => {
@@ -153,6 +166,31 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
 
   isTableTransforming: (tableId) => {
     return get().transformingTables.has(tableId)
+  },
+
+  requestPrioritySave: (tableId) => {
+    set((state) => {
+      const newSet = new Set(state.prioritySaveTableIds)
+      newSet.add(tableId)
+      console.log(`[UIStore] Priority save requested for table ${tableId}`)
+      return { prioritySaveTableIds: newSet }
+    })
+  },
+
+  clearPrioritySave: (tableId) => {
+    set((state) => {
+      const newSet = new Set(state.prioritySaveTableIds)
+      newSet.delete(tableId)
+      return { prioritySaveTableIds: newSet }
+    })
+  },
+
+  hasPrioritySave: (tableId) => {
+    return get().prioritySaveTableIds.has(tableId)
+  },
+
+  getPrioritySaveTables: () => {
+    return Array.from(get().prioritySaveTableIds)
   },
 }))
 

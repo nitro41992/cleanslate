@@ -31,6 +31,8 @@ interface EditBatchState {
   getPendingEdits: (tableId: string) => PendingEdit[]
   clearBatch: (tableId: string) => void
   hasPendingEdits: (tableId: string) => boolean
+  /** Check if ANY table has pending edits (for beforeunload checks) */
+  hasAnyPendingEdits: () => boolean
   /** Flush all pending edits immediately (for tests or urgent saves) */
   flushAll: () => Promise<void>
   /** Flush edits for a table if it's safe (not transforming). Returns true if flushed. */
@@ -128,8 +130,14 @@ export const useEditBatchStore = create<EditBatchState>((set, get) => ({
       }
 
       // Table not being transformed - flush normally
-      flushCallback(tableId, currentEdits)
-      get().clearBatch(tableId)
+      // IMPORTANT: Await the callback to ensure changelog write completes before clearing
+      try {
+        await flushCallback(tableId, currentEdits)
+        get().clearBatch(tableId)
+      } catch (error) {
+        console.error('[EditBatch] Flush callback failed:', error)
+        // Don't clear batch on failure - edits will be retried on next timer
+      }
     }, BATCH_WINDOW)
 
     const newTimeouts = new Map(state.batchTimeouts)
@@ -170,6 +178,14 @@ export const useEditBatchStore = create<EditBatchState>((set, get) => ({
   hasPendingEdits: (tableId: string) => {
     const edits = get().pendingEdits.get(tableId)
     return edits !== undefined && edits.length > 0
+  },
+
+  hasAnyPendingEdits: () => {
+    const state = get()
+    for (const edits of state.pendingEdits.values()) {
+      if (edits.length > 0) return true
+    }
+    return false
   },
 
   flushAll: async () => {
