@@ -873,35 +873,33 @@ export function DataGrid({
       // VS Code-style left gutter bar indicator
       // Draw on first column (col === 0) to create a row-level indicator
       // This makes edit state highly visible during scroll
-      if (editable && col === 0 && (hasPendingEdit || isCellDirty)) {
-        ctx.save()
+      // CRITICAL: Check row-level status BEFORE the condition, not inside it
+      // Otherwise we never enter the block if column 0 itself isn't dirty
+      let rowHasPendingEdit = false
+      let rowIsDirty = false
 
-        // Check if ANY cell in this row has a pending edit or is dirty
-        // For pending edits, check all columns
-        let rowHasPendingEdit = hasPendingEdit
-        let rowIsDirty = isCellDirty
+      if (col === 0 && csId && tableId) {
+        // Check if ANY cell in this row has a pending edit
+        const pendingEdits = useEditBatchStore.getState().getPendingEdits(tableId)
+        rowHasPendingEdit = pendingEdits.some(e => e.csId === csId)
 
-        if (csId && tableId && !rowHasPendingEdit) {
-          const pendingEdits = useEditBatchStore.getState().getPendingEdits(tableId)
-          rowHasPendingEdit = pendingEdits.some(e => e.csId === csId)
-        }
-
-        if (csId && !rowIsDirty) {
-          // Check if any column in this row is dirty
-          for (const colName of columns) {
-            if (dirtyCells.has(`${csId}:${colName}`)) {
-              rowIsDirty = true
-              break
-            }
+        // Check if ANY cell in this row is dirty (committed edit)
+        for (const c of columns) {
+          if (dirtyCells.has(`${csId}:${c}`)) {
+            rowIsDirty = true
+            break
           }
         }
+      }
 
+      // Draw gutter bar if ANY cell in the row has edits
+      if (editable && col === 0 && (rowHasPendingEdit || rowIsDirty)) {
+        ctx.save()
         // Draw full-height bar on left edge of row (VS Code git diff style)
         const barWidth = 3
         // Orange (#f97316) = pending edit, Green (#22c55e) = committed
         ctx.fillStyle = rowHasPendingEdit ? '#f97316' : '#22c55e'
         ctx.fillRect(rect.x, rect.y, barWidth, rect.height)
-
         ctx.restore()
       }
 

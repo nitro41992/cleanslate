@@ -175,6 +175,11 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // IMMEDIATELY mark table as dirty (before any async operations)
+      // This ensures the UI shows "Unsaved changes" during the 2s debounce window
+      const uiStoreModule = await import('@/stores/uiStore')
+      uiStoreModule.useUIStore.getState().markTableDirty(tableId)
+
       // CRITICAL: Flush pending batch edits before executing non-cell-edit commands
       // This prevents data loss when transforms run while edits are batched:
       // 1. User edits cell → edit added to editBatchStore (not yet in DuckDB)
@@ -188,12 +193,12 @@ export class CommandExecutor implements ICommandExecutor {
           console.log('[Executor] Flushing pending batch edits before transform')
           await useEditBatchStore.getState().flushAll()
         }
-      }
 
-      // IMMEDIATELY mark table as dirty (before any async operations)
-      // This ensures the UI shows "Unsaved changes" during the 2s debounce window
-      const uiStoreModule = await import('@/stores/uiStore')
-      uiStoreModule.useUIStore.getState().markTableDirty(tableId)
+        // Set transform lock - prevents new edit flushes during long-running transforms
+        // Edits made during transform will be deferred and flushed after completion
+        uiStoreModule.useUIStore.getState().setTableTransforming(tableId, true)
+        console.log('[Executor] Transform lock acquired for', tableId)
+      }
 
       // CRITICAL: If there are future states (after undo), clear the column version store
       // before building context. This prevents stale expression chain metadata from causing
@@ -646,6 +651,20 @@ export class CommandExecutor implements ICommandExecutor {
         }
       })
 
+      // Clear transform lock and flush any deferred edits made during transform
+      if (!LOCAL_ONLY_COMMANDS.has(command.type)) {
+        uiStoreModule.useUIStore.getState().setTableTransforming(tableId, false)
+        console.log('[Executor] Transform lock released for', tableId)
+
+        // Flush any edits that were deferred during the transform
+        const { useEditBatchStore } = await import('@/stores/editBatchStore')
+        const hasDeferredEdits = useEditBatchStore.getState().hasPendingEdits(tableId)
+        if (hasDeferredEdits) {
+          console.log('[Executor] Flushing deferred edits after transform')
+          await useEditBatchStore.getState().flushIfSafe(tableId)
+        }
+      }
+
       return {
         success: true,
         executionResult,
@@ -654,6 +673,13 @@ export class CommandExecutor implements ICommandExecutor {
         diffViewName,
       }
     } catch (error) {
+      // Ensure transform lock is cleared on error
+      const tableId = (command.params as Record<string, unknown>)?.tableId as string
+      if (tableId && !LOCAL_ONLY_COMMANDS.has(command.type)) {
+        const { useUIStore } = await import('@/stores/uiStore')
+        useUIStore.getState().setTableTransforming(tableId, false)
+        console.log('[Executor] Transform lock released (error path) for', tableId)
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),

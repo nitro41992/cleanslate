@@ -33,6 +33,8 @@ interface EditBatchState {
   hasPendingEdits: (tableId: string) => boolean
   /** Flush all pending edits immediately (for tests or urgent saves) */
   flushAll: () => Promise<void>
+  /** Flush edits for a table if it's safe (not transforming). Returns true if flushed. */
+  flushIfSafe: (tableId: string) => Promise<boolean>
 
   // Internal: set flush callback (called by DataGrid)
   _setFlushCallback: (callback: (tableId: string, edits: PendingEdit[]) => Promise<void>) => void
@@ -112,12 +114,22 @@ export const useEditBatchStore = create<EditBatchState>((set, get) => ({
       return
     }
 
-    const timeout = setTimeout(() => {
+    const timeout = setTimeout(async () => {
       const currentEdits = get().pendingEdits.get(tableId) || []
-      if (currentEdits.length > 0 && flushCallback) {
-        flushCallback(tableId, currentEdits)
-        get().clearBatch(tableId)
+      if (currentEdits.length === 0 || !flushCallback) return
+
+      // Check if table is being transformed - defer flush if so
+      const { useUIStore } = await import('@/stores/uiStore')
+      if (useUIStore.getState().isTableTransforming(tableId)) {
+        console.log('[EditBatch] Deferring flush - table is being transformed')
+        // Don't clear the batch - edits will be flushed when transform completes
+        // The executor will call flushIfSafe() after clearing the transform lock
+        return
       }
+
+      // Table not being transformed - flush normally
+      flushCallback(tableId, currentEdits)
+      get().clearBatch(tableId)
     }, BATCH_WINDOW)
 
     const newTimeouts = new Map(state.batchTimeouts)
@@ -176,6 +188,35 @@ export const useEditBatchStore = create<EditBatchState>((set, get) => ({
     // Clear all batches
     for (const tableId of state.pendingEdits.keys()) {
       get().clearBatch(tableId)
+    }
+  },
+
+  flushIfSafe: async (tableId: string) => {
+    // Check if table is being transformed
+    const { useUIStore } = await import('@/stores/uiStore')
+    if (useUIStore.getState().isTableTransforming(tableId)) {
+      console.log('[EditBatch] flushIfSafe: Table is transforming, cannot flush')
+      return false
+    }
+
+    const edits = get().getPendingEdits(tableId)
+    if (edits.length === 0) {
+      return true // Nothing to flush, considered success
+    }
+
+    if (!flushCallback) {
+      console.warn('[EditBatch] flushIfSafe: No flush callback registered')
+      return false
+    }
+
+    try {
+      await flushCallback(tableId, edits)
+      get().clearBatch(tableId)
+      console.log(`[EditBatch] flushIfSafe: Flushed ${edits.length} edits for table ${tableId}`)
+      return true
+    } catch (error) {
+      console.error('[EditBatch] flushIfSafe: Flush failed:', error)
+      return false
     }
   },
 

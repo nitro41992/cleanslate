@@ -15,6 +15,7 @@ interface UIState {
   busyCount: number  // Reference counter for nested DuckDB locks
   loadingMessage: string | null  // Dynamic loading message for file imports
   skipNextGridReload: boolean  // Flag to skip next DataGrid reload (e.g., after diff close)
+  transformingTables: Set<string>  // Tables currently undergoing transforms (prevents edit flushes)
 }
 
 interface UIActions {
@@ -38,6 +39,10 @@ interface UIActions {
   setLoadingMessage: (message: string | null) => void
   /** Set flag to skip next DataGrid reload (e.g., after diff close) */
   setSkipNextGridReload: (skip: boolean) => void
+  /** Mark a table as undergoing transformation (defers edit flushes) */
+  setTableTransforming: (tableId: string, isTransforming: boolean) => void
+  /** Check if a table is currently undergoing transformation */
+  isTableTransforming: (tableId: string) => boolean
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -51,6 +56,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   busyCount: 0,
   loadingMessage: null,
   skipNextGridReload: false,
+  transformingTables: new Set<string>(),
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
@@ -132,6 +138,22 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   decrementBusy: () => set((state) => ({ busyCount: Math.max(0, state.busyCount - 1) })),
   setLoadingMessage: (message) => set({ loadingMessage: message }),
   setSkipNextGridReload: (skip) => set({ skipNextGridReload: skip }),
+
+  setTableTransforming: (tableId, isTransforming) => {
+    set((state) => {
+      const newSet = new Set(state.transformingTables)
+      if (isTransforming) {
+        newSet.add(tableId)
+      } else {
+        newSet.delete(tableId)
+      }
+      return { transformingTables: newSet }
+    })
+  },
+
+  isTableTransforming: (tableId) => {
+    return get().transformingTables.has(tableId)
+  },
 }))
 
 // Persistence: Auto-save state on UI preference changes
