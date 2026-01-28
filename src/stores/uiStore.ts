@@ -148,7 +148,6 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   decrementBusy: () => set((state) => ({ busyCount: Math.max(0, state.busyCount - 1) })),
   setLoadingMessage: (message) => set({ loadingMessage: message }),
   setSkipNextGridReload: (skip) => {
-    console.log('[UIStore] setSkipNextGridReload called:', skip, new Error().stack?.split('\n').slice(1, 4).join('\n'))
     set({ skipNextGridReload: skip })
   },
 

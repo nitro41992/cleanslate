@@ -171,7 +171,6 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
   },
 
   appendCommand: (tableId, commandType, label, params, options = {}) => {
-    console.log('[TimelineStore] appendCommand called:', { tableId, commandType, label, paramsType: params.type })
     const timeline = get().timelines.get(tableId)
     if (!timeline) {
       console.error('[TimelineStore] Timeline not found for table:', tableId)
@@ -226,13 +225,6 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
 
       const newTimelines = new Map(state.timelines)
       newTimelines.set(tableId, updatedTimeline)
-
-      console.log('[TimelineStore] Command added:', {
-        tableId,
-        commandCount: updatedTimeline.commands.length,
-        currentPosition: updatedTimeline.currentPosition,
-        lastCommandLabel: command.label,
-      })
 
       return { timelines: newTimelines }
     })

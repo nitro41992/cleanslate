@@ -43,6 +43,40 @@ async function yieldToMain(): Promise<void> {
 const writeLocksInProgress = new Map<string, Promise<void>>()
 
 /**
+ * Global export queue - ensures only ONE Parquet export runs at a time.
+ *
+ * DuckDB's COPY TO operation creates large in-memory buffers (~500MB for 1M rows).
+ * When multiple exports run concurrently (e.g., persistence save + step snapshot),
+ * RAM spikes to 4GB+. By serializing exports, peak RAM stays under 2.5GB.
+ *
+ * This is separate from writeLocksInProgress which prevents concurrent writes
+ * to the SAME file. This queue prevents concurrent COPY TO operations globally.
+ */
+let globalExportChain: Promise<void> = Promise.resolve()
+
+/**
+ * Execute a function with global export serialization.
+ * Only one COPY TO operation can run at a time across the entire app.
+ */
+async function withGlobalExportLock<T>(fn: () => Promise<T>): Promise<T> {
+  const previousExport = globalExportChain
+  let resolve: () => void = () => {}
+
+  // Chain this export after any currently running export
+  globalExportChain = new Promise<void>(r => { resolve = r })
+
+  try {
+    // Wait for previous export to complete
+    await previousExport
+    // Execute this export
+    return await fn()
+  } finally {
+    // Release the lock for next export
+    resolve()
+  }
+}
+
+/**
  * Acquire a write lock for a file, waiting for any existing write to complete.
  * Returns a release function that must be called when done.
  */
@@ -190,18 +224,20 @@ export async function exportTableToParquet(
   tableName: string,
   snapshotId: string
 ): Promise<void> {
-  await ensureSnapshotDir()
+  // Use global export queue to serialize COPY TO operations (prevents RAM spikes)
+  return withGlobalExportLock(async () => {
+    await ensureSnapshotDir()
 
-  // Check table size
-  const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-  const rowCount = Number(countResult.toArray()[0].toJSON().count)
+    // Check table size
+    const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+    const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-  console.log(`[Snapshot] Exporting ${tableName} (${rowCount.toLocaleString()} rows) to OPFS...`)
+    console.log(`[Snapshot] Exporting ${tableName} (${rowCount.toLocaleString()} rows) to OPFS...`)
 
-  // Acquire write lock for this snapshot to prevent concurrent writes
-  const releaseLock = await acquireWriteLock(snapshotId)
+    // Acquire write lock for this snapshot to prevent concurrent writes
+    const releaseLock = await acquireWriteLock(snapshotId)
 
-  try {
+    try {
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
@@ -241,13 +277,16 @@ export async function exportTableToParquet(
           `)
 
           // 2. Retrieve buffer from WASM memory → JS heap (~50MB compressed)
-          const buffer = await db.copyFileToBuffer(duckdbTempFile)
+          let buffer: Uint8Array | null = await db.copyFileToBuffer(duckdbTempFile)
 
           // 3. Write to OPFS temp file (atomic step 1)
           const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
           const writable = await createWritableWithRetry(tempHandle)
           await writable.write(buffer)
           await writable.close()
+
+          // Explicit buffer release to help GC reclaim memory faster
+          buffer = null
 
           // CRITICAL: Small delay to ensure file handle is fully released
           await new Promise(resolve => setTimeout(resolve, 20))
@@ -323,13 +362,16 @@ export async function exportTableToParquet(
       `)
 
       // 2. Retrieve buffer from WASM → JS heap (safe: <50MB)
-      const buffer = await db.copyFileToBuffer(duckdbTempFile)
+      let buffer: Uint8Array | null = await db.copyFileToBuffer(duckdbTempFile)
 
       // 3. Write to OPFS temp file (atomic step 1: write to temp)
       const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
       const writable = await createWritableWithRetry(tempHandle)
       await writable.write(buffer)
       await writable.close()
+
+      // Explicit buffer release to help GC reclaim memory faster
+      buffer = null
 
       // CRITICAL: Small delay to ensure file handle is fully released
       await new Promise(resolve => setTimeout(resolve, 20))
@@ -375,10 +417,22 @@ export async function exportTableToParquet(
       throw error
     }
   }
+
+    // CHECKPOINT after large exports to release DuckDB buffer pool
+    // This helps reclaim ~200-500MB of WASM memory after COPY TO operations
+    if (rowCount > 100_000) {
+      try {
+        await conn.query('CHECKPOINT')
+        console.log('[Snapshot] CHECKPOINT after large export')
+      } catch {
+        // Non-fatal - CHECKPOINT failure shouldn't fail the export
+      }
+    }
   } finally {
     // Always release the write lock
     releaseLock()
   }
+  }) // End of withGlobalExportLock
 }
 
 /**

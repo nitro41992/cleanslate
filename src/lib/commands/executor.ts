@@ -1458,13 +1458,6 @@ export class CommandExecutor implements ICommandExecutor {
       cellChanges = commandWithCellChanges.getCellChanges()
     }
 
-    console.log('[EXECUTOR] syncExecuteToTimelineStore called:', {
-      tableId,
-      commandType: legacyCommandType,
-      label: command.label,
-      paramsType: timelineParams.type,
-    })
-
     timelineStoreState.appendCommand(tableId, legacyCommandType, command.label, timelineParams, {
       auditEntryId: auditInfo?.auditEntryId ?? command.id,
       affectedColumns: auditInfo?.affectedColumns ?? (column ? [column] : []),
@@ -1476,13 +1469,6 @@ export class CommandExecutor implements ICommandExecutor {
       columnOrderAfter,
     })
 
-    // Verify the command was added
-    const updatedTimeline = timelineStoreState.getTimeline(tableId)
-    console.log('[EXECUTOR] Timeline after append:', {
-      tableId,
-      commandCount: updatedTimeline?.commands.length,
-      currentPosition: updatedTimeline?.currentPosition,
-    })
   }
 }
 
