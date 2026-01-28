@@ -224,6 +224,20 @@ export function DataGrid({
 
         if (result.success) {
           console.log(`[DATAGRID] Batch edit successful: ${edits.length} cells`)
+
+          // Save to changelog for fast persistence (non-blocking)
+          // This avoids triggering full Parquet export for cell edits
+          const { saveCellEditsToChangelog } = await import('@/hooks/usePersistence')
+          await saveCellEditsToChangelog(
+            edits.map((e) => ({
+              tableId: batchTableId,
+              rowId: parseInt(e.csId, 10), // _cs_id is numeric
+              column: e.columnName,
+              oldValue: e.previousValue,
+              newValue: e.newValue,
+            }))
+          )
+
           // Trigger re-render for dirty cell tracking
           setExecutorTimelineVersion((v) => v + 1)
         } else {
