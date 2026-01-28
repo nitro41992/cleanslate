@@ -1,290 +1,241 @@
-# Fix Diff OOM on 1M+ Row Tables
+# Fix Diff Scroll Performance for Parquet Storage
+
+## Status: ✅ IMPLEMENTED
+
+Implementation complete. Changes made to:
+- `src/lib/diff-engine.ts`: Added `materializeDiffForPagination()`, `cleanupMaterializedDiffView()`, `getMaterializedDiffView()` functions and updated `fetchDiffPageWithKeyset()` to use materialized views
+- `src/components/diff/DiffView.tsx`: Wired up materialization after `runDiff()` completes for Parquet storage, added cleanup in unmount effect
 
 ## Problem
-- Diff operations fail with OOM error on 1M+ rows (Raw_Data_HF_V6: 1.01M rows × 31 columns)
-- Error: `failed to allocate data of size 2.0 MiB (1.7 GiB/1.7 GiB used)`
-- RAM usage at 3.4GB, DuckDB-WASM hitting browser memory ceiling
-- **Diff view scrolling is sluggish** compared to data preview (dragging scrollbar to a position is slow)
-
-## Root Cause Analysis
-
-### Primary Issue: `SELECT *` Materializes All Columns
-The CTEs at lines 610-614 use `SELECT *`, forcing DuckDB to materialize ALL 31 columns:
-
-```sql
--- CURRENT: ~1.5GB for 1M rows × 31 cols × 50 bytes avg
-WITH a_numbered AS (
-  SELECT *, ROW_NUMBER() OVER () as _row_num FROM sourceTableExpr
-),
-b_numbered AS (
-  SELECT *, ROW_NUMBER() OVER () as _row_num FROM "tableB"
-)
+Diff view scrolling is slow for large diffs that use Parquet storage. Console logs show:
+```
+[Diff] Keyset pagination not supported for Parquet storage, using OFFSET
+[Violation] 'message' handler took 508ms
 ```
 
-**Why DuckDB can't optimize this:**
-- `ROW_NUMBER() OVER ()` requires full table scan
-- CTEs with window functions are always materialized
-- Projection pushdown cannot work through materialized CTEs
+The issue: When diffs exceed 100k rows, they're stored as Parquet files to avoid OOM. But `fetchDiffPageWithKeyset` falls back to OFFSET pagination for Parquet, defeating the performance gains.
 
-### Secondary Issue: Cache Accumulation
-- `resolvedExpressionCache` (line 17) never cleared between diff sessions
-- `original_*` snapshots explicitly skipped in cleanup (line 988)
-- File handles stay registered in DuckDB memory
+## Root Cause
 
-### Tertiary Issue: OFFSET Pagination in Diff Grid (Scrolling)
-The diff grid uses OFFSET-based pagination while the main data preview uses keyset pagination:
+**Parquet file reads are stateless:**
+- `read_parquet('file.parquet')` creates an ephemeral table on each query
+- No persistent index on `sort_key` column
+- Keyset `WHERE sort_key > cursor` requires full table scan (no index)
+- Cursors are lost between queries - Parquet is stateless
 
-**Data Preview (Fast - O(1)):**
+**Current behavior:**
 ```typescript
-// DataGrid.tsx:497-501 - Jumps directly to cursor position
-getDataWithKeyset(tableName, { direction: 'forward', csId: targetCsId }, PAGE_SIZE)
+// diff-engine.ts:1069
+if (storageType === 'parquet') {
+  console.log('[Diff] Keyset pagination not supported for Parquet storage, using OFFSET')
+  // Falls back to O(n) OFFSET pagination
+}
 ```
-
-**Diff Grid (Slow - O(n)):**
-```sql
--- diff-engine.ts:899 - Must scan and skip all rows before offset
-LIMIT ${limit} OFFSET ${offset}
-```
-
-**Impact:** Scrolling to row 500,000 in diff requires DuckDB to:
-1. Scan all 500,000 rows from the diff table
-2. Execute 2 LEFT JOINs for each scanned row
-3. Discard 499,500 rows
-4. Return only 500 visible rows
-
-Additional factors:
-- **Two JOINs per page fetch** (`diff-engine.ts:895-896`)
-- **Smaller LRU cache** (8 vs 10 pages in `VirtualizedDiffGrid.tsx:63`)
-- **Complex cell rendering** (~140 lines vs ~50 lines in `drawCell`)
 
 ## Industry Best Practice (2025-2026)
 
-Per DuckDB docs and web search:
-1. **Explicit column projection** - Never use `SELECT *` in CTEs with window functions
-2. **Reduce threads** - Join-heavy ops need 3-4GB/thread; use `SET threads = 1`
-3. **Memory limit** - Set to 50-60% of system memory to avoid OS OOM killer
-4. **WASM limitation** - Browser caps at 4GB, no disk spilling for intermediate results
+Per [DuckDB 1.3 on MotherDuck](https://motherduck.com/blog/announcing-duckdb-13-on-motherduck-cdw/):
+- **Materialize only what's repeatedly read** - everything else stays virtual
+- DuckDB 1.3+ late materialization gives **3-10x faster reads** for LIMIT queries
+- Materializing Parquet into DuckDB increases performance **2x**
+
+Per [Halodoc Pagination Guide](https://blogs.halodoc.io/a-practical-guide-to-scalable-pagination/):
+- Keyset pagination drops latencies by **60%+** over OFFSET
+- Database query load reduced by **20%**, CPU improved by **30%**
+
+**The solution:** Create a temp table from Parquet files **once** when diff opens, then use keyset pagination on that stable, indexed table.
 
 ## Implementation Plan
 
-### Change 1: Column Projection in CTEs (PRIMARY FIX)
-**File:** `src/lib/diff-engine.ts` lines 607-624
+### Change 1: Materialize Parquet into Temp Table (PRIMARY FIX)
+**File:** `src/lib/diff-engine.ts`
 
-Build explicit column list instead of `SELECT *`:
+When a diff uses Parquet storage, materialize it into a temp table **once** when the diff view opens. This enables keyset pagination on a stable, indexed table instead of re-reading Parquet files on every scroll.
 
-```typescript
-// Before line 607, compute needed columns:
-const neededColumns = new Set<string>(['_cs_id'])  // Always need row ID
-keyColumns.forEach(c => neededColumns.add(c))      // Join keys
-valueColumns.forEach(c => neededColumns.add(c))    // For sharedColModificationExpr
-
-const columnList = [...neededColumns]
-  .map(c => `"${c}"`)
-  .join(', ')
-
-// Then in the SQL:
-const createTempTableQuery = `
-  CREATE TEMP TABLE "${diffTableName}" AS
-  WITH
-    a_numbered AS (
-      SELECT ${columnList}, ROW_NUMBER() OVER () as _row_num FROM ${sourceTableExpr}
-    ),
-    b_numbered AS (
-      SELECT ${columnList}, ROW_NUMBER() OVER () as _row_num FROM "${tableB}"
-    )
-  SELECT ...
-`
+**Current flow (slow):**
+```
+User scrolls → read_parquet('file.parquet') → full scan → OFFSET
+User scrolls → read_parquet('file.parquet') → full scan → OFFSET  (repeat)
 ```
 
-**Memory savings:** 31 cols → ~5-10 cols = **~70-85% reduction**
-
-### Change 2: Reduce Threads for Diff Operations
-**File:** `src/lib/diff-engine.ts` around line 629
-
-```typescript
-// Before the diff query, reduce threads
-await conn.query('SET threads = 1')
-
-try {
-  await execute(createTempTableQuery)
-} finally {
-  // Restore default (let DuckDB auto-detect)
-  await conn.query('RESET threads')
-}
+**New flow (fast):**
 ```
-
-### Change 3: Early Bail on High Memory
-**File:** `src/lib/diff-engine.ts` lines 304-306
-
-Change from logging to throwing:
-
-```typescript
-if (status.percentage > 85) {
-  clearInterval(memoryPollInterval)
-  throw new Error(
-    `Memory critical (${status.percentage.toFixed(0)}% used). ` +
-    `Aborting diff to prevent browser crash. ` +
-    `Try reducing table size or closing other tabs.`
-  )
-}
-```
-
-### Change 4: Add Global Cache Clear Function
-**File:** `src/lib/diff-engine.ts` after line 17
-
-```typescript
-/**
- * Clear all diff caches. Call when diff view closes to free memory.
- */
-export function clearDiffCaches(): void {
-  const snapshotCount = registeredParquetSnapshots.size
-  const cacheCount = resolvedExpressionCache.size
-  registeredParquetSnapshots.clear()
-  resolvedExpressionCache.clear()
-  console.log(`[Diff] Cleared caches: ${snapshotCount} snapshots, ${cacheCount} expressions`)
-}
-```
-
-### Change 5: Wire Up Cache Cleanup in DiffView
-**File:** `src/components/diff/DiffView.tsx` around line 112
-
-```typescript
-// After cleanupDiffSourceFiles call:
-if (currentSourceTableName) {
-  await cleanupDiffSourceFiles(currentSourceTableName)
-}
-// ADD: Clear all caches when diff view closes
-const { clearDiffCaches } = await import('@/lib/diff-engine')
-clearDiffCaches()
-```
-
-### Change 6: Keyset Pagination for Diff Grid (SCROLLING FIX)
-**File:** `src/lib/diff-engine.ts` - Modify `fetchDiffPage` function (~line 880)
-
-The diff table already has `sort_key` column. Use it for keyset pagination:
-
-**Current (OFFSET-based):**
-```sql
-SELECT ... FROM diff_table
-ORDER BY sort_key
-LIMIT 500 OFFSET 50000  -- Scans 50,500 rows
-```
-
-**New (Keyset-based):**
-```sql
-SELECT ... FROM diff_table
-WHERE sort_key > :lastSortKey  -- Direct B-tree lookup
-ORDER BY sort_key
-LIMIT 500  -- Only touches 500 rows
+Diff opens → CREATE TEMP TABLE _diff_view_X AS SELECT * FROM read_parquet(...)  (once)
+User scrolls → SELECT FROM _diff_view_X WHERE sort_key > cursor  (keyset, O(1))
+User scrolls → SELECT FROM _diff_view_X WHERE sort_key > cursor  (keyset, O(1))
+Diff closes → DROP TABLE _diff_view_X
 ```
 
 **Implementation:**
 
-1. **Add `fetchDiffPageWithKeyset` function** in `diff-engine.ts`:
+1. **Add materialization function** in `diff-engine.ts`:
 ```typescript
-export async function fetchDiffPageWithKeyset(
+// Track materialized view tables for cleanup
+const materializedDiffViews = new Map<string, string>() // diffTableName -> viewTableName
+
+/**
+ * Materialize a Parquet-backed diff into a temp table for fast keyset pagination.
+ * Called once when diff view opens for large diffs.
+ */
+export async function materializeDiffForPagination(
   diffTableName: string,
   sourceTableName: string,
   targetTableName: string,
   allColumns: string[],
   newColumns: string[],
-  removedColumns: string[],
-  cursor: { sortKey: number | null; direction: 'forward' | 'backward' },
-  limit: number,
-  keyOrderBy: string | null,
-  storageType: 'memory' | 'parquet'
-): Promise<{ rows: DiffRow[]; firstSortKey: number; lastSortKey: number }> {
+  removedColumns: string[]
+): Promise<string> {
+  const viewTableName = `_diff_view_${Date.now()}`
+
+  // Build the full diff query with JOINs
+  const sourceTableExpr = await resolveTableRef(sourceTableName)
+  const selectCols = allColumns
+    .map((c) => {
+      const inA = !removedColumns.includes(c)
+      const inB = !newColumns.includes(c)
+      const aExpr = inA ? `a."${c}"` : 'NULL'
+      const bExpr = inB ? `b."${c}"` : 'NULL'
+      return `${aExpr} as "a_${c}", ${bExpr} as "b_${c}"`
+    })
+    .join(', ')
+
+  // Materialize with all data needed for pagination
+  await execute(`
+    CREATE TEMP TABLE "${viewTableName}" AS
+    SELECT
+      d.diff_status,
+      d.row_id,
+      d.sort_key,
+      ${selectCols}
+    FROM read_parquet('${diffTableName}_part_*.parquet') d
+    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
+    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+    WHERE d.diff_status IN ('added', 'removed', 'modified')
+  `)
+
+  materializedDiffViews.set(diffTableName, viewTableName)
+  console.log(`[Diff] Materialized ${diffTableName} into ${viewTableName}`)
+  return viewTableName
+}
+
+/**
+ * Cleanup materialized view when diff closes.
+ */
+export async function cleanupMaterializedDiffView(diffTableName: string): Promise<void> {
+  const viewTableName = materializedDiffViews.get(diffTableName)
+  if (viewTableName) {
+    try {
+      await execute(`DROP TABLE IF EXISTS "${viewTableName}"`)
+      materializedDiffViews.delete(diffTableName)
+      console.log(`[Diff] Dropped materialized view ${viewTableName}`)
+    } catch (e) {
+      console.warn(`[Diff] Failed to drop ${viewTableName}:`, e)
+    }
+  }
+}
+```
+
+2. **Update `fetchDiffPageWithKeyset`** to use materialized view:
+```typescript
+export async function fetchDiffPageWithKeyset(
+  tempTableName: string,
+  // ... other params ...
+  storageType: 'memory' | 'parquet' = 'memory'
+): Promise<KeysetDiffPageResult> {
+  // For Parquet, use the materialized view if available
+  let queryTable = tempTableName
+  if (storageType === 'parquet') {
+    const viewTable = materializedDiffViews.get(tempTableName)
+    if (viewTable) {
+      queryTable = viewTable
+      // Now we can use keyset pagination on the materialized table!
+    } else {
+      // Fall back to OFFSET if not materialized yet
+      console.log('[Diff] No materialized view, using OFFSET')
+      // ... existing fallback code ...
+    }
+  }
+
+  // Keyset pagination query (works for both memory and materialized Parquet)
   const whereClause = cursor.sortKey !== null
     ? cursor.direction === 'forward'
-      ? `AND d.sort_key > ${cursor.sortKey}`
-      : `AND d.sort_key < ${cursor.sortKey}`
+      ? `WHERE sort_key > ${cursor.sortKey}`
+      : `WHERE sort_key < ${cursor.sortKey}`
     : ''
 
-  const orderDirection = cursor.direction === 'forward' ? 'ASC' : 'DESC'
+  const result = await query<DiffRow>(`
+    SELECT * FROM "${queryTable}"
+    ${whereClause}
+    ORDER BY sort_key ${cursor.direction === 'forward' ? 'ASC' : 'DESC'}
+    LIMIT ${limit}
+  `)
 
-  // ... build query with cursor-based WHERE instead of OFFSET
+  // Extract cursors from result
+  const firstSortKey = result.length > 0 ? result[0].sort_key : null
+  const lastSortKey = result.length > 0 ? result[result.length - 1].sort_key : null
+
+  return { rows: result, firstSortKey, lastSortKey }
 }
 ```
 
-2. **Modify `VirtualizedDiffGrid.tsx`** to track cursor positions:
+3. **Wire up in DiffView.tsx** - call materialization when diff opens with Parquet storage:
 ```typescript
-// Add to state
-const [cursorCache, setCursorCache] = useState<Map<number, number>>(new Map())
-// Map of: pageIndex -> sortKey at start of that page
-
-// In loadPage, use keyset when jumping to a known position
-const nearestPage = findNearestCachedPage(targetPage)
-if (nearestPage) {
-  // Use keyset from cached page
-  await fetchDiffPageWithKeyset(..., { sortKey: cursorCache.get(nearestPage), direction: 'forward' })
-} else {
-  // Fall back to OFFSET for first load or distant jumps
+// In DiffView.tsx, after runDiff completes:
+if (diffResult.storageType === 'parquet') {
+  await materializeDiffForPagination(
+    diffResult.diffTableName,
+    sourceTableName,
+    targetTableName,
+    allColumns,
+    newColumns,
+    removedColumns
+  )
 }
+
+// In cleanup effect:
+await cleanupMaterializedDiffView(diffTableName)
 ```
 
-3. **Cache sort_key values** when pages are loaded to enable fast random access.
-
-**Memory savings:** None (this is a CPU/latency fix, not memory)
-**Scroll performance:** ~10-100× faster for large tables
-
-### Change 7: Increase Diff Grid LRU Cache
-**File:** `src/components/diff/VirtualizedDiffGrid.tsx` line 63
-
-```typescript
-// Current: 8 pages (4000 rows)
-const MAX_CACHED_PAGES = 8
-
-// Change to: 12 pages (6000 rows) - closer to main grid's 10
-const MAX_CACHED_PAGES = 12
-```
-
-**Rationale:** Larger cache reduces expensive re-fetches during scroll. The OOM fix (Change 1) reduces per-row memory, allowing more cached rows.
+**Performance gain:** O(n) OFFSET → O(1) keyset = **~60%+ latency reduction** per scroll
 
 ## Files to Modify
 
-| File | Lines | Change |
-|------|-------|--------|
-| `src/lib/diff-engine.ts` | 607-624 | Column projection in CTEs |
-| `src/lib/diff-engine.ts` | 629 | Reduce threads to 1 |
-| `src/lib/diff-engine.ts` | 304-306 | Early bail at 85% |
-| `src/lib/diff-engine.ts` | after 17 | Add `clearDiffCaches()` export |
-| `src/lib/diff-engine.ts` | ~880 | Add `fetchDiffPageWithKeyset()` function |
-| `src/components/diff/DiffView.tsx` | ~112 | Call `clearDiffCaches()` on close |
-| `src/components/diff/VirtualizedDiffGrid.tsx` | 63 | Increase MAX_CACHED_PAGES to 12 |
-| `src/components/diff/VirtualizedDiffGrid.tsx` | ~200 | Use keyset pagination with cursor cache |
+| File | Change |
+|------|--------|
+| `src/lib/diff-engine.ts` | Add `materializeDiffForPagination()` and `cleanupMaterializedDiffView()` functions |
+| `src/lib/diff-engine.ts` | Update `fetchDiffPageWithKeyset()` to use materialized view for Parquet |
+| `src/components/diff/DiffView.tsx` | Call materialization on diff open, cleanup on close |
 
 ## Verification
-
-### Manual Test - OOM Fix
-1. Load Raw_Data_HF_V6 (1.01M rows × 31 columns)
-2. Apply a transform (e.g., trim a column)
-3. Open diff view (Preview Changes)
-4. **Expected:** Completes without OOM, peak memory < 2GB
 
 ### Manual Test - Scroll Performance
 1. Load Raw_Data_HF_V6 (1.01M rows × 31 columns)
 2. Apply a transform, open diff view
-3. Drag scrollbar from top to ~50% position
-4. **Expected:** Grid responds within 200ms (similar to data preview)
-5. Drag scrollbar rapidly up and down
-6. **Expected:** No significant lag or stuttering
+3. Check console for: `[Diff] Materialized _diff_xxx into _diff_view_xxx`
+4. Drag scrollbar from top to ~50% position
+5. **Expected:** Grid responds within 200ms (no more OFFSET fallback messages)
+6. Check console: Should see keyset fetch logs, NOT "using OFFSET"
 
-### Memory Profiling
-- Watch console for memory poll logs
-- Peak should stay under 1.5GB (vs current 1.7GB+ crash)
-- After diff close, caches should be cleared
+### Console Verification
+**Before fix:**
+```
+[Diff] Keyset pagination not supported for Parquet storage, using OFFSET
+[Violation] 'message' handler took 508ms
+```
+
+**After fix:**
+```
+[Diff] Materialized _diff_xxx into _diff_view_xxx
+[DIFFGRID] Keyset fetch (estimated): page 6 from cursor 3000
+```
 
 ### Regression Tests
 ```bash
-npm run test -- --grep "diff"
+npx playwright test e2e/tests/regression-diff.spec.ts --reporter=list
 ```
 
 ## Sources
-- [DuckDB Memory Management](https://duckdb.org/2024/07/09/memory-management)
-- [DuckDB OOM Errors Guide](https://duckdb.org/docs/stable/guides/troubleshooting/oom_errors)
-- [DuckDB Tuning Workloads](https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads)
-- [DuckDB CTE Optimization](https://duckdb.org/docs/stable/sql/query_syntax/with)
-- [WASM Memory Management](https://www.getorchestra.io/guides/memory-management-in-wasm-applications-for-data-engineering)
-- [DuckDB OFFSET Issue #14218](https://github.com/duckdb/duckdb/issues/14218) - Documents slow OFFSET on 115M row dataset
+- [DuckDB 1.3 on MotherDuck](https://motherduck.com/blog/announcing-duckdb-13-on-motherduck-cdw/) - Late materialization, 3-10x faster reads
+- [Halodoc Pagination Guide](https://blogs.halodoc.io/a-practical-guide-to-scalable-pagination/) - 60%+ latency reduction with keyset
+- [Keyset vs Offset Pagination](https://leapcell.io/blog/efficient-data-pagination-keyset-vs-offset) - O(1) vs O(n)
 - [Use The Index Luke - No Offset](https://use-the-index-luke.com/no-offset) - OFFSET is fundamentally unscalable
-- [Keyset vs Offset Pagination](https://leapcell.io/blog/efficient-data-pagination-keyset-vs-offset) - Keyset is O(1) vs OFFSET's O(n)

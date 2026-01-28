@@ -9,7 +9,7 @@ import DataGridLib, {
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchDiffPage, fetchDiffPageWithKeyset, type DiffRow } from '@/lib/diff-engine'
+import { fetchDiffPageWithKeyset, type DiffRow } from '@/lib/diff-engine'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -337,15 +337,20 @@ export function VirtualizedDiffGrid({
               firstSortKey = result.firstSortKey
               lastSortKey = result.lastSortKey
             } else {
-              // Fall back to OFFSET pagination (no adjacent cached page)
-              console.log(`[DIFFGRID] OFFSET fetch: page ${pageIdx} at offset ${pageStartRow}`)
-              newData = await fetchDiffPage(
+              // No adjacent cached page - estimate sort_key from row number
+              // sort_key = ROW_NUMBER() which starts at 1, so row N has sort_key = N + 1
+              // For page starting at row 500, we want sort_key > 500 to get rows 501+
+              const estimatedSortKey = pageStartRow > 0 ? pageStartRow : null
+              console.log(`[DIFFGRID] Keyset fetch (estimated): page ${pageIdx} from cursor ${estimatedSortKey}`)
+              const result = await fetchDiffPageWithKeyset(
                 diffTableName, sourceTableName, targetTableName,
                 allColumns, newColumns, removedColumns,
-                pageStartRow, PAGE_SIZE, keyOrderBy, storageType
+                { sortKey: estimatedSortKey, direction: 'forward' },
+                PAGE_SIZE, storageType
               )
-              // Note: OFFSET doesn't give us cursor positions, but that's OK
-              // The next adjacent fetch will use keyset from these rows
+              newData = result.rows
+              firstSortKey = result.firstSortKey
+              lastSortKey = result.lastSortKey
             }
 
             // Check abort again after async operation

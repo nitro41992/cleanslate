@@ -17,7 +17,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
-import { runDiff, cleanupDiffTable, cleanupDiffSourceFiles, clearDiffCaches } from '@/lib/diff-engine'
+import { runDiff, cleanupDiffTable, cleanupDiffSourceFiles, clearDiffCaches, materializeDiffForPagination, cleanupMaterializedDiffView } from '@/lib/diff-engine'
 import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
 import { toast } from 'sonner'
 
@@ -97,6 +97,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       ;(async () => {
         try {
           if (currentDiffTableName) {
+            // Cleanup materialized view first (if Parquet-backed)
+            if (currentStorageType === 'parquet') {
+              await cleanupMaterializedDiffView(currentDiffTableName)
+            }
             await cleanupDiffTable(currentDiffTableName, currentStorageType || 'memory')
             // VACUUM to reclaim RAM from dropped diff table (non-blocking)
             if (currentStorageType === 'memory') {
@@ -130,6 +134,12 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     if (diffTableName) {
       console.log(`[Diff] Cleaning up previous diff table: ${diffTableName}`)
       // Fire-and-forget cleanup (non-blocking to keep UI responsive)
+      // Cleanup materialized view first (if Parquet-backed)
+      if (storageType === 'parquet') {
+        cleanupMaterializedDiffView(diffTableName).catch(err => {
+          console.warn('[Diff] Previous materialized view cleanup failed (non-fatal):', err)
+        })
+      }
       cleanupDiffTable(diffTableName, storageType || 'memory').catch(err => {
         console.warn('[Diff] Previous diff cleanup failed (non-fatal):', err)
       })
@@ -214,6 +224,20 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         mode === 'compare-preview' ? 'preview' : 'two-tables'  // Row-based for preview, key-based for two-tables
       )
 
+      // For Parquet-backed diffs, materialize into temp table for fast keyset pagination
+      // This converts O(n) OFFSET queries to O(1) keyset queries on scroll
+      if (config.storageType === 'parquet' && config.totalDiffRows > 0) {
+        console.log('[Diff] Materializing Parquet diff for fast pagination...')
+        await materializeDiffForPagination(
+          config.diffTableName,
+          config.sourceTableName,
+          config.targetTableName,
+          config.allColumns,
+          config.newColumns,
+          config.removedColumns
+        )
+      }
+
       setDiffConfig({
         diffTableName: config.diffTableName,
         sourceTableName: config.sourceTableName,
@@ -254,6 +278,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     // Use setTimeout to ensure React has processed the clearResults state update
     setTimeout(async () => {
       if (oldDiffTableName) {
+        // Cleanup materialized view first (if Parquet-backed)
+        if (oldStorageType === 'parquet') {
+          await cleanupMaterializedDiffView(oldDiffTableName)
+        }
         await cleanupDiffTable(oldDiffTableName, oldStorageType || 'memory')
 
         // VACUUM to reclaim RAM from dropped diff table
