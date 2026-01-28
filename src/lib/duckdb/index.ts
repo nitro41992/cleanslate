@@ -26,6 +26,23 @@ import { toast as sonnerToast } from 'sonner'
 export const CS_ID_COLUMN = '_cs_id'
 
 /**
+ * Normalize a _cs_id value to a consistent string format.
+ * DuckDB returns BIGINT for ROW_NUMBER(), which comes back as JavaScript BigInt.
+ * This must be converted to string for:
+ * 1. Consistent JSON serialization (BigInt throws in JSON.stringify)
+ * 2. Consistent comparison in dirty cell tracking (cellChanges keys)
+ * 3. Stable storage in OPFS app-state.json
+ *
+ * @param value - The raw _cs_id value from DuckDB (typically BigInt)
+ * @returns String representation of the csId
+ */
+export function normalizeCsId(value: unknown): string {
+  // BigInt, number, string all convert correctly with String()
+  // null/undefined become "null"/"undefined" which is fine for error detection
+  return String(value)
+}
+
+/**
  * Filter out internal columns (like _cs_id, __base backup columns) from column lists for UI display
  */
 export function filterInternalColumns(columns: string[]): string[] {
@@ -681,7 +698,7 @@ export async function getTableDataWithRowIds(
     )
     return result.toArray().map((row) => {
       const json = row.toJSON()
-      const csId = json[CS_ID_COLUMN] as string
+      const csId = normalizeCsId(json[CS_ID_COLUMN])
       const data: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(json)) {
         if (!isInternalColumn(key)) {

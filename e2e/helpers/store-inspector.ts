@@ -49,6 +49,11 @@ export interface EditDirtyState {
   dirtyCount: number
 }
 
+export interface TimelineDirtyCellsState {
+  dirtyCells: string[]  // Array of "csId:columnName" keys
+  count: number
+}
+
 export interface MatcherStoreState {
   pairs: Array<{ id: string; status: string }>
   stats: {
@@ -208,6 +213,13 @@ export interface StoreInspector {
    * @param timeout - Optional timeout in milliseconds (default 10000)
    */
   waitForPersistenceComplete: (timeout?: number) => Promise<void>
+  /**
+   * Get dirty cells from the timeline store for a specific table.
+   * Dirty cells are cells that have been manually edited.
+   * @param tableId - Optional table ID (uses activeTableId if not specified)
+   * @returns Array of dirty cell keys in format "csId:columnName"
+   */
+  getTimelineDirtyCells: (tableId?: string) => Promise<TimelineDirtyCellsState>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -808,6 +820,28 @@ async getTableList(): Promise<TableInfo[]> {
         },
         { timeout }
       )
+    },
+
+    async getTimelineDirtyCells(tableId?: string): Promise<TimelineDirtyCellsState> {
+      return page.evaluate(({ tableId }) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.timelineStore || !stores?.tableStore) {
+          return { dirtyCells: [], count: 0 }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tableState = (stores.tableStore as any).getState()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const timelineState = (stores.timelineStore as any).getState()
+        const activeTableId = tableId || tableState?.activeTableId
+        if (!activeTableId) {
+          return { dirtyCells: [], count: 0 }
+        }
+        const dirtyCells = timelineState?.getDirtyCellsAtPosition?.(activeTableId) || new Set()
+        return {
+          dirtyCells: Array.from(dirtyCells) as string[],
+          count: dirtyCells.size,
+        }
+      }, { tableId })
     },
   }
 }

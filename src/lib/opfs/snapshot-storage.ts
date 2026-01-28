@@ -14,6 +14,68 @@ import * as duckdb from '@duckdb/duckdb-wasm'
 import { CS_ID_COLUMN } from '@/lib/duckdb'
 
 /**
+ * File-level write locks to prevent concurrent OPFS writes to the same file.
+ * OPFS doesn't allow multiple writable streams on the same file.
+ * This Map tracks ongoing write operations by file name.
+ */
+const writeLocksInProgress = new Map<string, Promise<void>>()
+
+/**
+ * Acquire a write lock for a file, waiting for any existing write to complete.
+ * Returns a release function that must be called when done.
+ */
+async function acquireWriteLock(fileName: string): Promise<() => void> {
+  // Wait for any existing write to complete
+  const existingLock = writeLocksInProgress.get(fileName)
+  if (existingLock) {
+    console.log(`[Snapshot] Waiting for existing write lock on ${fileName}...`)
+    await existingLock.catch(() => {}) // Ignore errors from previous write
+  }
+
+  // Create a new lock with a resolver
+  let releaseLock: () => void = () => {}
+  const lockPromise = new Promise<void>((resolve) => {
+    releaseLock = resolve
+  })
+  writeLocksInProgress.set(fileName, lockPromise)
+
+  return () => {
+    writeLocksInProgress.delete(fileName)
+    releaseLock()
+  }
+}
+
+/**
+ * Create a writable stream with retry logic for OPFS lock conflicts.
+ * OPFS can briefly hold locks after close(), this handles that gracefully.
+ */
+async function createWritableWithRetry(
+  fileHandle: FileSystemFileHandle,
+  maxRetries = 3
+): Promise<FileSystemWritableFileStream> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fileHandle.createWritable()
+    } catch (err) {
+      const isLockError =
+        err instanceof Error &&
+        (err.name === 'NoModificationAllowedError' ||
+          err.message.includes('modifications are not allowed'))
+
+      if (!isLockError || attempt === maxRetries) {
+        throw err
+      }
+
+      // Wait before retry with exponential backoff: 50ms, 100ms, 200ms
+      const delay = 50 * Math.pow(2, attempt - 1)
+      console.warn(`[Snapshot] createWritable failed (attempt ${attempt}), retrying in ${delay}ms...`)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+  throw new Error('createWritableWithRetry: unreachable')
+}
+
+/**
  * Ensure the snapshots directory exists in OPFS
  * Must be called before first Parquet export to avoid DuckDB errors
  */
@@ -114,11 +176,15 @@ export async function exportTableToParquet(
 
   console.log(`[Snapshot] Exporting ${tableName} (${rowCount.toLocaleString()} rows) to OPFS...`)
 
-  const root = await navigator.storage.getDirectory()
-  const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
-  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+  // Acquire write lock for this snapshot to prevent concurrent writes
+  const releaseLock = await acquireWriteLock(snapshotId)
 
-  // CRITICAL: Always chunk for tables >250k rows to prevent JS heap OOM
+  try {
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+
+    // CRITICAL: Always chunk for tables >250k rows to prevent JS heap OOM
   // copyFileToBuffer() copies data to JS heap, so we must limit buffer size
   const CHUNK_THRESHOLD = 250_000
   if (rowCount > CHUNK_THRESHOLD) {
@@ -152,14 +218,14 @@ export async function exportTableToParquet(
 
       // 3. Write to OPFS (buffer cleared after write)
       const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-      const writable = await fileHandle.createWritable()
+      const writable = await createWritableWithRetry(fileHandle)
       await writable.write(buffer)
       await writable.close()
 
       // CRITICAL: Small delay to ensure file handle is fully released
       // Without this, immediate registration for reading can fail with:
       // "Access Handles cannot be created if there is another open Access Handle"
-      await new Promise(resolve => setTimeout(resolve, 10))
+      await new Promise(resolve => setTimeout(resolve, 20))
 
       // Verify file was written
       const file = await fileHandle.getFile()
@@ -201,14 +267,14 @@ export async function exportTableToParquet(
 
     // 3. Write to OPFS
     const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-    const writable = await fileHandle.createWritable()
+    const writable = await createWritableWithRetry(fileHandle)
     await writable.write(buffer)
     await writable.close()
 
     // CRITICAL: Small delay to ensure file handle is fully released
     // Without this, immediate registration for reading can fail with:
     // "Access Handles cannot be created if there is another open Access Handle"
-    await new Promise(resolve => setTimeout(resolve, 10))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // Verify file was written
     const file = await fileHandle.getFile()
@@ -221,6 +287,10 @@ export async function exportTableToParquet(
     await db.dropFile(tempFileName)
 
     console.log(`[Snapshot] Exported to ${finalFileName}`)
+  }
+  } finally {
+    // Always release the write lock
+    releaseLock()
   }
 }
 

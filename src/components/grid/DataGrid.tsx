@@ -116,38 +116,48 @@ export function DataGrid({
   const [executorTimelineVersion, setExecutorTimelineVersion] = useState(0)
 
   // Timeline-based dirty cell tracking (replaces editStore.isDirty)
-  // Uses BOTH legacy timelineStore AND CommandExecutor for hybrid support
-  const getDirtyCellsAtPosition = useTimelineStore((s) => s.getDirtyCellsAtPosition)
-  const timelinePosition = useTimelineStore((s) => {
-    if (!tableId) return -1
-    return s.timelines.get(tableId)?.currentPosition ?? -1
-  })
+  // Subscribe directly to the timeline object so we re-render when loadTimelines() restores state
+  // This fixes the bug where dirty cell indicators don't persist after page refresh
+  const timeline = useTimelineStore((s) => tableId ? s.timelines.get(tableId) : undefined)
 
   // Compute dirty cells set based on timeline position
-  // This re-computes when position changes (undo/redo)
-  // Combines cells from legacy timeline AND CommandExecutor
-  // Note: timelinePosition and executorTimelineVersion are intentionally included to trigger recomputation
+  // This re-computes when the timeline object changes (including after persistence restore)
+  // Combines cells from timeline AND CommandExecutor
   const dirtyCells = useMemo(
     () => {
       if (!tableId) return new Set<string>()
 
-      // Get dirty cells from legacy timeline
-      const legacyDirtyCells = getDirtyCellsAtPosition(tableId)
+      const dirtyCells = new Set<string>()
 
-      // Get dirty cells from CommandExecutor
-      const executor = getCommandExecutor()
-      const executorDirtyCells = executor.getDirtyCells(tableId)
-
-      // Merge both sets
-      const merged = new Set<string>(legacyDirtyCells)
-      for (const cell of executorDirtyCells) {
-        merged.add(cell)
+      // Get dirty cells from timeline if it exists
+      if (timeline) {
+        // Only consider commands up to currentPosition (inclusive)
+        // Commands after currentPosition are "undone" and shouldn't show as dirty
+        for (let i = 0; i <= timeline.currentPosition && i < timeline.commands.length; i++) {
+          const cmd = timeline.commands[i]
+          // Track cells modified by manual_edit or batch_edit commands
+          if (cmd.cellChanges) {
+            for (const change of cmd.cellChanges) {
+              dirtyCells.add(`${change.csId}:${change.columnName}`)
+            }
+          }
+          // Also handle single manual_edit without cellChanges array
+          if (cmd.commandType === 'manual_edit' && cmd.params.type === 'manual_edit') {
+            dirtyCells.add(`${cmd.params.csId}:${cmd.params.columnName}`)
+          }
+        }
       }
 
-      return merged
+      // Merge with executor dirty cells (for current session edits not yet in timeline)
+      const executor = getCommandExecutor()
+      const executorDirtyCells = executor.getDirtyCells(tableId)
+      for (const cell of executorDirtyCells) {
+        dirtyCells.add(cell)
+      }
+
+      return dirtyCells
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tableId, getDirtyCellsAtPosition, timelinePosition, executorTimelineVersion]
+    [tableId, timeline, executorTimelineVersion]
   )
 
   // Audit store for logging edits
@@ -266,6 +276,7 @@ export function DataGrid({
 
   // Force grid re-render when timeline position changes (undo/redo)
   // This ensures dirty cell indicators (red triangles) update correctly
+  const timelinePosition = timeline?.currentPosition ?? -1
   useEffect(() => {
     if (prevTimelinePosition.current !== timelinePosition) {
       invalidateVisibleCells()
