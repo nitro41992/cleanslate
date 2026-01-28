@@ -187,13 +187,37 @@ export class LaundromatPage {
       { timeout: 10000 }
     )
 
-    // Click the grid to focus it and wait for canvas to be ready for input
-    await this.gridContainer.click()
+    // Detect platform for keyboard shortcuts
+    const isMac = process.platform === 'darwin'
+
+    // Ensure we're not in edit mode from a previous edit
+    await this.page.keyboard.press('Escape')
+    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
+
+    // Click the top-left area of the grid to focus it and start near cell (0,0)
+    // Using position to click near the first cell, not the center of the grid
+    const gridBox = await this.gridContainer.boundingBox()
+    if (gridBox) {
+      // Click near top-left (accounting for header row ~36px)
+      await this.page.mouse.click(gridBox.x + 50, gridBox.y + 50)
+    } else {
+      await this.gridContainer.click()
+    }
     await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
-    // Navigate to home position (first cell) and wait for canvas to update selection
-    await this.page.keyboard.press('Control+Home')
-    await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // Navigate to home position using platform-appropriate shortcuts
+    // On Mac: Cmd+Up then Cmd+Left. On Windows/Linux: Ctrl+Home
+    if (isMac) {
+      // Go to first row
+      await this.page.keyboard.press('Meta+ArrowUp')
+      await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
+      // Go to first column
+      await this.page.keyboard.press('Meta+ArrowLeft')
+      await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
+    } else {
+      await this.page.keyboard.press('Control+Home')
+      await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    }
 
     // Navigate to target row (canvas needs time to repaint selection after each navigation)
     for (let i = 0; i < row; i++) {
@@ -217,8 +241,12 @@ export class LaundromatPage {
     // Wait for edit overlay to render (canvas transitions to edit mode)
     await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
-    // Select all existing content and wait for selection to complete
-    await this.page.keyboard.press('Control+a')
+    // Select all existing content using platform-appropriate shortcut
+    if (isMac) {
+      await this.page.keyboard.press('Meta+a')
+    } else {
+      await this.page.keyboard.press('Control+a')
+    }
     await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
 
     // Type new value with slight delay between characters

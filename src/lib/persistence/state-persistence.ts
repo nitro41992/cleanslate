@@ -172,6 +172,21 @@ export async function restoreAppState(): Promise<AppStateV2 | null> {
  * Handles orphaned metadata (table deleted) and orphaned tables (metadata missing)
  */
 async function reconcileTablesWithDuckDB(tables: TableInfo[]): Promise<TableInfo[]> {
+  // Helper to deserialize dates from JSON strings
+  const deserializeTable = (table: TableInfo): TableInfo => ({
+    ...table,
+    createdAt: new Date(table.createdAt as unknown as string),
+    updatedAt: new Date(table.updatedAt as unknown as string),
+    lineage: table.lineage ? {
+      ...table.lineage,
+      checkpointedAt: new Date(table.lineage.checkpointedAt as unknown as string),
+      transformations: table.lineage.transformations.map(t => ({
+        ...t,
+        timestamp: new Date(t.timestamp as unknown as string),
+      })),
+    } : undefined,
+  })
+
   try {
     // Get list of user tables from DuckDB (exclude internal tables)
     const duckdbTables = await query<{ table_name: string }>(
@@ -183,6 +198,17 @@ async function reconcileTablesWithDuckDB(tables: TableInfo[]): Promise<TableInfo
     )
 
     const duckdbTableNames = new Set(duckdbTables.map(t => t.table_name))
+
+    // CRITICAL: If DuckDB is empty, skip reconciliation and preserve original metadata.
+    // At startup with Parquet persistence, DuckDB starts empty. The Parquet files are
+    // imported AFTER restoreAppState() runs (in usePersistence.hydrate()). Without this
+    // check, all tables would be incorrectly marked as "orphan metadata" and removed,
+    // breaking activeTableId restoration and timeline matching.
+    if (duckdbTableNames.size === 0 && tables.length > 0) {
+      console.log(`[Persistence] DuckDB empty - preserving ${tables.length} table(s) from app-state.json for Parquet import`)
+      return tables.map(deserializeTable)
+    }
+
     const validTables: TableInfo[] = []
     const metadataTableNames = new Set<string>()
 
@@ -191,22 +217,8 @@ async function reconcileTablesWithDuckDB(tables: TableInfo[]): Promise<TableInfo
       metadataTableNames.add(table.name)
 
       if (duckdbTableNames.has(table.name)) {
-        // Table exists in both - keep metadata
-        // Deserialize dates
-        const deserializedTable: TableInfo = {
-          ...table,
-          createdAt: new Date(table.createdAt as unknown as string),
-          updatedAt: new Date(table.updatedAt as unknown as string),
-          lineage: table.lineage ? {
-            ...table.lineage,
-            checkpointedAt: new Date(table.lineage.checkpointedAt as unknown as string),
-            transformations: table.lineage.transformations.map(t => ({
-              ...t,
-              timestamp: new Date(t.timestamp as unknown as string),
-            })),
-          } : undefined,
-        }
-        validTables.push(deserializedTable)
+        // Table exists in both - keep metadata with deserialized dates
+        validTables.push(deserializeTable(table))
       } else {
         // Orphan metadata (table deleted from DuckDB)
         console.warn(`[Persistence] Removing orphan metadata for '${table.name}'`)
@@ -230,19 +242,7 @@ async function reconcileTablesWithDuckDB(tables: TableInfo[]): Promise<TableInfo
   } catch (error) {
     console.error('[Persistence] Reconciliation failed:', error)
     // Return original tables if reconciliation fails
-    return tables.map(table => ({
-      ...table,
-      createdAt: new Date(table.createdAt as unknown as string),
-      updatedAt: new Date(table.updatedAt as unknown as string),
-      lineage: table.lineage ? {
-        ...table.lineage,
-        checkpointedAt: new Date(table.lineage.checkpointedAt as unknown as string),
-        transformations: table.lineage.transformations.map(t => ({
-          ...t,
-          timestamp: new Date(t.timestamp as unknown as string),
-        })),
-      } : undefined,
-    }))
+    return tables.map(deserializeTable)
   }
 }
 

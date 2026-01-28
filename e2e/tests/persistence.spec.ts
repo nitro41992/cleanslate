@@ -414,16 +414,14 @@ test.describe('Application State Persistence', () => {
       return rows[0].name
     }, { timeout: 10000 }).toBe('JOHN DOE')
 
-    // Wait for the debounced Parquet save to complete after undo
-    // The executor's updateTableStore increments dataVersion, triggering auto-save
-    await expect.poll(async () => {
-      return await page.evaluate(() => {
-        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        if (!stores?.uiStore) return 'unknown'
-        const state = (stores.uiStore as { getState: () => { persistenceStatus: string } }).getState()
-        return state.persistenceStatus
-      })
-    }, { timeout: 15000, message: 'Waiting for persistence to complete after undo' }).toBe('idle')
+    // Flush to OPFS before reload (same pattern as other persistence tests)
+    // This ensures the Parquet file is written with the undone state
+    await inspector.flushToOPFS()
+
+    // Wait for Parquet persistence to complete with proper two-phase wait
+    // Phase 1: Subscription fires and marks table dirty
+    // Phase 2: Save completes (status becomes idle with no dirty tables)
+    await inspector.waitForPersistenceComplete()
 
     // Save app state (timelines, UI prefs)
     await inspector.saveAppState()
