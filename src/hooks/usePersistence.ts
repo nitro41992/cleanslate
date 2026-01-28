@@ -461,6 +461,102 @@ export function usePersistence() {
     }
   }, [isRestoring, saveTable])
 
+  // 6b. WATCH DIRTY TABLES: Catch cell edits that don't change dataVersion
+  // Cell edits skip dataVersion increment to preserve grid scroll position,
+  // but they DO call markTableDirty(). This subscription catches those changes
+  // and triggers saves for tables marked dirty without a dataVersion bump.
+  //
+  // IMPORTANT: This effect only handles the "cell edit" case where:
+  // - Table is newly marked dirty (in dirtyTableIds)
+  // - dataVersion did NOT change (effect 6 won't fire)
+  //
+  // For structural transforms where dataVersion changes, effect 6 handles it.
+  useEffect(() => {
+    if (isRestoring) return
+
+    let cellEditTimeout: NodeJS.Timeout | null = null
+    let prevDirtyTableIds = new Set<string>()
+    const lastSeenDataVersions = new Map<string, number>()
+
+    // Initialize with current tables' dataVersions
+    useTableStore.getState().tables.forEach(t => {
+      lastSeenDataVersions.set(t.id, t.dataVersion ?? 0)
+    })
+
+    // Import UIStore dynamically to avoid circular dependencies
+    const setupSubscription = async () => {
+      const { useUIStore } = await import('@/stores/uiStore')
+
+      // Initialize with current dirty tables
+      prevDirtyTableIds = new Set(useUIStore.getState().dirtyTableIds)
+
+      const unsubscribe = useUIStore.subscribe(
+        (state) => {
+          const currentDirtyIds = state.dirtyTableIds
+
+          // Find newly dirty tables (not previously dirty)
+          const newlyDirty: string[] = []
+          for (const tableId of currentDirtyIds) {
+            if (!prevDirtyTableIds.has(tableId)) {
+              newlyDirty.push(tableId)
+            }
+          }
+          prevDirtyTableIds = new Set(currentDirtyIds)
+
+          if (newlyDirty.length === 0) return
+
+          // Look up table names and filter to only cell-edit cases
+          // (tables where dataVersion didn't change)
+          const tableState = useTableStore.getState()
+          const tablesToSave = newlyDirty
+            .map(id => tableState.tables.find(t => t.id === id))
+            .filter((t): t is NonNullable<typeof t> => {
+              if (!t) return false
+
+              // Check if dataVersion changed - if so, effect 6 will handle it
+              const currentVersion = t.dataVersion ?? 0
+              const lastVersion = lastSeenDataVersions.get(t.id) ?? 0
+              lastSeenDataVersions.set(t.id, currentVersion)
+
+              // Only handle if dataVersion DIDN'T change (cell edit case)
+              return currentVersion === lastVersion
+            })
+
+          if (tablesToSave.length === 0) return
+
+          // Debounce cell edit saves
+          if (cellEditTimeout) clearTimeout(cellEditTimeout)
+
+          const maxRowCount = Math.max(...tablesToSave.map(t => t.rowCount))
+          const debounceTime = getDebounceTime(maxRowCount)
+
+          cellEditTimeout = setTimeout(() => {
+            for (const table of tablesToSave) {
+              // Track when table first became dirty if not already tracked
+              if (!firstDirtyAt.has(table.id)) {
+                firstDirtyAt.set(table.id, Date.now())
+              }
+              console.log(`[Persistence] Cell edit save: ${table.name}`)
+              saveTable(table.name)
+                .then(() => firstDirtyAt.delete(table.id))
+                .catch(console.error)
+            }
+          }, debounceTime)
+        }
+      )
+
+      return unsubscribe
+    }
+
+    let unsubscribePromise: Promise<() => void> | null = null
+    unsubscribePromise = setupSubscription()
+
+    return () => {
+      if (cellEditTimeout) clearTimeout(cellEditTimeout)
+      unsubscribePromise?.then(unsub => unsub()).catch(() => {})
+    }
+  }, [isRestoring, saveTable])
+
   // 7. WATCH FOR DELETIONS: Subscribe to tableStore and delete Parquet when tables removed
   useEffect(() => {
     if (isRestoring) return
@@ -483,6 +579,28 @@ export function usePersistence() {
 
     return () => unsubscribe()
   }, [isRestoring, deleteTableSnapshot])
+
+  // 8. BEFOREUNLOAD WARNING: Warn user if saves are in progress when navigating away
+  // This prevents data loss if user closes tab or refreshes during a save operation.
+  // The warning is only shown if there are actually saves in progress.
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Check if any saves are in progress
+      if (saveInProgress.size > 0) {
+        const tableNames = Array.from(saveInProgress.keys()).join(', ')
+        console.warn(`[Persistence] Blocking navigation - saves in progress for: ${tableNames}`)
+
+        // Standard way to trigger browser's "Leave site?" dialog
+        e.preventDefault()
+        // Legacy browsers need returnValue set
+        e.returnValue = 'Changes are being saved. Leave anyway?'
+        return 'Changes are being saved. Leave anyway?'
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, []) // No dependencies - saveInProgress is module-level
 
   return {
     isRestoring,

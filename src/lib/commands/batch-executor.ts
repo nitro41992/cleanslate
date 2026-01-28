@@ -18,6 +18,27 @@
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { LARGE_DATASET_THRESHOLD } from '@/lib/constants'
 
+/**
+ * Cooperative yield to browser main thread.
+ * Uses scheduler.yield() when available (Chrome 115+) for priority-aware scheduling,
+ * falls back to setTimeout(0) for older browsers.
+ *
+ * This prevents UI freezing during long-running batch operations by allowing
+ * the browser to handle pending user input (scrolls, clicks) between chunks.
+ *
+ * @see https://developer.chrome.com/blog/use-scheduler-yield
+ */
+async function yieldToMain(): Promise<void> {
+  // Check for scheduler.yield() support (Chrome 115+, Firefox 129+)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scheduler = (globalThis as any).scheduler
+  if (scheduler && typeof scheduler.yield === 'function') {
+    await scheduler.yield()
+  } else {
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+}
+
 export interface BatchExecuteOptions {
   /**
    * Source table to read from
@@ -155,8 +176,9 @@ export async function batchExecute(
     onProgress?.(processed, totalRows, percent)
 
     // Yield to browser to prevent UI freezing
+    // Uses scheduler.yield() for priority-aware scheduling when available
     // Allows React to process state updates and user interactions
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await yieldToMain()
   }
 
   // Final checkpoint to ensure all changes are persisted

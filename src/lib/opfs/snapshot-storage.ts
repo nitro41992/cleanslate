@@ -12,6 +12,28 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import * as duckdb from '@duckdb/duckdb-wasm'
 import { CS_ID_COLUMN } from '@/lib/duckdb'
+import { deleteFileIfExists } from './opfs-helpers'
+
+/**
+ * Cooperative yield to browser main thread.
+ * Uses scheduler.yield() when available (Chrome 115+) for priority-aware scheduling,
+ * falls back to setTimeout(0) for older browsers.
+ *
+ * This prevents UI freezing during Parquet export by allowing the browser
+ * to handle pending user input (scrolls, clicks) between chunks.
+ *
+ * @see https://developer.chrome.com/blog/use-scheduler-yield
+ */
+async function yieldToMain(): Promise<void> {
+  // Check for scheduler.yield() support (Chrome 115+, Firefox 129+)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scheduler = (globalThis as any).scheduler
+  if (scheduler && typeof scheduler.yield === 'function') {
+    await scheduler.yield()
+  } else {
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+}
 
 /**
  * File-level write locks to prevent concurrent OPFS writes to the same file.
@@ -185,21 +207,109 @@ export async function exportTableToParquet(
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
 
     // CRITICAL: Always chunk for tables >250k rows to prevent JS heap OOM
-  // copyFileToBuffer() copies data to JS heap, so we must limit buffer size
-  const CHUNK_THRESHOLD = 250_000
-  if (rowCount > CHUNK_THRESHOLD) {
-    console.log('[Snapshot] Using chunked Parquet export for large table')
+    // copyFileToBuffer() copies data to JS heap, so we must limit buffer size
+    // Uses atomic write pattern per chunk: write to .tmp file, then rename on success
+    const CHUNK_THRESHOLD = 250_000
+    if (rowCount > CHUNK_THRESHOLD) {
+      console.log('[Snapshot] Using chunked Parquet export for large table')
 
-    const batchSize = CHUNK_THRESHOLD
-    let offset = 0
-    let partIndex = 0
+      const batchSize = CHUNK_THRESHOLD
+      let offset = 0
+      let partIndex = 0
 
-    while (offset < rowCount) {
-      const tempFileName = `temp_${snapshotId}_part_${partIndex}.parquet`
-      const finalFileName = `${snapshotId}_part_${partIndex}.parquet`
+      // Track completed chunks for cleanup on failure
+      const completedChunks: string[] = []
 
+      try {
+        while (offset < rowCount) {
+          const duckdbTempFile = `duckdb_temp_${snapshotId}_part_${partIndex}.parquet`
+          const opfsTempFile = `${snapshotId}_part_${partIndex}.parquet.tmp`
+          const finalFileName = `${snapshotId}_part_${partIndex}.parquet`
+
+          // 1. COPY TO in-memory file (DuckDB WASM memory)
+          // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
+          const orderByCol = await getOrderByColumn(conn, tableName)
+          const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
+
+          await conn.query(`
+            COPY (
+              SELECT * FROM "${tableName}"
+              ${orderByClause}
+              LIMIT ${batchSize} OFFSET ${offset}
+            ) TO '${duckdbTempFile}'
+            (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+          `)
+
+          // 2. Retrieve buffer from WASM memory → JS heap (~50MB compressed)
+          const buffer = await db.copyFileToBuffer(duckdbTempFile)
+
+          // 3. Write to OPFS temp file (atomic step 1)
+          const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
+          const writable = await createWritableWithRetry(tempHandle)
+          await writable.write(buffer)
+          await writable.close()
+
+          // CRITICAL: Small delay to ensure file handle is fully released
+          await new Promise(resolve => setTimeout(resolve, 20))
+
+          // Verify temp file was written
+          const tempFile = await tempHandle.getFile()
+          if (tempFile.size === 0) {
+            throw new Error(`[Snapshot] Failed to write temp chunk ${opfsTempFile} - file is 0 bytes`)
+          }
+
+          // 4. Atomic rename: temp → final (atomic step 2)
+          await deleteFileIfExists(snapshotsDir, finalFileName)
+          const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
+          const finalWritable = await finalHandle.createWritable()
+          const tempContent = await tempFile.arrayBuffer()
+          await finalWritable.write(tempContent)
+          await finalWritable.close()
+
+          await new Promise(resolve => setTimeout(resolve, 20))
+
+          // Verify final file was written
+          const file = await finalHandle.getFile()
+          if (file.size === 0) {
+            throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
+          }
+          console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
+
+          // 5. Cleanup: delete temp files
+          await deleteFileIfExists(snapshotsDir, opfsTempFile)
+          await db.dropFile(duckdbTempFile)
+
+          completedChunks.push(finalFileName)
+          offset += batchSize
+          partIndex++
+          console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
+
+          // Yield to browser between chunks to prevent UI freezing during large exports
+          await yieldToMain()
+        }
+
+        console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
+      } catch (error) {
+        // Cleanup any temp files on failure (completed chunks are valid and kept)
+        for (let i = 0; i <= partIndex; i++) {
+          await deleteFileIfExists(snapshotsDir, `${snapshotId}_part_${i}.parquet.tmp`)
+          try {
+            await db.dropFile(`duckdb_temp_${snapshotId}_part_${i}.parquet`)
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+        throw error
+      }
+  } else {
+    // Single file export (ONLY safe for tables ≤250k rows)
+    // Uses atomic write pattern: write to .tmp file, then rename on success
+    const duckdbTempFile = `duckdb_temp_${snapshotId}.parquet`
+    const opfsTempFile = `${snapshotId}.parquet.tmp`
+    const finalFileName = `${snapshotId}.parquet`
+
+    try {
       // 1. COPY TO in-memory file (DuckDB WASM memory)
-      // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
       // Detect correct ORDER BY column for this table (handles diff tables with row_id)
       const orderByCol = await getOrderByColumn(conn, tableName)
       const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
@@ -208,85 +318,62 @@ export async function exportTableToParquet(
         COPY (
           SELECT * FROM "${tableName}"
           ${orderByClause}
-          LIMIT ${batchSize} OFFSET ${offset}
-        ) TO '${tempFileName}'
+        ) TO '${duckdbTempFile}'
         (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
       `)
 
-      // 2. Retrieve buffer from WASM memory → JS heap (~50MB compressed)
-      const buffer = await db.copyFileToBuffer(tempFileName)
+      // 2. Retrieve buffer from WASM → JS heap (safe: <50MB)
+      const buffer = await db.copyFileToBuffer(duckdbTempFile)
 
-      // 3. Write to OPFS (buffer cleared after write)
-      const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-      const writable = await createWritableWithRetry(fileHandle)
+      // 3. Write to OPFS temp file (atomic step 1: write to temp)
+      const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
+      const writable = await createWritableWithRetry(tempHandle)
       await writable.write(buffer)
       await writable.close()
 
       // CRITICAL: Small delay to ensure file handle is fully released
-      // Without this, immediate registration for reading can fail with:
-      // "Access Handles cannot be created if there is another open Access Handle"
       await new Promise(resolve => setTimeout(resolve, 20))
 
-      // Verify file was written
-      const file = await fileHandle.getFile()
+      // Verify temp file was written
+      const tempFile = await tempHandle.getFile()
+      if (tempFile.size === 0) {
+        throw new Error(`[Snapshot] Failed to write temp file ${opfsTempFile} - file is 0 bytes`)
+      }
+
+      // 4. Atomic rename: temp → final (atomic step 2)
+      // Delete existing final file first (if any), then rename
+      await deleteFileIfExists(snapshotsDir, finalFileName)
+      const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
+      const finalWritable = await finalHandle.createWritable()
+      const tempContent = await tempFile.arrayBuffer()
+      await finalWritable.write(tempContent)
+      await finalWritable.close()
+
+      // Delay to ensure file handle is released
+      await new Promise(resolve => setTimeout(resolve, 20))
+
+      // Verify final file was written
+      const file = await finalHandle.getFile()
       if (file.size === 0) {
         throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
       }
       console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
 
-      // 4. Cleanup virtual file in WASM
-      await db.dropFile(tempFileName)
+      // 5. Cleanup: delete temp file and DuckDB virtual file
+      await deleteFileIfExists(snapshotsDir, opfsTempFile)
+      await db.dropFile(duckdbTempFile)
 
-      offset += batchSize
-      partIndex++
-      console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
+      console.log(`[Snapshot] Exported to ${finalFileName}`)
+    } catch (error) {
+      // Cleanup orphaned temp files on failure
+      await deleteFileIfExists(snapshotsDir, opfsTempFile)
+      try {
+        await db.dropFile(duckdbTempFile)
+      } catch {
+        // Ignore cleanup errors
+      }
+      throw error
     }
-
-    console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
-  } else {
-    // Single file export (ONLY safe for tables ≤250k rows)
-    // If rowCount == CHUNK_THRESHOLD, this path is safe (equality handled by > check above)
-    const tempFileName = `temp_${snapshotId}.parquet`
-    const finalFileName = `${snapshotId}.parquet`
-
-    // 1. COPY TO in-memory file
-    // Detect correct ORDER BY column for this table (handles diff tables with row_id)
-    const orderByCol = await getOrderByColumn(conn, tableName)
-    const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
-
-    await conn.query(`
-      COPY (
-        SELECT * FROM "${tableName}"
-        ${orderByClause}
-      ) TO '${tempFileName}'
-      (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-    `)
-
-    // 2. Retrieve buffer from WASM → JS heap (safe: <50MB)
-    const buffer = await db.copyFileToBuffer(tempFileName)
-
-    // 3. Write to OPFS
-    const fileHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-    const writable = await createWritableWithRetry(fileHandle)
-    await writable.write(buffer)
-    await writable.close()
-
-    // CRITICAL: Small delay to ensure file handle is fully released
-    // Without this, immediate registration for reading can fail with:
-    // "Access Handles cannot be created if there is another open Access Handle"
-    await new Promise(resolve => setTimeout(resolve, 20))
-
-    // Verify file was written
-    const file = await fileHandle.getFile()
-    if (file.size === 0) {
-      throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
-    }
-    console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
-
-    // 4. Cleanup virtual file
-    await db.dropFile(tempFileName)
-
-    console.log(`[Snapshot] Exported to ${finalFileName}`)
   }
   } finally {
     // Always release the write lock
@@ -523,13 +610,17 @@ export async function listParquetSnapshots(): Promise<string[]> {
 }
 
 /**
- * Scans the snapshots directory and deletes any 0-byte (corrupt) files.
- * This is a self-healing step to recover from failed writes or browser crashes.
+ * Scans the snapshots directory and deletes corrupt and orphaned files:
+ * 1. 0-byte Parquet files (corrupt from failed writes)
+ * 2. Orphaned .tmp files (from interrupted atomic writes)
  *
- * Common causes of 0-byte files:
+ * This is a self-healing step to recover from browser crashes or interrupted saves.
+ *
+ * Common causes of corrupt/orphaned files:
  * - Browser crash during Parquet export
  * - OPFS permission denied mid-write
  * - Out of disk quota during write
+ * - User closed tab during save
  *
  * Call this once at application startup to ensure clean state.
  */
@@ -552,7 +643,8 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
       return // Snapshots directory doesn't exist, nothing to clean
     }
 
-    let deletedCount = 0
+    let corruptCount = 0
+    let tempCount = 0
 
     // Iterate over all files in the snapshots directory
     // Parquet files need at least ~200 bytes for magic bytes + minimal schema
@@ -560,18 +652,29 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
 
     // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, handle] of snapshotsDir.entries()) {
-      if (handle.kind === 'file' && name.endsWith('.parquet')) {
+      if (handle.kind !== 'file') continue
+
+      // Clean up orphaned temp files from atomic writes
+      if (name.endsWith('.tmp')) {
+        console.warn(`[Snapshot] Found orphaned temp file: ${name}. Deleting...`)
+        await snapshotsDir.removeEntry(name)
+        tempCount++
+        continue
+      }
+
+      // Clean up corrupt Parquet files
+      if (name.endsWith('.parquet')) {
         const file = await handle.getFile()
         if (file.size < MIN_PARQUET_SIZE) {
           console.warn(`[Snapshot] Found corrupt file (${file.size} bytes): ${name}. Deleting...`)
           await snapshotsDir.removeEntry(name)
-          deletedCount++
+          corruptCount++
         }
       }
     }
 
-    if (deletedCount > 0) {
-      console.log(`[Snapshot] Cleanup complete. Removed ${deletedCount} corrupt file(s).`)
+    if (corruptCount > 0 || tempCount > 0) {
+      console.log(`[Snapshot] Cleanup complete. Removed ${corruptCount} corrupt file(s) and ${tempCount} temp file(s).`)
     }
   } catch (error) {
     console.warn('[Snapshot] Failed to run corrupt file cleanup:', error)
