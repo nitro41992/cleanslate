@@ -175,6 +175,21 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // CRITICAL: Flush pending batch edits before executing non-cell-edit commands
+      // This prevents data loss when transforms run while edits are batched:
+      // 1. User edits cell → edit added to editBatchStore (not yet in DuckDB)
+      // 2. User triggers transform → if we don't flush, transform reads stale data
+      // 3. Transform completes → dataVersion increments → grid reloads from DuckDB
+      // 4. Result: User's edit is lost because it was never committed to DuckDB
+      if (!LOCAL_ONLY_COMMANDS.has(command.type)) {
+        const { useEditBatchStore } = await import('@/stores/editBatchStore')
+        const hasPendingEdits = useEditBatchStore.getState().hasPendingEdits(tableId)
+        if (hasPendingEdits) {
+          console.log('[Executor] Flushing pending batch edits before transform')
+          await useEditBatchStore.getState().flushAll()
+        }
+      }
+
       // IMMEDIATELY mark table as dirty (before any async operations)
       // This ensures the UI shows "Unsaved changes" during the 2s debounce window
       const uiStoreModule = await import('@/stores/uiStore')

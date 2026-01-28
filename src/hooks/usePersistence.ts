@@ -233,6 +233,19 @@ export function usePersistence() {
       const uiStore = useUIStore.getState()
 
       try {
+        // CRITICAL: Flush any pending batch edits for this table before exporting
+        // This ensures all cell edits are captured in the Parquet file, even if
+        // the user made rapid edits that haven't been flushed yet.
+        const tableForFlush = useTableStore.getState().tables.find(t => t.name === tableName)
+        if (tableForFlush) {
+          const { useEditBatchStore } = await import('@/stores/editBatchStore')
+          const hasPendingEdits = useEditBatchStore.getState().hasPendingEdits(tableForFlush.id)
+          if (hasPendingEdits) {
+            console.log(`[Persistence] Flushing pending edits before saving ${tableName}`)
+            await useEditBatchStore.getState().flushAll()
+          }
+        }
+
         const db = await initDuckDB()
         const conn = await getConnection()
 
@@ -247,9 +260,9 @@ export function usePersistence() {
         await exportTableToParquet(db, conn, tableName, tableName)
 
         // Mark table as clean after successful Parquet export
-        const table = useTableStore.getState().tables.find(t => t.name === tableName)
-        if (table) {
-          useUIStore.getState().markTableClean(table.id)
+        const tableForClean = useTableStore.getState().tables.find(t => t.name === tableName)
+        if (tableForClean) {
+          useUIStore.getState().markTableClean(tableForClean.id)
         }
 
         console.log(`[Persistence] ${tableName} saved`)

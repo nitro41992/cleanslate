@@ -606,6 +606,16 @@ export function DataGrid({
     }
   }, [])
 
+  // Compute reverse map: row index -> csId for the loaded range
+  // IMPORTANT: This must be defined before getCellContent which depends on it
+  const rowIndexToCsId = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const [csId, rowIndex] of csIdToRowIndex) {
+      map.set(rowIndex, csId)
+    }
+    return map
+  }, [csIdToRowIndex])
+
   const getCellContent = useCallback(
     ([col, row]: Item) => {
       const adjustedRow = row - loadedRange.start
@@ -619,7 +629,25 @@ export function DataGrid({
       }
 
       const colName = columns[col]
-      const value = rowData[colName]
+
+      // Get base value from DuckDB data
+      let value = rowData[colName]
+
+      // OPTIMISTIC UI: Check for pending batch edit that should overlay
+      // When batching is enabled, edits are accumulated in editBatchStore before
+      // being flushed to DuckDB. During this window, we need to show the edited
+      // value even though it's not yet in the database. This prevents the UI
+      // from reverting to stale values during transforms.
+      const csId = rowIndexToCsId.get(row)
+      if (csId && tableId) {
+        const pendingEdits = useEditBatchStore.getState().getPendingEdits(tableId)
+        const pendingEdit = pendingEdits.find(
+          e => e.csId === csId && e.columnName === colName
+        )
+        if (pendingEdit) {
+          value = pendingEdit.newValue
+        }
+      }
 
       return {
         kind: GridCellKind.Text as const,
@@ -629,17 +657,8 @@ export function DataGrid({
         readonly: !editable,
       }
     },
-    [data, columns, loadedRange.start, editable]
+    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId]
   )
-
-  // Compute reverse map: row index -> csId for the loaded range
-  const rowIndexToCsId = useMemo(() => {
-    const map = new Map<number, string>()
-    for (const [csId, rowIndex] of csIdToRowIndex) {
-      map.set(rowIndex, csId)
-    }
-    return map
-  }, [csIdToRowIndex])
 
   // Helper to convert BigInt values to strings for command serialization
   const serializeValue = (value: unknown): unknown => {
@@ -809,6 +828,9 @@ export function DataGrid({
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights
+  // Uses VS Code-style left gutter bar for edit indicators:
+  // - Orange bar = pending edit (in batch store, not yet in DuckDB)
+  // - Green bar = committed edit (in DuckDB timeline, dirty state)
   const drawCell: DrawCellCallback = useCallback(
     (args, draw) => {
       const { col, row, rect, ctx } = args
@@ -835,29 +857,83 @@ export function DataGrid({
       // Draw the default cell
       draw()
 
-      // Then overlay the dirty indicator if applicable
-      // Uses timeline-based tracking: cell is dirty if there's a manual_edit
-      // command that modified it AND we're at/past that command's position
+      // Check for pending batch edit (not yet committed to DuckDB)
+      // These are edits in the 500ms batching window before flush
+      let hasPendingEdit = false
+      if (csId && tableId) {
+        const pendingEdits = useEditBatchStore.getState().getPendingEdits(tableId)
+        hasPendingEdit = pendingEdits.some(
+          e => e.csId === csId && e.columnName === colName
+        )
+      }
+
+      // Check for committed edit (in DuckDB timeline, shown as dirty)
       const isCellDirty = cellKey && dirtyCells.has(cellKey)
-      if (editable && isCellDirty) {
-        // Save canvas state before modifying
+
+      // VS Code-style left gutter bar indicator
+      // Draw on first column (col === 0) to create a row-level indicator
+      // This makes edit state highly visible during scroll
+      if (editable && col === 0 && (hasPendingEdit || isCellDirty)) {
         ctx.save()
 
-        // Draw a small red triangle in the top-right corner
+        // Check if ANY cell in this row has a pending edit or is dirty
+        // For pending edits, check all columns
+        let rowHasPendingEdit = hasPendingEdit
+        let rowIsDirty = isCellDirty
+
+        if (csId && tableId && !rowHasPendingEdit) {
+          const pendingEdits = useEditBatchStore.getState().getPendingEdits(tableId)
+          rowHasPendingEdit = pendingEdits.some(e => e.csId === csId)
+        }
+
+        if (csId && !rowIsDirty) {
+          // Check if any column in this row is dirty
+          for (const colName of columns) {
+            if (dirtyCells.has(`${csId}:${colName}`)) {
+              rowIsDirty = true
+              break
+            }
+          }
+        }
+
+        // Draw full-height bar on left edge of row (VS Code git diff style)
+        const barWidth = 3
+        // Orange (#f97316) = pending edit, Green (#22c55e) = committed
+        ctx.fillStyle = rowHasPendingEdit ? '#f97316' : '#22c55e'
+        ctx.fillRect(rect.x, rect.y, barWidth, rect.height)
+
+        ctx.restore()
+      }
+
+      // Also draw cell-level indicator for specific edited cells (beyond first column)
+      // This provides per-cell granularity while keeping the row-level bar visible
+      if (editable && col > 0 && hasPendingEdit) {
+        ctx.save()
+        // Small dot in top-left corner for edited cells
+        ctx.beginPath()
+        ctx.arc(rect.x + 6, rect.y + 6, 3, 0, Math.PI * 2)
+        ctx.fillStyle = '#f97316' // orange for pending
+        ctx.fill()
+        ctx.restore()
+      }
+
+      // Keep the existing red triangle for committed dirty cells (col > 0)
+      // This maintains visual consistency with the existing dirty cell indicator
+      if (editable && col > 0 && isCellDirty && !hasPendingEdit) {
+        ctx.save()
+        // Draw a small green triangle in the top-right corner (committed)
         const triangleSize = 8
         ctx.beginPath()
         ctx.moveTo(rect.x + rect.width - triangleSize, rect.y)
         ctx.lineTo(rect.x + rect.width, rect.y)
         ctx.lineTo(rect.x + rect.width, rect.y + triangleSize)
         ctx.closePath()
-        ctx.fillStyle = '#ef4444' // red-500
+        ctx.fillStyle = '#22c55e' // green-500 for committed
         ctx.fill()
-
-        // Restore canvas state to prevent affecting other cells
         ctx.restore()
       }
     },
-    [editable, columns, dirtyCells, rowIndexToCsId, activeHighlight]
+    [editable, columns, dirtyCells, rowIndexToCsId, activeHighlight, tableId]
   )
 
   const getRowThemeOverride: GetRowThemeCallback = useCallback(
