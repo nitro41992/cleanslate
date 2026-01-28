@@ -213,7 +213,10 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Step 2.5: Batching decision for large operations (>500k rows)
       // MOVED FROM Step 3.75 - needed for snapshot decision
-      const shouldBatch = ctx.table.rowCount > 500_000
+      // CRITICAL: Skip batch mode for LOCAL_ONLY_COMMANDS (cell edits)
+      // Cell edits only modify 1 row, so batch mode is never appropriate regardless of table size
+      const isLocalOnlyCommand = LOCAL_ONLY_COMMANDS.has(command.type)
+      const shouldBatch = !isLocalOnlyCommand && ctx.table.rowCount > 500_000
       const batchSize = 50_000
 
       if (shouldBatch) {
@@ -591,7 +594,7 @@ export class CommandExecutor implements ICommandExecutor {
       // Skip dataVersion increment for local-only commands (cell edits)
       // These commands already update local state in the component and don't need a full grid reload
       // This prevents scroll position from resetting during cell edits at 2M+ rows
-      const isLocalOnlyCommand = LOCAL_ONLY_COMMANDS.has(command.type)
+      // Note: isLocalOnlyCommand already defined above in Step 2.5
 
       if (isLocalOnlyCommand) {
         // For cell edits, only update metadata that changed (rowCount, columns if applicable)

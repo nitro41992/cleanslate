@@ -248,12 +248,24 @@ LIMIT 500 OFFSET :page
 3. ✅ Add AbortController to DataGrid page fetches (already existed)
 4. ✅ **Atomic writes:** Temp file + rename pattern in snapshot-storage.ts
 5. ✅ **beforeunload guard:** Warn if save in progress
+6. ✅ **Cell edit batch mode fix:** Skip batch mode for `LOCAL_ONLY_COMMANDS`
+7. ✅ **Save cascade prevention:** Filter tables with pending/in-progress saves in effect 6b
 
 **Files modified:**
 - `src/lib/commands/batch-executor.ts` - Added `yieldToMain()` helper with scheduler.yield() fallback
 - `src/lib/opfs/snapshot-storage.ts` - Added yield points, atomic writes with .tmp files
 - `src/lib/opfs/opfs-helpers.ts` - New file with `deleteFileIfExists()`, `renameFile()`, `cleanupTempFiles()`
-- `src/hooks/usePersistence.ts` - Added `beforeunload` event listener
+- `src/hooks/usePersistence.ts` - Added `beforeunload` event listener, effect 6b cascade prevention
+- `src/lib/commands/executor.ts` - Skip batch mode for cell edits regardless of table size
+
+**Cell Edit Performance Fixes:**
+- **Problem:** Cell edits on 1M row tables logged "Large operation...using batch mode" and context was set up for batching even though only 1 row was modified
+- **Fix:** Added check at line 217: `const shouldBatch = !isLocalOnlyCommand && ctx.table.rowCount > 500_000`
+- Cell edits (`edit:cell`, `edit:batch`) now always skip batch mode regardless of table size
+
+**Save Cascade Fix:**
+- **Problem:** Effect 6b caused re-save cascades when `pendingSave` was set, triggering back-to-back Parquet exports
+- **Fix:** Filter out tables with `saveInProgress` or `pendingSave` before setting debounce timer
 
 **Expected improvement:** 50-70% reduction in perceived freeze time + zero data loss on reload
 

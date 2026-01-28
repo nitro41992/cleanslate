@@ -524,14 +524,33 @@ export function usePersistence() {
 
           if (tablesToSave.length === 0) return
 
+          // Filter out tables that already have a save in progress or pending
+          // This prevents cascading saves during rapid cell edits
+          const tablesNeedingSave = tablesToSave.filter(t => {
+            const hasSaveInProgress = saveInProgress.has(t.name)
+            const hasPendingSave = pendingSave.get(t.name)
+            if (hasSaveInProgress || hasPendingSave) {
+              // Save already in progress or queued - it will capture our changes
+              return false
+            }
+            return true
+          })
+
+          if (tablesNeedingSave.length === 0) return
+
           // Debounce cell edit saves
           if (cellEditTimeout) clearTimeout(cellEditTimeout)
 
-          const maxRowCount = Math.max(...tablesToSave.map(t => t.rowCount))
+          const maxRowCount = Math.max(...tablesNeedingSave.map(t => t.rowCount))
           const debounceTime = getDebounceTime(maxRowCount)
 
           cellEditTimeout = setTimeout(() => {
-            for (const table of tablesToSave) {
+            for (const table of tablesNeedingSave) {
+              // Double-check save isn't already in progress (race condition guard)
+              if (saveInProgress.has(table.name)) {
+                console.log(`[Persistence] Skipping cell edit save for ${table.name} - save already in progress`)
+                continue
+              }
               // Track when table first became dirty if not already tracked
               if (!firstDirtyAt.has(table.id)) {
                 firstDirtyAt.set(table.id, Date.now())
