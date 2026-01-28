@@ -17,7 +17,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
-import { runDiff, cleanupDiffTable, cleanupDiffSourceFiles } from '@/lib/diff-engine'
+import { runDiff, cleanupDiffTable, cleanupDiffSourceFiles, clearDiffCaches } from '@/lib/diff-engine'
 import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
 import { toast } from 'sonner'
 
@@ -111,6 +111,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           if (currentSourceTableName) {
             await cleanupDiffSourceFiles(currentSourceTableName)
           }
+          // Clear all diff caches to free memory
+          clearDiffCaches()
         } catch (err) {
           console.warn('[DiffView] Cleanup error:', err)
         }

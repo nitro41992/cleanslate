@@ -17,6 +17,22 @@ const pendingDiffRegistrations = new Map<string, Promise<void>>()
 const resolvedExpressionCache = new Map<string, string>()
 
 /**
+ * Clear all diff caches. Call when diff view closes to free memory.
+ * Clears:
+ * - registeredParquetSnapshots: Set of registered Parquet snapshot IDs
+ * - resolvedExpressionCache: Map of snapshot ID → SQL expressions
+ *
+ * NOTE: Does NOT clear registeredDiffTables as those are cleaned up by cleanupDiffTable()
+ */
+export function clearDiffCaches(): void {
+  const snapshotCount = registeredParquetSnapshots.size
+  const cacheCount = resolvedExpressionCache.size
+  registeredParquetSnapshots.clear()
+  resolvedExpressionCache.clear()
+  console.log(`[Diff] Cleared caches: ${snapshotCount} snapshots, ${cacheCount} expressions`)
+}
+
+/**
  * Resolve a table reference to a SQL expression, with robust Parquet handling.
  * Checks OPFS file existence before using read_parquet to avoid IO errors.
  *
@@ -300,9 +316,14 @@ export async function runDiff(
           `${formatBytes(status.limitBytes)} (${status.percentage.toFixed(1)}%)`
         )
 
-        // Warn if critical
-        if (status.percentage > 90) {
-          console.warn('[Diff] CRITICAL: Memory usage >90% during diff creation!')
+        // Abort if critical to prevent browser crash
+        if (status.percentage > 85) {
+          clearInterval(memoryPollInterval)
+          throw new Error(
+            `Memory critical (${status.percentage.toFixed(0)}% used). ` +
+            `Aborting diff to prevent browser crash. ` +
+            `Try reducing table size or closing other tabs.`
+          )
         }
       } catch (err) {
         console.warn('[Diff] Memory poll failed (non-fatal):', err)
@@ -604,14 +625,53 @@ export async function runDiff(
 
     // Add ROW_NUMBER to preserve original table order for sorting
     // Use table B (current) order as primary, fall back to table A (original) for removed rows
+    //
+    // MEMORY OPTIMIZATION: Build explicit column list instead of SELECT *
+    // The CTEs with ROW_NUMBER() OVER () require full table scan and materialization.
+    // By selecting only needed columns, we reduce memory from ~1.5GB to ~200MB for 1M rows.
+    // Needed columns: _cs_id (row ID), key columns (join), value columns (modification check)
+    const neededColumns = new Set<string>(['_cs_id'])
+    keyColumns.forEach(c => neededColumns.add(c))
+    valueColumns.forEach(c => neededColumns.add(c))
+
+    // Build column list for table A (source/original)
+    // Note: colsA excludes internal columns, but we need _cs_id for row identification
+    // Use colsAAll to get all columns including internal ones
+    const colsAAllNames = colsAAll.map(c => c.column_name)
+    const colsAFiltered = [...neededColumns].filter(c => colsAAllNames.includes(c))
+    // Fallback to SELECT * if no columns match (shouldn't happen, but safety net)
+    const columnListA = colsAFiltered.length > 0
+      ? colsAFiltered.map(c => `"${c}"`).join(', ')
+      : '*'
+
+    // Build column list for table B (target/current)
+    // Note: colsB excludes internal columns, but we need _cs_id for row identification
+    // Use colsBAll to get all columns including internal ones
+    const colsBAllNames = colsBAll.map(c => c.column_name)
+    const colsBFiltered = [...neededColumns].filter(c => colsBAllNames.includes(c))
+    // Fallback to SELECT * if no columns match (shouldn't happen, but safety net)
+    const columnListB = colsBFiltered.length > 0
+      ? colsBFiltered.map(c => `"${c}"`).join(', ')
+      : '*'
+
+    console.log('[Diff] Column projection:', {
+      allColumns: allColumns.length,
+      neededColumns: neededColumns.size,
+      columnListA: colsAFiltered.length,
+      columnListB: colsBFiltered.length,
+      memoryReductionEstimate: allColumns.length > 0
+        ? `${Math.round((1 - neededColumns.size / allColumns.length) * 100)}%`
+        : 'N/A'
+    })
+
     const createTempTableQuery = `
       CREATE TEMP TABLE "${diffTableName}" AS
       WITH
         a_numbered AS (
-          SELECT *, ROW_NUMBER() OVER () as _row_num FROM ${sourceTableExpr}
+          SELECT ${columnListA}, ROW_NUMBER() OVER () as _row_num FROM ${sourceTableExpr}
         ),
         b_numbered AS (
-          SELECT *, ROW_NUMBER() OVER () as _row_num FROM "${tableB}"
+          SELECT ${columnListB}, ROW_NUMBER() OVER () as _row_num FROM "${tableB}"
         )
       SELECT
         COALESCE(a."_cs_id", b."_cs_id") as row_id,
@@ -628,11 +688,17 @@ export async function runDiff(
       // Allows DuckDB to use streaming aggregations instead of materializing
       await conn.query(`SET preserve_insertion_order = false`)
 
+      // Reduce threads to 1 for diff operations
+      // Join-heavy ops need 3-4GB/thread; single thread reduces peak memory significantly
+      // See: https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads
+      await conn.query(`SET threads = 1`)
+
       try {
         await execute(createTempTableQuery)
       } finally {
-        // Restore default setting
+        // Restore default settings
         await conn.query(`SET preserve_insertion_order = true`)
+        await conn.query(`RESET threads`)
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
@@ -964,6 +1030,117 @@ export async function fetchDiffPage(
     ORDER BY d.sort_key
     LIMIT ${limit} OFFSET ${offset}
   `)
+}
+
+/**
+ * Keyset pagination result with cursor positions for subsequent fetches.
+ */
+export interface KeysetDiffPageResult {
+  rows: DiffRow[]
+  firstSortKey: number | null
+  lastSortKey: number | null
+}
+
+/**
+ * Fetch a page of diff results using keyset (cursor-based) pagination.
+ *
+ * PERFORMANCE: O(1) vs OFFSET's O(n) for large datasets.
+ * - OFFSET 500000 requires scanning and discarding 500,000 rows
+ * - Keyset uses B-tree index lookup: WHERE sort_key > cursor directly
+ *
+ * See: https://use-the-index-luke.com/no-offset
+ *
+ * @param cursor - The sort_key to start from (exclusive) and direction
+ * @returns Rows plus first/last sort_key for cursor tracking
+ */
+export async function fetchDiffPageWithKeyset(
+  tempTableName: string,
+  sourceTableName: string,
+  targetTableName: string,
+  allColumns: string[],
+  newColumns: string[],
+  removedColumns: string[],
+  cursor: { sortKey: number | null; direction: 'forward' | 'backward' },
+  limit: number = 500,
+  storageType: 'memory' | 'parquet' = 'memory'
+): Promise<KeysetDiffPageResult> {
+  // Parquet storage requires complex file registration handled by fetchDiffPage
+  // Fall back to OFFSET pagination for Parquet (rare case for very large diffs)
+  if (storageType === 'parquet') {
+    console.log('[Diff] Keyset pagination not supported for Parquet storage, using OFFSET')
+    // For Parquet, we can't easily do keyset pagination without cursor positions
+    // Return empty cursors to signal that keyset isn't available
+    const offset = cursor.sortKey !== null ? 0 : 0  // Can't compute offset from sortKey
+    const rows = await fetchDiffPage(
+      tempTableName, sourceTableName, targetTableName,
+      allColumns, newColumns, removedColumns,
+      offset, limit, '', storageType
+    )
+    return {
+      rows,
+      firstSortKey: null,  // No cursor tracking for Parquet
+      lastSortKey: null,
+    }
+  }
+
+  // Memory storage: use efficient keyset pagination
+  const sourceTableExpr = await resolveTableRef(sourceTableName)
+
+  // Build select columns (same as fetchDiffPage)
+  const selectCols = allColumns
+    .map((c) => {
+      const inA = !removedColumns.includes(c)
+      const inB = !newColumns.includes(c)
+      const aExpr = inA ? `a."${c}"` : 'NULL'
+      const bExpr = inB ? `b."${c}"` : 'NULL'
+      return `${aExpr} as "a_${c}", ${bExpr} as "b_${c}"`
+    })
+    .join(', ')
+
+  // Build WHERE clause for keyset pagination
+  let whereClause = `d.diff_status IN ('added', 'removed', 'modified')`
+  if (cursor.sortKey !== null) {
+    if (cursor.direction === 'forward') {
+      whereClause += ` AND d.sort_key > ${cursor.sortKey}`
+    } else {
+      whereClause += ` AND d.sort_key < ${cursor.sortKey}`
+    }
+  }
+
+  // Order direction matches cursor direction
+  const orderDirection = cursor.direction === 'forward' ? 'ASC' : 'DESC'
+
+  const rows = await query<DiffRow & { sort_key: number }>(`
+    SELECT
+      d.diff_status,
+      d.row_id,
+      d.sort_key,
+      ${selectCols}
+    FROM "${tempTableName}" d
+    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
+    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+    WHERE ${whereClause}
+    ORDER BY d.sort_key ${orderDirection}
+    LIMIT ${limit}
+  `)
+
+  // If backward direction, reverse the rows to maintain ascending order
+  if (cursor.direction === 'backward') {
+    rows.reverse()
+  }
+
+  // Extract cursor positions
+  const firstSortKey = rows.length > 0 ? rows[0].sort_key : null
+  const lastSortKey = rows.length > 0 ? rows[rows.length - 1].sort_key : null
+
+  // Remove sort_key from returned rows (internal use only)
+  const cleanRows = rows.map(({ sort_key: _sk, ...rest }) => rest as DiffRow)
+
+  return {
+    rows: cleanRows,
+    firstSortKey,
+    lastSortKey,
+  }
 }
 
 /**

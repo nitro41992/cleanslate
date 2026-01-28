@@ -9,7 +9,7 @@ import DataGridLib, {
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchDiffPage, type DiffRow } from '@/lib/diff-engine'
+import { fetchDiffPage, fetchDiffPageWithKeyset, type DiffRow } from '@/lib/diff-engine'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -60,16 +60,19 @@ interface VirtualizedDiffGridProps {
 
 const PAGE_SIZE = 500
 const PREFETCH_BUFFER = 1000   // Increased from 500 to 1000 rows for smoother scrolling
-const MAX_CACHED_PAGES = 8     // LRU cache: 8 pages for diff (diff rows are larger)
+const MAX_CACHED_PAGES = 12    // LRU cache: 12 pages for diff (OOM fix reduces per-row memory)
 
 /**
  * LRU page cache entry for diff grid.
  * Caches pages by their starting offset for O(1) lookup.
+ * Includes cursor positions for keyset pagination.
  */
 interface CachedDiffPage {
   startRow: number
   rows: DiffRow[]
   timestamp: number          // For LRU eviction
+  firstSortKey: number | null  // Cursor at start of page (for backward navigation)
+  lastSortKey: number | null   // Cursor at end of page (for forward navigation)
 }
 
 export function VirtualizedDiffGrid({
@@ -172,7 +175,7 @@ export function VirtualizedDiffGrid({
     return cols
   }, [allColumns, keyColumns, userNewColumns, userRemovedColumns, blindMode])
 
-  // Load initial data
+  // Load initial data using keyset pagination to capture cursor positions
   useEffect(() => {
     if (!diffTableName || totalRows === 0) {
       setIsLoading(false)
@@ -184,24 +187,32 @@ export function VirtualizedDiffGrid({
     setLoadedRange({ start: 0, end: 0 })
     pageCacheRef.current.clear() // Clear LRU cache on data reload
 
-    fetchDiffPage(diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, 0, PAGE_SIZE, keyOrderBy, storageType)
-      .then((rows) => {
+    // Use keyset pagination for initial load to capture cursor positions
+    fetchDiffPageWithKeyset(
+      diffTableName, sourceTableName, targetTableName,
+      allColumns, newColumns, removedColumns,
+      { sortKey: null, direction: 'forward' },  // null cursor = start from beginning
+      PAGE_SIZE, storageType
+    )
+      .then(({ rows, firstSortKey, lastSortKey }) => {
         setData(rows)
         setLoadedRange({ start: 0, end: rows.length })
         setIsLoading(false)
 
-        // Cache the initial page
+        // Cache the initial page with cursor positions
         pageCacheRef.current.set(0, {
           startRow: 0,
           rows,
           timestamp: Date.now(),
+          firstSortKey,
+          lastSortKey,
         })
       })
       .catch((err) => {
         console.error('Error loading diff data:', err)
         setIsLoading(false)
       })
-  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType])
+  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, storageType])
 
   // Debounce delay for scroll handling (ms) - shorter for responsive feel
   const SCROLL_DEBOUNCE_MS = 50
@@ -279,7 +290,8 @@ export function VirtualizedDiffGrid({
           return
         }
 
-        // Fetch missing pages
+        // Fetch missing pages using keyset pagination when possible
+        // Strategy: Find nearest cached page with cursor and navigate from there
         try {
           for (const pageIdx of missingPageIndices) {
             // Check if this fetch was aborted (user scrolled to different position)
@@ -289,11 +301,52 @@ export function VirtualizedDiffGrid({
             }
 
             const pageStartRow = pageIdx * PAGE_SIZE
-            const newData = await fetchDiffPage(
-              diffTableName, sourceTableName, targetTableName,
-              allColumns, newColumns, removedColumns,
-              pageStartRow, PAGE_SIZE, keyOrderBy, storageType
-            )
+            let newData: DiffRow[]
+            let firstSortKey: number | null = null
+            let lastSortKey: number | null = null
+
+            // Try to find a cached page with cursor to use keyset pagination
+            // Look for adjacent pages (one before or one after)
+            const prevPageStart = (pageIdx - 1) * PAGE_SIZE
+            const nextPageStart = (pageIdx + 1) * PAGE_SIZE
+            const prevCached = pageCacheRef.current.get(prevPageStart)
+            const nextCached = pageCacheRef.current.get(nextPageStart)
+
+            if (prevCached?.lastSortKey !== null && prevCached?.lastSortKey !== undefined) {
+              // Use keyset pagination from end of previous page (forward)
+              console.log(`[DIFFGRID] Keyset fetch: page ${pageIdx} from cursor ${prevCached.lastSortKey}`)
+              const result = await fetchDiffPageWithKeyset(
+                diffTableName, sourceTableName, targetTableName,
+                allColumns, newColumns, removedColumns,
+                { sortKey: prevCached.lastSortKey, direction: 'forward' },
+                PAGE_SIZE, storageType
+              )
+              newData = result.rows
+              firstSortKey = result.firstSortKey
+              lastSortKey = result.lastSortKey
+            } else if (nextCached?.firstSortKey !== null && nextCached?.firstSortKey !== undefined) {
+              // Use keyset pagination from start of next page (backward)
+              console.log(`[DIFFGRID] Keyset fetch (backward): page ${pageIdx} from cursor ${nextCached.firstSortKey}`)
+              const result = await fetchDiffPageWithKeyset(
+                diffTableName, sourceTableName, targetTableName,
+                allColumns, newColumns, removedColumns,
+                { sortKey: nextCached.firstSortKey, direction: 'backward' },
+                PAGE_SIZE, storageType
+              )
+              newData = result.rows
+              firstSortKey = result.firstSortKey
+              lastSortKey = result.lastSortKey
+            } else {
+              // Fall back to OFFSET pagination (no adjacent cached page)
+              console.log(`[DIFFGRID] OFFSET fetch: page ${pageIdx} at offset ${pageStartRow}`)
+              newData = await fetchDiffPage(
+                diffTableName, sourceTableName, targetTableName,
+                allColumns, newColumns, removedColumns,
+                pageStartRow, PAGE_SIZE, keyOrderBy, storageType
+              )
+              // Note: OFFSET doesn't give us cursor positions, but that's OK
+              // The next adjacent fetch will use keyset from these rows
+            }
 
             // Check abort again after async operation
             if (abortController.signal.aborted) {
@@ -301,11 +354,13 @@ export function VirtualizedDiffGrid({
               return
             }
 
-            // Add to LRU cache
+            // Add to LRU cache with cursor positions
             const newPage: CachedDiffPage = {
               startRow: pageStartRow,
               rows: newData,
               timestamp: Date.now(),
+              firstSortKey,
+              lastSortKey,
             }
             pageCacheRef.current.set(pageStartRow, newPage)
             cachedPages.push(newPage)
