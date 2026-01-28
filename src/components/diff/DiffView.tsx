@@ -125,6 +125,22 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     // Only require key columns for two-tables mode (preview uses _cs_id internally)
     if (mode === 'compare-tables' && keyColumns.length === 0) return
 
+    // Clean up any existing diff table BEFORE creating a new one
+    // This prevents orphaned diff tables from accumulating
+    if (diffTableName) {
+      console.log(`[Diff] Cleaning up previous diff table: ${diffTableName}`)
+      // Fire-and-forget cleanup (non-blocking to keep UI responsive)
+      cleanupDiffTable(diffTableName, storageType || 'memory').catch(err => {
+        console.warn('[Diff] Previous diff cleanup failed (non-fatal):', err)
+      })
+      // Also cleanup source files if Parquet-backed
+      if (sourceTableName) {
+        cleanupDiffSourceFiles(sourceTableName).catch(err => {
+          console.warn('[Diff] Previous source cleanup failed (non-fatal):', err)
+        })
+      }
+    }
+
     setIsComparing(true)
     try {
       let sourceTableName: string
@@ -222,7 +238,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     } finally {
       setIsComparing(false)
     }
-  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, setIsComparing, setDiffConfig, getTimeline])
+  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, setIsComparing, setDiffConfig, getTimeline, diffTableName, sourceTableName, storageType])
 
   const handleNewComparison = useCallback(async () => {
     // Save old values for cleanup
