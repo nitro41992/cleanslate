@@ -402,7 +402,9 @@ export async function compactChangelog(force = false): Promise<number> {
 }
 
 // Track tables that were just saved (e.g., during import) to skip redundant auto-saves
-const recentlySavedTables = new Set<string>()
+// Uses timestamp-based Map with time window to handle multiple subscription calls
+const recentlySavedTables = new Map<string, number>()
+const RECENTLY_SAVED_WINDOW_MS = 5_000 // 5 second window
 
 // Track when each table first became dirty (for maxWait enforcement)
 // This ensures saves happen even during continuous rapid editing
@@ -413,8 +415,28 @@ const firstDirtyAt = new Map<string, number>()
  * Called by useDuckDB after direct Parquet export during import.
  */
 export function markTableAsRecentlySaved(tableId: string): void {
-  recentlySavedTables.add(tableId)
-  console.log(`[Persistence] Marked ${tableId} as recently saved (will skip auto-save)`)
+  recentlySavedTables.set(tableId, Date.now())
+  console.log(`[Persistence] Marked ${tableId} as recently saved (will skip auto-save for ${RECENTLY_SAVED_WINDOW_MS}ms)`)
+}
+
+/**
+ * Check if a table was recently saved (within the time window).
+ * Returns true if the table should be skipped, false otherwise.
+ * Does NOT consume the flag - allows multiple subscription calls to see it.
+ */
+function wasRecentlySaved(tableId: string): boolean {
+  const savedAt = recentlySavedTables.get(tableId)
+  if (!savedAt) return false
+
+  const elapsed = Date.now() - savedAt
+  if (elapsed > RECENTLY_SAVED_WINDOW_MS) {
+    // Expired - clean up and return false
+    recentlySavedTables.delete(tableId)
+    return false
+  }
+
+  // Still within window - don't delete, just return true
+  return true
 }
 
 /**
@@ -766,9 +788,9 @@ export function usePersistence() {
 
         // Skip tables that were just saved (e.g., during import)
         // This prevents redundant saves - the table is already persisted
-        if (recentlySavedTables.has(table.id)) {
+        // Uses time-window check to handle multiple subscription calls
+        if (wasRecentlySaved(table.id)) {
           console.log(`[Persistence] Skipping ${table.name} - was just saved during import`)
-          recentlySavedTables.delete(table.id)  // Consume the flag
           knownTableIds.add(table.id)           // Track it as known
           lastDataVersions.set(table.id, currentVersion)
           continue
