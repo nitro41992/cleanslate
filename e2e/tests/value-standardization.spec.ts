@@ -677,6 +677,8 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
 
     // Press Ctrl+Z to undo first
     await page.keyboard.press('Control+z')
+    // Undo for Tier 3 commands (like standardization) uses Heavy Path (snapshot restore)
+    await inspector.waitForReplayComplete()
     await inspector.waitForTransformComplete(tableId)
 
     // Wait for undo to complete - should have original unique names count
@@ -687,7 +689,20 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
 
     // Now press Ctrl+Y to redo
     await page.keyboard.press('Control+y')
+    // Redo for Tier 3 commands (like standardization) uses Heavy Path replay
+    // Wait for both replay and transform to complete
+    await inspector.waitForReplayComplete()
     await inspector.waitForTransformComplete(tableId)
+
+    // Wait for table to exist before polling data (redo may recreate table from snapshot)
+    await expect.poll(async () => {
+      try {
+        const rows = await inspector.runQuery('SELECT COUNT(*) as cnt FROM fr_f_standardize')
+        return Number(rows[0].cnt)
+      } catch {
+        return 0
+      }
+    }, { timeout: 15000, message: 'Table should exist after redo' }).toBeGreaterThan(0)
 
     // Poll for redo to complete - should have fewer unique names (standardized state)
     await expect.poll(async () => {

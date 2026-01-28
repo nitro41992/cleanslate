@@ -1544,14 +1544,23 @@ test.describe('FR-E2: Combiner - Join Files', () => {
   })
 })
 
-test.describe.serial('FR-A4: Manual Cell Editing', () => {
+test.describe('FR-A4: Manual Cell Editing', () => {
+  // Use fresh browser context per test for complete WASM isolation
+  // Timeline operations benefit from fresh state to avoid stale timeline data
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
   let inspector: StoreInspector
 
-  test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     await laundromat.goto()
@@ -1559,20 +1568,20 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
     await inspector.waitForDuckDBReady()
   })
 
-  test.afterAll(async () => {
-    await page.close()
-  })
-
   test.afterEach(async () => {
-    // Lightweight cleanup (no table drops for fast tests)
-    await coolHeapLight(page)
+    try {
+      await coolHeapLight(page)
+    } catch {
+      // Ignore cleanup errors - page may be in bad state
+    }
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   async function loadTestData() {
-    // IMPORTANT: Reload to ensure clean state - prevents getting stuck in previous screen
-    await page.reload()
-    await inspector.waitForDuckDBReady()
-
     await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()
@@ -1687,10 +1696,11 @@ test.describe.serial('FR-A4: Manual Cell Editing', () => {
 
     // Wait for the timeline to be updated with the cell edit command
     // Use inspector.getTimelinePosition for consistent Map access pattern
+    // Note: Timeline recording happens async after cell edit; allow sufficient time
     await expect.poll(async () => {
       const position = await inspector.getTimelinePosition(tableId as string)
       return position.total
-    }, { timeout: 10000, message: 'Timeline command was not added' }).toBeGreaterThan(0)
+    }, { timeout: 15000, message: 'Timeline command was not added' }).toBeGreaterThan(0)
 
     // Verify undo button is enabled (canUndo should be true)
     await expect(laundromat.undoButton).toBeEnabled()
