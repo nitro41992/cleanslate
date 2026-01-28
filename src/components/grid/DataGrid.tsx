@@ -97,6 +97,9 @@ export function DataGrid({
   const containerSize = useContainerSize(containerRef)
   // Grid ref for programmatic control (e.g., forcing re-render on highlight changes)
   const gridRef = useRef<DataEditorRef>(null)
+  // Track scroll position for restore after data reload (transforms, not cell edits)
+  // This preserves the user's view position across structural changes (column adds, transforms)
+  const scrollPositionRef = useRef<{ col: number; row: number } | null>(null)
 
   // Timeline store for highlight state and replay status
   const storeHighlight = useTimelineStore((s) => s.highlight)
@@ -202,6 +205,10 @@ export function DataGrid({
     }
 
     console.log('[DATAGRID] Starting data reload...')
+
+    // Capture scroll position BEFORE clearing data (for restore after structural changes)
+    const savedScrollPosition = scrollPositionRef.current
+
     setIsLoading(true)
     setData([]) // Clear stale data immediately
     setLoadedRange({ start: 0, end: 0 }) // Reset loaded range
@@ -229,6 +236,20 @@ export function DataGrid({
         setCsIdToRowIndex(idMap)
         setLoadedRange({ start: 0, end: rows.length })
         setIsLoading(false)
+
+        // Restore scroll position after data loads (for structural changes like transforms)
+        // Use requestAnimationFrame to ensure grid has rendered before scrolling
+        if (savedScrollPosition && gridRef.current) {
+          requestAnimationFrame(() => {
+            if (gridRef.current) {
+              const { col, row } = savedScrollPosition
+              // Clamp row to valid range (in case row count decreased)
+              const clampedRow = Math.min(row, Math.max(0, rowCount - 1))
+              gridRef.current.scrollTo(col, clampedRow)
+              console.log('[DATAGRID] Restored scroll position:', { col, row: clampedRow })
+            }
+          })
+        }
       })
       .catch((err) => {
         console.error('Error loading data:', err)
@@ -287,6 +308,10 @@ export function DataGrid({
   // Load more data on scroll (with row ID tracking for timeline highlighting)
   const onVisibleRegionChanged = useCallback(
     async (range: { x: number; y: number; width: number; height: number }) => {
+      // Save current scroll position for restore after data reload (transforms)
+      // This captures the user's view position before any structural change
+      scrollPositionRef.current = { col: range.x, row: range.y }
+
       // Skip if DuckDB is busy with heavy operations
       if (useUIStore.getState().busyCount > 0) return
 

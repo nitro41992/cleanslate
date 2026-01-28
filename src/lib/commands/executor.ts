@@ -135,6 +135,10 @@ export function clearCommandTimeline(tableId: string): void {
   }
 }
 
+// Commands that modify cell values but don't change structure
+// These update local state and don't require a full grid reload
+const LOCAL_ONLY_COMMANDS = new Set(['edit:cell', 'edit:batch'])
+
 // ===== COMMAND EXECUTOR CLASS =====
 
 export class CommandExecutor implements ICommandExecutor {
@@ -583,10 +587,31 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Step 8: Update stores
       progress('complete', 100, 'Complete')
-      this.updateTableStore(ctx.table.id, {
-        ...executionResult,
-        columnOrder: newColumnOrder,
-      })
+
+      // Skip dataVersion increment for local-only commands (cell edits)
+      // These commands already update local state in the component and don't need a full grid reload
+      // This prevents scroll position from resetting during cell edits at 2M+ rows
+      const isLocalOnlyCommand = LOCAL_ONLY_COMMANDS.has(command.type)
+
+      if (isLocalOnlyCommand) {
+        // For cell edits, only update metadata that changed (rowCount, columns if applicable)
+        // but DON'T increment dataVersion to avoid triggering full grid reload
+        const tableStore = useTableStore.getState()
+        const currentTable = tableStore.tables.find(t => t.id === ctx.table.id)
+        if (currentTable && executionResult.rowCount !== undefined && executionResult.rowCount !== currentTable.rowCount) {
+          // Only update if row count actually changed (shouldn't happen for cell edits)
+          tableStore.updateTable(ctx.table.id, {
+            rowCount: executionResult.rowCount,
+          })
+        }
+        console.log('[Executor] Skipped dataVersion bump for local-only command:', command.type)
+      } else {
+        // For structural changes (transforms, column operations), trigger full grid reload
+        this.updateTableStore(ctx.table.id, {
+          ...executionResult,
+          columnOrder: newColumnOrder,
+        })
+      }
 
       // Proactive memory management: prune snapshots if memory > 80%
       await this.pruneSnapshotsIfHighMemory()
