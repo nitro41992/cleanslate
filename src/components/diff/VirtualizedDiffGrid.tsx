@@ -90,10 +90,15 @@ export function VirtualizedDiffGrid({
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
-  // Prevent concurrent fetch requests during rapid scrolling
-  const fetchLockRef = useRef(false)
   // LRU page cache for efficient scrolling (keyed by page start offset)
   const pageCacheRef = useRef<Map<number, CachedDiffPage>>(new Map())
+
+  // Debounce timer for scroll handling - prevents excessive fetches during rapid scrolling
+  const scrollDebounceRef = useRef<NodeJS.Timeout | null>(null)
+  // Abort controller for cancelling in-flight fetches when scroll position changes
+  const fetchAbortRef = useRef<AbortController | null>(null)
+  // Track the last requested range to avoid applying stale data
+  const pendingRangeRef = useRef<{ start: number; end: number } | null>(null)
 
   // IMPORTANT: Perspective swap for display
   // The diff engine computes columns from tableA's perspective where A=original, B=current:
@@ -198,120 +203,174 @@ export function VirtualizedDiffGrid({
       })
   }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType])
 
-  // Load more data on scroll with LRU cache
-  // Uses prefetch buffer of ±PREFETCH_BUFFER rows for smooth scrolling
-  // Loads multiple pages to cover the visible region + buffer
-  const onVisibleRegionChanged = useCallback(
-    async (range: Rectangle) => {
-      if (!diffTableName || totalRows === 0) return
+  // Debounce delay for scroll handling (ms) - shorter for responsive feel
+  const SCROLL_DEBOUNCE_MS = 50
 
-      // Skip if a fetch is already in progress (prevents concurrent requests during rapid scroll)
-      if (fetchLockRef.current) return
+  // Load more data on scroll with LRU cache and debouncing
+  // Uses prefetch buffer of ±PREFETCH_BUFFER rows for smooth scrolling
+  // Debounced to prevent excessive fetches during rapid scrolling (e.g., scrollbar drag)
+  const onVisibleRegionChanged = useCallback(
+    (range: Rectangle) => {
+      if (!diffTableName || totalRows === 0) return
 
       // Calculate the range we need to cover (visible + prefetch buffer)
       const needStart = Math.max(0, range.y - PREFETCH_BUFFER)
       const needEnd = Math.min(totalRows, range.y + range.height + PREFETCH_BUFFER)
 
-      // Check if we already have this range fully loaded
+      // Check if we already have this range fully loaded (no fetch needed)
       if (needStart >= loadedRange.start && needEnd <= loadedRange.end) {
         return // Already have all needed data
       }
 
-      // Calculate which pages we need to cover the range
-      const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
-      const lastPageIdx = Math.floor((needEnd - 1) / PAGE_SIZE)
-
-      // Collect all cached pages that cover our range
-      const cachedPages: CachedDiffPage[] = []
-      const missingPageIndices: number[] = []
-
-      for (let pageIdx = firstPageIdx; pageIdx <= lastPageIdx; pageIdx++) {
-        const pageStartRow = pageIdx * PAGE_SIZE
-        const cached = pageCacheRef.current.get(pageStartRow)
-        if (cached && cached.rows.length > 0) {
-          cached.timestamp = Date.now() // Update LRU timestamp
-          cachedPages.push(cached)
-        } else {
-          missingPageIndices.push(pageIdx)
-        }
+      // Clear any pending debounce timer
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current)
       }
 
-      // If we have all pages cached, merge them
-      if (missingPageIndices.length === 0 && cachedPages.length > 0) {
-        cachedPages.sort((a, b) => a.startRow - b.startRow)
-        const mergedRows: DiffRow[] = []
-        const rangeStart = cachedPages[0].startRow
-
-        for (const page of cachedPages) {
-          mergedRows.push(...page.rows)
-        }
-
-        const rangeEnd = rangeStart + mergedRows.length
-        console.log(`[DIFFGRID] Cache hit: merged ${cachedPages.length} pages (rows ${rangeStart}-${rangeEnd})`)
-        setData(mergedRows)
-        setLoadedRange({ start: rangeStart, end: rangeEnd })
-        return
+      // Cancel any in-flight fetch for a different region
+      if (fetchAbortRef.current) {
+        fetchAbortRef.current.abort()
       }
 
-      // Fetch missing pages
-      fetchLockRef.current = true
-      try {
-        for (const pageIdx of missingPageIndices) {
+      // Track this as the pending range
+      pendingRangeRef.current = { start: needStart, end: needEnd }
+
+      // Debounce the fetch - wait for scrolling to settle
+      scrollDebounceRef.current = setTimeout(async () => {
+        // Create new abort controller for this fetch
+        const abortController = new AbortController()
+        fetchAbortRef.current = abortController
+
+        // Calculate which pages we need to cover the range
+        const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
+        const lastPageIdx = Math.floor((needEnd - 1) / PAGE_SIZE)
+
+        // Collect all cached pages that cover our range
+        const cachedPages: CachedDiffPage[] = []
+        const missingPageIndices: number[] = []
+
+        for (let pageIdx = firstPageIdx; pageIdx <= lastPageIdx; pageIdx++) {
           const pageStartRow = pageIdx * PAGE_SIZE
-          const newData = await fetchDiffPage(
-            diffTableName, sourceTableName, targetTableName,
-            allColumns, newColumns, removedColumns,
-            pageStartRow, PAGE_SIZE, keyOrderBy, storageType
-          )
-
-          // Add to LRU cache
-          const newPage: CachedDiffPage = {
-            startRow: pageStartRow,
-            rows: newData,
-            timestamp: Date.now(),
+          const cached = pageCacheRef.current.get(pageStartRow)
+          if (cached && cached.rows.length > 0) {
+            cached.timestamp = Date.now() // Update LRU timestamp
+            cachedPages.push(cached)
+          } else {
+            missingPageIndices.push(pageIdx)
           }
-          pageCacheRef.current.set(pageStartRow, newPage)
-          cachedPages.push(newPage)
+        }
 
-          // Evict oldest pages if cache is full
-          while (pageCacheRef.current.size > MAX_CACHED_PAGES) {
-            let oldestKey = -1
-            let oldestTime = Infinity
-            for (const [key, page] of pageCacheRef.current.entries()) {
-              if (page.timestamp < oldestTime) {
-                oldestTime = page.timestamp
-                oldestKey = key
+        // If we have all pages cached, merge them immediately
+        if (missingPageIndices.length === 0 && cachedPages.length > 0) {
+          // Sort by startRow and merge
+          cachedPages.sort((a, b) => a.startRow - b.startRow)
+          const mergedRows: DiffRow[] = []
+          const rangeStart = cachedPages[0].startRow
+
+          for (const page of cachedPages) {
+            mergedRows.push(...page.rows)
+          }
+
+          const rangeEnd = rangeStart + mergedRows.length
+          console.log(`[DIFFGRID] Cache hit: merged ${cachedPages.length} pages (rows ${rangeStart}-${rangeEnd})`)
+          setData(mergedRows)
+          setLoadedRange({ start: rangeStart, end: rangeEnd })
+          pendingRangeRef.current = null
+          return
+        }
+
+        // Fetch missing pages
+        try {
+          for (const pageIdx of missingPageIndices) {
+            // Check if this fetch was aborted (user scrolled to different position)
+            if (abortController.signal.aborted) {
+              console.log('[DIFFGRID] Fetch aborted - scroll position changed')
+              return
+            }
+
+            const pageStartRow = pageIdx * PAGE_SIZE
+            const newData = await fetchDiffPage(
+              diffTableName, sourceTableName, targetTableName,
+              allColumns, newColumns, removedColumns,
+              pageStartRow, PAGE_SIZE, keyOrderBy, storageType
+            )
+
+            // Check abort again after async operation
+            if (abortController.signal.aborted) {
+              console.log('[DIFFGRID] Fetch aborted after page load - scroll position changed')
+              return
+            }
+
+            // Add to LRU cache
+            const newPage: CachedDiffPage = {
+              startRow: pageStartRow,
+              rows: newData,
+              timestamp: Date.now(),
+            }
+            pageCacheRef.current.set(pageStartRow, newPage)
+            cachedPages.push(newPage)
+
+            // Evict oldest pages if cache is full
+            while (pageCacheRef.current.size > MAX_CACHED_PAGES) {
+              let oldestKey = -1
+              let oldestTime = Infinity
+              for (const [key, page] of pageCacheRef.current.entries()) {
+                if (page.timestamp < oldestTime) {
+                  oldestTime = page.timestamp
+                  oldestKey = key
+                }
+              }
+              if (oldestKey >= 0) {
+                pageCacheRef.current.delete(oldestKey)
+              } else {
+                break
               }
             }
-            if (oldestKey >= 0) {
-              pageCacheRef.current.delete(oldestKey)
-            } else {
-              break
-            }
           }
+
+          // Final abort check before updating state
+          if (abortController.signal.aborted) {
+            console.log('[DIFFGRID] Fetch aborted before state update')
+            return
+          }
+
+          // Merge all pages (cached + newly fetched)
+          cachedPages.sort((a, b) => a.startRow - b.startRow)
+          const mergedRows: DiffRow[] = []
+          const rangeStart = cachedPages[0].startRow
+
+          for (const page of cachedPages) {
+            mergedRows.push(...page.rows)
+          }
+
+          const rangeEnd = rangeStart + mergedRows.length
+          console.log(`[DIFFGRID] Fetched ${missingPageIndices.length} pages, merged ${cachedPages.length} total (rows ${rangeStart}-${rangeEnd})`)
+          setData(mergedRows)
+          setLoadedRange({ start: rangeStart, end: rangeEnd })
+          pendingRangeRef.current = null
+        } catch (err) {
+          // Check if this was an intentional abort
+          if (abortController.signal.aborted) {
+            return
+          }
+          console.error('[DIFFGRID] Error loading diff page:', err)
         }
-
-        // Merge all pages (cached + newly fetched)
-        cachedPages.sort((a, b) => a.startRow - b.startRow)
-        const mergedRows: DiffRow[] = []
-        const rangeStart = cachedPages[0].startRow
-
-        for (const page of cachedPages) {
-          mergedRows.push(...page.rows)
-        }
-
-        const rangeEnd = rangeStart + mergedRows.length
-        console.log(`[DIFFGRID] Fetched ${missingPageIndices.length} pages, merged ${cachedPages.length} total (rows ${rangeStart}-${rangeEnd})`)
-        setData(mergedRows)
-        setLoadedRange({ start: rangeStart, end: rangeEnd })
-      } catch (err) {
-        console.error('Error loading diff page:', err)
-      } finally {
-        fetchLockRef.current = false
-      }
+      }, SCROLL_DEBOUNCE_MS)
     },
     [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, keyOrderBy, storageType, loadedRange]
   )
+
+  // Cleanup debounce timer and abort controller on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current)
+      }
+      if (fetchAbortRef.current) {
+        fetchAbortRef.current.abort()
+      }
+    }
+  }, [])
 
   const getCellContent = useCallback(
     ([col, row]: Item) => {
