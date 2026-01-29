@@ -193,7 +193,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm animate-in fade-in-0 duration-200"
+      className="fixed inset-0 z-50 bg-background/95 animate-in fade-in-0 duration-200"
       data-testid="standardize-view"
     >
       {/* Header */}

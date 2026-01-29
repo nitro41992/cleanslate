@@ -168,9 +168,6 @@ export function IngestionWizard({
       <DialogContent
         className="max-w-[90vw] max-h-[90vh] w-full h-full flex flex-col"
         data-testid="ingestion-wizard"
-        style={{
-          animation: 'scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
-        }}
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3 text-2xl">

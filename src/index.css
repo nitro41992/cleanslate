@@ -301,21 +301,68 @@
     }
   }
 
-  /* Modal scale-in animation */
-  @keyframes scaleIn {
+  /* Dialog animations - must include centering transform to avoid conflicts */
+  @keyframes dialogEnter {
     from {
       opacity: 0;
-      transform: scale(0.95);
+      transform: translate(-50%, -50%) scale(0.96);
     }
     to {
       opacity: 1;
-      transform: scale(1);
+      transform: translate(-50%, -50%) scale(1);
     }
   }
 
-  /* Glass effect */
+  @keyframes dialogExit {
+    from {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.96);
+    }
+  }
+
+  /* Overlay fade */
+  @keyframes overlayEnter {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes overlayExit {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  .dialog-content[data-state="open"] {
+    animation: dialogEnter 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .dialog-content[data-state="closed"] {
+    animation: dialogExit 0.15s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .dialog-overlay[data-state="open"] {
+    animation: overlayEnter 0.2s ease-out both;
+  }
+
+  .dialog-overlay[data-state="closed"] {
+    animation: overlayExit 0.15s ease-out both;
+  }
+
+  /* Glass effect - removed backdrop-blur for performance */
   .glass {
-    @apply bg-background/80 backdrop-blur-sm;
+    @apply bg-background/90;
+  }
+}
+
+/* Reduced motion accessibility support */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
