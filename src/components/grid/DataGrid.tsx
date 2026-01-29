@@ -1106,6 +1106,20 @@ export function DataGrid({
   const BASE_ROW_HEIGHT = 33
   const WORD_WRAP_ROW_HEIGHT = 80 // Fixed height to accommodate ~3 lines of wrapped text
 
+  // Track word wrap changes to force grid remount
+  // When row height changes dramatically (33px ↔ 80px), Glide Data Grid's virtualization
+  // gets confused. A clean remount with a new key is the simplest reliable fix.
+  const [gridKey, setGridKey] = useState(0)
+  const prevWordWrapRef = useRef(wordWrapEnabled)
+
+  useEffect(() => {
+    if (prevWordWrapRef.current !== wordWrapEnabled) {
+      pageCacheRef.current.clear()
+      setGridKey(k => k + 1)
+    }
+    prevWordWrapRef.current = wordWrapEnabled
+  }, [wordWrapEnabled])
+
   if (isLoading) {
     return (
       <div className="h-full w-full p-4 space-y-2">
@@ -1135,6 +1149,7 @@ export function DataGrid({
       <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
         {data.length > 0 && (
           <DataGridLib
+            key={gridKey}
             ref={gridRef}
             columns={gridColumns}
             rows={rowCount}
