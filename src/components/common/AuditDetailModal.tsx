@@ -39,7 +39,10 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
   })()
 
   const isMergeAction = parsedDetails?.type === 'merge' || entry.action === 'Apply Merges' || entry.action === 'Merge Duplicates'
-  const isStandardizeAction = parsedDetails?.type === 'standardize'
+  const isStandardizeAction =
+    parsedDetails?.type === 'standardize' ||
+    entry.action?.includes('Standardize Values') ||
+    entry.action === 'Apply Standardization'
   // Check for manual/batch edits via entryType OR action name (fallback for edge cases)
   const isManualEdit =
     entry.entryType === 'B' ||

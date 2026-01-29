@@ -569,15 +569,23 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
       { timeout: 3000 }
     )
 
-    // Verify modal shows the audit details (either "Standardization Details" or "Row-Level Changes")
-    // The modal should display action details for the standardization
-    await expect(modal.locator('text=Apply Standardization')).toBeVisible({ timeout: 5000 })
+    // Verify modal title shows "Standardization Details" (not generic "Row-Level Changes")
+    await expect(modal.locator('text=Standardization Details')).toBeVisible({ timeout: 5000 })
 
-    // Verify table name is shown
+    // Verify StandardizeDetailTable is rendered (not generic AuditDetailTable)
+    const standardizeTable = modal.getByTestId('standardize-detail-table')
+    await expect(standardizeTable).toBeVisible({ timeout: 5000 })
+
+    // Verify it shows value mappings (from → to) column headers
+    await expect(modal.locator('text=Original Value')).toBeVisible()
+    await expect(modal.locator('text=Standardized To')).toBeVisible()
+    await expect(modal.locator('text=Rows Changed')).toBeVisible()
+
+    // Verify table name is shown in summary
     await expect(modal.locator('text=fr_f_standardize')).toBeVisible()
 
-    // Verify rows affected is shown
-    await expect(modal.locator('text=Rows Affected')).toBeVisible()
+    // Verify "Values:" label is shown (standardize uses Values not Rows Affected)
+    await expect(modal.locator('text=Values:')).toBeVisible()
 
     // Close modal - Rule 2: Use positive hidden assertion
     await page.keyboard.press('Escape')
