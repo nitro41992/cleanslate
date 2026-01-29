@@ -175,14 +175,16 @@ export class LaundromatPage {
     // Dismiss any overlays first
     await this.dismissOverlays()
 
-    // Wait for grid to be fully rendered and data loaded (semantic wait)
+    // Wait for grid to be fully rendered and data loaded (comprehensive check)
     await this.gridContainer.waitFor({ state: 'visible' })
     await this.page.waitForFunction(
       () => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
         if (!stores?.tableStore) return false
-        const state = (stores.tableStore as { getState: () => { isLoading: boolean } }).getState()
-        return state?.isLoading === false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.tableStore as any).getState()
+        // Ensure not loading AND has tables loaded
+        return state?.isLoading === false && state?.tables?.length > 0
       },
       { timeout: 10000 }
     )
@@ -194,12 +196,12 @@ export class LaundromatPage {
     await this.page.keyboard.press('Escape')
     await this.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
 
-    // Click the top-left area of the grid to focus it and start near cell (0,0)
-    // Using position to click near the first cell, not the center of the grid
+    // Click on a data cell (not header) to focus the grid
+    // The header row is typically 36px, so click at y+60 to hit the first data row
     const gridBox = await this.gridContainer.boundingBox()
     if (gridBox) {
-      // Click near top-left (accounting for header row ~36px)
-      await this.page.mouse.click(gridBox.x + 50, gridBox.y + 50)
+      // Click at position that lands on first data row (after header)
+      await this.page.mouse.click(gridBox.x + 100, gridBox.y + 60)
     } else {
       await this.gridContainer.click()
     }

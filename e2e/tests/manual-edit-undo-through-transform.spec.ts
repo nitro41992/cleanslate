@@ -141,6 +141,9 @@ test.describe('Manual Edit Undo Through Transform', () => {
     // ===== STEP 3: Manual Edit 2 - Edit the name in row 2 =====
     // console.log('STEP 3: Manual Edit 2 - Editing name in row 2')
 
+    // Wait for grid to be ready after panel close (required per e2e guidelines)
+    await inspector.waitForGridReady()
+
     // Edit row 2's name: Bob -> Bob_EDITED
     await laundromat.editCell(1, 1, 'Bob_EDITED')
 

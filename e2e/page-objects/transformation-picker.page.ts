@@ -26,49 +26,97 @@ export class TransformationPickerPage {
 
   /**
    * Select a transformation tile by its label
-   * Skips category buttons (which have a count badge) and clicks the actual transformation button
+   * Handles category expansion and scrolling automatically
    */
   async selectTransformation(name: string): Promise<void> {
-    // First, ensure the category is expanded if needed
-    // Category buttons have format "⬡ Category N" with a number at the end
-    const categoryButton = this.page.locator('button').filter({
-      hasText: new RegExp(`${name}\\s+"?\\d+"?$`, 'i')
-    }).first()
+    // Ensure the CleanPanel is open and ready for selection
+    await this.page.getByTestId('panel-clean').waitFor({ state: 'visible', timeout: 5000 })
 
-    // Check if category exists and expand it
-    const categoryExists = await categoryButton.count() > 0
-    if (categoryExists) {
-      const isExpanded = await categoryButton.getAttribute('data-state').then(state => state === 'open').catch(() => false)
-      if (!isExpanded) {
-        await categoryButton.click()
-        // Wait for submenu to appear (state-aware)
-        await categoryButton.getAttribute('data-state').then(async () => {
-          // Wait for the data-state to change to 'open'
-          await this.page.waitForFunction(
-            (selector) => document.querySelector(selector)?.getAttribute('data-state') === 'open',
-            categoryButton.toString(),
-            { timeout: 2000 }
-          ).catch(() => {})
-        }).catch(() => {})
+    // Wait for any previous transformation's form reset to complete
+    await this.page.waitForFunction(
+      () => {
+        const panel = document.querySelector('[data-testid="panel-clean"]')
+        if (!panel) return false
+        const applyBtn = panel.querySelector('[data-testid="apply-transformation-btn"]')
+        if (applyBtn?.textContent?.includes('Applying')) return false
+        return true
+      },
+      { timeout: 5000 }
+    ).catch(() => {})
+
+    const panel = this.page.getByTestId('panel-clean')
+
+    // Strategy: Find the transformation button by looking for buttons that:
+    // 1. Contain the transformation name (case insensitive)
+    // 2. Have a LONGER text (transformation buttons include descriptions like "Replace text values")
+    // 3. Category headers are short like "⬡ Find & Replace 2" (~20 chars)
+    // 4. Transform buttons are longer like "🔍 Find & Replace Replace text values" (~40+ chars)
+
+    // Use page.evaluate to find the correct button based on text length
+    const buttonInfo = await this.page.evaluate((searchName) => {
+      const panelEl = document.querySelector('[data-testid="panel-clean"]')
+      if (!panelEl) return null
+
+      const buttons = panelEl.querySelectorAll('button')
+      let categoryButtonIndex = -1
+      let transformButtonIndex = -1
+
+      for (let i = 0; i < buttons.length; i++) {
+        const text = buttons[i].textContent || ''
+        if (!text.toLowerCase().includes(searchName.toLowerCase())) continue
+
+        const trimmedText = text.trim()
+        // Category headers are short (under 30 chars) and end with a number
+        // Transform buttons are longer and include a description
+        const isShortAndEndsWithNumber = trimmedText.length < 30 && /\d{1,2}$/.test(trimmedText)
+
+        if (isShortAndEndsWithNumber) {
+          categoryButtonIndex = i
+        } else {
+          transformButtonIndex = i
+          break // Found the transform button, stop searching
+        }
       }
+
+      return { categoryButtonIndex, transformButtonIndex }
+    }, name)
+
+    if (!buttonInfo || buttonInfo.transformButtonIndex === -1) {
+      throw new Error(`Could not find transformation button for: ${name}`)
     }
 
-    // Now click the actual transformation button
-    // Key difference: transformation buttons don't have a number badge at the end
-    // Find all buttons with the name, then filter out category buttons (those with numbers at end)
-    const allButtons = this.page.locator('button').filter({
-      hasText: new RegExp(name, 'i')
-    })
+    // Get locators for the buttons we found
+    const allButtons = panel.locator('button')
+    const transformButton = allButtons.nth(buttonInfo.transformButtonIndex)
 
-    // Get the button that doesn't end with a number (i.e., not a category button)
-    const transformButton = allButtons.filter({
-      hasNotText: /\d+$/  // Exclude buttons ending with digits
-    }).first()
+    // Check if the transform button is visible
+    const isVisible = await transformButton.isVisible()
 
+    if (!isVisible && buttonInfo.categoryButtonIndex !== -1) {
+      // Need to expand the category first
+      const categoryButton = allButtons.nth(buttonInfo.categoryButtonIndex)
+      await categoryButton.scrollIntoViewIfNeeded()
+      await categoryButton.click()
+      // Wait for expansion animation
+      await transformButton.waitFor({ state: 'visible', timeout: 3000 })
+    }
+
+    // Scroll into view and click the transformation button
+    await transformButton.scrollIntoViewIfNeeded()
     await transformButton.waitFor({ state: 'visible', timeout: 5000 })
     await transformButton.click()
 
-    // Wait for transformation form to render (state-aware: wait for column selector)
+    // Wait for transformation form to render (placeholder text disappears)
+    await this.page.waitForFunction(
+      () => {
+        const panelEl = document.querySelector('[data-testid="panel-clean"]')
+        if (!panelEl) return false
+        return !panelEl.textContent?.includes('Select a transformation from the left')
+      },
+      { timeout: 5000 }
+    )
+
+    // Wait for column selector if this transformation requires it
     await this.page.getByTestId('column-selector').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
       // Some transformations may not have column selector, which is OK
     })
@@ -144,12 +192,29 @@ export class TransformationPickerPage {
       { timeout: 30000 }
     )
     // Wait for success indicator (toast or button state change) - state-aware
-    // The waitForFunction above already confirms the operation completed
-    // Additional toast check is optional for explicit success verification
     await this.page.locator('[role="region"][aria-label*="Notifications"] [data-state="open"]')
       .waitFor({ state: 'visible', timeout: 1000 }).catch(() => {
         // Toast may not appear for all transformations, which is OK
       })
+
+    // Wait for the form to reset (CleanPanel resets after 1.5s delay)
+    // This ensures subsequent addTransformation calls work correctly
+    await this.page.waitForFunction(
+      () => {
+        const panel = document.querySelector('[data-testid="panel-clean"]')
+        if (!panel) return false
+        // Form is reset when the "Select a transformation" placeholder appears
+        // OR when no transformation is currently selected (Apply button is disabled)
+        const text = panel.textContent || ''
+        const hasPlaceholder = text.includes('Select a transformation from the left')
+        const applyBtn = panel.querySelector('[data-testid="apply-transformation-btn"]')
+        const applyDisabled = applyBtn?.hasAttribute('disabled') || false
+        return hasPlaceholder || applyDisabled
+      },
+      { timeout: 3000 }
+    ).catch(() => {
+      // If form doesn't reset within 3s, continue anyway (may be OK for some transformations)
+    })
   }
 
   /**

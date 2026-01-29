@@ -133,12 +133,19 @@ test.describe('OPFS Persistence - Basic Functionality', () => {
     expect(initialData.length).toBe(5)
     expect(initialData[0].name).toBe('John Doe')
 
+    // Wait for grid to be ready before applying transforms
+    await inspector.waitForGridReady()
+
+    // Get table ID for later use
+    const tableId = await inspector.getActiveTableId()
+    expect(tableId).not.toBeNull()
+
     // 3. Apply transformation
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
     // Wait for transformation to complete in DuckDB
-    await inspector.waitForTransformComplete()
+    await inspector.waitForTransformComplete(tableId!)
 
     // 4. Verify transformation applied via SQL (polls until transformed)
     await expect.poll(async () => {
@@ -146,16 +153,34 @@ test.describe('OPFS Persistence - Basic Functionality', () => {
       return rows[0].name
     }, { timeout: 10000 }).toBe('JOHN DOE')
 
+    // Close panel and wait for grid to be ready
+    await laundromat.closePanel()
+    await inspector.waitForGridReady()
+
+    // Make a cell edit on the SAME column that was transformed to force materialization
+    // (Tier 1 transforms use expression chaining; cell edits on transformed column force materialization)
+    // Edit row 2 (id=3) name column (col 1) to preserve row 1 (id=1) for verification
+    await laundromat.editCell(2, 1, 'EDITED_NAME')
+
+    // Verify the edit was applied
+    await expect.poll(async () => {
+      const rows = await inspector.runQuery('SELECT name FROM basic_data WHERE id = 3')
+      return rows[0]?.name
+    }, { timeout: 10000 }).toBe('EDITED_NAME')
+
     // 5. Flush to OPFS (required in test env where auto-flush is disabled)
     await inspector.flushToOPFS()
     // Wait for persistence to complete
     await inspector.waitForPersistenceComplete()
 
-    // 6. Reload and wait for hydration
+    // 6. Save app state (timelines, UI prefs) - required for Tier 1 transform replay
+    await inspector.saveAppState()
+
+    // 7. Reload and wait for hydration
     await page.reload()
     await waitForAppReady(page, inspector)
 
-    // 7. Verify table persisted
+    // 8. Verify table persisted
     await expect.poll(async () => {
       const tables = await inspector.getTables()
       return tables.some(t => t.name === 'basic_data')
@@ -173,11 +198,11 @@ test.describe('OPFS Persistence - Basic Functionality', () => {
 
     // Verify data persisted - note: Tier 1 transforms (uppercase) are expression-based
     // The base data is persisted, timeline should be replayed on restore
-    const restoredData = await inspector.getTableData('basic_data')
-    expect(restoredData.length).toBe(5)
-    // If transformation is replayed via timeline, this will be JOHN DOE
-    // If only base data was restored, this will be John Doe
-    expect(restoredData[0].name).toBe('JOHN DOE')
+    // Use SQL query to verify (expression chaining is applied via SQL view)
+    await expect.poll(async () => {
+      const rows = await inspector.runQuery('SELECT name FROM basic_data WHERE id = 1')
+      return rows[0]?.name
+    }, { timeout: 15000 }).toBe('JOHN DOE')
   })
 
   test('should persist multiple tables', async () => {
