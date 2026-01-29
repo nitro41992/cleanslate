@@ -20,42 +20,49 @@ const colorClasses: Record<TransformationGroupColor, {
   header: string
   headerHover: string
   selected: string
+  iconBg: string
 }> = {
   emerald: {
     badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     header: 'text-emerald-400',
     headerHover: 'hover:bg-emerald-500/5',
-    selected: 'border-emerald-500 bg-emerald-500/5',
+    selected: 'border-l-2 border-emerald-500 bg-emerald-500/5',
+    iconBg: 'bg-emerald-500/10',
   },
   blue: {
     badge: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
     header: 'text-blue-400',
     headerHover: 'hover:bg-blue-500/5',
-    selected: 'border-blue-500 bg-blue-500/5',
+    selected: 'border-l-2 border-blue-500 bg-blue-500/5',
+    iconBg: 'bg-blue-500/10',
   },
   violet: {
     badge: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
     header: 'text-violet-400',
     headerHover: 'hover:bg-violet-500/5',
-    selected: 'border-violet-500 bg-violet-500/5',
+    selected: 'border-l-2 border-violet-500 bg-violet-500/5',
+    iconBg: 'bg-violet-500/10',
   },
   amber: {
     badge: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
     header: 'text-amber-400',
     headerHover: 'hover:bg-amber-500/5',
-    selected: 'border-amber-500 bg-amber-500/5',
+    selected: 'border-l-2 border-amber-500 bg-amber-500/5',
+    iconBg: 'bg-amber-500/10',
   },
   rose: {
     badge: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
     header: 'text-rose-400',
     headerHover: 'hover:bg-rose-500/5',
-    selected: 'border-rose-500 bg-rose-500/5',
+    selected: 'border-l-2 border-rose-500 bg-rose-500/5',
+    iconBg: 'bg-rose-500/10',
   },
   slate: {
     badge: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
     header: 'text-slate-400',
     headerHover: 'hover:bg-slate-500/5',
-    selected: 'border-slate-500 bg-slate-500/5',
+    selected: 'border-l-2 border-slate-500 bg-slate-500/5',
+    iconBg: 'bg-slate-500/10',
   },
 }
 
@@ -105,7 +112,7 @@ export function GroupedTransformationPicker({
               type="button"
               onClick={() => toggleGroup(group.id)}
               className={cn(
-                'w-full flex items-center justify-between px-3 py-2 transition-colors',
+                'w-full flex items-center justify-between px-3 py-2.5 transition-colors',
                 'bg-muted/30',
                 colors.headerHover
               )}
@@ -114,7 +121,7 @@ export function GroupedTransformationPicker({
                 <span className={cn('text-base', colors.header)}>
                   {group.icon}
                 </span>
-                <span className={cn('text-sm font-medium', colors.header)}>
+                <span className={cn('text-sm font-semibold tracking-tight', colors.header)}>
                   {group.label}
                 </span>
                 <span
@@ -144,32 +151,44 @@ export function GroupedTransformationPicker({
               )}
             >
               <div className="overflow-hidden">
-                <div className="grid grid-cols-3 gap-1.5 p-2">
+                <div className="space-y-0.5 p-2">
                   {groupTransforms.map(t => (
                     <button
                       key={t.id}
                       onClick={() => onSelect(t)}
                       disabled={disabled}
                       className={cn(
-                        'flex flex-col items-center gap-1 p-2 rounded-md border transition-all',
-                        'hover:bg-muted/50 hover:border-border',
+                        'w-full flex items-center gap-3 px-3 py-2 rounded-lg',
+                        'transition-colors duration-150',
+                        'hover:bg-muted/40',
                         'disabled:opacity-50 disabled:cursor-not-allowed',
-                        'focus:outline-none focus:ring-2 focus:ring-primary/50',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                         selectedTransform?.id === t.id && colors.selected,
-                        lastApplied === t.id && 'border-green-500 bg-green-500/10'
+                        lastApplied === t.id && 'border-l-2 border-green-500 bg-green-500/5'
                       )}
                     >
-                      <div className="relative">
-                        <span className="text-lg">{t.icon}</span>
+                      {/* Icon container - uniform visual weight */}
+                      <div className={cn(
+                        'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 relative',
+                        colors.iconBg
+                      )}>
+                        <span className="text-base leading-none">{t.icon}</span>
                         {lastApplied === t.id && (
-                          <div className="absolute -top-1 -right-1.5 w-3.5 h-3.5 bg-green-500 rounded-full flex items-center justify-center">
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center shadow-sm">
                             <Check className="w-2.5 h-2.5 text-white" />
                           </div>
                         )}
                       </div>
-                      <span className="text-[10px] font-medium text-center leading-tight line-clamp-2">
-                        {t.label}
-                      </span>
+
+                      {/* Text block - left-aligned for scanning */}
+                      <div className="flex-1 min-w-0 text-left">
+                        <span className="text-sm font-medium text-foreground block truncate">
+                          {t.label}
+                        </span>
+                        <span className="text-xs text-muted-foreground block truncate">
+                          {t.description}
+                        </span>
+                      </div>
                     </button>
                   ))}
                 </div>

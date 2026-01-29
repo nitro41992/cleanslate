@@ -11,6 +11,7 @@ CleanSlate Pro is a browser-based, local-first data operations suite for regulat
 - **MUST NOT** use tools like `sed` — use Edit tool or TypeScript LSP
 - **MUST** ensure E2E tests pass; if failing, work with me to determine if issue is implementation or test intent
 - **MUST NOT** add new logic to `transformations.ts` [DEPRECATED] — use `src/lib/commands/` instead
+- **MUST** use shadcn components when applicable before falling back to custom components
 
 ## 3. Common Commands
 

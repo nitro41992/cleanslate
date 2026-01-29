@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { ColumnCombobox } from '@/components/ui/combobox'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   AlertDialog,
@@ -279,280 +280,279 @@ export function CleanPanel() {
       {/* Confirm Discard Undone Operations Dialog */}
       <ConfirmDiscardDialog {...confirmDialogProps} />
 
-      <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-4">
-          {/* Grouped Transformation Picker */}
-          <GroupedTransformationPicker
-            selectedTransform={selectedTransform}
-            lastApplied={lastApplied}
-            disabled={!activeTable || isApplying}
-            onSelect={handleSelectTransform}
-          />
+      <div className="flex h-full">
+        {/* Left Column: Picker (scrollable) */}
+        <div className="w-[280px] border-r border-border/50 flex flex-col">
+          <ScrollArea className="flex-1">
+            <div className="p-4">
+              <GroupedTransformationPicker
+                selectedTransform={selectedTransform}
+                lastApplied={lastApplied}
+                disabled={!activeTable || isApplying}
+                onSelect={handleSelectTransform}
+              />
 
-          {/* Configuration Section */}
-          {selectedTransform && (
-            <div className="space-y-4 pt-4 border-t border-border/50 animate-in slide-in-from-top-2 duration-200">
-              {/* Enhanced Transform Info */}
-              <div className="bg-muted/30 rounded-lg p-3 space-y-3">
-                {/* Header */}
-                <div>
-                  <h3 className="font-medium flex items-center gap-2">
-                    <span className="text-lg">{selectedTransform.icon}</span>
-                    {selectedTransform.label}
-                  </h3>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {selectedTransform.description}
+              {/* No table state - show in picker column */}
+              {!activeTable && (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="text-sm">No table selected</p>
+                  <p className="text-xs mt-1">
+                    Upload a CSV file to start transforming data
                   </p>
                 </div>
-
-                {/* Examples */}
-                {selectedTransform.examples && selectedTransform.examples.length > 0 && (
-                  <div className="border-t border-border/50 pt-2">
-                    <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
-                    <div className="space-y-1">
-                      {selectedTransform.examples.slice(0, 2).map((ex, i) => (
-                        <div key={i} className="flex items-center gap-2 text-xs font-mono">
-                          <span className="text-red-400/80">{ex.before}</span>
-                          <span className="text-muted-foreground">→</span>
-                          <span className="text-green-400/80">{ex.after}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Hints */}
-                {selectedTransform.hints && selectedTransform.hints.length > 0 && (
-                  <div className="border-t border-border/50 pt-2">
-                    <ul className="text-xs text-muted-foreground space-y-0.5">
-                      {selectedTransform.hints.map((hint, i) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className="text-blue-400">•</span>
-                          {hint}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              {/* Custom SQL Context Helper */}
-              {selectedTransform.id === 'custom_sql' && activeTable && (
-                <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 space-y-3">
-                  {/* Table Info */}
-                  <div>
-                    <p className="text-xs font-medium text-slate-400 mb-1">Table</p>
-                    <code className="text-sm text-cyan-400 font-mono">&quot;{activeTable.name}&quot;</code>
-                    <span className="text-xs text-muted-foreground ml-2">
-                      ({activeTable.rowCount?.toLocaleString() || 0} rows)
-                    </span>
-                  </div>
-
-                  {/* Available Columns */}
-                  <div>
-                    <p className="text-xs font-medium text-slate-400 mb-1">
-                      Columns ({columns.length})
-                    </p>
-                    <div className="flex flex-wrap gap-1">
-                      {columns.slice(0, 10).map((col) => (
-                        <button
-                          key={col}
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(`"${col}"`)
-                            toast.success(`Copied "${col}" to clipboard`)
-                          }}
-                          className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800
-                                     text-amber-400 hover:bg-slate-700 transition-colors"
-                        >
-                          &quot;{col}&quot;
-                        </button>
-                      ))}
-                      {columns.length > 10 && (
-                        <span className="text-xs text-muted-foreground self-center">
-                          +{columns.length - 10} more
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Quick Templates */}
-                  <div>
-                    <p className="text-xs font-medium text-slate-400 mb-1">Quick Templates</p>
-                    <div className="space-y-1">
-                      {[
-                        { label: 'Update column', sql: `UPDATE "${activeTable.name}" SET "column" = value` },
-                        { label: 'Add column', sql: `ALTER TABLE "${activeTable.name}" ADD COLUMN new_col VARCHAR` },
-                        { label: 'Delete rows', sql: `DELETE FROM "${activeTable.name}" WHERE condition` },
-                      ].map((template) => (
-                        <button
-                          key={template.label}
-                          type="button"
-                          onClick={() => setParams({ ...params, sql: template.sql })}
-                          className="w-full text-left text-xs px-2 py-1.5 rounded
-                                     bg-slate-800/50 hover:bg-slate-800 transition-colors"
-                        >
-                          <span className="text-slate-300">{template.label}</span>
-                          <code className="block text-[10px] text-slate-500 font-mono truncate">
-                            {template.sql}
-                          </code>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
               )}
+            </div>
+          </ScrollArea>
+        </div>
 
-              {/* Column Selector */}
-              {selectedTransform.requiresColumn && (
-                <div className="space-y-2">
-                  <Label>Target Column</Label>
-                  <Select
-                    value={selectedColumn}
-                    onValueChange={setSelectedColumn}
-                  >
-                    <SelectTrigger data-testid="column-selector">
-                      <SelectValue placeholder="Select column..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {columns.map((col) => (
-                        <SelectItem key={col} value={col}>
-                          {col}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {/* Additional Params */}
-              {selectedTransform.params
-                ?.filter((param) => {
-                  // For split_column, only show relevant params based on splitMode
-                  if (selectedTransform.id === 'split_column') {
-                    const splitMode = params.splitMode || 'delimiter'
-                    if (param.name === 'delimiter') return splitMode === 'delimiter'
-                    if (param.name === 'position') return splitMode === 'position'
-                    if (param.name === 'length') return splitMode === 'length'
-                  }
-                  return true
-                })
-                .map((param) => (
-                <div key={param.name} className="space-y-2">
-                  <Label>{param.label}</Label>
-                  {param.type === 'select' && param.options ? (
-                    <Select
-                      value={params[param.name] || ''}
-                      onValueChange={(v) =>
-                        setParams({ ...params, [param.name]: v })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={`Select ${param.label}`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {param.options.map((opt) => (
-                          <SelectItem key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : selectedTransform.id === 'custom_sql' && param.name === 'sql' ? (
-                    /* Enhanced SQL textarea */
-                    <div className="space-y-1">
-                      <textarea
-                        value={params[param.name] || ''}
-                        onChange={(e) =>
-                          setParams({ ...params, [param.name]: e.target.value })
-                        }
-                        placeholder={`UPDATE "${activeTable?.name || 'table'}" SET "column" = value WHERE condition`}
-                        className="w-full h-24 px-3 py-2 text-sm font-mono rounded-md
-                                   bg-slate-900 border border-slate-700
-                                   text-cyan-300 placeholder:text-slate-600
-                                   focus:outline-none focus:ring-2 focus:ring-primary/50
-                                   resize-y min-h-[80px]"
-                        spellCheck={false}
-                      />
-                      <p className="text-[10px] text-muted-foreground">
-                        Use DuckDB SQL syntax. Column names must be double-quoted.
+        {/* Right Column: Configuration (vertically centered, scrollable if needed) */}
+        <div className="flex-1 flex flex-col overflow-y-auto">
+          <div className="flex-1 flex flex-col justify-center p-4">
+            {selectedTransform ? (
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  {/* Enhanced Transform Info */}
+                  <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+                    {/* Header */}
+                    <div>
+                      <h3 className="font-medium flex items-center gap-2">
+                        <span className="text-lg">{selectedTransform.icon}</span>
+                        {selectedTransform.label}
+                      </h3>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {selectedTransform.description}
                       </p>
                     </div>
-                  ) : (
-                    <Input
-                      value={params[param.name] || ''}
-                      onChange={(e) =>
-                        setParams({ ...params, [param.name]: e.target.value })
-                      }
-                      placeholder={param.label}
-                    />
-                  )}
-                </div>
-              ))}
 
-              {/* Apply Button */}
-              <Button
-                className="w-full"
-                onClick={handleApply}
-                disabled={isApplying || !isValid()}
-                data-testid="apply-transformation-btn"
-              >
-                {isApplying ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Applying...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4 mr-2" />
-                    Apply Transformation
-                  </>
-                )}
-              </Button>
+                    {/* Examples */}
+                    {selectedTransform.examples && selectedTransform.examples.length > 0 && (
+                      <div className="border-t border-border/50 pt-2">
+                        <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
+                        <div className="space-y-1">
+                          {selectedTransform.examples.slice(0, 2).map((ex, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs font-mono">
+                              <span className="text-red-400/80">{ex.before}</span>
+                              <span className="text-muted-foreground">→</span>
+                              <span className="text-green-400/80">{ex.after}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
-              {/* Execution Progress (for batched operations) */}
-              {executionProgress && (
-                <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{executionProgress.message}</span>
-                    <span>{Math.round(executionProgress.progress)}%</span>
+                    {/* Hints */}
+                    {selectedTransform.hints && selectedTransform.hints.length > 0 && (
+                      <div className="border-t border-border/50 pt-2">
+                        <ul className="text-xs text-muted-foreground space-y-0.5">
+                          {selectedTransform.hints.map((hint, i) => (
+                            <li key={i} className="flex items-start gap-1.5">
+                              <span className="text-blue-400">•</span>
+                              {hint}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
-                  <Progress value={executionProgress.progress} className="h-2" />
+
+                  {/* Custom SQL Context Helper */}
+                  {selectedTransform.id === 'custom_sql' && activeTable && (
+                    <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 space-y-3">
+                      {/* Table Info */}
+                      <div>
+                        <p className="text-xs font-medium text-slate-400 mb-1">Table</p>
+                        <code className="text-sm text-cyan-400 font-mono">&quot;{activeTable.name}&quot;</code>
+                        <span className="text-xs text-muted-foreground ml-2">
+                          ({activeTable.rowCount?.toLocaleString() || 0} rows)
+                        </span>
+                      </div>
+
+                      {/* Available Columns */}
+                      <div>
+                        <p className="text-xs font-medium text-slate-400 mb-1">
+                          Columns ({columns.length})
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {columns.slice(0, 10).map((col) => (
+                            <button
+                              key={col}
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(`"${col}"`)
+                                toast.success(`Copied "${col}" to clipboard`)
+                              }}
+                              className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800
+                                         text-amber-400 hover:bg-slate-700 transition-colors"
+                            >
+                              &quot;{col}&quot;
+                            </button>
+                          ))}
+                          {columns.length > 10 && (
+                            <span className="text-xs text-muted-foreground self-center">
+                              +{columns.length - 10} more
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Quick Templates */}
+                      <div>
+                        <p className="text-xs font-medium text-slate-400 mb-1">Quick Templates</p>
+                        <div className="space-y-1">
+                          {[
+                            { label: 'Update column', sql: `UPDATE "${activeTable.name}" SET "column" = value` },
+                            { label: 'Add column', sql: `ALTER TABLE "${activeTable.name}" ADD COLUMN new_col VARCHAR` },
+                            { label: 'Delete rows', sql: `DELETE FROM "${activeTable.name}" WHERE condition` },
+                          ].map((template) => (
+                            <button
+                              key={template.label}
+                              type="button"
+                              onClick={() => setParams({ ...params, sql: template.sql })}
+                              className="w-full text-left text-xs px-2 py-1.5 rounded
+                                         bg-slate-800/50 hover:bg-slate-800 transition-colors"
+                            >
+                              <span className="text-slate-300">{template.label}</span>
+                              <code className="block text-[10px] text-slate-500 font-mono truncate">
+                                {template.sql}
+                              </code>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Column Selector */}
+                  {selectedTransform.requiresColumn && (
+                    <div className="space-y-2">
+                      <Label>Target Column</Label>
+                      <ColumnCombobox
+                        columns={columns}
+                        value={selectedColumn}
+                        onValueChange={setSelectedColumn}
+                        disabled={isApplying}
+                      />
+                    </div>
+                  )}
+
+                  {/* Additional Params */}
+                  {selectedTransform.params
+                    ?.filter((param) => {
+                      // For split_column, only show relevant params based on splitMode
+                      if (selectedTransform.id === 'split_column') {
+                        const splitMode = params.splitMode || 'delimiter'
+                        if (param.name === 'delimiter') return splitMode === 'delimiter'
+                        if (param.name === 'position') return splitMode === 'position'
+                        if (param.name === 'length') return splitMode === 'length'
+                      }
+                      return true
+                    })
+                    .map((param) => (
+                    <div key={param.name} className="space-y-2">
+                      <Label>{param.label}</Label>
+                      {param.type === 'select' && param.options ? (
+                        <Select
+                          value={params[param.name] || ''}
+                          onValueChange={(v) =>
+                            setParams({ ...params, [param.name]: v })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder={`Select ${param.label}`} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {param.options.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : selectedTransform.id === 'custom_sql' && param.name === 'sql' ? (
+                        /* Enhanced SQL textarea */
+                        <div className="space-y-1">
+                          <textarea
+                            value={params[param.name] || ''}
+                            onChange={(e) =>
+                              setParams({ ...params, [param.name]: e.target.value })
+                            }
+                            placeholder={`UPDATE "${activeTable?.name || 'table'}" SET "column" = value WHERE condition`}
+                            className="w-full h-24 px-3 py-2 text-sm font-mono rounded-md
+                                       bg-slate-900 border border-slate-700
+                                       text-cyan-300 placeholder:text-slate-600
+                                       focus:outline-none focus:ring-2 focus:ring-primary/50
+                                       resize-y min-h-[80px]"
+                            spellCheck={false}
+                          />
+                          <p className="text-[10px] text-muted-foreground">
+                            Use DuckDB SQL syntax. Column names must be double-quoted.
+                          </p>
+                        </div>
+                      ) : (
+                        <Input
+                          value={params[param.name] || ''}
+                          onChange={(e) =>
+                            setParams({ ...params, [param.name]: e.target.value })
+                          }
+                          placeholder={param.label}
+                        />
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Apply Button */}
+                  <Button
+                    className="w-full"
+                    onClick={handleApply}
+                    disabled={isApplying || !isValid()}
+                    data-testid="apply-transformation-btn"
+                  >
+                    {isApplying ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Applying...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 mr-2" />
+                        Apply Transformation
+                      </>
+                    )}
+                  </Button>
+
+                  {/* Execution Progress (for batched operations) */}
+                  {executionProgress && (
+                    <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>{executionProgress.message}</span>
+                        <span>{Math.round(executionProgress.progress)}%</span>
+                      </div>
+                      <Progress value={executionProgress.progress} className="h-2" />
+                    </div>
+                  )}
+
+                  {/* Cancel Button */}
+                  <Button
+                    variant="ghost"
+                    className="w-full"
+                    onClick={resetForm}
+                    disabled={isApplying}
+                  >
+                    Cancel
+                  </Button>
                 </div>
-              )}
-
-              {/* Cancel Button */}
-              <Button
-                variant="ghost"
-                className="w-full"
-                onClick={resetForm}
-                disabled={isApplying}
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
-
-          {/* Empty State */}
-          {!selectedTransform && !activeTable && (
-            <div className="text-center py-8 text-muted-foreground">
-              <p className="text-sm">No table selected</p>
-              <p className="text-xs mt-1">
-                Upload a CSV file to start transforming data
-              </p>
-            </div>
-          )}
-
-          {!selectedTransform && activeTable && (
-            <div className="text-center py-4 text-muted-foreground">
-              <p className="text-xs">
-                Select a transformation above to configure and apply
-              </p>
-            </div>
-          )}
+            ) : (
+              /* Empty State for right column */
+              <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
+                <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
+                  <Sparkles className="w-6 h-6 text-muted-foreground" />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Select a transformation from the left to configure it
+                </p>
+              </div>
+            )}
+          </div>
         </div>
-      </ScrollArea>
       </div>
     </>
   )
