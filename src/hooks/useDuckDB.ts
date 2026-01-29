@@ -452,6 +452,43 @@ export function useDuckDB() {
     []
   )
 
+  /**
+   * Compact memory by restarting the WASM worker.
+   * WASM linear memory pages grow but never shrink (browser limitation).
+   * This terminates the worker, releases all linear memory, reinitializes DuckDB,
+   * and reloads tables from Parquet snapshots.
+   */
+  const compactMemory = useCallback(async () => {
+    console.log('[DuckDB] Starting memory compaction...')
+
+    // 1. Save current app state first (ensure nothing is lost)
+    const { saveAppStateNow } = await import('@/lib/persistence/state-persistence')
+    await saveAppStateNow()
+    console.log('[DuckDB] App state saved before compaction')
+
+    // 2. Set not ready to block UI queries during restart
+    setIsReady(false)
+
+    // 3. Terminate the worker (releases WASM linear memory)
+    await terminateAndReinitialize()
+    console.log('[DuckDB] Worker terminated')
+
+    // 4. Reinitialize DuckDB with fresh worker
+    await initDuckDB()
+    console.log('[DuckDB] DuckDB reinitialized')
+
+    // 5. Re-hydrate tables from Parquet snapshots
+    const { performHydration } = await import('@/hooks/usePersistence')
+    await performHydration(true) // true = re-hydration mode
+    console.log('[DuckDB] Tables re-hydrated from Parquet')
+
+    // 6. Ready again
+    setIsReady(true)
+    refreshMemory()
+
+    console.log('[DuckDB] Memory compaction complete')
+  }, [refreshMemory])
+
   return {
     isReady,
     isLoading,
@@ -465,5 +502,6 @@ export function useDuckDB() {
     deleteTable,
     updateCell,
     duplicateTable,
+    compactMemory,
   }
 }

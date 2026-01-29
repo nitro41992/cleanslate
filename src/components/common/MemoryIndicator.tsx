@@ -1,15 +1,28 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useUIStore } from '@/stores/uiStore'
 import { formatBytes } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { useDuckDB } from '@/hooks/useDuckDB'
-import { query } from '@/lib/duckdb'
+import { toast } from '@/hooks/use-toast'
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
 
 interface MemoryIndicatorProps {
   compact?: boolean
@@ -50,8 +63,9 @@ function BreakdownBar({
 export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
   const { memoryUsage, memoryLimit, memoryLevel, memoryBreakdown, refreshMemory, busyCount } =
     useUIStore()
-  const { isReady } = useDuckDB()
+  const { isReady, compactMemory } = useDuckDB()
   const isBusy = busyCount > 0
+  const [isCompacting, setIsCompacting] = useState(false)
 
   useEffect(() => {
     // Don't poll until DuckDB is ready
@@ -77,55 +91,30 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
     memoryBreakdown.overheadBytes
   const maxForBars = Math.max(totalBreakdown, memoryUsage, 1) // Avoid division by zero
 
-  // Diagnostic function to log memory details to console
-  const runDiagnostics = async () => {
-    console.group('DuckDB Memory Diagnostics')
+  // Handle memory compaction
+  const handleCompact = async () => {
+    setIsCompacting(true)
     try {
-      // 1. Check active tables
-      const tables = await query<{ name: string; rows: number }>(`
-        SELECT
-          table_name as name,
-          estimated_size as rows
-        FROM duckdb_tables()
-        WHERE NOT internal
-        ORDER BY rows DESC
-      `)
-
-      console.log('Active Tables:')
-      if (tables.length === 0) {
-        console.log('   (No user tables found)')
-      } else {
-        console.table(tables)
-      }
-
-      // 2. Check total heap usage
-      const sizeInfo = await query('CALL pragma_database_size()')
-      console.log('Heap Allocation:', sizeInfo[0])
-
-      // 3. Log UI Store stats
-      console.log('App State:', {
-        memoryUsage: formatBytes(memoryUsage),
-        memoryLimit: formatBytes(memoryLimit),
-        percentage: percentage.toFixed(1) + '%',
+      await compactMemory()
+      toast({
+        title: 'Memory compacted',
+        description: 'Database restarted successfully.',
       })
-
-      // 4. Log breakdown
-      console.log('Memory Breakdown:', {
-        tableData: formatBytes(memoryBreakdown.tableDataBytes),
-        timeline: formatBytes(memoryBreakdown.timelineBytes),
-        diff: formatBytes(memoryBreakdown.diffBytes),
-        overhead: formatBytes(memoryBreakdown.overheadBytes),
+    } catch (error) {
+      toast({
+        title: 'Compaction failed',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
       })
-    } catch (err) {
-      console.error('Diagnostic failed:', err)
+    } finally {
+      setIsCompacting(false)
     }
-    console.groupEnd()
   }
 
   // Warning message based on level
   const getWarningMessage = () => {
     if (isCritical) {
-      return 'Memory usage is high. Consider deleting unused tables.'
+      return 'Memory usage is high. Consider compacting.'
     }
     if (isWarning) {
       return 'Memory usage is elevated.'
@@ -133,16 +122,10 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
     return null
   }
 
-  // Tooltip content with memory breakdown
-  const tooltipContent = (
-    <div className="space-y-3 min-w-[240px]">
-      {/* Header with total */}
-      <div className="flex justify-between text-xs font-medium">
-        <span>DuckDB Memory</span>
-        <span>{formatBytes(memoryUsage)}</span>
-      </div>
-
-      {/* Breakdown bars */}
+  // Dropdown content with memory breakdown and compact button
+  const dropdownContent = (
+    <div className="space-y-3 p-2">
+      {/* Memory breakdown bars */}
       <div className="space-y-1.5">
         <BreakdownBar
           label="Your Data"
@@ -174,78 +157,116 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
       {getWarningMessage() && (
         <div
           className={cn(
-            'text-xs border-t border-border/50 pt-2',
-            isCritical ? 'text-destructive' : 'text-amber-500'
+            'text-xs p-2 rounded-md',
+            isCritical ? 'bg-destructive/10 text-destructive' : 'bg-amber-500/10 text-amber-500'
           )}
         >
           {getWarningMessage()}
         </div>
       )}
 
-      {/* Click hint */}
-      <div className="text-xs text-muted-foreground border-t border-border/50 pt-2">
-        Click for detailed diagnostics
-      </div>
+      {/* Compact Memory button with confirmation */}
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            disabled={isCompacting || !isReady}
+          >
+            {isCompacting ? 'Compacting...' : 'Compact Memory'}
+          </Button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Compact Memory?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will restart the database engine to release unused memory.
+              Your data is saved and will reload automatically.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleCompact}>Compact</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <p className="text-xs text-muted-foreground">
+        WASM memory grows but cannot shrink. Compacting restarts the engine to reclaim memory.
+      </p>
     </div>
   )
 
   // Compact view for status bar
   if (compact) {
     return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div
-              className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
-              onClick={runDiagnostics}
-            >
-              <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-                <div
-                  className={cn(
-                    'h-full rounded-full transition-all',
-                    isCritical ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-primary',
-                    isBusy && 'animate-pulse opacity-50'
-                  )}
-                  style={{ width: `${Math.min(percentage, 100)}%` }}
-                />
-              </div>
-              <span>{Math.round(percentage)}%</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <div
+            className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+          >
+            <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all',
+                  isCritical ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-primary',
+                  isBusy && 'animate-pulse opacity-50',
+                  isCompacting && 'animate-pulse'
+                )}
+                style={{ width: `${Math.min(percentage, 100)}%` }}
+              />
             </div>
-          </TooltipTrigger>
-          <TooltipContent side="top">{tooltipContent}</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+            <span>{isCompacting ? '...' : `${Math.round(percentage)}%`}</span>
+          </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-72">
+          <DropdownMenuLabel className="flex justify-between">
+            <span>DuckDB Memory</span>
+            <span className="font-normal text-muted-foreground">
+              {formatBytes(memoryUsage)} / {formatBytes(memoryLimit)}
+            </span>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {dropdownContent}
+        </DropdownMenuContent>
+      </DropdownMenu>
     )
   }
 
   // Full view (sidebar)
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div
-            className="space-y-1.5 cursor-pointer group"
-            onClick={runDiagnostics}
-          >
-            <div className="flex items-center justify-between text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-              <span>Memory</span>
-              <span>{Math.round(percentage)}%</span>
-            </div>
-            <div className="memory-bar">
-              <div
-                className={cn(
-                  'memory-bar-fill',
-                  isWarning && !isCritical && 'warning',
-                  isCritical && 'critical',
-                  isBusy && 'animate-pulse opacity-50'
-                )}
-                style={{ width: `${Math.min(percentage, 100)}%` }}
-              />
-            </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <div className="space-y-1.5 cursor-pointer group">
+          <div className="flex items-center justify-between text-xs text-muted-foreground group-hover:text-foreground transition-colors">
+            <span>Memory</span>
+            <span>{isCompacting ? '...' : `${Math.round(percentage)}%`}</span>
           </div>
-        </TooltipTrigger>
-        <TooltipContent side="right">{tooltipContent}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+          <div className="memory-bar">
+            <div
+              className={cn(
+                'memory-bar-fill',
+                isWarning && !isCritical && 'warning',
+                isCritical && 'critical',
+                isBusy && 'animate-pulse opacity-50',
+                isCompacting && 'animate-pulse'
+              )}
+              style={{ width: `${Math.min(percentage, 100)}%` }}
+            />
+          </div>
+        </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="right" align="start" className="w-72">
+        <DropdownMenuLabel className="flex justify-between">
+          <span>DuckDB Memory</span>
+          <span className="font-normal text-muted-foreground">
+            {formatBytes(memoryUsage)} / {formatBytes(memoryLimit)}
+          </span>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {dropdownContent}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
