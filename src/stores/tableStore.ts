@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { TableInfo, ColumnInfo, LineageTransformation } from '@/types'
+import type { TableInfo, ColumnInfo, LineageTransformation, ColumnPreferences } from '@/types'
 import { generateId } from '@/lib/utils'
 import { cleanupTimelineSnapshots } from '@/lib/timeline-engine'
 import { isInternalColumn } from '@/lib/commands/utils/column-ordering'
@@ -28,9 +28,17 @@ interface TableActions {
     transformations: LineageTransformation[]
   ) => string
   loadTables: (tables: TableInfo[]) => void
+  /** Update column width preference for a table */
+  updateColumnWidth: (tableId: string, columnName: string, width: number) => void
+  /** Get column preferences for a table */
+  getColumnPreferences: (tableId: string) => ColumnPreferences | undefined
+  /** Toggle word wrap for a table */
+  toggleWordWrap: (tableId: string) => void
+  /** Check if word wrap is enabled for a table */
+  isWordWrapEnabled: (tableId: string) => boolean
 }
 
-export const useTableStore = create<TableState & TableActions>((set) => ({
+export const useTableStore = create<TableState & TableActions>((set, get) => ({
   tables: [],
   activeTableId: null,
   isLoading: false,
@@ -171,6 +179,66 @@ export const useTableStore = create<TableState & TableActions>((set) => ({
   loadTables: (tables) => {
     // Bulk load tables during restoration (doesn't trigger subscriptions)
     set({ tables })
+  },
+
+  updateColumnWidth: (tableId, columnName, width) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        // Merge new width into existing preferences
+        const currentWidths = t.columnPreferences?.widths || {}
+        const updatedPreferences: ColumnPreferences = {
+          ...t.columnPreferences,
+          widths: {
+            ...currentWidths,
+            [columnName]: width,
+          },
+        }
+
+        return {
+          ...t,
+          columnPreferences: updatedPreferences,
+          updatedAt: new Date(),
+          // Note: Do NOT increment dataVersion here - column widths are UI-only
+          // and shouldn't trigger data reload
+        }
+      }),
+    }))
+  },
+
+  getColumnPreferences: (tableId) => {
+    const state = get()
+    const table = state.tables.find((t) => t.id === tableId)
+    return table?.columnPreferences
+  },
+
+  toggleWordWrap: (tableId) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        const currentEnabled = t.columnPreferences?.wordWrapEnabled ?? false
+        const updatedPreferences: ColumnPreferences = {
+          ...t.columnPreferences,
+          widths: t.columnPreferences?.widths || {},
+          wordWrapEnabled: !currentEnabled,
+        }
+
+        return {
+          ...t,
+          columnPreferences: updatedPreferences,
+          updatedAt: new Date(),
+          // Note: Do NOT increment dataVersion here - word wrap is UI-only
+        }
+      }),
+    }))
+  },
+
+  isWordWrapEnabled: (tableId) => {
+    const state = get()
+    const table = state.tables.find((t) => t.id === tableId)
+    return table?.columnPreferences?.wordWrapEnabled ?? false
   },
 }))
 

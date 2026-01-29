@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { FileText } from 'lucide-react'
+import { FileText, WrapText } from 'lucide-react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { MobileBlocker } from '@/components/layout/MobileBlocker'
 import { Toaster } from '@/components/ui/sonner'
@@ -18,6 +18,11 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 
 // Panels
 import { CleanPanel } from '@/components/panels/CleanPanel'
@@ -69,6 +74,8 @@ function App() {
     return reordered.map((c) => c.name)
   }, [activeTable?.columns, activeTable?.columnOrder, activeTable?.dataVersion])
   const setActiveTable = useTableStore((s) => s.setActiveTable)
+  const toggleWordWrap = useTableStore((s) => s.toggleWordWrap)
+  const isWordWrapEnabled = useTableStore((s) => s.isWordWrapEnabled)
 
   const activePanel = usePreviewStore((s) => s.activePanel)
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
@@ -320,13 +327,30 @@ function App() {
             /* Data Preview */
             <Card className="flex-1 flex flex-col overflow-hidden">
               <CardHeader className="py-3 shrink-0 border-b border-border/50">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-muted-foreground" />
-                  <span>{activeTable.name}</span>
-                  <span className="text-muted-foreground font-normal">
-                    {activeTable.rowCount.toLocaleString()} rows
-                  </span>
-                </CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-muted-foreground" />
+                    <span>{activeTable.name}</span>
+                    <span className="text-muted-foreground font-normal">
+                      {activeTable.rowCount.toLocaleString()} rows
+                    </span>
+                  </CardTitle>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => toggleWordWrap(activeTable.id)}
+                        className={`h-7 px-2 ${isWordWrapEnabled(activeTable.id) ? 'bg-amber-500/20 text-amber-400' : 'text-muted-foreground hover:text-foreground'}`}
+                      >
+                        <WrapText className="w-4 h-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      {isWordWrapEnabled(activeTable.id) ? 'Disable word wrap' : 'Enable word wrap'}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               </CardHeader>
               <CardContent className="flex-1 p-0 min-h-0 overflow-hidden relative">
                 <div className="absolute inset-0">
@@ -338,6 +362,7 @@ function App() {
                     editable={true}
                     tableId={activeTable.id}
                     dataVersion={activeTable.dataVersion}
+                    wordWrapEnabled={isWordWrapEnabled(activeTable.id)}
                   />
                 </div>
               </CardContent>

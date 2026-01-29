@@ -10,6 +10,20 @@ export interface TableInfo {
   lineage?: TableLineage        // Full transformation history
   dataVersion?: number          // Increments on any data change to trigger grid refresh
   columnOrder?: string[]        // User-visible column names only (excludes _cs_id, __base)
+  columnPreferences?: ColumnPreferences  // User column width/wrap settings
+}
+
+/**
+ * User preferences for column display in the data grid.
+ * Persisted to app-state.json for restoration across sessions.
+ */
+export interface ColumnPreferences {
+  /** Column name -> pixel width (user-resized widths) */
+  widths: Record<string, number>
+  /** Column name -> word wrap enabled (per-column override) */
+  wordWrap?: Record<string, boolean>
+  /** Global word wrap toggle for all columns */
+  wordWrapEnabled?: boolean
 }
 
 export interface TableLineage {

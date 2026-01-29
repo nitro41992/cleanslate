@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useTableStore } from '@/stores/tableStore'
 import { useEditBatchStore, type PendingEdit, isBatchingEnabled } from '@/stores/editBatchStore'
 import { updateCell, estimateCsIdForRow } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
@@ -22,6 +23,12 @@ import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from '@/hooks/use-toast'
 import { validateValueForType, getTypeDisplayName } from '@/lib/validation/type-validation'
+import {
+  getDefaultColumnWidth,
+  GLOBAL_MIN_COLUMN_WIDTH,
+  GLOBAL_MAX_COLUMN_WIDTH,
+  MAX_COLUMN_AUTO_WIDTH,
+} from '@/components/grid/column-sizing'
 import type { TimelineHighlight, ManualEditParams, ColumnInfo } from '@/types'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
@@ -75,6 +82,8 @@ interface DataGridProps {
   ghostRows?: Array<{ csId: string; data: Record<string, unknown> }>
   // Triggers grid refresh when incremented (for undo/redo)
   dataVersion?: number
+  // Word wrap for cell content
+  wordWrapEnabled?: boolean
 }
 
 const PAGE_SIZE = 500
@@ -106,6 +115,7 @@ export function DataGrid({
   timelineHighlight,
   ghostRows: _ghostRows = [],
   dataVersion,
+  wordWrapEnabled = false,
 }: DataGridProps) {
   const { getData, getDataWithRowIds, getDataWithKeyset } = useDuckDB()
 
@@ -278,20 +288,39 @@ export function DataGrid({
     })
   }, [tableId, tableName])
 
+  // Get saved column preferences for this table
+  const columnPreferences = useTableStore((s) =>
+    tableId ? s.getColumnPreferences(tableId) : undefined
+  )
+  const updateColumnWidth = useTableStore((s) => s.updateColumnWidth)
+
+  // Header tooltip state - shows column type on click
+  const [headerTooltip, setHeaderTooltip] = useState<{
+    column: string
+    type: string
+    x: number
+    y: number
+  } | null>(null)
+
   const gridColumns: GridColumn[] = useMemo(
     () =>
       columns.map((col) => {
         const colType = columnTypeMap.get(col)
-        const typeDisplay = colType ? getTypeDisplayName(colType) : undefined
-        // Show type in parentheses after column name (e.g., "age (Integer)")
-        const title = typeDisplay ? `${col} (${typeDisplay})` : col
+        // Clean title - just the column name (type shown via tooltip)
+        const title = col
+
+        // Priority: 1. User-saved width, 2. Type-based default, 3. Fallback 150px
+        const savedWidth = columnPreferences?.widths?.[col]
+        const typeBasedWidth = colType ? getDefaultColumnWidth(colType) : 150
+        const width = savedWidth ?? typeBasedWidth
+
         return {
           id: col,
           title,
-          width: 150,
+          width,
         }
       }),
-    [columns, columnTypeMap]
+    [columns, columnTypeMap, columnPreferences]
   )
 
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
@@ -459,6 +488,12 @@ export function DataGrid({
       // Calculate the range we need to cover (visible + prefetch buffer)
       const needStart = Math.max(0, range.y - PREFETCH_BUFFER)
       const needEnd = Math.min(rowCount, range.y + range.height + PREFETCH_BUFFER)
+
+      // Guard against invalid range (can happen when row height changes dramatically
+      // and scroll position hasn't adjusted yet, e.g., toggling word wrap off)
+      if (needEnd <= needStart) {
+        return
+      }
 
       // Check if we already have this range fully loaded (no fetch needed)
       if (needStart >= loadedRange.start && needEnd <= loadedRange.end) {
@@ -704,9 +739,10 @@ export function DataGrid({
         displayData: value === null || value === undefined ? '' : String(value),
         allowOverlay: true,
         readonly: !editable,
+        allowWrapping: wordWrapEnabled,
       }
     },
-    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId]
+    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled]
   )
 
   // Helper to convert BigInt values to strings for command serialization
@@ -1032,6 +1068,44 @@ export function DataGrid({
     [highlightedRows, activeHighlight, rowIndexToCsId]
   )
 
+  // Handle column resize end - persist the new width to store
+  // Note: onColumnResize fires during drag (for immediate visual feedback)
+  // onColumnResizeEnd fires when user releases - that's when we persist
+  const handleColumnResizeEnd = useCallback(
+    (column: GridColumn, newSize: number) => {
+      if (!tableId || !column.id) return
+      // Persist the new width
+      updateColumnWidth(tableId, column.id as string, newSize)
+    },
+    [tableId, updateColumnWidth]
+  )
+
+  // Handle header click - show type tooltip
+  const handleHeaderClicked = useCallback(
+    (col: number, event: { bounds: { x: number; y: number; width: number; height: number } }) => {
+      const colName = columns[col]
+      const colType = columnTypeMap.get(colName)
+      if (colType) {
+        const typeDisplay = getTypeDisplayName(colType)
+        setHeaderTooltip({
+          column: colName,
+          type: typeDisplay,
+          x: event.bounds.x + event.bounds.width / 2,
+          y: event.bounds.y + event.bounds.height,
+        })
+        // Auto-hide after 2 seconds
+        setTimeout(() => setHeaderTooltip(null), 2000)
+      }
+    },
+    [columns, columnTypeMap]
+  )
+
+  // Row height constants for word wrap
+  // Using fixed heights for performance with large datasets (400k+ rows)
+  // Dynamic per-row calculation is too expensive as it requires O(rows × columns) operations
+  const BASE_ROW_HEIGHT = 33
+  const WORD_WRAP_ROW_HEIGHT = 80 // Fixed height to accommodate ~3 lines of wrapped text
+
   if (isLoading) {
     return (
       <div className="h-full w-full p-4 space-y-2">
@@ -1074,6 +1148,15 @@ export function DataGrid({
             }
             onCellEdited={editable ? onCellEdited : undefined}
             drawCell={editable ? drawCell : undefined}
+            // Fixed row height for word wrap (dynamic calculation too expensive for large datasets)
+            rowHeight={wordWrapEnabled ? WORD_WRAP_ROW_HEIGHT : BASE_ROW_HEIGHT}
+            // Column resize support
+            onColumnResize={handleColumnResizeEnd}
+            minColumnWidth={GLOBAL_MIN_COLUMN_WIDTH}
+            maxColumnWidth={GLOBAL_MAX_COLUMN_WIDTH}
+            maxColumnAutoWidth={MAX_COLUMN_AUTO_WIDTH}
+            // Header click shows type tooltip
+            onHeaderClicked={handleHeaderClicked}
             width={gridWidth}
             height={gridHeight}
             smoothScrollX
@@ -1101,6 +1184,23 @@ export function DataGrid({
           />
         )}
       </div>
+
+      {/* Column type tooltip - shown on header click */}
+      {headerTooltip && (
+        <div
+          className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600 pointer-events-none"
+          style={{
+            left: headerTooltip.x,
+            top: headerTooltip.y + 6,
+            transform: 'translateX(-50%)',
+          }}
+        >
+          <div className="font-medium text-zinc-100">{headerTooltip.column}</div>
+          <div className="text-zinc-400 mt-0.5">
+            Type: <span className="text-amber-400">{headerTooltip.type}</span>
+          </div>
+        </div>
+      )}
 
       {/* Confirm Discard Undone Operations Dialog */}
       {editable && <ConfirmDiscardDialog {...confirmDialogProps} />}

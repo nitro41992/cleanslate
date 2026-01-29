@@ -122,7 +122,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         }
       })()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [])
 
   const handleRunDiff = useCallback(async () => {
