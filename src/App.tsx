@@ -334,6 +334,7 @@ function App() {
                     tableName={activeTable.name}
                     rowCount={activeTable.rowCount}
                     columns={displayColumns}
+                    columnTypes={activeTable.columns}
                     editable={true}
                     tableId={activeTable.id}
                     dataVersion={activeTable.dataVersion}

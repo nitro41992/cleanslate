@@ -20,7 +20,9 @@ import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
-import type { TimelineHighlight, ManualEditParams } from '@/types'
+import { toast } from '@/hooks/use-toast'
+import { validateValueForType, getTypeDisplayName } from '@/lib/validation/type-validation'
+import type { TimelineHighlight, ManualEditParams, ColumnInfo } from '@/types'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -60,6 +62,8 @@ interface DataGridProps {
   tableName: string
   rowCount: number
   columns: string[]
+  /** Column type information for validation and display */
+  columnTypes?: ColumnInfo[]
   highlightedRows?: Map<number, 'added' | 'removed' | 'modified'>
   highlightedCells?: Map<string, boolean>
   onCellClick?: (col: number, row: number) => void
@@ -93,6 +97,7 @@ export function DataGrid({
   tableName,
   rowCount,
   columns,
+  columnTypes,
   highlightedRows,
   highlightedCells: _highlightedCells,
   onCellClick,
@@ -103,6 +108,17 @@ export function DataGrid({
   dataVersion,
 }: DataGridProps) {
   const { getData, getDataWithRowIds, getDataWithKeyset } = useDuckDB()
+
+  // Create a lookup map for column types (used for validation and display)
+  const columnTypeMap = useMemo(() => {
+    const map = new Map<string, string>()
+    if (columnTypes) {
+      for (const col of columnTypes) {
+        map.set(col.name, col.type)
+      }
+    }
+    return map
+  }, [columnTypes])
   const [data, setData] = useState<Record<string, unknown>[]>([])
   // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
@@ -264,12 +280,18 @@ export function DataGrid({
 
   const gridColumns: GridColumn[] = useMemo(
     () =>
-      columns.map((col) => ({
-        id: col,
-        title: col,
-        width: 150,
-      })),
-    [columns]
+      columns.map((col) => {
+        const colType = columnTypeMap.get(col)
+        const typeDisplay = colType ? getTypeDisplayName(colType) : undefined
+        // Show type in parentheses after column name (e.g., "age (Integer)")
+        const title = typeDisplay ? `${col} (${typeDisplay})` : col
+        return {
+          id: col,
+          title,
+          width: 150,
+        }
+      }),
+    [columns, columnTypeMap]
   )
 
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
@@ -721,6 +743,22 @@ export function DataGrid({
       // Skip if value hasn't changed
       if (previousValue === newCellValue) return
 
+      // Validate the new value against the column type
+      const colType = columnTypeMap.get(colName)
+      if (colType && newCellValue !== null) {
+        const validation = validateValueForType(newCellValue, colType)
+        if (!validation.isValid) {
+          const typeDisplay = getTypeDisplayName(colType)
+          toast({
+            title: 'Invalid value',
+            description: `${validation.error}. Column "${colName}" expects ${typeDisplay}${validation.formatHint ? ` (${validation.formatHint})` : ''}.`,
+            variant: 'destructive',
+          })
+          // Block the edit - don't proceed
+          return
+        }
+      }
+
       // Get the row's _cs_id for the command
       const csId = rowIndexToCsId.get(row)
       if (!csId) {
@@ -851,7 +889,7 @@ export function DataGrid({
         console.error('Failed to process cell edit:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch, columnTypeMap]
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights
