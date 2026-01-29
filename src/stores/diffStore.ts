@@ -3,6 +3,8 @@ import type { DiffSummary } from '@/lib/diff-engine'
 
 export type DiffMode = 'compare-preview' | 'compare-tables'
 
+type DiffStatus = 'added' | 'removed' | 'modified'
+
 interface DiffState {
   // View state
   isViewOpen: boolean
@@ -29,6 +31,12 @@ interface DiffState {
   // UI state
   isComparing: boolean
   blindMode: boolean
+  // Grid customization
+  columnWidths: Record<string, number>  // columnName -> width
+  wordWrapEnabled: boolean
+  // Filters
+  statusFilter: DiffStatus[] | null  // null = show all, array = show only those statuses
+  columnFilter: string | null  // column name to filter on, null = all
 }
 
 interface DiffActions {
@@ -56,6 +64,14 @@ interface DiffActions {
   setBlindMode: (enabled: boolean) => void
   reset: () => void
   clearResults: () => void
+  // Grid customization actions
+  setColumnWidth: (column: string, width: number) => void
+  clearColumnWidths: () => void
+  toggleWordWrap: () => void
+  // Filter actions
+  toggleStatusFilter: (status: DiffStatus) => void
+  clearStatusFilter: () => void
+  setColumnFilter: (column: string | null) => void
 }
 
 const initialState: DiffState = {
@@ -77,6 +93,12 @@ const initialState: DiffState = {
   storageType: null,
   isComparing: false,
   blindMode: false,
+  // Grid customization
+  columnWidths: {},
+  wordWrapEnabled: false,
+  // Filters
+  statusFilter: null,
+  columnFilter: null,
 }
 
 export const useDiffStore = create<DiffState & DiffActions>((set) => ({
@@ -129,6 +151,35 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     newColumns: [],
     removedColumns: [],
     storageType: null,
+    // Clear grid customization and filters on new comparison
+    columnWidths: {},
+    statusFilter: null,
+    columnFilter: null,
   }),
   reset: () => set(initialState),
+  // Grid customization actions
+  setColumnWidth: (column, width) => set((state) => ({
+    columnWidths: { ...state.columnWidths, [column]: width }
+  })),
+  clearColumnWidths: () => set({ columnWidths: {} }),
+  toggleWordWrap: () => set((state) => ({ wordWrapEnabled: !state.wordWrapEnabled })),
+  // Filter actions
+  toggleStatusFilter: (status) => set((state) => {
+    const current = state.statusFilter
+    if (current === null) {
+      // First click: filter to just this status
+      return { statusFilter: [status] }
+    }
+    if (current.includes(status)) {
+      // Status already selected: deselect it
+      const newFilter = current.filter(s => s !== status)
+      // If all deselected, reset to null (show all)
+      return { statusFilter: newFilter.length === 0 ? null : newFilter }
+    } else {
+      // Add status to filter
+      return { statusFilter: [...current, status] }
+    }
+  }),
+  clearStatusFilter: () => set({ statusFilter: null }),
+  setColumnFilter: (column) => set({ columnFilter: column }),
 }))

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Plus, Minus, RefreshCw, Equal } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useDiffStore } from '@/stores/diffStore'
+
+type DiffStatus = 'added' | 'removed' | 'modified'
 
 interface DiffSummaryPillsProps {
   summary: {
@@ -13,12 +16,21 @@ interface DiffSummaryPillsProps {
 }
 
 export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsProps) {
+  const statusFilter = useDiffStore((s) => s.statusFilter)
+  const toggleStatusFilter = useDiffStore((s) => s.toggleStatusFilter)
+
   const [displayValues, setDisplayValues] = useState({
     added: 0,
     removed: 0,
     modified: 0,
     unchanged: 0,
   })
+
+  // Check if a status is currently active in the filter
+  const isActive = (status: DiffStatus): boolean => {
+    if (statusFilter === null) return false
+    return statusFilter.includes(status)
+  }
 
   // Convert BigInt to number if needed
   const toNum = (val: number | bigint): number =>
@@ -67,7 +79,7 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
 
   const pills = [
     {
-      key: 'added',
+      key: 'added' as DiffStatus,
       label: 'Added',
       value: displayValues.added,
       target: targetValues.added,
@@ -76,9 +88,10 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
       borderClass: 'border-[hsl(var(--diff-added-border))]',
       textClass: 'text-[hsl(var(--diff-added-text))]',
       animClass: 'diff-pill-added',
+      clickable: true,
     },
     {
-      key: 'removed',
+      key: 'removed' as DiffStatus,
       label: 'Removed',
       value: displayValues.removed,
       target: targetValues.removed,
@@ -87,9 +100,10 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
       borderClass: 'border-[hsl(var(--diff-removed-border))]',
       textClass: 'text-[hsl(var(--diff-removed-text))]',
       animClass: 'diff-pill-removed',
+      clickable: true,
     },
     {
-      key: 'modified',
+      key: 'modified' as DiffStatus,
       label: 'Changed',
       value: displayValues.modified,
       target: targetValues.modified,
@@ -98,9 +112,10 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
       borderClass: 'border-[hsl(var(--diff-modified-border))]',
       textClass: 'text-[hsl(var(--diff-modified-text))]',
       animClass: 'diff-pill-modified',
+      clickable: true,
     },
     {
-      key: 'unchanged',
+      key: 'unchanged' as const,
       label: 'Same',
       value: displayValues.unchanged,
       target: targetValues.unchanged,
@@ -109,6 +124,7 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
       borderClass: 'border-muted',
       textClass: 'text-[hsl(var(--diff-unchanged-text))]',
       animClass: 'diff-pill-unchanged',
+      clickable: false, // "Same" is display only, not filterable
     },
   ]
 
@@ -116,17 +132,11 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
     <div className="flex items-center gap-3 flex-wrap">
       {pills.map((pill) => {
         const Icon = pill.icon
-        return (
-          <div
-            key={pill.key}
-            className={cn(
-              'diff-pill flex items-center gap-2 px-3 py-2 rounded-lg border',
-              pill.bgClass,
-              pill.borderClass,
-              pill.animClass
-            )}
-            data-testid={`diff-pill-${pill.key}`}
-          >
+        const active = pill.clickable && isActive(pill.key as DiffStatus)
+
+        // Common content for both button and div
+        const content = (
+          <>
             <Icon className={cn('w-4 h-4', pill.textClass)} />
             <span className={cn('text-xl font-bold tabular-nums', pill.textClass)}>
               {pill.value.toLocaleString()}
@@ -134,6 +144,49 @@ export function DiffSummaryPills({ summary, animate = true }: DiffSummaryPillsPr
             <span className="text-xs text-muted-foreground uppercase tracking-wide">
               {pill.label}
             </span>
+          </>
+        )
+
+        // Clickable pills (Added, Removed, Changed)
+        if (pill.clickable) {
+          return (
+            <button
+              key={pill.key}
+              onClick={() => toggleStatusFilter(pill.key as DiffStatus)}
+              className={cn(
+                'diff-pill flex items-center gap-2 px-3 py-2 rounded-lg border transition-all',
+                'cursor-pointer hover:opacity-80',
+                pill.bgClass,
+                pill.borderClass,
+                pill.animClass,
+                // Active state: show ring highlight
+                active && 'ring-2 ring-offset-2 ring-offset-background ring-current opacity-100',
+                // Inactive when other filters are active: dim slightly
+                statusFilter !== null && !active && 'opacity-50'
+              )}
+              data-testid={`diff-pill-${pill.key}`}
+              data-active={active}
+            >
+              {content}
+            </button>
+          )
+        }
+
+        // Non-clickable pill (Same - display only)
+        return (
+          <div
+            key={pill.key}
+            className={cn(
+              'diff-pill flex items-center gap-2 px-3 py-2 rounded-lg border',
+              pill.bgClass,
+              pill.borderClass,
+              pill.animClass,
+              // Dim when filters are active (since "Same" rows are always hidden in diff view)
+              statusFilter !== null && 'opacity-50'
+            )}
+            data-testid={`diff-pill-${pill.key}`}
+          >
+            {content}
           </div>
         )
       })}

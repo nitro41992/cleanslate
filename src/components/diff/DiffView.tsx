@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react'
-import { X, ArrowLeft, EyeOff, AlertTriangle, RotateCcw } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { X, ArrowLeft, EyeOff, AlertTriangle, RotateCcw, WrapText, XCircle, Check, ChevronsUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
@@ -9,6 +9,20 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
+import { cn } from '@/lib/utils'
 import { DiffConfigPanel } from './DiffConfigPanel'
 import { VirtualizedDiffGrid } from './VirtualizedDiffGrid'
 import { DiffSummaryPills } from './DiffSummaryPills'
@@ -20,6 +34,78 @@ import { useUIStore } from '@/stores/uiStore'
 import { runDiff, cleanupDiffTable, cleanupDiffSourceFiles, clearDiffCaches, materializeDiffForPagination, cleanupMaterializedDiffView } from '@/lib/diff-engine'
 import { getOriginalSnapshotName, hasOriginalSnapshot, tableExists } from '@/lib/duckdb'
 import { toast } from 'sonner'
+
+/**
+ * Searchable column filter combobox for the diff view
+ */
+interface ColumnFilterComboboxProps {
+  columns: string[]
+  value: string | null
+  onValueChange: (value: string | null) => void
+}
+
+function ColumnFilterCombobox({ columns, value, onValueChange }: ColumnFilterComboboxProps) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-48 h-8 justify-between text-xs"
+        >
+          {value ?? 'All columns'}
+          <ChevronsUpDown className="ml-2 h-3 w-3 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-48 p-0">
+        <Command>
+          <CommandInput placeholder="Search columns..." className="h-8 text-xs" />
+          <CommandList>
+            <CommandEmpty>No column found.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value="all"
+                onSelect={() => {
+                  onValueChange(null)
+                  setOpen(false)
+                }}
+              >
+                <Check
+                  className={cn(
+                    'mr-2 h-4 w-4',
+                    value === null ? 'opacity-100' : 'opacity-0'
+                  )}
+                />
+                All columns
+              </CommandItem>
+              {columns.map((col) => (
+                <CommandItem
+                  key={col}
+                  value={col}
+                  onSelect={() => {
+                    onValueChange(col)
+                    setOpen(false)
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      'mr-2 h-4 w-4',
+                      value === col ? 'opacity-100' : 'opacity-0'
+                    )}
+                  />
+                  {col}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 interface DiffViewProps {
   open: boolean
@@ -48,6 +134,9 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     storageType,
     isComparing,
     blindMode,
+    wordWrapEnabled,
+    statusFilter,
+    columnFilter,
     setMode,
     setTableA,
     setTableB,
@@ -55,6 +144,9 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     setDiffConfig,
     setIsComparing,
     setBlindMode,
+    toggleWordWrap,
+    clearStatusFilter,
+    setColumnFilter,
     reset,
     clearResults,
   } = useDiffStore()
@@ -489,9 +581,61 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                 </div>
               )}
 
-              {/* Summary Pills */}
+              {/* Summary Pills (clickable for filtering) */}
               <div className="p-4 border-b border-border/50 bg-card/30">
                 <DiffSummaryPills summary={summary} />
+              </div>
+
+              {/* Controls Row */}
+              <div className="px-4 py-2 border-b border-border/50 bg-card/20 flex items-center gap-3">
+                {/* Column Filter Dropdown - Searchable */}
+                <ColumnFilterCombobox
+                  columns={allColumns
+                    .filter(col => !keyColumns.includes(col))  // Exclude key columns
+                    .filter(col => !newColumns.includes(col))  // Exclude columns only in original (removed)
+                    .filter(col => !removedColumns.includes(col))  // Exclude columns only in current (new)
+                  }
+                  value={columnFilter}
+                  onValueChange={setColumnFilter}
+                />
+
+                <div className="h-4 w-px bg-border" />
+
+                {/* Word Wrap Toggle */}
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={toggleWordWrap}
+                        className={`h-8 px-3 gap-2 ${wordWrapEnabled ? 'bg-amber-500/20 text-amber-400' : 'text-muted-foreground hover:text-foreground'}`}
+                      >
+                        <WrapText className="w-4 h-4" />
+                        <span className="text-xs">Wrap</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {wordWrapEnabled ? 'Disable word wrap' : 'Enable word wrap'}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+
+                {/* Clear Filters (only shown when filters active) */}
+                {(statusFilter || columnFilter) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      clearStatusFilter()
+                      setColumnFilter(null)
+                    }}
+                    className="h-8 px-3 gap-2 text-muted-foreground hover:text-foreground"
+                  >
+                    <XCircle className="w-4 h-4" />
+                    <span className="text-xs">Clear Filters</span>
+                  </Button>
+                )}
               </div>
 
               {/* Virtualized Results Grid */}
@@ -514,8 +658,18 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               {/* Footer with row count */}
               <div className="px-4 py-2 border-t border-border/50 bg-card/30 flex items-center justify-between text-xs text-muted-foreground">
                 <span>
-                  {totalDiffRows.toLocaleString()} differences
-                  {summary.unchanged > 0 && ` (${summary.unchanged.toLocaleString()} unchanged rows hidden)`}
+                  {(statusFilter || columnFilter) ? (
+                    <>
+                      Filtered view
+                      {statusFilter && ` (${statusFilter.map(s => s === 'modified' ? 'changed' : s).join(', ')})`}
+                      {columnFilter && ` - column: ${columnFilter}`}
+                    </>
+                  ) : (
+                    <>
+                      {totalDiffRows.toLocaleString()} differences
+                      {summary.unchanged > 0 && ` (${summary.unchanged.toLocaleString()} unchanged rows hidden)`}
+                    </>
+                  )}
                 </span>
                 <div className="flex items-center gap-2 text-amber-500">
                   <AlertTriangle className="w-4 h-4 shrink-0" />

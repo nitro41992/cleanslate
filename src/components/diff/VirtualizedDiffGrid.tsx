@@ -9,7 +9,17 @@ import DataGridLib, {
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchDiffPageWithKeyset, type DiffRow } from '@/lib/diff-engine'
+import { fetchDiffPageWithKeyset, getRowsWithColumnChanges, type DiffRow } from '@/lib/diff-engine'
+import { useDiffStore } from '@/stores/diffStore'
+
+// Column sizing constants (same as DataGrid)
+const GLOBAL_MIN_COLUMN_WIDTH = 50
+const GLOBAL_MAX_COLUMN_WIDTH = 500
+const DEFAULT_COLUMN_WIDTH = 180
+
+// Row height constants
+const BASE_ROW_HEIGHT = 33
+const WORD_WRAP_ROW_HEIGHT = 80
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -96,6 +106,55 @@ export function VirtualizedDiffGrid({
   // LRU page cache for efficient scrolling (keyed by page start offset)
   const pageCacheRef = useRef<Map<number, CachedDiffPage>>(new Map())
 
+  // Get store state and actions
+  const columnWidths = useDiffStore((s) => s.columnWidths)
+  const setColumnWidth = useDiffStore((s) => s.setColumnWidth)
+  const wordWrapEnabled = useDiffStore((s) => s.wordWrapEnabled)
+  const statusFilter = useDiffStore((s) => s.statusFilter)
+  const columnFilter = useDiffStore((s) => s.columnFilter)
+
+  // Track row IDs with changes in the selected column (for column filtering)
+  const [columnFilterRowIds, setColumnFilterRowIds] = useState<Set<string> | null>(null)
+  const [isLoadingColumnFilter, setIsLoadingColumnFilter] = useState(false)
+
+  // Fetch row IDs when column filter changes
+  useEffect(() => {
+    if (!columnFilter || !diffTableName) {
+      setColumnFilterRowIds(null)
+      return
+    }
+
+    setIsLoadingColumnFilter(true)
+    getRowsWithColumnChanges(
+      diffTableName,
+      sourceTableName,
+      targetTableName,
+      columnFilter,
+      storageType
+    )
+      .then((rowIds) => {
+        setColumnFilterRowIds(rowIds)
+        setIsLoadingColumnFilter(false)
+      })
+      .catch((err) => {
+        console.error('[DiffGrid] Failed to fetch column filter rows:', err)
+        setColumnFilterRowIds(null)
+        setIsLoadingColumnFilter(false)
+      })
+  }, [columnFilter, diffTableName, sourceTableName, targetTableName, storageType])
+
+  // Track word wrap changes to force grid remount (same pattern as DataGrid)
+  const [gridKey, setGridKey] = useState(0)
+  const prevWordWrapRef = useRef(wordWrapEnabled)
+
+  useEffect(() => {
+    if (prevWordWrapRef.current !== wordWrapEnabled) {
+      pageCacheRef.current.clear()
+      setGridKey(k => k + 1)
+    }
+    prevWordWrapRef.current = wordWrapEnabled
+  }, [wordWrapEnabled])
+
   // Debounce timer for scroll handling - prevents excessive fetches during rapid scrolling
   const scrollDebounceRef = useRef<NodeJS.Timeout | null>(null)
   // Abort controller for cancelling in-flight fetches when scroll position changes
@@ -139,6 +198,27 @@ export function VirtualizedDiffGrid({
     return cache
   }, [data, allColumns, keyColumnsSet, userNewColumnsSet, userRemovedColumnsSet])
 
+  // Filter data by status and/or column if filters are active
+  // MUST be defined BEFORE callbacks that use it!
+  const filteredData = useMemo(() => {
+    let result = data
+
+    // Apply status filter
+    if (statusFilter) {
+      result = result.filter(row => statusFilter.includes(row.diff_status as 'added' | 'removed' | 'modified'))
+    }
+
+    // Apply column filter (only show rows where that column changed)
+    if (columnFilter && columnFilterRowIds) {
+      result = result.filter(row => columnFilterRowIds.has(row.row_id as string))
+    }
+
+    return result
+  }, [data, statusFilter, columnFilter, columnFilterRowIds])
+
+  // Check if any filter is active
+  const hasActiveFilter = statusFilter !== null || columnFilter !== null
+
   // Build grid columns: Status (if not blind mode) + all data columns
   const gridColumns: GridColumn[] = useMemo(() => {
     const cols: GridColumn[] = []
@@ -147,7 +227,7 @@ export function VirtualizedDiffGrid({
       cols.push({
         id: '_status',
         title: 'Status',
-        width: 100,
+        width: columnWidths['_status'] ?? 100,
       })
     }
 
@@ -168,12 +248,12 @@ export function VirtualizedDiffGrid({
       cols.push({
         id: col,
         title,
-        width: 180,
+        width: columnWidths[col] ?? DEFAULT_COLUMN_WIDTH,
       })
     }
 
     return cols
-  }, [allColumns, keyColumns, userNewColumns, userRemovedColumns, blindMode])
+  }, [allColumns, keyColumns, userNewColumns, userRemovedColumns, blindMode, columnWidths])
 
   // Load initial data using keyset pagination to capture cursor positions
   useEffect(() => {
@@ -434,8 +514,10 @@ export function VirtualizedDiffGrid({
 
   const getCellContent = useCallback(
     ([col, row]: Item) => {
-      const adjustedRow = row - loadedRange.start
-      const rowData = data[adjustedRow]
+      // When filtering, use filteredData instead of raw data
+      const dataSource = hasActiveFilter ? filteredData : data
+      const adjustedRow = hasActiveFilter ? row : row - loadedRange.start
+      const rowData = dataSource[adjustedRow]
 
       if (!rowData) {
         return {
@@ -510,17 +592,20 @@ export function VirtualizedDiffGrid({
         displayData: displayValue,
         allowOverlay: true,
         readonly: true,
+        allowWrapping: wordWrapEnabled,
       }
     },
-    [data, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache]
+    [data, filteredData, hasActiveFilter, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache, wordWrapEnabled]
   )
 
   // Custom cell drawing for modified cells (show A→B with styling)
   const drawCell: DrawCellCallback = useCallback(
     (args, draw) => {
       const { col, row, rect, ctx } = args
-      const adjustedRow = row - loadedRange.start
-      const rowData = data[adjustedRow]
+      // When filtering, use filteredData instead of raw data
+      const dataSource = hasActiveFilter ? filteredData : data
+      const adjustedRow = hasActiveFilter ? row : row - loadedRange.start
+      const rowData = dataSource[adjustedRow]
 
       if (!rowData || blindMode) {
         draw()
@@ -655,7 +740,7 @@ export function VirtualizedDiffGrid({
         draw()
       }
     },
-    [data, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache]
+    [data, filteredData, hasActiveFilter, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache]
   )
 
   // Row theme based on diff status
@@ -663,8 +748,10 @@ export function VirtualizedDiffGrid({
     (row: number) => {
       if (blindMode) return undefined
 
-      const adjustedRow = row - loadedRange.start
-      const rowData = data[adjustedRow]
+      // When filtering, use filteredData instead of raw data
+      const dataSource = hasActiveFilter ? filteredData : data
+      const adjustedRow = hasActiveFilter ? row : row - loadedRange.start
+      const rowData = dataSource[adjustedRow]
       if (!rowData) return undefined
 
       const status = rowData.diff_status
@@ -687,8 +774,19 @@ export function VirtualizedDiffGrid({
       }
       return undefined
     },
-    [data, loadedRange.start, blindMode, modifiedColumnsCache]
+    [data, filteredData, hasActiveFilter, loadedRange.start, blindMode, modifiedColumnsCache]
   )
+
+  // Handle column resize - persist to store
+  const handleColumnResize = useCallback(
+    (column: GridColumn, newSize: number) => {
+      if (column.id) {
+        setColumnWidth(column.id as string, newSize)
+      }
+    },
+    [setColumnWidth]
+  )
+
 
   if (isLoading) {
     return (
@@ -726,16 +824,39 @@ export function VirtualizedDiffGrid({
   const gridWidth = containerSize.width || 800
   const gridHeight = containerSize.height || 500
 
+  // Determine the row count to display
+  // When filtering by status or column, use the filtered data length
+  const effectiveRowCount = hasActiveFilter ? filteredData.length : totalRows
+
+  // Show loading indicator when column filter is being fetched
+  if (isLoadingColumnFilter) {
+    return (
+      <div className="h-full w-full p-4 space-y-2">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    )
+  }
+
   return (
     <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="diff-grid">
       {data.length > 0 && (
         <DataGridLib
+          key={gridKey}
           columns={gridColumns}
-          rows={totalRows}
+          rows={effectiveRowCount}
           getCellContent={getCellContent}
-          onVisibleRegionChanged={onVisibleRegionChanged}
+          onVisibleRegionChanged={hasActiveFilter ? undefined : onVisibleRegionChanged}
           getRowThemeOverride={getRowThemeOverride}
           drawCell={drawCell}
+          // Column resize support
+          onColumnResize={handleColumnResize}
+          minColumnWidth={GLOBAL_MIN_COLUMN_WIDTH}
+          maxColumnWidth={GLOBAL_MAX_COLUMN_WIDTH}
+          // Row height for word wrap
+          rowHeight={wordWrapEnabled ? WORD_WRAP_ROW_HEIGHT : BASE_ROW_HEIGHT}
           width={gridWidth}
           height={gridHeight}
           smoothScrollX

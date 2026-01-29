@@ -506,9 +506,13 @@ export async function runDiff(
     const diffTableName = `_diff_${Date.now()}`
 
     // Build modification condition:
-    // A row is "modified" ONLY if shared column values differ.
-    // This prevents misleading counts like "100k modified" when Calculate Age
-    // adds a column - that's a structural change, not a value modification.
+    // A row is "modified" if:
+    // 1. Shared column values differ (original behavior), OR
+    // 2. New columns have non-NULL values (column added by transformation), OR
+    // 3. Removed columns had non-NULL values (column deleted by transformation)
+    //
+    // This ensures rows affected by column additions/removals are shown in the diff,
+    // not just structural changes in the banner.
     //
     // TYPE-AWARE COMPARISON FIX: When column types differ (e.g., DATE vs VARCHAR),
     // we need to compare actual types, not just VARCHAR representations.
@@ -534,6 +538,29 @@ export async function runDiff(
           })
           .join(' OR ')
       : 'FALSE'
+
+    // Build expression for new columns (in B/current but not A/original)
+    // removedColumns = columns added to current (from user's perspective)
+    // Mark as modified if any new column has a non-NULL value
+    const newColumnModificationExpr = removedColumns.length > 0
+      ? removedColumns.map((c) => `b."${c}" IS NOT NULL`).join(' OR ')
+      : 'FALSE'
+
+    // Build expression for removed columns (in A/original but not B/current)
+    // newColumns = columns removed from current (from user's perspective)
+    // Mark as modified if any removed column had a non-NULL value
+    const removedColumnModificationExpr = newColumns.length > 0
+      ? newColumns.map((c) => `a."${c}" IS NOT NULL`).join(' OR ')
+      : 'FALSE'
+
+    // Combine all modification conditions
+    const fullModificationExpr = [
+      sharedColModificationExpr,
+      newColumnModificationExpr,
+      removedColumnModificationExpr,
+    ]
+      .filter((expr) => expr !== 'FALSE')
+      .join(' OR ') || 'FALSE'
 
     // DIAGNOSTIC: Log diff detection details
     console.log('[Diff] Modification detection:', {
@@ -616,7 +643,7 @@ export async function runDiff(
         CASE
           WHEN a."_cs_id" IS NULL THEN 'added'
           WHEN b."_cs_id" IS NULL THEN 'removed'
-          WHEN ${sharedColModificationExpr} THEN 'modified'
+          WHEN ${fullModificationExpr} THEN 'modified'
           ELSE 'unchanged'
         END as diff_status
       `
@@ -624,7 +651,7 @@ export async function runDiff(
         CASE
           WHEN ${keyColumns.map((c) => `a."${c}" IS NULL`).join(' AND ')} THEN 'added'
           WHEN ${keyColumns.map((c) => `b."${c}" IS NULL`).join(' AND ')} THEN 'removed'
-          WHEN ${sharedColModificationExpr} THEN 'modified'
+          WHEN ${fullModificationExpr} THEN 'modified'
           ELSE 'unchanged'
         END as diff_status
       `
@@ -635,10 +662,15 @@ export async function runDiff(
     // MEMORY OPTIMIZATION: Build explicit column list instead of SELECT *
     // The CTEs with ROW_NUMBER() OVER () require full table scan and materialization.
     // By selecting only needed columns, we reduce memory from ~1.5GB to ~200MB for 1M rows.
-    // Needed columns: _cs_id (row ID), key columns (join), value columns (modification check)
+    // Needed columns: _cs_id (row ID), key columns (join), value columns (modification check),
+    // plus new/removed columns (for column-level change detection)
     const neededColumns = new Set<string>(['_cs_id'])
     keyColumns.forEach(c => neededColumns.add(c))
     valueColumns.forEach(c => neededColumns.add(c))
+    // Add columns only in A (user's removed columns) - needed for removedColumnModificationExpr
+    newColumns.forEach(c => neededColumns.add(c))
+    // Add columns only in B (user's new columns) - needed for newColumnModificationExpr
+    removedColumns.forEach(c => neededColumns.add(c))
 
     // Build column list for table A (source/original)
     // Note: colsA excludes internal columns, but we need _cs_id for row identification
@@ -1482,6 +1514,78 @@ export async function* streamDiffResults(
     yield chunk
     offset += chunkSize
   }
+}
+
+/**
+ * Get row IDs that have changes in a specific column.
+ * Used for column-level filtering in the diff view.
+ *
+ * @param diffTableName - The narrow diff table name
+ * @param sourceTableName - Source table (may be "parquet:snapshot_id")
+ * @param targetTableName - Target table name
+ * @param columnName - The column to check for changes
+ * @param storageType - 'memory' or 'parquet'
+ * @returns Set of row_ids that have changes in the specified column
+ */
+export async function getRowsWithColumnChanges(
+  diffTableName: string,
+  sourceTableName: string,
+  targetTableName: string,
+  columnName: string,
+  storageType: 'memory' | 'parquet' = 'memory'
+): Promise<Set<string>> {
+  const sourceTableExpr = await resolveTableRef(sourceTableName)
+
+  // Handle Parquet-backed diffs
+  let diffExpr: string
+  if (storageType === 'parquet') {
+    // Check if materialized view exists
+    const viewTableName = materializedDiffViews.get(diffTableName)
+    if (viewTableName) {
+      // Use materialized view - it already has a_col and b_col joined
+      const rows = await query<{ row_id: string }>(`
+        SELECT row_id
+        FROM "${viewTableName}"
+        WHERE diff_status = 'modified'
+          AND CAST("a_${columnName}" AS VARCHAR) IS DISTINCT FROM CAST("b_${columnName}" AS VARCHAR)
+      `)
+      return new Set(rows.map(r => r.row_id))
+    }
+
+    // No materialized view - need to use Parquet files
+    // Check if chunked or single file
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+    let isChunked = false
+    try {
+      await snapshotsDir.getFileHandle(`${diffTableName}_part_0.parquet`, { create: false })
+      isChunked = true
+    } catch {
+      isChunked = false
+    }
+
+    if (isChunked) {
+      diffExpr = `read_parquet('${diffTableName}_part_*.parquet')`
+    } else {
+      diffExpr = `read_parquet('${diffTableName}.parquet')`
+    }
+  } else {
+    diffExpr = `"${diffTableName}"`
+  }
+
+  // Query for modified rows where this specific column changed
+  const rows = await query<{ row_id: string }>(`
+    SELECT d.row_id
+    FROM ${diffExpr} d
+    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
+    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+    WHERE d.diff_status = 'modified'
+      AND CAST(a."${columnName}" AS VARCHAR) IS DISTINCT FROM CAST(b."${columnName}" AS VARCHAR)
+  `)
+
+  return new Set(rows.map(r => r.row_id))
 }
 
 /**
