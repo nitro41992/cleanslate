@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Layers, Link2, Play, Loader2, X, Sparkles, Merge } from 'lucide-react'
+import { Layers, Link2, Play, Loader2, X, Sparkles, Merge, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -391,9 +391,20 @@ export function CombinePanel() {
             </div>
           )}
 
-          {stackTableIds.length === 2 && !stackValidation && (
-            <Button variant="outline" onClick={handleValidateStack} className="w-full">
-              Validate Compatibility
+          {stackTableIds.length === 2 && (
+            <Button
+              variant="outline"
+              onClick={handleValidateStack}
+              className={`w-full ${stackValidation ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : ''}`}
+            >
+              {stackValidation ? (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Validated
+                </>
+              ) : (
+                'Validate Compatibility'
+              )}
             </Button>
           )}
 
@@ -511,9 +522,20 @@ export function CombinePanel() {
             </div>
           )}
 
-          {keyColumn && !joinValidation && (
-            <Button variant="outline" onClick={handleValidateJoin} className="w-full">
-              Validate Join
+          {keyColumn && (
+            <Button
+              variant="outline"
+              onClick={handleValidateJoin}
+              className={`w-full ${joinValidation ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : ''}`}
+            >
+              {joinValidation ? (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Validated
+                </>
+              ) : (
+                'Validate Join'
+              )}
             </Button>
           )}
 
