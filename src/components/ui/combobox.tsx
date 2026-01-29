@@ -22,6 +22,12 @@ interface ColumnComboboxProps {
   onValueChange: (value: string) => void
   placeholder?: string
   disabled?: boolean
+  /** Controlled open state */
+  open?: boolean
+  /** Callback when open state changes */
+  onOpenChange?: (open: boolean) => void
+  /** Auto-focus the search input when opened */
+  autoFocus?: boolean
 }
 
 export function ColumnCombobox({
@@ -30,8 +36,18 @@ export function ColumnCombobox({
   onValueChange,
   placeholder = 'Select column...',
   disabled = false,
+  open: controlledOpen,
+  onOpenChange,
+  autoFocus = false,
 }: ColumnComboboxProps) {
-  const [open, setOpen] = React.useState(false)
+  const [internalOpen, setInternalOpen] = React.useState(false)
+
+  // Use controlled state if provided, otherwise internal
+  const open = controlledOpen !== undefined ? controlledOpen : internalOpen
+  const setOpen = (newOpen: boolean) => {
+    setInternalOpen(newOpen)
+    onOpenChange?.(newOpen)
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -50,7 +66,7 @@ export function ColumnCombobox({
       </PopoverTrigger>
       <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
         <Command>
-          <CommandInput placeholder="Search columns..." />
+          <CommandInput placeholder="Search columns..." autoFocus={autoFocus} />
           <CommandList>
             <CommandEmpty>No column found.</CommandEmpty>
             <CommandGroup>

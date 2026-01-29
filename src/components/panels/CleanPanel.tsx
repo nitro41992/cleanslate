@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Loader2, Sparkles, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -29,7 +29,10 @@ import {
   validateCastType,
   CastTypeValidation,
 } from '@/lib/transformations'
-import { GroupedTransformationPicker } from '@/components/clean/GroupedTransformationPicker'
+import {
+  GroupedTransformationPicker,
+  type GroupedTransformationPickerRef,
+} from '@/components/clean/GroupedTransformationPicker'
 import { initializeTimeline } from '@/lib/timeline-engine'
 import {
   createCommand,
@@ -52,6 +55,13 @@ export function CleanPanel() {
   // Execution progress state for batched operations
   const [executionProgress, setExecutionProgress] = useState<ExecutorProgress | null>(null)
 
+  // Keyboard navigation state
+  const [columnComboboxOpen, setColumnComboboxOpen] = useState(false)
+  const pickerRef = useRef<GroupedTransformationPickerRef>(null)
+  const applyButtonRef = useRef<HTMLButtonElement>(null)
+  // Use a more flexible approach for first param - store the element directly
+  const firstParamElementRef = useRef<HTMLElement | null>(null)
+
   // Hook for executing commands with confirmation when discarding redo states
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
@@ -61,7 +71,7 @@ export function CleanPanel() {
 
   const columns = activeTable?.columns.map((c) => c.name) || []
 
-  const handleSelectTransform = (transform: TransformationDefinition) => {
+  const handleSelectTransform = useCallback((transform: TransformationDefinition) => {
     setSelectedTransform(transform)
     setSelectedColumn('')
     setLastApplied(null)
@@ -73,7 +83,54 @@ export function CleanPanel() {
       }
     })
     setParams(defaultParams)
-  }
+
+    // Auto-open column combobox if transform requires column
+    if (transform.requiresColumn) {
+      // Small delay to let the UI render
+      setTimeout(() => setColumnComboboxOpen(true), 50)
+    } else if (transform.params && transform.params.length > 0) {
+      // Focus first param input
+      setTimeout(() => firstParamElementRef.current?.focus(), 50)
+    } else {
+      // No column or params needed - focus apply button
+      setTimeout(() => applyButtonRef.current?.focus(), 50)
+    }
+  }, [])
+
+  // Handle column selection - auto-advance to next step
+  const handleColumnChange = useCallback((value: string) => {
+    setSelectedColumn(value)
+    setColumnComboboxOpen(false)
+
+    // After column is selected, focus first param or apply button
+    if (selectedTransform?.params && selectedTransform.params.length > 0) {
+      setTimeout(() => firstParamElementRef.current?.focus(), 50)
+    } else {
+      setTimeout(() => applyButtonRef.current?.focus(), 50)
+    }
+  }, [selectedTransform])
+
+  // Handle picker navigation to column combobox
+  const handlePickerNavigateNext = useCallback(() => {
+    if (selectedTransform?.requiresColumn) {
+      setColumnComboboxOpen(true)
+    } else if (selectedTransform?.params && selectedTransform.params.length > 0) {
+      firstParamElementRef.current?.focus()
+    } else {
+      applyButtonRef.current?.focus()
+    }
+  }, [selectedTransform])
+
+  // Focus picker when panel first renders with a table
+  useEffect(() => {
+    if (activeTable && !selectedTransform && !isApplying) {
+      // Small delay to ensure picker is mounted
+      const timer = setTimeout(() => {
+        pickerRef.current?.focus()
+      }, 100)
+      return () => clearTimeout(timer)
+    }
+  }, [activeTable, selectedTransform, isApplying])
 
   const resetForm = () => {
     setSelectedTransform(null)
@@ -286,10 +343,12 @@ export function CleanPanel() {
           <ScrollArea className="flex-1">
             <div className="p-4">
               <GroupedTransformationPicker
+                ref={pickerRef}
                 selectedTransform={selectedTransform}
                 lastApplied={lastApplied}
                 disabled={!activeTable || isApplying}
                 onSelect={handleSelectTransform}
+                onNavigateNext={handlePickerNavigateNext}
               />
 
               {/* No table state - show in picker column */}
@@ -428,8 +487,11 @@ export function CleanPanel() {
                       <ColumnCombobox
                         columns={columns}
                         value={selectedColumn}
-                        onValueChange={setSelectedColumn}
+                        onValueChange={handleColumnChange}
                         disabled={isApplying}
+                        open={columnComboboxOpen}
+                        onOpenChange={setColumnComboboxOpen}
+                        autoFocus
                       />
                     </div>
                   )}
@@ -446,7 +508,10 @@ export function CleanPanel() {
                       }
                       return true
                     })
-                    .map((param) => (
+                    .map((param, paramIndex) => {
+                    const isFirstParam = paramIndex === 0
+
+                    return (
                     <div key={param.name} className="space-y-2">
                       <Label>{param.label}</Label>
                       {param.type === 'select' && param.options ? (
@@ -456,7 +521,9 @@ export function CleanPanel() {
                             setParams({ ...params, [param.name]: v })
                           }
                         >
-                          <SelectTrigger>
+                          <SelectTrigger
+                            ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
+                          >
                             <SelectValue placeholder={`Select ${param.label}`} />
                           </SelectTrigger>
                           <SelectContent>
@@ -471,6 +538,7 @@ export function CleanPanel() {
                         /* Enhanced SQL textarea */
                         <div className="space-y-1">
                           <textarea
+                            ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
                             value={params[param.name] || ''}
                             onChange={(e) =>
                               setParams({ ...params, [param.name]: e.target.value })
@@ -489,6 +557,7 @@ export function CleanPanel() {
                         </div>
                       ) : (
                         <Input
+                          ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
                           value={params[param.name] || ''}
                           onChange={(e) =>
                             setParams({ ...params, [param.name]: e.target.value })
@@ -497,10 +566,12 @@ export function CleanPanel() {
                         />
                       )}
                     </div>
-                  ))}
+                    )
+                  })}
 
                   {/* Apply Button */}
                   <Button
+                    ref={applyButtonRef}
                     className="w-full"
                     onClick={handleApply}
                     disabled={isApplying || !isValid()}
