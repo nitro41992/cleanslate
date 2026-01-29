@@ -19,6 +19,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTableStore } from '@/stores/tableStore'
+import { useUIStore } from '@/stores/uiStore'
 import { initDuckDB, getConnection, getTableColumns, CS_ID_COLUMN } from '@/lib/duckdb'
 import {
   listParquetSnapshots,
@@ -1178,20 +1179,27 @@ export function usePersistence() {
   useEffect(() => {
     if (isRestoring) return
 
-    let previousTableNames = new Set(useTableStore.getState().tables.map(t => t.name))
+    // Track both names (for snapshot deletion) and IDs (for dirty state cleanup)
+    let previousTables = new Map(
+      useTableStore.getState().tables.map(t => [t.id, t.name])
+    )
 
     const unsubscribe = useTableStore.subscribe((state) => {
-      const currentTableNames = new Set(state.tables.map(t => t.name))
+      const currentTableIds = new Set(state.tables.map(t => t.id))
 
       // Find tables that were removed
-      for (const name of previousTableNames) {
-        if (!currentTableNames.has(name)) {
+      for (const [id, name] of previousTables) {
+        if (!currentTableIds.has(id)) {
           console.log(`[Persistence] Table removed, deleting snapshot: ${name}`)
           deleteTableSnapshot(name).catch(console.error)
+
+          // Clean up dirty state for the removed table
+          // This prevents status from getting stuck at 'saving' when a dirty table is deleted
+          useUIStore.getState().markTableClean(id)
         }
       }
 
-      previousTableNames = currentTableNames
+      previousTables = new Map(state.tables.map(t => [t.id, t.name]))
     })
 
     return () => unsubscribe()

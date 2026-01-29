@@ -184,23 +184,28 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
 
   markTableClean: (tableId) => {
     const current = get().dirtyTableIds
+    let finalSize = current.size
+
     if (current.has(tableId)) {
       const updated = new Set(current)
       updated.delete(tableId)
       set({ dirtyTableIds: updated })
+      finalSize = updated.size
+    }
 
-      // Transition to 'saved' when all tables are clean
-      if (updated.size === 0) {
-        set({ persistenceStatus: 'saved', lastSavedAt: new Date() })
+    // Transition to 'saved' when all tables are clean
+    // This check is OUTSIDE the if block to handle re-saves where the table
+    // was already cleaned by a previous save but status is still 'saving'
+    if (finalSize === 0 && get().persistenceStatus === 'saving') {
+      set({ persistenceStatus: 'saved', lastSavedAt: new Date() })
 
-        // Auto-reset to 'idle' after 3 seconds
-        setTimeout(() => {
-          // Only reset if still 'saved' (avoid race with new operations)
-          if (get().persistenceStatus === 'saved') {
-            set({ persistenceStatus: 'idle' })
-          }
-        }, 3000)
-      }
+      // Auto-reset to 'idle' after 3 seconds
+      setTimeout(() => {
+        // Only reset if still 'saved' (avoid race with new operations)
+        if (get().persistenceStatus === 'saved') {
+          set({ persistenceStatus: 'idle' })
+        }
+      }, 3000)
     }
   },
 
