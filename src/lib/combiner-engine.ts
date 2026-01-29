@@ -1,4 +1,4 @@
-import { query, execute, getTableColumns } from '@/lib/duckdb'
+import { query, execute, getTableColumns, CS_ID_COLUMN } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { JoinType, StackValidation, JoinValidation } from '@/types'
 
@@ -58,33 +58,36 @@ export async function stackTables(
 ): Promise<{ rowCount: number }> {
   return withDuckDBLock(async () => {
     const colsA = await getTableColumns(tableA)
-  const colsB = await getTableColumns(tableB)
+    const colsB = await getTableColumns(tableB)
 
-  // Get all unique column names
-  const allColNames = [
-    ...new Set([...colsA.map((c) => c.name), ...colsB.map((c) => c.name)]),
-  ]
+    // Get all unique column names, excluding _cs_id (will be regenerated)
+    const allColNames = [
+      ...new Set([...colsA.map((c) => c.name), ...colsB.map((c) => c.name)]),
+    ].filter((col) => col !== CS_ID_COLUMN)
 
-  const namesA = new Set(colsA.map((c) => c.name))
-  const namesB = new Set(colsB.map((c) => c.name))
+    const namesA = new Set(colsA.map((c) => c.name))
+    const namesB = new Set(colsB.map((c) => c.name))
 
-  // Build SELECT for table A
-  const selectA = allColNames
-    .map((col) => (namesA.has(col) ? `"${col}"` : `NULL as "${col}"`))
-    .join(', ')
+    // Build SELECT for table A (user columns only)
+    const selectA = allColNames
+      .map((col) => (namesA.has(col) ? `"${col}"` : `NULL as "${col}"`))
+      .join(', ')
 
-  // Build SELECT for table B
-  const selectB = allColNames
-    .map((col) => (namesB.has(col) ? `"${col}"` : `NULL as "${col}"`))
-    .join(', ')
+    // Build SELECT for table B (user columns only)
+    const selectB = allColNames
+      .map((col) => (namesB.has(col) ? `"${col}"` : `NULL as "${col}"`))
+      .join(', ')
 
-  // Execute UNION ALL
-  await execute(`
-    CREATE OR REPLACE TABLE "${resultName}" AS
-    SELECT ${selectA} FROM "${tableA}"
-    UNION ALL
-    SELECT ${selectB} FROM "${tableB}"
-  `)
+    // Execute UNION ALL with regenerated _cs_id
+    await execute(`
+      CREATE OR REPLACE TABLE "${resultName}" AS
+      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", ${allColNames.map((c) => `"${c}"`).join(', ')}
+      FROM (
+        SELECT ${selectA} FROM "${tableA}"
+        UNION ALL
+        SELECT ${selectB} FROM "${tableB}"
+      )
+    `)
 
     // Get row count
     const countResult = await query<{ count: number }>(
@@ -209,35 +212,44 @@ export async function joinTables(
 ): Promise<{ rowCount: number }> {
   return withDuckDBLock(async () => {
     const colsL = await getTableColumns(leftTable)
-  const colsR = await getTableColumns(rightTable)
+    const colsR = await getTableColumns(rightTable)
 
-  // Get non-key columns from right table (avoid duplicates)
-  const leftColNames = new Set(colsL.map((c) => c.name))
-  const rightOnlyCols = colsR.filter(
-    (c) => c.name !== keyColumn && !leftColNames.has(c.name)
-  )
+    // Get non-key, non-internal columns from right table (avoid duplicates)
+    const leftColNames = new Set(colsL.map((c) => c.name))
+    const rightOnlyCols = colsR.filter(
+      (c) =>
+        c.name !== keyColumn &&
+        !leftColNames.has(c.name) &&
+        c.name !== CS_ID_COLUMN
+    )
 
-  // Build SELECT clause
-  const leftSelect = colsL.map((c) => `l."${c.name}"`).join(', ')
-  const rightSelect = rightOnlyCols.map((c) => `r."${c.name}"`).join(', ')
-  const selectClause =
-    rightSelect.length > 0 ? `${leftSelect}, ${rightSelect}` : leftSelect
+    // Build SELECT clause (exclude _cs_id from source tables)
+    const leftSelect = colsL
+      .filter((c) => c.name !== CS_ID_COLUMN)
+      .map((c) => `l."${c.name}"`)
+      .join(', ')
+    const rightSelect = rightOnlyCols.map((c) => `r."${c.name}"`).join(', ')
+    const selectClause =
+      rightSelect.length > 0 ? `${leftSelect}, ${rightSelect}` : leftSelect
 
-  // Map join type to SQL
-  const joinTypeMap: Record<JoinType, string> = {
-    left: 'LEFT JOIN',
-    inner: 'INNER JOIN',
-    full_outer: 'FULL OUTER JOIN',
-  }
-  const sqlJoinType = joinTypeMap[joinType]
+    // Map join type to SQL
+    const joinTypeMap: Record<JoinType, string> = {
+      left: 'LEFT JOIN',
+      inner: 'INNER JOIN',
+      full_outer: 'FULL OUTER JOIN',
+    }
+    const sqlJoinType = joinTypeMap[joinType]
 
-  // Execute join
-  await execute(`
-    CREATE OR REPLACE TABLE "${resultName}" AS
-    SELECT ${selectClause}
-    FROM "${leftTable}" l
-    ${sqlJoinType} "${rightTable}" r ON l."${keyColumn}" = r."${keyColumn}"
-  `)
+    // Execute join with regenerated _cs_id
+    await execute(`
+      CREATE OR REPLACE TABLE "${resultName}" AS
+      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", *
+      FROM (
+        SELECT ${selectClause}
+        FROM "${leftTable}" l
+        ${sqlJoinType} "${rightTable}" r ON l."${keyColumn}" = r."${keyColumn}"
+      )
+    `)
 
     // Get row count
     const countResult = await query<{ count: number }>(

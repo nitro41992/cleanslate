@@ -1,4 +1,4 @@
-import { Link2, Play, Loader2, Sparkles } from 'lucide-react'
+import { Link2, Play, Loader2, Sparkles, Check } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -177,7 +177,7 @@ export function JoinPanel() {
               setJoinValidation(null)
             }}
           >
-            <SelectTrigger>
+            <SelectTrigger data-testid="join-left-table-select">
               <SelectValue placeholder="Select left table" />
             </SelectTrigger>
             <SelectContent>
@@ -201,7 +201,7 @@ export function JoinPanel() {
               setJoinValidation(null)
             }}
           >
-            <SelectTrigger>
+            <SelectTrigger data-testid="join-right-table-select">
               <SelectValue placeholder="Select right table" />
             </SelectTrigger>
             <SelectContent>
@@ -227,7 +227,7 @@ export function JoinPanel() {
                 setJoinValidation(null)
               }}
             >
-              <SelectTrigger>
+              <SelectTrigger data-testid="join-key-column-select">
                 <SelectValue placeholder="Select key column" />
               </SelectTrigger>
               <SelectContent>
@@ -272,10 +272,21 @@ export function JoinPanel() {
           </div>
         )}
 
-        {/* Validate Button */}
-        {keyColumn && !joinValidation && (
-          <Button variant="outline" onClick={handleValidate}>
-            Validate Join
+        {/* Validate Button - stays visible, changes style when validated */}
+        {keyColumn && (
+          <Button
+            variant={joinValidation ? 'default' : 'outline'}
+            className={joinValidation ? 'bg-green-600 hover:bg-green-700' : ''}
+            onClick={handleValidate}
+          >
+            {joinValidation ? (
+              <>
+                <Check className="w-4 h-4 mr-2" />
+                Validated
+              </>
+            ) : (
+              'Validate Join'
+            )}
           </Button>
         )}
 
@@ -303,6 +314,7 @@ export function JoinPanel() {
             <Label htmlFor="join-result-name">Result Table Name</Label>
             <Input
               id="join-result-name"
+              data-testid="join-result-name-input"
               value={resultTableName}
               onChange={(e) => setResultTableName(e.target.value)}
               placeholder="e.g., orders_with_customers"

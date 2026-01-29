@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Layers, Play, Loader2, X } from 'lucide-react'
+import { Layers, Play, Loader2, X, Check } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -139,7 +139,7 @@ export function StackPanel() {
           <Label>Select Tables to Stack</Label>
           <div className="flex gap-2">
             <Select value={selectedTable} onValueChange={setSelectedTable}>
-              <SelectTrigger className="flex-1">
+              <SelectTrigger className="flex-1" data-testid="stack-table-select">
                 <SelectValue placeholder="Select a table" />
               </SelectTrigger>
               <SelectContent>
@@ -191,10 +191,21 @@ export function StackPanel() {
           </div>
         )}
 
-        {/* Validate Button */}
-        {stackTableIds.length === 2 && !stackValidation && (
-          <Button variant="outline" onClick={handleValidate}>
-            Validate Compatibility
+        {/* Validate Button - stays visible, changes style when validated */}
+        {stackTableIds.length === 2 && (
+          <Button
+            variant={stackValidation ? 'default' : 'outline'}
+            className={stackValidation ? 'bg-green-600 hover:bg-green-700' : ''}
+            onClick={handleValidate}
+          >
+            {stackValidation ? (
+              <>
+                <Check className="w-4 h-4 mr-2" />
+                Validated
+              </>
+            ) : (
+              'Validate Compatibility'
+            )}
           </Button>
         )}
 
@@ -209,6 +220,7 @@ export function StackPanel() {
             <Label htmlFor="stack-result-name">Result Table Name</Label>
             <Input
               id="stack-result-name"
+              data-testid="stack-result-name-input"
               value={resultTableName}
               onChange={(e) => setResultTableName(e.target.value)}
               placeholder="e.g., combined_sales"
