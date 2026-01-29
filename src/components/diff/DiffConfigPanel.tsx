@@ -60,7 +60,8 @@ export function DiffConfigPanel({
   // Get timeline for active table (if exists)
   const getTimeline = useTimelineStore((s) => s.getTimeline)
 
-  // Check if active table has an original snapshot (either old-style or timeline-based)
+  // Check if active table has an original snapshot AND at least one transformation
+  // Just having a snapshot (from file upload) isn't enough - we need actual changes to compare
   useEffect(() => {
     if (mode === 'compare-preview' && activeTableId && activeTableName) {
       setCheckingSnapshot(true)
@@ -75,6 +76,12 @@ export function DiffConfigPanel({
         // Then check timeline-based snapshot (handles both in-memory and Parquet)
         const timeline = getTimeline(activeTableId)
         if (timeline?.originalSnapshotName) {
+          // CRITICAL: Also require at least one command (transformation) to be applied
+          // Snapshots are created at file upload, but diff only makes sense after transformations
+          if (timeline.commands.length === 0) {
+            return false
+          }
+
           // Parquet snapshots are always valid (stored in OPFS)
           if (timeline.originalSnapshotName.startsWith('parquet:')) {
             return true
