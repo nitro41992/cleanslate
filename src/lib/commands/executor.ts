@@ -630,10 +630,15 @@ export class CommandExecutor implements ICommandExecutor {
         console.log('[Executor] Skipped dataVersion bump for local-only command:', command.type)
       } else {
         // For structural changes (transforms, column operations), trigger full grid reload
-        this.updateTableStore(ctx.table.id, {
-          ...executionResult,
-          columnOrder: newColumnOrder,
-        })
+        // EXCEPTION: Skip for combine commands that create NEW tables - they don't modify the source table
+        // The UI handler (CombinePanel) adds the new table separately via addTable()
+        const createsNewTable = command.type === 'combine:stack' || command.type === 'combine:join'
+        if (!createsNewTable) {
+          this.updateTableStore(ctx.table.id, {
+            ...executionResult,
+            columnOrder: newColumnOrder,
+          })
+        }
       }
 
       // Proactive memory management: prune snapshots if memory > 80%
