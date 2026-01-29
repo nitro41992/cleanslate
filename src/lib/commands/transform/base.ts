@@ -18,6 +18,7 @@ import type {
 import { generateId } from '@/lib/utils'
 import { quoteColumn, quoteTable } from '../utils/sql'
 import { createColumnVersionManager, type ColumnVersionStore } from '../column-versions'
+import { capturePreSnapshot, capturePostDiff } from '../audit-snapshot'
 
 /**
  * Base parameters for all transform commands
@@ -131,12 +132,16 @@ export abstract class BaseTransformCommand<TParams extends BaseTransformParams =
 
     // Transforms that support row-level drill-down via Tier 1 column versioning
     // or Tier 2/3 with explicit audit capture
+    // NOTE: remove_duplicates and filter_empty are excluded - they delete rows,
+    // not modify cell values, so drill-down showing before/after doesn't apply
     const drillDownSupported = new Set([
+      // Tier 1 modifications (column versioning)
       'trim', 'lowercase', 'uppercase', 'title_case', 'replace',
-      'remove_accents', 'remove_non_printable', 'collapse_spaces',
-      'sentence_case', 'unformat_currency', 'fix_negatives', 'pad_zeros',
+      'remove_accents', 'remove_non_printable', 'collapse_spaces', 'sentence_case',
+      // Tier 2/3 modifications
+      'unformat_currency', 'fix_negatives', 'pad_zeros',
       'standardize_date', 'calculate_age', 'fill_down', 'cast_type',
-      'replace_empty', 'remove_duplicates', 'filter_empty',
+      'replace_empty',
     ])
 
     return {
@@ -199,10 +204,23 @@ export abstract class Tier1TransformCommand<TParams extends BaseTransformParams 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
     const column = this.params.column!
+    const transformType = this.type.replace('transform:', '')
+
+    // Transforms that support row-level drill-down audit capture
+    const drillDownSupported = new Set([
+      'trim', 'lowercase', 'uppercase', 'title_case', 'replace',
+      'remove_accents', 'remove_non_printable', 'collapse_spaces', 'sentence_case',
+    ])
 
     try {
       // Count affected rows before transformation
       const affectedCount = await this.countAffectedRows(ctx)
+
+      // Capture pre-snapshot for drill-down support (before transform)
+      if (drillDownSupported.has(transformType)) {
+        const predicate = await this.getAffectedRowsPredicate(ctx)
+        await capturePreSnapshot(ctx.db, tableName, column, this.id, predicate || undefined)
+      }
 
       // Get the transformation expression
       const expression = this.getTransformExpression(ctx)
@@ -232,6 +250,11 @@ export abstract class Tier1TransformCommand<TParams extends BaseTransformParams 
 
       // Update context's column versions for subsequent commands
       ctx.columnVersions = versionStore.versions
+
+      // Capture post-diff for drill-down support (after transform)
+      if (drillDownSupported.has(transformType)) {
+        await capturePostDiff(ctx.db, tableName, column, this.id)
+      }
 
       // Get new row count and columns
       const columns = await ctx.db.getTableColumns(tableName)

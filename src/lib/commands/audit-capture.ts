@@ -100,6 +100,9 @@ export async function captureTier23RowDetails(
       // filter_empty removes rows, so we capture deleted rows
       return await captureFilterEmptyDetails(db, tableName, column, auditEntryId)
 
+    case 'replace':
+      return await captureReplaceDetails(db, tableName, column, auditEntryId, transformParams)
+
     default:
       console.warn(`[AUDIT] No row capture implementation for Tier 2/3 transform: ${transformationType}`)
       return false
@@ -146,18 +149,27 @@ async function captureStandardizeDateDetails(
     '${strftimeFormat}'
   )`
 
+  // Use CTE to compute both values and filter out no-change rows
   const insertSql = `
     INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+    WITH computed AS (
+      SELECT
+        rowid as rid,
+        CAST(${quotedCol} AS VARCHAR) AS prev_val,
+        ${newValueExpression} AS new_val
+      FROM "${tableName}"
+      WHERE ${whereClause}
+    )
     SELECT
       uuid(),
       '${auditEntryId}',
-      rowid,
+      rid,
       '${escapedColumn}',
-      CAST(${quotedCol} AS VARCHAR),
-      ${newValueExpression},
+      prev_val,
+      new_val,
       CURRENT_TIMESTAMP
-    FROM "${tableName}"
-    WHERE ${whereClause}
+    FROM computed
+    WHERE prev_val IS DISTINCT FROM new_val
     LIMIT ${ROW_DETAIL_THRESHOLD}
   `
 
@@ -531,6 +543,79 @@ async function captureFilterEmptyDetails(
       CURRENT_TIMESTAMP
     FROM "${tableName}"
     WHERE ${whereClause}
+    LIMIT ${ROW_DETAIL_THRESHOLD}
+  `
+
+  await db.execute(insertSql)
+  return await checkRowDetailsInserted(db, auditEntryId)
+}
+
+/**
+ * Capture details for find & replace transformation.
+ * Shows rows where the find pattern was matched and replaced.
+ */
+async function captureReplaceDetails(
+  db: DbConnection,
+  tableName: string,
+  column: string,
+  auditEntryId: string,
+  params?: Record<string, unknown>
+): Promise<boolean> {
+  const find = (params?.find as string) || ''
+  const replace = (params?.replace as string) ?? ''
+  const caseSensitive = params?.caseSensitive !== false && params?.caseSensitive !== 'false'
+  const matchType = (params?.matchType as string) || 'contains'
+
+  if (!find) return false
+
+  const quotedCol = `"${column}"`
+  const escapedColumn = column.replace(/'/g, "''")
+  const escapedFind = find.replace(/'/g, "''")
+  const escapedReplace = replace.replace(/'/g, "''")
+
+  // Build WHERE clause based on match type and case sensitivity
+  let whereClause: string
+  let newValueExpression: string
+
+  if (matchType === 'exact') {
+    if (caseSensitive) {
+      whereClause = `${quotedCol} = '${escapedFind}'`
+      newValueExpression = `'${escapedReplace}'`
+    } else {
+      whereClause = `LOWER(${quotedCol}) = LOWER('${escapedFind}')`
+      newValueExpression = `'${escapedReplace}'`
+    }
+  } else {
+    // contains
+    if (caseSensitive) {
+      whereClause = `${quotedCol} LIKE '%${escapedFind}%'`
+      newValueExpression = `REPLACE(${quotedCol}, '${escapedFind}', '${escapedReplace}')`
+    } else {
+      whereClause = `LOWER(${quotedCol}) LIKE LOWER('%${escapedFind}%')`
+      // For case-insensitive, use REGEXP_REPLACE with character class pattern
+      // Build pattern that matches each letter case-insensitively
+      let pattern = escapedFind.replace(/[[\]\\^$.|?*+(){}]/g, '\\$&') // Escape regex chars
+      pattern = pattern.replace(/[a-z]/gi, (letter) => {
+        const lower = letter.toLowerCase()
+        const upper = letter.toUpperCase()
+        return lower !== upper ? `[${lower}${upper}]` : letter
+      })
+      newValueExpression = `REGEXP_REPLACE(${quotedCol}, '${pattern}', '${escapedReplace}', 'g')`
+    }
+  }
+
+  const insertSql = `
+    INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
+    SELECT
+      uuid(),
+      '${auditEntryId}',
+      rowid,
+      '${escapedColumn}',
+      CAST(${quotedCol} AS VARCHAR),
+      CAST(${newValueExpression} AS VARCHAR),
+      CURRENT_TIMESTAMP
+    FROM "${tableName}"
+    WHERE ${quotedCol} IS NOT NULL AND (${whereClause})
     LIMIT ${ROW_DETAIL_THRESHOLD}
   `
 

@@ -83,6 +83,31 @@ export function AuditSidebar() {
     [findTimelineCommand, highlightedCommandId, clearHighlight, setHighlightedCommand]
   )
 
+  // Check if highlight button should be shown for an entry
+  // Hide for full-table operations (stack, join, row deletions, metadata-only changes)
+  const shouldShowHighlight = useCallback(
+    (entry: AuditLogEntry): boolean => {
+      const cmd = findTimelineCommand(entry.auditEntryId)
+      if (!cmd) return false
+
+      // Extract transform type from command params
+      const params = cmd.params as unknown as Record<string, unknown> | undefined
+      const cmdType = (params?.transformationType as string) || (params?.type as string) || ''
+
+      // Skip full-table operations that don't have meaningful cell-level highlighting
+      const skipTypes = new Set([
+        'stack',           // Creates new table from stacking
+        'join',            // Creates new table from join
+        'remove_duplicates', // Deletes rows (nothing to highlight after)
+        'filter_empty',    // Deletes rows
+        'rename_column',   // Metadata-only change
+      ])
+
+      return !skipTypes.has(cmdType)
+    },
+    [findTimelineCommand]
+  )
+
   // Filter entries for active table
   const tableEntries = entries.filter((e) => e.tableId === activeTableId)
 
@@ -311,8 +336,8 @@ export function AuditSidebar() {
                             <span>View details</span>
                           </div>
                         )}
-                        {/* Highlight in grid button */}
-                        {findTimelineCommand(entry.auditEntryId) && (
+                        {/* Highlight in grid button - hidden for full-table operations */}
+                        {shouldShowHighlight(entry) && (
                           <button
                             onClick={(e) => toggleHighlight(entry, e)}
                             className={cn(
