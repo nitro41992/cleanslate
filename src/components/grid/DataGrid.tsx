@@ -65,6 +65,163 @@ function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   return size
 }
 
+/**
+ * Subtle custom header icons for column types.
+ * These are minimal text-based icons without the boxed appearance of the built-in icons.
+ */
+import type { SpriteMap } from '@glideapps/glide-data-grid'
+
+const customHeaderIcons: SpriteMap = {
+  // Text: "T" - serif style for readability
+  typeText: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <text x="10" y="15" text-anchor="middle" fill="${fgColor}" font-size="12" font-family="Georgia, serif" font-weight="500">T</text>
+    </svg>
+  `,
+  // Integer: "#" - number sign
+  typeInteger: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <text x="10" y="15" text-anchor="middle" fill="${fgColor}" font-size="11" font-family="ui-monospace, monospace" font-weight="500">#</text>
+    </svg>
+  `,
+  // Decimal: ".0" - decimal notation
+  typeDecimal: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <text x="10" y="14" text-anchor="middle" fill="${fgColor}" font-size="10" font-family="ui-monospace, monospace" font-weight="500">.0</text>
+    </svg>
+  `,
+  // Date: calendar icon (simple)
+  typeDate: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <rect x="4" y="5" width="12" height="11" rx="1" fill="none" stroke="${fgColor}" stroke-width="1.2"/>
+      <line x1="4" y1="8" x2="16" y2="8" stroke="${fgColor}" stroke-width="1"/>
+      <line x1="7" y1="3" x2="7" y2="6" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round"/>
+      <line x1="13" y1="3" x2="13" y2="6" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>
+  `,
+  // Timestamp: clock icon (simple)
+  typeTime: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="10" cy="10" r="6" fill="none" stroke="${fgColor}" stroke-width="1.2"/>
+      <line x1="10" y1="10" x2="10" y2="6" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round"/>
+      <line x1="10" y1="10" x2="13" y2="10" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>
+  `,
+  // Boolean: toggle/checkbox
+  typeBool: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <rect x="4" y="6" width="8" height="8" rx="1" fill="none" stroke="${fgColor}" stroke-width="1.2"/>
+      <polyline points="6,10 8,12 12,7" fill="none" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  `,
+  // UUID: key icon
+  typeUUID: ({ fgColor }) => `
+    <svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="7" cy="10" r="3" fill="none" stroke="${fgColor}" stroke-width="1.2"/>
+      <line x1="10" y1="10" x2="16" y2="10" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round"/>
+      <line x1="14" y1="10" x2="14" y2="13" stroke="${fgColor}" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>
+  `,
+}
+
+/**
+ * Maps DuckDB column types to custom subtle icons.
+ * Returns undefined for types without a suitable icon.
+ */
+function getColumnIcon(type: string): string | undefined {
+  const normalizedType = type.toUpperCase()
+
+  // Text types
+  if (normalizedType.includes('VARCHAR') || normalizedType.includes('TEXT') || normalizedType === 'STRING') {
+    return 'typeText'
+  }
+
+  // Integer types
+  if (
+    normalizedType.includes('INT') ||
+    normalizedType.includes('BIGINT') ||
+    normalizedType.includes('SMALLINT') ||
+    normalizedType.includes('TINYINT') ||
+    normalizedType.includes('HUGEINT')
+  ) {
+    return 'typeInteger'
+  }
+
+  // Floating point types
+  if (
+    normalizedType.includes('DOUBLE') ||
+    normalizedType.includes('DECIMAL') ||
+    normalizedType.includes('FLOAT') ||
+    normalizedType.includes('REAL') ||
+    normalizedType.includes('NUMERIC')
+  ) {
+    return 'typeDecimal'
+  }
+
+  // Date (but not timestamp)
+  if (normalizedType.includes('DATE') && !normalizedType.includes('TIMESTAMP')) {
+    return 'typeDate'
+  }
+
+  // Timestamp and time types
+  if (normalizedType.includes('TIMESTAMP') || normalizedType === 'TIME') {
+    return 'typeTime'
+  }
+
+  // Boolean
+  if (normalizedType.includes('BOOL')) {
+    return 'typeBool'
+  }
+
+  // UUID
+  if (normalizedType.includes('UUID')) {
+    return 'typeUUID'
+  }
+
+  return undefined
+}
+
+/**
+ * Returns a description of what the column type means.
+ * Used in the persistent tooltip when clicking column headers.
+ */
+function getTypeDescription(type: string): string {
+  const normalizedType = type.toUpperCase()
+
+  if (normalizedType.includes('VARCHAR') || normalizedType.includes('TEXT') || normalizedType === 'STRING') {
+    return 'Variable-length text string'
+  }
+  if (normalizedType.includes('BIGINT') || normalizedType.includes('HUGEINT')) {
+    return 'Large whole number (no decimals)'
+  }
+  if (normalizedType.includes('INT')) {
+    return 'Whole number (no decimals)'
+  }
+  if (normalizedType.includes('DOUBLE') || normalizedType.includes('FLOAT') || normalizedType.includes('REAL')) {
+    return 'Number with decimal precision'
+  }
+  if (normalizedType.includes('DECIMAL') || normalizedType.includes('NUMERIC')) {
+    return 'Fixed-precision decimal number'
+  }
+  if (normalizedType.includes('TIMESTAMP')) {
+    return 'Date and time combined'
+  }
+  if (normalizedType.includes('DATE')) {
+    return 'Calendar date (year-month-day)'
+  }
+  if (normalizedType === 'TIME') {
+    return 'Time of day (hours:minutes:seconds)'
+  }
+  if (normalizedType.includes('BOOL')) {
+    return 'True or False value'
+  }
+  if (normalizedType.includes('UUID')) {
+    return 'Unique identifier'
+  }
+
+  return 'Data value'
+}
+
 interface DataGridProps {
   tableName: string
   rowCount: number
@@ -294,10 +451,11 @@ export function DataGrid({
   )
   const updateColumnWidth = useTableStore((s) => s.updateColumnWidth)
 
-  // Header tooltip state - shows column type on click
+  // Header tooltip state - shows column type on click (persistent until dismissed)
   const [headerTooltip, setHeaderTooltip] = useState<{
     column: string
     type: string
+    description: string
     x: number
     y: number
   } | null>(null)
@@ -314,10 +472,14 @@ export function DataGrid({
         const typeBasedWidth = colType ? getDefaultColumnWidth(colType) : 150
         const width = savedWidth ?? typeBasedWidth
 
+        // Get type-specific icon for header
+        const icon = colType ? getColumnIcon(colType) : undefined
+
         return {
           id: col,
           title,
           width,
+          icon,
         }
       }),
     [columns, columnTypeMap, columnPreferences]
@@ -1080,25 +1242,53 @@ export function DataGrid({
     [tableId, updateColumnWidth]
   )
 
-  // Handle header click - show type tooltip
+  // Handle header click - show persistent type tooltip
   const handleHeaderClicked = useCallback(
     (col: number, event: { bounds: { x: number; y: number; width: number; height: number } }) => {
       const colName = columns[col]
       const colType = columnTypeMap.get(colName)
       if (colType) {
         const typeDisplay = getTypeDisplayName(colType)
+        const typeDescription = getTypeDescription(colType)
         setHeaderTooltip({
           column: colName,
           type: typeDisplay,
+          description: typeDescription,
           x: event.bounds.x + event.bounds.width / 2,
           y: event.bounds.y + event.bounds.height,
         })
-        // Auto-hide after 2 seconds
-        setTimeout(() => setHeaderTooltip(null), 2000)
+        // No auto-hide - tooltip stays until click outside or Escape
       }
     },
     [columns, columnTypeMap]
   )
+
+  // Dismiss tooltip on click outside or Escape key
+  useEffect(() => {
+    if (!headerTooltip) return
+
+    const handleClickOutside = () => {
+      setHeaderTooltip(null)
+    }
+
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setHeaderTooltip(null)
+      }
+    }
+
+    // Delay adding listeners to avoid immediate dismissal from the click that opened it
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('click', handleClickOutside)
+      document.addEventListener('keydown', handleEscape)
+    }, 0)
+
+    return () => {
+      clearTimeout(timeoutId)
+      document.removeEventListener('click', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [headerTooltip])
 
   // Row height constants for word wrap
   // Using fixed heights for performance with large datasets (400k+ rows)
@@ -1172,6 +1362,8 @@ export function DataGrid({
             maxColumnAutoWidth={MAX_COLUMN_AUTO_WIDTH}
             // Header click shows type tooltip
             onHeaderClicked={handleHeaderClicked}
+            // Custom subtle header icons for column types
+            headerIcons={customHeaderIcons}
             width={gridWidth}
             height={gridHeight}
             smoothScrollX
@@ -1200,19 +1392,23 @@ export function DataGrid({
         )}
       </div>
 
-      {/* Column type tooltip - shown on header click */}
+      {/* Column type tooltip - shown on header click, persistent until dismissed */}
       {headerTooltip && (
         <div
-          className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600 pointer-events-none"
+          className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600"
           style={{
             left: headerTooltip.x,
             top: headerTooltip.y + 6,
             transform: 'translateX(-50%)',
           }}
+          onClick={(e) => e.stopPropagation()}
         >
           <div className="font-medium text-zinc-100">{headerTooltip.column}</div>
           <div className="text-zinc-400 mt-0.5">
             Type: <span className="text-amber-400">{headerTooltip.type}</span>
+          </div>
+          <div className="text-zinc-500 mt-1 text-[10px]">
+            {headerTooltip.description}
           </div>
         </div>
       )}
