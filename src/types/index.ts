@@ -11,6 +11,7 @@ export interface TableInfo {
   dataVersion?: number          // Increments on any data change to trigger grid refresh
   columnOrder?: string[]        // User-visible column names only (excludes _cs_id, __base)
   columnPreferences?: ColumnPreferences  // User column width/wrap settings
+  viewState?: TableViewState    // Filter/sort configuration (view operation, not data mutation)
 }
 
 /**
@@ -180,6 +181,61 @@ export type ObfuscationMethod =
   | 'jitter'
 
 export type PersistenceStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+
+// Filter & Sort types (View Operations)
+
+/**
+ * Filter operators for different column types.
+ * Text operators: contains, equals, starts_with, ends_with, is_empty, is_not_empty
+ * Numeric operators: eq, gt, lt, gte, lte, between
+ * Date operators: date_eq, date_before, date_after, date_between, last_n_days
+ * Boolean operators: is_true, is_false
+ */
+export type FilterOperator =
+  // Text
+  | 'contains'
+  | 'equals'
+  | 'starts_with'
+  | 'ends_with'
+  | 'is_empty'
+  | 'is_not_empty'
+  // Numeric
+  | 'eq'
+  | 'gt'
+  | 'lt'
+  | 'gte'
+  | 'lte'
+  | 'between'
+  // Date
+  | 'date_eq'
+  | 'date_before'
+  | 'date_after'
+  | 'date_between'
+  | 'last_n_days'
+  // Boolean
+  | 'is_true'
+  | 'is_false'
+
+/**
+ * A single column filter configuration.
+ * Filters are view operations - they modify SQL queries, not underlying data.
+ */
+export interface ColumnFilter {
+  column: string
+  operator: FilterOperator
+  value: string | number | boolean | null
+  value2?: string | number  // For "between" operators
+}
+
+/**
+ * View state for a table - controls filtering and sorting without modifying data.
+ * Similar to columnPreferences, this is a UI concern persisted for user convenience.
+ */
+export interface TableViewState {
+  filters: ColumnFilter[]
+  sortColumn: string | null
+  sortDirection: 'asc' | 'desc'
+}
 
 // Combiner types (FR-E)
 export type JoinType = 'left' | 'inner' | 'full_outer'

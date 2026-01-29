@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { TableInfo, ColumnInfo, LineageTransformation, ColumnPreferences } from '@/types'
+import type { TableInfo, ColumnInfo, LineageTransformation, ColumnPreferences, ColumnFilter, TableViewState } from '@/types'
 import { generateId } from '@/lib/utils'
 import { cleanupTimelineSnapshots } from '@/lib/timeline-engine'
 import { isInternalColumn } from '@/lib/commands/utils/column-ordering'
@@ -36,6 +36,18 @@ interface TableActions {
   toggleWordWrap: (tableId: string) => void
   /** Check if word wrap is enabled for a table */
   isWordWrapEnabled: (tableId: string) => boolean
+  /** Set a filter on a table column (replaces existing filter for that column) */
+  setFilter: (tableId: string, filter: ColumnFilter) => void
+  /** Remove filter from a specific column */
+  removeFilter: (tableId: string, column: string) => void
+  /** Clear all filters from a table */
+  clearFilters: (tableId: string) => void
+  /** Set sort configuration for a table */
+  setSort: (tableId: string, column: string | null, direction: 'asc' | 'desc') => void
+  /** Clear all view state (filters and sort) */
+  clearViewState: (tableId: string) => void
+  /** Get current view state for a table */
+  getViewState: (tableId: string) => TableViewState | undefined
 }
 
 export const useTableStore = create<TableState & TableActions>((set, get) => ({
@@ -239,6 +251,125 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
     const state = get()
     const table = state.tables.find((t) => t.id === tableId)
     return table?.columnPreferences?.wordWrapEnabled ?? false
+  },
+
+  setFilter: (tableId, filter) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        const currentViewState = t.viewState || {
+          filters: [],
+          sortColumn: null,
+          sortDirection: 'asc' as const,
+        }
+
+        // Replace existing filter for this column, or add new one
+        const existingIndex = currentViewState.filters.findIndex(
+          (f) => f.column === filter.column
+        )
+        const newFilters =
+          existingIndex >= 0
+            ? currentViewState.filters.map((f, i) =>
+                i === existingIndex ? filter : f
+              )
+            : [...currentViewState.filters, filter]
+
+        return {
+          ...t,
+          viewState: {
+            ...currentViewState,
+            filters: newFilters,
+          },
+          updatedAt: new Date(),
+          // Note: Do NOT increment dataVersion - view state is UI-only
+        }
+      }),
+    }))
+  },
+
+  removeFilter: (tableId, column) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        const currentViewState = t.viewState
+        if (!currentViewState) return t
+
+        return {
+          ...t,
+          viewState: {
+            ...currentViewState,
+            filters: currentViewState.filters.filter((f) => f.column !== column),
+          },
+          updatedAt: new Date(),
+        }
+      }),
+    }))
+  },
+
+  clearFilters: (tableId) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        const currentViewState = t.viewState
+        if (!currentViewState) return t
+
+        return {
+          ...t,
+          viewState: {
+            ...currentViewState,
+            filters: [],
+          },
+          updatedAt: new Date(),
+        }
+      }),
+    }))
+  },
+
+  setSort: (tableId, column, direction) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        const currentViewState = t.viewState || {
+          filters: [],
+          sortColumn: null,
+          sortDirection: 'asc' as const,
+        }
+
+        return {
+          ...t,
+          viewState: {
+            ...currentViewState,
+            sortColumn: column,
+            sortDirection: direction,
+          },
+          updatedAt: new Date(),
+        }
+      }),
+    }))
+  },
+
+  clearViewState: (tableId) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+
+        return {
+          ...t,
+          viewState: undefined,
+          updatedAt: new Date(),
+        }
+      }),
+    }))
+  },
+
+  getViewState: (tableId) => {
+    const state = get()
+    const table = state.tables.find((t) => t.id === tableId)
+    return table?.viewState
   },
 }))
 

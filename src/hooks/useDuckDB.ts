@@ -8,6 +8,7 @@ import {
   getTableData,
   getTableDataWithRowIds,
   getTableDataWithKeyset,
+  getFilteredRowCount,
   exportToCSV,
   dropTable,
   query,
@@ -19,6 +20,8 @@ import {
   terminateAndReinitialize,
   type KeysetCursor,
 } from '@/lib/duckdb'
+import { buildWhereClause, buildOrderByClause } from '@/lib/duckdb/filter-builder'
+import type { ColumnFilter } from '@/types'
 import { checkMemoryCapacity, getMemoryStatus, WARNING_THRESHOLD } from '@/lib/duckdb/memory'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
@@ -352,6 +355,55 @@ export function useDuckDB() {
     []
   )
 
+  /**
+   * Get filtered and sorted data using keyset pagination.
+   * Filters and sort are applied as SQL WHERE/ORDER BY clauses.
+   *
+   * @param tableName - Name of the table to query
+   * @param cursor - Pagination cursor
+   * @param limit - Number of rows to fetch
+   * @param filters - Array of column filters to apply
+   * @param sortColumn - Column to sort by (null for default _cs_id sort)
+   * @param sortDirection - 'asc' or 'desc'
+   */
+  const getFilteredDataWithKeyset = useCallback(
+    async (
+      tableName: string,
+      cursor: KeysetCursor,
+      limit: number,
+      filters: ColumnFilter[],
+      sortColumn: string | null,
+      sortDirection: 'asc' | 'desc'
+    ) => {
+      const whereClause = buildWhereClause(filters)
+      const orderByClause = buildOrderByClause(sortColumn, sortDirection)
+
+      const enhancedCursor: KeysetCursor = {
+        ...cursor,
+        whereClause: whereClause || undefined,
+        orderByClause: orderByClause || undefined,
+      }
+
+      return getTableDataWithKeyset(tableName, enhancedCursor, limit)
+    },
+    []
+  )
+
+  /**
+   * Get the count of rows matching a filter.
+   * Useful for displaying "X of Y rows" in the UI.
+   *
+   * @param tableName - Name of the table to query
+   * @param filters - Array of column filters to apply
+   */
+  const getFilteredCount = useCallback(
+    async (tableName: string, filters: ColumnFilter[]) => {
+      const whereClause = buildWhereClause(filters)
+      return getFilteredRowCount(tableName, whereClause)
+    },
+    []
+  )
+
   const runQuery = useCallback(async (sql: string) => {
     return query(sql)
   }, [])
@@ -496,6 +548,8 @@ export function useDuckDB() {
     getData,
     getDataWithRowIds,
     getDataWithKeyset,
+    getFilteredDataWithKeyset,
+    getFilteredCount,
     runQuery,
     runExecute,
     exportTable,

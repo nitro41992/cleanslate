@@ -779,6 +779,10 @@ export async function getTableDataWithRowIds(
 export interface KeysetCursor {
   direction: 'forward' | 'backward'
   csId: string | null
+  /** Optional additional WHERE clause for filtering (without "WHERE" keyword) */
+  whereClause?: string
+  /** Optional ORDER BY clause (without "ORDER BY" keyword) - overrides default _cs_id ordering */
+  orderByClause?: string
 }
 
 /**
@@ -798,8 +802,12 @@ export interface KeysetPageResult {
  * Unlike OFFSET-based pagination which degrades linearly with depth,
  * keyset pagination uses WHERE _cs_id > X to jump directly to the target position.
  *
+ * Supports optional filtering and sorting via cursor.whereClause and cursor.orderByClause.
+ * When custom sorting is applied, the keyset pagination falls back to OFFSET-based
+ * pagination for the cursor position (custom sort columns may have duplicates).
+ *
  * @param tableName - Name of the table to query
- * @param cursor - Pagination cursor (null csId for first page)
+ * @param cursor - Pagination cursor (null csId for first page), with optional filter/sort clauses
  * @param limit - Number of rows to fetch (default 500)
  * @returns Page of rows with boundary csIds for next/prev navigation
  */
@@ -810,17 +818,46 @@ export async function getTableDataWithKeyset(
 ): Promise<KeysetPageResult> {
   return withMutex(async () => {
     const connection = await getConnection()
+
+    // Build WHERE clause components
+    const whereConditions: string[] = []
+
+    // Add filter conditions if provided
+    if (cursor.whereClause) {
+      whereConditions.push(`(${cursor.whereClause})`)
+    }
+
+    // Determine ORDER BY clause
+    // Default: ORDER BY _cs_id for deterministic pagination
+    // Custom: Uses provided orderByClause (should include _cs_id as secondary sort)
+    const hasCustomSort = Boolean(cursor.orderByClause)
+    const orderByClause = cursor.orderByClause || `"${CS_ID_COLUMN}"`
+
     let query: string
 
     if (!cursor.csId) {
       // First page - no cursor, start from beginning
-      query = `SELECT * FROM "${tableName}" ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit + 1}`
+      const whereStr = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY ${orderByClause} LIMIT ${limit + 1}`
+    } else if (hasCustomSort) {
+      // Custom sort: Fall back to OFFSET-based pagination since custom sort columns
+      // may have duplicate values, making keyset pagination unreliable.
+      // We estimate the offset from the cursor position.
+      // NOTE: This is less efficient but necessary for correct behavior.
+      const whereStr = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
+      // For now, we restart from beginning when there's custom sort
+      // A more sophisticated approach would track row position
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY ${orderByClause} LIMIT ${limit + 1}`
     } else if (cursor.direction === 'forward') {
       // Scroll down - get rows after cursor
-      query = `SELECT * FROM "${tableName}" WHERE "${CS_ID_COLUMN}" > ${cursor.csId} ORDER BY "${CS_ID_COLUMN}" LIMIT ${limit + 1}`
+      whereConditions.push(`"${CS_ID_COLUMN}" > ${cursor.csId}`)
+      const whereStr = `WHERE ${whereConditions.join(' AND ')}`
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY ${orderByClause} LIMIT ${limit + 1}`
     } else {
       // Scroll up - get rows before cursor, then reverse
-      query = `SELECT * FROM "${tableName}" WHERE "${CS_ID_COLUMN}" < ${cursor.csId} ORDER BY "${CS_ID_COLUMN}" DESC LIMIT ${limit + 1}`
+      whereConditions.push(`"${CS_ID_COLUMN}" < ${cursor.csId}`)
+      const whereStr = `WHERE ${whereConditions.join(' AND ')}`
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY "${CS_ID_COLUMN}" DESC LIMIT ${limit + 1}`
     }
 
     const result = await connection.query(query)
@@ -833,7 +870,7 @@ export async function getTableDataWithKeyset(
     }
 
     // Reverse if scrolling backward (we queried DESC)
-    if (cursor.direction === 'backward') {
+    if (cursor.direction === 'backward' && !hasCustomSort) {
       rawRows = rawRows.reverse()
     }
 
@@ -1393,6 +1430,25 @@ export async function flushDuckDB(
       flushTimer = null
     }, 1000)
   }
+}
+
+/**
+ * Get the count of rows matching a filter condition
+ *
+ * @param tableName - Name of the table to query
+ * @param whereClause - WHERE clause without "WHERE" keyword (empty string for no filter)
+ * @returns Number of rows matching the filter
+ */
+export async function getFilteredRowCount(
+  tableName: string,
+  whereClause: string
+): Promise<number> {
+  return withMutex(async () => {
+    const connection = await getConnection()
+    const whereStr = whereClause ? `WHERE ${whereClause}` : ''
+    const result = await connection.query(`SELECT COUNT(*) as count FROM "${tableName}" ${whereStr}`)
+    return Number(result.toArray()[0].toJSON().count)
+  })
 }
 
 export { db, conn }

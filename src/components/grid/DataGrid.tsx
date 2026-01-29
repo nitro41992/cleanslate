@@ -9,6 +9,7 @@ import DataGridLib, {
   DataEditorRef,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
+import { Filter } from 'lucide-react'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
@@ -29,7 +30,9 @@ import {
   GLOBAL_MAX_COLUMN_WIDTH,
   MAX_COLUMN_AUTO_WIDTH,
 } from '@/components/grid/column-sizing'
-import type { TimelineHighlight, ManualEditParams, ColumnInfo } from '@/types'
+import { ColumnHeaderMenu, ActiveFiltersBar } from '@/components/grid/filters'
+import { buildWhereClause, buildOrderByClause } from '@/lib/duckdb/filter-builder'
+import type { TimelineHighlight, ManualEditParams, ColumnInfo, ColumnFilter } from '@/types'
 
 function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -274,7 +277,7 @@ export function DataGrid({
   dataVersion,
   wordWrapEnabled = false,
 }: DataGridProps) {
-  const { getData, getDataWithRowIds, getDataWithKeyset } = useDuckDB()
+  const { getData, getDataWithRowIds, getDataWithKeyset, getFilteredCount } = useDuckDB()
 
   // Create a lookup map for column types (used for validation and display)
   const columnTypeMap = useMemo(() => {
@@ -451,6 +454,18 @@ export function DataGrid({
   )
   const updateColumnWidth = useTableStore((s) => s.updateColumnWidth)
 
+  // Get view state (filters/sort) for this table
+  const viewState = useTableStore((s) =>
+    tableId ? s.getViewState(tableId) : undefined
+  )
+  const setFilter = useTableStore((s) => s.setFilter)
+  const removeFilter = useTableStore((s) => s.removeFilter)
+  const clearFilters = useTableStore((s) => s.clearFilters)
+  const setSort = useTableStore((s) => s.setSort)
+
+  // Track filtered row count (null = no filter active, use total rowCount)
+  const [filteredRowCount, setFilteredRowCount] = useState<number | null>(null)
+
   // Header tooltip state - shows column type on click (persistent until dismissed)
   const [headerTooltip, setHeaderTooltip] = useState<{
     column: string
@@ -460,12 +475,55 @@ export function DataGrid({
     y: number
   } | null>(null)
 
+  // Check if a column has an active filter
+  const getColumnFilter = useCallback((colName: string): ColumnFilter | undefined => {
+    return viewState?.filters.find(f => f.column === colName)
+  }, [viewState])
+
+  // Filter/sort action handlers
+  const handleSetFilter = useCallback((filter: ColumnFilter) => {
+    if (tableId) {
+      setFilter(tableId, filter)
+    }
+  }, [tableId, setFilter])
+
+  const handleRemoveFilter = useCallback((column: string) => {
+    if (tableId) {
+      removeFilter(tableId, column)
+    }
+  }, [tableId, removeFilter])
+
+  const handleClearAllFilters = useCallback(() => {
+    if (tableId) {
+      clearFilters(tableId)
+    }
+  }, [tableId, clearFilters])
+
+  const handleSetSort = useCallback((column: string, direction: 'asc' | 'desc') => {
+    if (tableId) {
+      setSort(tableId, column, direction)
+    }
+  }, [tableId, setSort])
+
+  const handleClearSort = useCallback(() => {
+    if (tableId) {
+      setSort(tableId, null, 'asc')
+    }
+  }, [tableId, setSort])
+
   const gridColumns: GridColumn[] = useMemo(
     () =>
       columns.map((col) => {
         const colType = columnTypeMap.get(col)
-        // Clean title - just the column name (type shown via tooltip)
-        const title = col
+
+        // Build title with sort indicator if this column is sorted
+        const isSorted = viewState?.sortColumn === col
+        const sortIndicator = isSorted
+          ? viewState?.sortDirection === 'asc' ? ' ↑' : ' ↓'
+          : ''
+        const hasFilter = viewState?.filters.some(f => f.column === col)
+        const filterIndicator = hasFilter ? ' ⚡' : ''
+        const title = `${col}${sortIndicator}${filterIndicator}`
 
         // Priority: 1. User-saved width, 2. Type-based default, 3. Fallback 150px
         const savedWidth = columnPreferences?.widths?.[col]
@@ -482,12 +540,13 @@ export function DataGrid({
           icon,
         }
       }),
-    [columns, columnTypeMap, columnPreferences]
+    [columns, columnTypeMap, columnPreferences, viewState]
   )
 
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
+  // Also re-runs when view state (filters/sort) changes
   useEffect(() => {
-    console.log('[DATAGRID] useEffect triggered', { tableName, columnCount: columns.length, rowCount, dataVersion, isReplaying })
+    console.log('[DATAGRID] useEffect triggered', { tableName, columnCount: columns.length, rowCount, dataVersion, isReplaying, viewState })
 
     // Check and consume skip flag (e.g., after diff close to prevent unnecessary reload)
     const shouldSkip = useUIStore.getState().skipNextGridReload
@@ -525,8 +584,39 @@ export function DataGrid({
     setCsIdToRowIndex(new Map()) // Reset row ID mapping
     pageCacheRef.current.clear() // Clear LRU cache on data reload
 
-    // Load initial data using keyset pagination for O(1) performance
-    getDataWithKeyset(tableName, { direction: 'forward', csId: null }, PAGE_SIZE)
+    // Build filter/sort clauses from viewState
+    const filters = viewState?.filters ?? []
+    const sortColumn = viewState?.sortColumn ?? null
+    const sortDirection = viewState?.sortDirection ?? 'asc'
+
+    // Build WHERE and ORDER BY clauses
+    const whereClause = filters.length > 0 ? buildWhereClause(filters) : undefined
+    const orderByClause = sortColumn ? buildOrderByClause(sortColumn, sortDirection) : undefined
+
+    // Fetch filtered row count if filters are active
+    if (filters.length > 0) {
+      getFilteredCount(tableName, filters)
+        .then(count => {
+          setFilteredRowCount(count)
+          console.log('[DATAGRID] Filtered row count:', count)
+        })
+        .catch(err => {
+          console.warn('[DATAGRID] Failed to get filtered count:', err)
+          setFilteredRowCount(null)
+        })
+    } else {
+      setFilteredRowCount(null)
+    }
+
+    // Load initial data using keyset pagination with optional filter/sort
+    const cursor = {
+      direction: 'forward' as const,
+      csId: null,
+      whereClause,
+      orderByClause,
+    }
+
+    getDataWithKeyset(tableName, cursor, PAGE_SIZE)
       .then((pageResult) => {
         console.log('[DATAGRID] Data fetched with keyset, row count:', pageResult.rows.length)
         // Build _cs_id -> row index map
@@ -593,7 +683,7 @@ export function DataGrid({
             setIsLoading(false)
           })
       })
-  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, rowCount, dataVersion, isReplaying, isBusy])
+  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, getFilteredCount, rowCount, dataVersion, isReplaying, isBusy, viewState])
 
   // Track previous values to detect changes
   const prevHighlightCommandId = useRef<string | null | undefined>(undefined)
@@ -740,9 +830,16 @@ export function DataGrid({
             const pageStartRow = pageIdx * PAGE_SIZE
             const targetCsId = pageStartRow > 0 ? estimateCsIdForRow(pageStartRow - 1) : null
 
+            // Build filter/sort clauses from viewState
+            const filters = viewState?.filters ?? []
+            const sortColumn = viewState?.sortColumn ?? null
+            const sortDirection = viewState?.sortDirection ?? 'asc'
+            const whereClause = filters.length > 0 ? buildWhereClause(filters) : undefined
+            const orderByClause = sortColumn ? buildOrderByClause(sortColumn, sortDirection) : undefined
+
             const pageResult = await getDataWithKeyset(
               tableName,
-              { direction: 'forward', csId: targetCsId },
+              { direction: 'forward', csId: targetCsId, whereClause, orderByClause },
               PAGE_SIZE
             )
 
@@ -837,7 +934,7 @@ export function DataGrid({
         }
       }, SCROLL_DEBOUNCE_MS)
     },
-    [getData, getDataWithRowIds, getDataWithKeyset, tableName, rowCount, loadedRange]
+    [getData, getDataWithRowIds, getDataWithKeyset, tableName, rowCount, loadedRange, viewState]
   )
 
   // Cleanup debounce timer and abort controller on unmount
@@ -1242,7 +1339,10 @@ export function DataGrid({
     [tableId, updateColumnWidth]
   )
 
-  // Handle header click - show persistent type tooltip
+  // Handle header click - show persistent type tooltip (or open filter menu)
+  // Currently we show the tooltip on click, but the ColumnHeaderMenu is attached via
+  // a custom header renderer which Glide Data Grid doesn't directly support.
+  // Instead, we'll track the click and show the tooltip for type info.
   const handleHeaderClicked = useCallback(
     (col: number, event: { bounds: { x: number; y: number; width: number; height: number } }) => {
       const colName = columns[col]
@@ -1334,15 +1434,32 @@ export function DataGrid({
   const gridWidth = containerSize.width || 800
   const gridHeight = containerSize.height || 500
 
+  // Compute effective row count (filtered or total)
+  const effectiveRowCount = filteredRowCount ?? rowCount
+
   return (
     <>
+      {/* Active Filters Bar - shown when filters or sort are active */}
+      {tableId && (viewState?.filters.length || viewState?.sortColumn) && (
+        <ActiveFiltersBar
+          filters={viewState?.filters ?? []}
+          filteredCount={filteredRowCount}
+          totalCount={rowCount}
+          sortColumn={viewState?.sortColumn ?? null}
+          sortDirection={viewState?.sortDirection ?? 'asc'}
+          onRemoveFilter={handleRemoveFilter}
+          onClearAllFilters={handleClearAllFilters}
+          onClearSort={handleClearSort}
+        />
+      )}
+
       <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
         {data.length > 0 && (
           <DataGridLib
             key={gridKey}
             ref={gridRef}
             columns={gridColumns}
-            rows={rowCount}
+            rows={effectiveRowCount}
             getCellContent={getCellContent}
             onVisibleRegionChanged={onVisibleRegionChanged}
             getRowThemeOverride={getRowThemeOverride}
@@ -1392,8 +1509,44 @@ export function DataGrid({
         )}
       </div>
 
-      {/* Column type tooltip - shown on header click, persistent until dismissed */}
-      {headerTooltip && (
+      {/* Column header popover - shown on header click, with filter/sort options */}
+      {headerTooltip && tableId && (
+        <ColumnHeaderMenu
+          columnName={headerTooltip.column}
+          columnType={columnTypeMap.get(headerTooltip.column) ?? 'VARCHAR'}
+          currentFilter={getColumnFilter(headerTooltip.column)}
+          currentSortColumn={viewState?.sortColumn ?? null}
+          currentSortDirection={viewState?.sortDirection ?? 'asc'}
+          onSetFilter={handleSetFilter}
+          onRemoveFilter={() => handleRemoveFilter(headerTooltip.column)}
+          onSetSort={(direction) => handleSetSort(headerTooltip.column, direction)}
+          onClearSort={handleClearSort}
+        >
+          <div
+            className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600 cursor-pointer hover:bg-zinc-700 transition-colors"
+            style={{
+              left: headerTooltip.x,
+              top: headerTooltip.y + 6,
+              transform: 'translateX(-50%)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="font-medium text-zinc-100 flex items-center gap-2">
+              {headerTooltip.column}
+              <Filter className="h-3 w-3 text-zinc-400" />
+            </div>
+            <div className="text-zinc-400 mt-0.5">
+              Type: <span className="text-amber-400">{headerTooltip.type}</span>
+            </div>
+            <div className="text-zinc-500 mt-1 text-[10px]">
+              Click to filter/sort • {headerTooltip.description}
+            </div>
+          </div>
+        </ColumnHeaderMenu>
+      )}
+
+      {/* Fallback tooltip for non-editable grids */}
+      {headerTooltip && !tableId && (
         <div
           className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600"
           style={{
