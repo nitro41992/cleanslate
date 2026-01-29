@@ -195,8 +195,10 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
 
     // Transition to 'saved' when all tables are clean
     // This check is OUTSIDE the if block to handle re-saves where the table
-    // was already cleaned by a previous save but status is still 'saving'
-    if (finalSize === 0 && get().persistenceStatus === 'saving') {
+    // was already cleaned by a previous save but status is still 'saving'.
+    // Also handle 'dirty' status for changelog fast path (cell edits don't go through 'saving').
+    const status = get().persistenceStatus
+    if (finalSize === 0 && (status === 'saving' || status === 'dirty')) {
       set({ persistenceStatus: 'saved', lastSavedAt: new Date() })
 
       // Auto-reset to 'idle' after 3 seconds

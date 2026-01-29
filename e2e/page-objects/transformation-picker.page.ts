@@ -87,6 +87,16 @@ export class TransformationPickerPage {
     const option = this.page.getByRole('option', { name: columnName })
     await option.waitFor({ state: 'visible', timeout: 5000 })
     await option.click()
+
+    // Wait for dropdown to close after selection
+    // The dropdown uses Radix UI which wraps content in a popper wrapper
+    await this.page.locator('[data-radix-popper-content-wrapper]').waitFor({
+      state: 'hidden',
+      timeout: 2000
+    }).catch(async () => {
+      // If dropdown doesn't close automatically, press Escape to close it
+      await this.page.keyboard.press('Escape')
+    })
   }
 
   /**

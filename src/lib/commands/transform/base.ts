@@ -18,7 +18,8 @@ import type {
 import { generateId } from '@/lib/utils'
 import { quoteColumn, quoteTable } from '../utils/sql'
 import { createColumnVersionManager, type ColumnVersionStore } from '../column-versions'
-import { capturePreSnapshot, capturePostDiff } from '../audit-snapshot'
+// Note: Row-level audit capture is handled by the executor's captureTier1RowDetails method,
+// which uses the __base column created by column versioning. No additional capture needed here.
 
 /**
  * Base parameters for all transform commands
@@ -204,28 +205,17 @@ export abstract class Tier1TransformCommand<TParams extends BaseTransformParams 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const tableName = ctx.table.name
     const column = this.params.column!
-    const transformType = this.type.replace('transform:', '')
-
-    // Transforms that support row-level drill-down audit capture
-    const drillDownSupported = new Set([
-      'trim', 'lowercase', 'uppercase', 'title_case', 'replace',
-      'remove_accents', 'remove_non_printable', 'collapse_spaces', 'sentence_case',
-    ])
 
     try {
       // Count affected rows before transformation
       const affectedCount = await this.countAffectedRows(ctx)
 
-      // Capture pre-snapshot for drill-down support (before transform)
-      if (drillDownSupported.has(transformType)) {
-        const predicate = await this.getAffectedRowsPredicate(ctx)
-        await capturePreSnapshot(ctx.db, tableName, column, this.id, predicate || undefined)
-      }
-
       // Get the transformation expression
       const expression = this.getTransformExpression(ctx)
 
       // Use column versioning for Tier 1 (instant undo via backup/restore)
+      // This creates a __base column that stores the original values,
+      // which the executor uses for row-level audit capture
       const versionStore: ColumnVersionStore = { versions: ctx.columnVersions }
       const versionManager = createColumnVersionManager(ctx.db, versionStore)
 
@@ -251,10 +241,8 @@ export abstract class Tier1TransformCommand<TParams extends BaseTransformParams 
       // Update context's column versions for subsequent commands
       ctx.columnVersions = versionStore.versions
 
-      // Capture post-diff for drill-down support (after transform)
-      if (drillDownSupported.has(transformType)) {
-        await capturePostDiff(ctx.db, tableName, column, this.id)
-      }
+      // Note: Row-level audit capture is handled by the executor's captureTier1RowDetails,
+      // which uses the __base column created by column versioning
 
       // Get new row count and columns
       const columns = await ctx.db.getTableColumns(tableName)

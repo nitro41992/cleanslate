@@ -1,5 +1,31 @@
 # E2E Testing Guidelines
 
+## Running Tests (Timeout Rules)
+
+**CRITICAL:** Always run tests with strict timeouts to prevent runaway processes.
+
+**Individual test runs:**
+```bash
+# Run a single test with 60s timeout and no retries
+npx playwright test "test-file.spec.ts:123" --timeout=60000 --retries=0 --reporter=line
+
+# Run multiple specific tests
+npx playwright test "file1.spec.ts:123" "file2.spec.ts:456" --timeout=60000 --retries=0 --reporter=line
+```
+
+**Batch test runs:**
+```bash
+# Run a test file with 90s timeout
+npx playwright test "test-file.spec.ts" --timeout=90000 --retries=0 --reporter=line
+```
+
+**Rules:**
+- Single tests: Use `--timeout=60000` (60s)
+- Heavy tests (WASM, Parquet): Use `--timeout=90000` (90s)
+- Always use `--retries=0` when debugging to avoid long waits
+- Use `--reporter=line` for concise output
+- **Never run the full suite without timeouts** — DuckDB-WASM tests can hang indefinitely
+
 ## 1. State Isolation ("Clean Slate" Rule)
 
 **Rule:** Never assume state persists cleanly. DuckDB-WASM is memory-intensive — shared contexts cause "Target Closed" crashes.
