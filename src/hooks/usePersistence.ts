@@ -455,6 +455,85 @@ export function markTableAsRecentlySaved(tableId: string): void {
 }
 
 /**
+ * Force save all dirty tables immediately.
+ * This is a fallback for when tables get stuck in "unsaved" state.
+ * Bypasses debounce and saves all dirty tables to Parquet.
+ */
+export async function forceSaveAll(): Promise<void> {
+  const { useUIStore } = await import('@/stores/uiStore')
+  const { useTableStore } = await import('@/stores/tableStore')
+
+  const uiState = useUIStore.getState()
+  const tableState = useTableStore.getState()
+
+  // Get all dirty table IDs
+  const dirtyIds = Array.from(uiState.dirtyTableIds)
+
+  if (dirtyIds.length === 0) {
+    console.log('[Persistence] forceSaveAll: No dirty tables to save')
+    return
+  }
+
+  console.log(`[Persistence] forceSaveAll: Saving ${dirtyIds.length} dirty table(s)...`)
+
+  // Set status to saving
+  uiState.setPersistenceStatus('saving')
+
+  const db = await initDuckDB()
+  const conn = await getConnection()
+
+  let savedCount = 0
+  let errorCount = 0
+
+  for (const tableId of dirtyIds) {
+    const table = tableState.tables.find(t => t.id === tableId)
+    if (!table) {
+      console.warn(`[Persistence] forceSaveAll: Table ${tableId} not found, skipping`)
+      continue
+    }
+
+    try {
+      // Track in UI store
+      uiState.addSavingTable(table.name)
+
+      // Export to Parquet
+      await exportTableToParquet(db, conn, table.name, table.name, {
+        onChunkProgress: (current, total, tableName) => {
+          uiState.setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
+        },
+      })
+
+      // Mark table as clean
+      uiState.markTableClean(tableId)
+      uiState.removeSavingTable(table.name)
+
+      savedCount++
+      console.log(`[Persistence] forceSaveAll: Saved ${table.name}`)
+    } catch (err) {
+      console.error(`[Persistence] forceSaveAll: Failed to save ${table.name}:`, err)
+      uiState.removeSavingTable(table.name)
+      errorCount++
+    }
+  }
+
+  // Force compact changelog as well
+  try {
+    await compactChangelog(true)
+  } catch (err) {
+    console.error('[Persistence] forceSaveAll: Compaction failed:', err)
+  }
+
+  // Update status
+  if (errorCount > 0) {
+    uiState.setPersistenceStatus('error')
+  } else if (savedCount > 0) {
+    uiState.setPersistenceStatus('saved')
+  }
+
+  console.log(`[Persistence] forceSaveAll complete: ${savedCount} saved, ${errorCount} errors`)
+}
+
+/**
  * Check if a table was recently saved (within the time window).
  * Returns true if the table should be skipped, false otherwise.
  * Does NOT consume the flag - allows multiple subscription calls to see it.

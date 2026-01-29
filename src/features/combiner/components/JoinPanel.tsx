@@ -17,6 +17,7 @@ import { useCombinerStore } from '@/stores/combinerStore'
 import { validateJoin, joinTables, autoCleanKeys } from '@/lib/combiner-engine'
 import { getTableColumns } from '@/lib/duckdb'
 import { toast } from '@/hooks/use-toast'
+import { markTableAsRecentlySaved } from '@/hooks/usePersistence'
 import type { JoinType } from '@/types'
 
 export function JoinPanel() {
@@ -114,11 +115,16 @@ export function JoinPanel() {
       const columns = await getTableColumns(resultTableName.trim())
 
       // Add to table store
-      addTable(
+      const newTableId = addTable(
         resultTableName.trim(),
         columns.map((c) => ({ ...c, nullable: true })),
         rowCount
       )
+
+      // Prevent race condition with auto-save subscription
+      // Without this, the table gets stuck in "unsaved" state due to multiple
+      // subscription callbacks firing during save and re-marking the table dirty
+      markTableAsRecentlySaved(newTableId)
 
       const joinTypeLabel =
         joinType === 'inner'

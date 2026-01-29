@@ -1,12 +1,15 @@
-import { Loader2, Check, AlertCircle, Circle } from 'lucide-react'
+import { useState } from 'react'
+import { Loader2, Check, AlertCircle, Circle, Save } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { forceSaveAll } from '@/hooks/usePersistence'
 
 export function PersistenceIndicator() {
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
@@ -15,6 +18,22 @@ export function PersistenceIndicator() {
   const chunkProgress = useUIStore((s) => s.chunkProgress)
   const compactionStatus = useUIStore((s) => s.compactionStatus)
   const pendingChangelogCount = useUIStore((s) => s.pendingChangelogCount)
+
+  const [isForceSaving, setIsForceSaving] = useState(false)
+
+  const handleForceSave = async () => {
+    setIsForceSaving(true)
+    try {
+      await forceSaveAll()
+    } finally {
+      setIsForceSaving(false)
+    }
+  }
+
+  // Show force save button when dirty or error (not when already saving)
+  const showForceSaveButton =
+    (persistenceStatus === 'dirty' || persistenceStatus === 'error') &&
+    !isForceSaving
 
   // Hide when idle
   if (persistenceStatus === 'idle') return null
@@ -103,6 +122,28 @@ export function PersistenceIndicator() {
     pendingChangelogCount > 0 ||
     persistenceStatus === 'error'
 
+  // Force save button (shown when dirty/error and not currently saving)
+  const forceSaveButton = showForceSaveButton && (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 hover:bg-muted"
+            onClick={handleForceSave}
+            disabled={isForceSaving}
+          >
+            <Save className="h-3 w-3" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Force save all pending changes</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+
   const indicator = (
     <div
       className={cn(
@@ -117,12 +158,13 @@ export function PersistenceIndicator() {
         <>
           <Circle className="w-2.5 h-2.5 fill-current animate-pulse" />
           <span>{getProgressText()}</span>
+          {forceSaveButton}
         </>
       )}
-      {persistenceStatus === 'saving' && (
+      {(persistenceStatus === 'saving' || isForceSaving) && (
         <>
           <Loader2 className="w-3 h-3 animate-spin" />
-          <span>{getProgressText()}</span>
+          <span>{isForceSaving ? 'Force saving...' : getProgressText()}</span>
           {/* Mini progress bar for chunked exports */}
           {isChunking && (
             <div className="w-12 h-1 rounded-full bg-muted overflow-hidden">
@@ -136,7 +178,7 @@ export function PersistenceIndicator() {
           )}
         </>
       )}
-      {persistenceStatus === 'saved' && (
+      {persistenceStatus === 'saved' && !isForceSaving && (
         <>
           <Check className="w-3 h-3" />
           <span>{getProgressText()}</span>
@@ -146,6 +188,7 @@ export function PersistenceIndicator() {
         <>
           <AlertCircle className="w-3 h-3" />
           <span>{getProgressText()}</span>
+          {forceSaveButton}
         </>
       )}
     </div>
