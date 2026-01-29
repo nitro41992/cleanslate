@@ -9,7 +9,6 @@ import DataGridLib, {
   DataEditorRef,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
-import { Filter } from 'lucide-react'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
@@ -30,7 +29,7 @@ import {
   GLOBAL_MAX_COLUMN_WIDTH,
   MAX_COLUMN_AUTO_WIDTH,
 } from '@/components/grid/column-sizing'
-import { ColumnHeaderMenu, ActiveFiltersBar } from '@/components/grid/filters'
+import { ColumnHeaderMenu, FilterBar } from '@/components/grid/filters'
 import { buildWhereClause, buildOrderByClause } from '@/lib/duckdb/filter-builder'
 import type { TimelineHighlight, ManualEditParams, ColumnInfo, ColumnFilter } from '@/types'
 
@@ -543,6 +542,32 @@ export function DataGrid({
     [columns, columnTypeMap, columnPreferences, viewState]
   )
 
+  // Memoize theme to prevent unnecessary re-renders that can break text wrapping cache
+  const gridTheme = useMemo(() => ({
+    bgCell: '#18191c',
+    bgCellMedium: '#28292d',
+    bgHeader: '#1f2024',
+    bgHeaderHasFocus: '#3d3020',
+    bgHeaderHovered: '#252629',
+    textDark: '#e8e6e3',
+    textMedium: '#8b8d93',
+    textLight: '#8b8d93',
+    textHeader: '#e8e6e3',
+    borderColor: '#2d2e33',
+    accentColor: '#e09520',
+    accentFg: '#141517',
+    accentLight: '#3d3020',
+    linkColor: '#e09520',
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+    baseFontStyle: '13px',
+    headerFontStyle: '600 13px',
+    editorFontSize: '13px',
+    // Text wrapping requires these properties
+    lineHeight: 1.4,
+    cellHorizontalPadding: 8,
+    cellVerticalPadding: 3,
+  }), [])
+
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
   // Also re-runs when view state (filters/sort) changes
   useEffect(() => {
@@ -998,10 +1023,11 @@ export function DataGrid({
         displayData: value === null || value === undefined ? '' : String(value),
         allowOverlay: true,
         readonly: !editable,
-        allowWrapping: wordWrapEnabled,
+        // TEMP: Hardcoded true for testing text wrap propagation
+        allowWrapping: true,
       }
     },
-    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled]
+    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId]
   )
 
   // Helper to convert BigInt values to strings for command serialization
@@ -1394,7 +1420,7 @@ export function DataGrid({
   // Using fixed heights for performance with large datasets (400k+ rows)
   // Dynamic per-row calculation is too expensive as it requires O(rows × columns) operations
   const BASE_ROW_HEIGHT = 33
-  const WORD_WRAP_ROW_HEIGHT = 80 // Fixed height to accommodate ~3 lines of wrapped text
+  const WORD_WRAP_ROW_HEIGHT = 120 // Fixed height to accommodate ~5 lines of wrapped text
 
   // Track word wrap changes to force grid remount
   // When row height changes dramatically (33px ↔ 80px), Glide Data Grid's virtualization
@@ -1438,22 +1464,24 @@ export function DataGrid({
   const effectiveRowCount = filteredRowCount ?? rowCount
 
   return (
-    <>
-      {/* Active Filters Bar - shown when filters or sort are active */}
-      {tableId && (viewState?.filters.length || viewState?.sortColumn) && (
-        <ActiveFiltersBar
+    <div className="flex flex-col h-full w-full">
+      {/* Filter Bar - always visible for easy filter access */}
+      {tableId && columnTypes && (
+        <FilterBar
+          columns={columnTypes}
           filters={viewState?.filters ?? []}
           filteredCount={filteredRowCount}
           totalCount={rowCount}
           sortColumn={viewState?.sortColumn ?? null}
           sortDirection={viewState?.sortDirection ?? 'asc'}
+          onSetFilter={handleSetFilter}
           onRemoveFilter={handleRemoveFilter}
           onClearAllFilters={handleClearAllFilters}
           onClearSort={handleClearSort}
         />
       )}
 
-      <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="data-grid">
+      <div ref={containerRef} className="flex-1 min-h-0 w-full gdg-container" data-testid="data-grid">
         {data.length > 0 && (
           <DataGridLib
             key={gridKey}
@@ -1484,27 +1512,8 @@ export function DataGrid({
             width={gridWidth}
             height={gridHeight}
             smoothScrollX
-            smoothScrollY
-            theme={{
-              bgCell: '#18191c',
-              bgCellMedium: '#28292d',
-              bgHeader: '#1f2024',
-              bgHeaderHasFocus: '#3d3020',
-              bgHeaderHovered: '#252629',
-              textDark: '#e8e6e3',
-              textMedium: '#8b8d93',
-              textLight: '#8b8d93',
-              textHeader: '#e8e6e3',
-              borderColor: '#2d2e33',
-              accentColor: '#e09520',
-              accentFg: '#141517',
-              accentLight: '#3d3020',
-              linkColor: '#e09520',
-              fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-              baseFontStyle: '13px',
-              headerFontStyle: '600 13px',
-              editorFontSize: '13px',
-            }}
+            smoothScrollY={false}
+            theme={gridTheme}
           />
         )}
       </div>
@@ -1531,15 +1540,14 @@ export function DataGrid({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="font-medium text-zinc-100 flex items-center gap-2">
+            <div className="font-medium text-zinc-100">
               {headerTooltip.column}
-              <Filter className="h-3 w-3 text-zinc-400" />
             </div>
             <div className="text-zinc-400 mt-0.5">
               Type: <span className="text-amber-400">{headerTooltip.type}</span>
             </div>
             <div className="text-zinc-500 mt-1 text-[10px]">
-              Click to filter/sort • {headerTooltip.description}
+              {headerTooltip.description}
             </div>
           </div>
         </ColumnHeaderMenu>
@@ -1568,6 +1576,6 @@ export function DataGrid({
 
       {/* Confirm Discard Undone Operations Dialog */}
       {editable && <ConfirmDiscardDialog {...confirmDialogProps} />}
-    </>
+    </div>
   )
 }

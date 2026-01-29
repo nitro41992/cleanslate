@@ -1,3 +1,5 @@
 export { ColumnHeaderMenu } from './ColumnHeaderMenu'
 export { FilterFactory } from './FilterFactory'
 export { ActiveFiltersBar } from './ActiveFiltersBar'
+export { FilterBar } from './FilterBar'
+export { FilterCommand } from './FilterCommand'
