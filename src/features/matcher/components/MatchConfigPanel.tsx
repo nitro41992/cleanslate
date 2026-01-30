@@ -97,7 +97,7 @@ export function MatchConfigPanel({
   return (
     <div className="p-4 space-y-6">
       {/* Header Info Card */}
-      <div className="bg-muted/30 rounded-lg p-3">
+      <div className="bg-muted rounded-lg p-3">
         <h2 className="font-medium flex items-center gap-2">
           <Users className="w-4 h-4" />
           Find Duplicates
@@ -155,8 +155,8 @@ export function MatchConfigPanel({
                   className={cn(
                     'flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors',
                     isSelected
-                      ? 'border-l-2 border-l-primary border-primary/30 bg-primary/5'
-                      : 'border-border/50 hover:bg-muted/50'
+                      ? 'border-l-2 border-l-primary border-primary bg-accent'
+                      : 'border-border hover:bg-muted'
                   )}
                   onClick={() => onBlockingStrategyChange(strategy)}
                 >
@@ -181,7 +181,7 @@ export function MatchConfigPanel({
 
                     {/* Strategy Examples */}
                     {info.examples.length > 0 && isSelected && (
-                      <div className="mt-2 pt-2 border-t border-border/50">
+                      <div className="mt-2 pt-2 border-t border-border">
                         <div className="space-y-1">
                           {info.examples.map((ex, i) => (
                             <div key={i} className="flex items-center gap-2 text-xs font-mono">
@@ -228,7 +228,7 @@ export function MatchConfigPanel({
       )}
 
       {/* How it works */}
-      <div className="border-t border-border/50 pt-4">
+      <div className="border-t border-border pt-4">
         <p className="text-xs font-medium text-muted-foreground mb-2">How it works</p>
         <ul className="text-xs text-muted-foreground space-y-1">
           <li className="flex items-start gap-1.5">

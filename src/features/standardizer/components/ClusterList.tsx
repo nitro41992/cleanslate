@@ -68,12 +68,14 @@ export function ClusterList({
     estimateSize: (index) => {
       const cluster = filteredClusters[index]
       const isExpanded = cluster.id === expandedId
-      // Base height + expanded content
+      // Base height + expanded content + gap
       if (isExpanded && cluster.values.length > 1) {
-        return 80 + 32 + cluster.values.length * 44
+        return 80 + 32 + cluster.values.length * 44 + 8
       }
-      return 80
+      return 80 + 8
     },
+    paddingStart: 16,
+    paddingEnd: 16,
     overscan: 5,
   })
 
@@ -81,17 +83,17 @@ export function ClusterList({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Filter Bar - Glass morphic styling */}
-      <div className="p-4 border-b border-border/30 space-y-3 bg-gradient-to-b from-muted/20 to-transparent backdrop-blur-sm">
+      {/* Filter Bar */}
+      <div className="p-4 border-b border-border space-y-3 bg-card">
         {/* Filter Tabs - Pill style */}
         <div className="flex gap-2 items-center">
-          <div className="flex gap-1 p-1 rounded-lg bg-muted/30 ring-1 ring-border/20">
+          <div className="flex gap-1 p-1 rounded-lg bg-muted border border-border">
             <button
               className={cn(
                 'px-3 py-1.5 text-sm rounded-md transition-all duration-200',
                 filter === 'all'
                   ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
               )}
               onClick={() => onFilterChange('all')}
               data-testid="filter-all"
@@ -103,7 +105,7 @@ export function ClusterList({
                 'px-3 py-1.5 text-sm rounded-md transition-all duration-200',
                 filter === 'actionable'
                   ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
               )}
               onClick={() => onFilterChange('actionable')}
               data-testid="filter-actionable"
@@ -131,9 +133,9 @@ export function ClusterList({
           </button>
         </div>
 
-        {/* Search - Enhanced styling */}
+        {/* Search */}
         <div className="relative">
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1 rounded bg-muted/30">
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1 rounded bg-muted">
             <Search className="h-3.5 w-3.5 text-muted-foreground" />
           </div>
           <Input
@@ -141,7 +143,7 @@ export function ClusterList({
             placeholder="Search values..."
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="pl-10 bg-muted/20 border-border/30 focus:border-primary/50 focus:ring-primary/20"
+            className="pl-10 bg-muted border-border focus:border-primary focus:ring-primary/50"
             data-testid="cluster-search"
           />
         </div>
@@ -151,7 +153,7 @@ export function ClusterList({
       {filteredClusters.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
           <div className="text-center space-y-3">
-            <div className="mx-auto w-12 h-12 rounded-xl bg-muted/30 ring-1 ring-border/20 flex items-center justify-center">
+            <div className="mx-auto w-12 h-12 rounded-xl bg-muted border border-border flex items-center justify-center">
               <Layers className="w-6 h-6 text-muted-foreground/60" />
             </div>
             <div>
@@ -164,42 +166,43 @@ export function ClusterList({
         </div>
       ) : (
         <div ref={parentRef} className="flex-1 overflow-auto">
-          <div
-            className="p-4"
-            style={{
-              height: `${virtualizer.getTotalSize()}px`,
-              width: '100%',
-              position: 'relative',
-            }}
-          >
-            {virtualizer.getVirtualItems().map((virtualRow) => {
-              const cluster = filteredClusters[virtualRow.index]
-              return (
-                <div
-                  key={cluster.id}
-                  data-index={virtualRow.index}
-                  ref={virtualizer.measureElement}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    transform: `translateY(${virtualRow.start}px)`,
-                    paddingBottom: '8px',
-                  }}
-                >
-                  <ClusterCard
-                    cluster={cluster}
-                    isExpanded={expandedId === cluster.id}
-                    onToggleExpand={() => onToggleExpand(cluster.id)}
-                    onToggleValue={(valueId) => onToggleValue(cluster.id, valueId)}
-                    onSetMaster={(valueId) => onSetMaster(cluster.id, valueId)}
-                    onSelectAll={() => onSelectAll(cluster.id)}
-                    onDeselectAll={() => onDeselectAll(cluster.id)}
-                  />
-                </div>
-              )
-            })}
+          <div className="px-4">
+            <div
+              style={{
+                height: virtualizer.getTotalSize(),
+                width: '100%',
+                position: 'relative',
+              }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const cluster = filteredClusters[virtualRow.index]
+                return (
+                  <div
+                    key={cluster.id}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      transform: `translateY(${virtualRow.start}px)`,
+                      paddingBottom: 8,
+                    }}
+                  >
+                    <ClusterCard
+                      cluster={cluster}
+                      isExpanded={expandedId === cluster.id}
+                      onToggleExpand={() => onToggleExpand(cluster.id)}
+                      onToggleValue={(valueId) => onToggleValue(cluster.id, valueId)}
+                      onSetMaster={(valueId) => onSetMaster(cluster.id, valueId)}
+                      onSelectAll={() => onSelectAll(cluster.id)}
+                      onDeselectAll={() => onDeselectAll(cluster.id)}
+                    />
+                  </div>
+                )
+              })}
+            </div>
           </div>
         </div>
       )}

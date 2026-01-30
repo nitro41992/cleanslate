@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Star, Link2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Star } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -34,23 +34,20 @@ export function ClusterCard({
     <div
       className={cn(
         'rounded-xl overflow-hidden transition-all duration-200',
-        'bg-gradient-to-br from-card/80 to-card/60 backdrop-blur-sm',
-        'ring-1',
-        isExpanded
-          ? 'ring-primary/40 shadow-lg shadow-primary/5'
-          : 'ring-border/30 hover:ring-border/50',
-        hasSelectedChanges && 'ring-primary/40 shadow-lg shadow-primary/5'
+        'bg-card',
+        'border border-border',
+        hasSelectedChanges && 'shadow-sm'
       )}
       data-testid="cluster-card"
     >
       {/* Header */}
       <button
-        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-muted/30 transition-colors"
+        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-muted transition-colors"
         onClick={onToggleExpand}
       >
         <div className={cn(
           'p-1.5 rounded-md transition-colors',
-          isExpanded ? 'bg-primary/10' : 'bg-muted/50'
+          isExpanded ? 'bg-accent' : 'bg-muted'
         )}>
           {isExpanded ? (
             <ChevronDown className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -59,17 +56,13 @@ export function ClusterCard({
           )}
         </div>
 
-        <div className="p-1.5 rounded-md bg-muted/30">
-          <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-        </div>
-
         <span className="font-medium text-sm truncate flex-1 text-left">
           "{cluster.masterValue || '(empty)'}"
         </span>
 
         <Badge
           variant="secondary"
-          className="shrink-0 bg-muted/50 text-muted-foreground border-0"
+          className="shrink-0 bg-muted text-muted-foreground border-0"
         >
           {cluster.values.length} value{cluster.values.length !== 1 ? 's' : ''}
         </Badge>
@@ -77,7 +70,7 @@ export function ClusterCard({
         {hasSelectedChanges && (
           <Badge
             variant="default"
-            className="shrink-0 bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30"
+            className="shrink-0 bg-primary/20 text-primary border border-primary hover:bg-primary/30"
           >
             {cluster.selectedCount} to change
           </Badge>
@@ -99,9 +92,9 @@ export function ClusterCard({
 
       {/* Expanded Content */}
       {isExpanded && isActionable && (
-        <div className="border-t border-border/20">
+        <div className="border-t border-border">
           {/* Bulk Actions with Progress Bar */}
-          <div className="px-4 py-2.5 flex items-center gap-3 bg-muted/10 text-xs">
+          <div className="px-4 py-2.5 flex items-center gap-3 bg-muted text-xs">
             <button
               onClick={(e) => {
                 e.stopPropagation()
@@ -126,9 +119,9 @@ export function ClusterCard({
 
             {/* Selection Progress Micro-visualization */}
             <div className="flex items-center gap-2">
-              <div className="w-16 h-1.5 rounded-full bg-muted/50 overflow-hidden">
+              <div className="w-16 h-1.5 rounded-full bg-secondary overflow-hidden">
                 <div
-                  className="h-full bg-primary/60 rounded-full transition-all duration-300"
+                  className="h-full bg-primary rounded-full transition-all duration-300"
                   style={{ width: `${selectionRatio * 100}%` }}
                 />
               </div>
@@ -139,7 +132,7 @@ export function ClusterCard({
           </div>
 
           {/* Value List */}
-          <div className="divide-y divide-border/20">
+          <div className="divide-y divide-border">
             {cluster.values.map((value, index) => (
               <ClusterValueRow
                 key={value.id}
@@ -155,7 +148,7 @@ export function ClusterCard({
 
       {/* Single Value Indicator */}
       {isExpanded && !isActionable && (
-        <div className="px-4 py-3 text-sm text-muted-foreground border-t border-border/20 bg-muted/10">
+        <div className="px-4 py-3 text-sm text-muted-foreground border-t border-border bg-muted">
           This cluster has only one unique value - no standardization needed.
         </div>
       )}
@@ -177,8 +170,8 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
         'group px-4 py-2.5 flex items-center gap-3 transition-colors',
         'animate-in fade-in-0 slide-in-from-left-1',
         value.isMaster
-          ? 'bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent'
-          : 'hover:bg-muted/20'
+          ? 'bg-amber-950/40'
+          : 'hover:bg-muted'
       )}
       style={{ animationDelay: `${animationDelay}ms` }}
     >
@@ -205,7 +198,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
 
       <Badge
         variant="outline"
-        className="shrink-0 text-xs tabular-nums bg-transparent border-border/50"
+        className="shrink-0 text-xs tabular-nums bg-transparent border-border"
       >
         {value.count.toLocaleString()}
       </Badge>
@@ -213,7 +206,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
       {value.isMaster ? (
         <Badge
           variant="outline"
-          className="shrink-0 gap-1 bg-transparent border-amber-500/50 text-amber-600 dark:text-amber-500 hover:bg-amber-500/10"
+          className="shrink-0 gap-1 bg-transparent border-amber-700/50 text-amber-600 dark:text-amber-500 hover:bg-amber-900/40"
         >
           <Star className="h-3 w-3 fill-amber-500/30" />
           Master
@@ -225,7 +218,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
           className={cn(
             'h-7 text-xs transition-all duration-200',
             'opacity-0 group-hover:opacity-100',
-            'text-muted-foreground hover:text-primary hover:bg-primary/10'
+            'text-muted-foreground hover:text-primary hover:bg-accent'
           )}
           onClick={(e) => {
             e.stopPropagation()

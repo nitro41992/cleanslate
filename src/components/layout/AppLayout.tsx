@@ -7,6 +7,7 @@ import { FeaturePanel } from './FeaturePanel'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
+import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useUIStore } from '@/stores/uiStore'
 
 interface AppLayoutProps {
@@ -27,6 +28,7 @@ export function AppLayout({
   const setActivePanel = usePreviewStore((s) => s.setActivePanel)
   const openDiffView = useDiffStore((s) => s.openView)
   const openMatchView = useMatcherStore((s) => s.openView)
+  const openStandardizeView = useStandardizerStore((s) => s.openView)
 
   // Keyboard shortcuts for panels
   useEffect(() => {
@@ -39,22 +41,25 @@ export function AppLayout({
         return
       }
 
-      // Number keys 1-5 for panels (2 and 5 open overlays)
+      // Number keys 1-6 for panels (2, 3, and 6 open overlays)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         switch (e.key) {
           case '1':
             setActivePanel('clean')
             break
           case '2':
-            openMatchView()
+            openStandardizeView()
             break
           case '3':
-            setActivePanel('combine')
+            openMatchView()
             break
           case '4':
-            setActivePanel('scrub')
+            setActivePanel('combine')
             break
           case '5':
+            setActivePanel('scrub')
+            break
+          case '6':
             openDiffView()
             break
           case 'Escape':
@@ -66,7 +71,7 @@ export function AppLayout({
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setActivePanel, openDiffView, openMatchView])
+  }, [setActivePanel, openDiffView, openMatchView, openStandardizeView])
 
   // Event listener for storage quota warning to open sidebar
   useEffect(() => {

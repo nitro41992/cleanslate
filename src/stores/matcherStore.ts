@@ -116,7 +116,7 @@ const initialState: MatcherState = {
   definiteThreshold: 95,
   maybeThreshold: 85,
   pairs: [],
-  filter: 'all',
+  filter: 'maybe',
   currentPairIndex: 0,
   selectedIds: new Set(),
   expandedId: null,
@@ -252,7 +252,7 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
       currentPairIndex: 0,
       selectedIds: new Set(),
       expandedId: null,
-      filter: 'all',
+      filter: 'maybe',
       stats: calculateStats(pairs, definiteThreshold, maybeThreshold),
     })
   },

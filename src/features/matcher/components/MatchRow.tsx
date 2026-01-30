@@ -20,22 +20,22 @@ interface MatchRowProps {
 }
 
 const classStyles = {
-  definite: 'ring-green-500/30 bg-gradient-to-br from-green-500/5 to-transparent',
-  maybe: 'ring-yellow-500/30 bg-gradient-to-br from-yellow-500/5 to-transparent',
-  not_match: 'ring-red-500/30 bg-gradient-to-br from-red-500/5 to-transparent',
+  definite: 'border border-green-800/40 bg-green-950/30',
+  maybe: 'border border-yellow-800/40 bg-yellow-950/30',
+  not_match: 'border border-red-800/40 bg-red-950/30',
 }
 
 const similarityBadgeStyles = {
-  definite: 'bg-green-500/15 text-green-400 ring-1 ring-green-500/30',
-  maybe: 'bg-yellow-500/15 text-yellow-400 ring-1 ring-yellow-500/30',
-  not_match: 'bg-red-500/15 text-red-400 ring-1 ring-red-500/30',
+  definite: 'bg-green-950/50 text-green-400 border border-green-700/50',
+  maybe: 'bg-yellow-950/50 text-yellow-400 border border-yellow-700/50',
+  not_match: 'bg-red-950/50 text-red-400 border border-red-700/50',
 }
 
 // Color-coded border styles for field comparison
 const fieldBorderStyles = {
-  exact: 'border-l-2 border-l-green-500/60',
-  similar: 'border-l-2 border-l-amber-500/60',
-  different: 'border-l-2 border-l-red-500/60',
+  exact: 'border-l-2 border-l-green-500',
+  similar: 'border-l-2 border-l-amber-500',
+  different: 'border-l-2 border-l-red-500',
 }
 
 function formatValue(value: unknown): string {
@@ -91,9 +91,9 @@ export const MatchRow = memo(function MatchRow({
 
   return (
     <div className={cn(
-      'rounded-xl transition-all duration-200 ring-1 overflow-hidden',
+      'rounded-xl transition-all duration-200 overflow-hidden',
       classStyles[classification],
-      isExpanded && 'shadow-lg shadow-black/5'
+      isExpanded && 'shadow-lg shadow-black/10'
     )}>
       {/* Summary Row */}
       <div className="flex items-center gap-2 p-3">
@@ -136,7 +136,7 @@ export const MatchRow = memo(function MatchRow({
 
           <div className={cn(
             'p-1.5 rounded-md transition-colors',
-            isExpanded ? 'bg-muted/50' : 'bg-transparent'
+            isExpanded ? 'bg-muted' : 'bg-transparent'
           )}>
             {isExpanded ? (
               <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -146,12 +146,12 @@ export const MatchRow = memo(function MatchRow({
           </div>
         </button>
 
-        {/* Action Buttons - Enhanced with glow */}
+        {/* Action Buttons */}
         <div className="flex items-center gap-1 shrink-0">
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-lg hover:bg-green-500/20 hover:shadow-sm hover:shadow-green-500/20 transition-all"
+            className="h-8 w-8 rounded-lg hover:bg-green-900/40 transition-all"
             onClick={onMerge}
             title="Merge (M)"
           >
@@ -160,7 +160,7 @@ export const MatchRow = memo(function MatchRow({
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-lg hover:bg-red-500/20 hover:shadow-sm hover:shadow-red-500/20 transition-all"
+            className="h-8 w-8 rounded-lg hover:bg-red-900/40 transition-all"
             onClick={onKeepSeparate}
             title="Keep Separate (K)"
           >
@@ -169,30 +169,30 @@ export const MatchRow = memo(function MatchRow({
         </div>
       </div>
 
-      {/* Expanded Detail - Glass morphic container */}
+      {/* Expanded Detail */}
       {isExpanded && (
-        <div className="px-4 pb-4 border-t border-border/20">
+        <div className="px-4 pb-4 border-t border-border/50">
           <div className="pt-4">
             {/* Side-by-Side Comparison with Swap Button */}
             <div className="grid grid-cols-[1fr,auto,1fr] gap-3">
               {/* Left Column - KEEPING or REMOVING */}
               <div
                 className={cn(
-                  'rounded-lg p-3 backdrop-blur-sm ring-1 transition-all',
+                  'rounded-lg p-3 border transition-all',
                   pair.keepRow === 'A'
-                    ? 'bg-green-500/5 ring-green-500/20'
-                    : 'bg-red-500/5 ring-red-500/20'
+                    ? 'bg-green-950/40 border-green-800/30'
+                    : 'bg-red-950/40 border-red-800/30'
                 )}
               >
                 <div className={cn(
                   'text-xs font-semibold mb-3 flex items-center gap-1.5 pb-2 border-b',
                   pair.keepRow === 'A'
-                    ? 'text-green-400 border-green-500/20'
-                    : 'text-red-400 border-red-500/20'
+                    ? 'text-green-400 border-green-800/30'
+                    : 'text-red-400 border-red-800/30'
                 )}>
                   <div className={cn(
                     'p-1 rounded',
-                    pair.keepRow === 'A' ? 'bg-green-500/20' : 'bg-red-500/20'
+                    pair.keepRow === 'A' ? 'bg-green-900/50' : 'bg-red-900/50'
                   )}>
                     {pair.keepRow === 'A' ? (
                       <Check className="w-3 h-3" />
@@ -225,15 +225,15 @@ export const MatchRow = memo(function MatchRow({
                 </div>
               </div>
 
-              {/* Swap Button - Circular glass effect */}
+              {/* Swap Button */}
               <div className="flex items-center justify-center">
                 <Button
                   variant="ghost"
                   size="icon"
                   className={cn(
                     'h-10 w-10 rounded-full',
-                    'bg-muted/30 backdrop-blur-sm ring-1 ring-border/30',
-                    'hover:bg-muted/50 hover:ring-primary/30 hover:shadow-lg hover:shadow-primary/10',
+                    'bg-muted border border-border',
+                    'hover:bg-secondary hover:border-primary',
                     'transition-all duration-200'
                   )}
                   onClick={(e) => {
@@ -249,21 +249,21 @@ export const MatchRow = memo(function MatchRow({
               {/* Right Column - KEEPING or REMOVING */}
               <div
                 className={cn(
-                  'rounded-lg p-3 backdrop-blur-sm ring-1 transition-all',
+                  'rounded-lg p-3 border transition-all',
                   pair.keepRow === 'B'
-                    ? 'bg-green-500/5 ring-green-500/20'
-                    : 'bg-red-500/5 ring-red-500/20'
+                    ? 'bg-green-950/40 border-green-800/30'
+                    : 'bg-red-950/40 border-red-800/30'
                 )}
               >
                 <div className={cn(
                   'text-xs font-semibold mb-3 flex items-center gap-1.5 pb-2 border-b',
                   pair.keepRow === 'B'
-                    ? 'text-green-400 border-green-500/20'
-                    : 'text-red-400 border-red-500/20'
+                    ? 'text-green-400 border-green-800/30'
+                    : 'text-red-400 border-red-800/30'
                 )}>
                   <div className={cn(
                     'p-1 rounded',
-                    pair.keepRow === 'B' ? 'bg-green-500/20' : 'bg-red-500/20'
+                    pair.keepRow === 'B' ? 'bg-green-900/50' : 'bg-red-900/50'
                   )}>
                     {pair.keepRow === 'B' ? (
                       <Check className="w-3 h-3" />
@@ -298,17 +298,17 @@ export const MatchRow = memo(function MatchRow({
             </div>
 
             {/* Summary with legend */}
-            <div className="mt-3 pt-3 border-t border-border/20 flex items-center justify-center gap-4 text-[11px] text-muted-foreground">
+            <div className="mt-3 pt-3 border-t border-border/50 flex items-center justify-center gap-4 text-[11px] text-muted-foreground">
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-green-500/60" />
+                <div className="w-2 h-2 rounded-full bg-green-500" />
                 <span>exact</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-amber-500/60" />
+                <div className="w-2 h-2 rounded-full bg-amber-500" />
                 <span>similar</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-red-500/60" />
+                <div className="w-2 h-2 rounded-full bg-red-500" />
                 <span>different</span>
               </div>
             </div>

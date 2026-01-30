@@ -72,20 +72,17 @@ export function SimilaritySpectrum({
         </span>
       </div>
 
-      {/* Histogram - Enhanced with glow */}
-      <div className="relative h-16 rounded-lg overflow-hidden bg-muted/10 ring-1 ring-border/20">
+      {/* Histogram */}
+      <div className="relative h-16 rounded-lg overflow-hidden bg-muted border border-border">
         <div className="absolute inset-0 flex items-end gap-px p-1">
           {histogram.map((bucket, index) => {
             // Determine bucket color based on thresholds (use midpoint of bucket)
             const bucketMid = bucket.min + (bucket.max - bucket.min) / 2
-            let bgColor = 'bg-red-500/50'
-            let glowColor = 'shadow-red-500/20'
+            let bgColor = 'bg-red-600'
             if (bucketMid >= definiteThreshold) {
-              bgColor = 'bg-green-500/50'
-              glowColor = 'shadow-green-500/20'
+              bgColor = 'bg-green-600'
             } else if (bucketMid >= maybeThreshold) {
-              bgColor = 'bg-yellow-500/50'
-              glowColor = 'shadow-yellow-500/20'
+              bgColor = 'bg-yellow-600'
             }
 
             return (
@@ -94,7 +91,6 @@ export function SimilaritySpectrum({
                 className={cn(
                   'flex-1 rounded-t transition-all duration-200',
                   bgColor,
-                  bucket.count > 0 && `shadow-sm ${glowColor}`,
                   bucket.count === 0 && 'opacity-20'
                 )}
                 style={{ height: `${Math.max(bucket.height, 6)}%` }}
@@ -127,20 +123,20 @@ export function SimilaritySpectrum({
         <span>100%</span>
       </div>
 
-      {/* Zone Legend - Enhanced with pills */}
-      <div className="flex justify-between text-xs pt-3 border-t border-border/20">
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/10 ring-1 ring-red-500/20">
-          <div className="w-2 h-2 rounded-full bg-red-500/60" />
+      {/* Zone Legend */}
+      <div className="flex justify-between text-xs pt-3 border-t border-border">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-950/40 border border-red-800/40">
+          <div className="w-2 h-2 rounded-full bg-red-500" />
           <span className="text-red-400/80">Not Match</span>
           <span className="font-medium text-red-400 tabular-nums">({zoneCounts.notMatch})</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-500/10 ring-1 ring-yellow-500/20">
-          <div className="w-2 h-2 rounded-full bg-yellow-500/60" />
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-950/40 border border-yellow-800/40">
+          <div className="w-2 h-2 rounded-full bg-yellow-500" />
           <span className="text-yellow-400/80">Maybe</span>
           <span className="font-medium text-yellow-400 tabular-nums">({zoneCounts.maybe})</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 ring-1 ring-green-500/20">
-          <div className="w-2 h-2 rounded-full bg-green-500/60" />
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-950/40 border border-green-800/40">
+          <div className="w-2 h-2 rounded-full bg-green-500" />
           <span className="text-green-400/80">Definite</span>
           <span className="font-medium text-green-400 tabular-nums">({zoneCounts.definite})</span>
         </div>

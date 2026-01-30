@@ -19,13 +19,13 @@ export function CategoryFilter({
 }: CategoryFilterProps) {
   const filters: { value: MatchFilter; label: string; count: number; color: string }[] = [
     { value: 'all', label: 'All', count: counts.all, color: '' },
-    { value: 'definite', label: 'Definite', count: counts.definite, color: 'bg-green-500/20 data-[active=true]:bg-green-500/30' },
-    { value: 'maybe', label: 'Maybe', count: counts.maybe, color: 'bg-yellow-500/20 data-[active=true]:bg-yellow-500/30' },
-    { value: 'not_match', label: 'Not Match', count: counts.notMatch, color: 'bg-red-500/20 data-[active=true]:bg-red-500/30' },
+    { value: 'definite', label: 'Definite', count: counts.definite, color: 'bg-green-950/40 data-[active=true]:bg-green-900/50' },
+    { value: 'maybe', label: 'Maybe', count: counts.maybe, color: 'bg-yellow-950/40 data-[active=true]:bg-yellow-900/50' },
+    { value: 'not_match', label: 'Not Match', count: counts.notMatch, color: 'bg-red-950/40 data-[active=true]:bg-red-900/50' },
   ]
 
   return (
-    <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-lg">
+    <div className="flex items-center gap-1 p-1 bg-muted rounded-lg">
       {filters.map((filter) => (
         <button
           key={filter.value}

@@ -116,8 +116,10 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   const virtualizer = useVirtualizer({
     count: filteredPairs.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 72, // Estimated row height in pixels
-    overscan: 5, // Render 5 extra items above/below visible area
+    estimateSize: () => 80, // Estimated row height including gap
+    paddingStart: 16,
+    paddingEnd: 16,
+    overscan: 5,
   })
 
   // Memoized callbacks for MatchRow to prevent unnecessary re-renders
@@ -148,19 +150,23 @@ export function MatchView({ open, onClose }: MatchViewProps) {
         onClose()
       }
 
-      // Keyboard shortcuts for filtering
+      // Keyboard shortcuts for filtering (use letters to avoid conflict with global nav)
       if (pairs.length > 0 && !e.ctrlKey && !e.metaKey) {
         switch (e.key) {
-          case '1':
+          case 'a':
+          case 'A':
             setFilter('all')
             break
-          case '2':
+          case 'd':
+          case 'D':
             setFilter('definite')
             break
-          case '3':
+          case 'y':
+          case 'Y':
             setFilter('maybe')
             break
-          case '4':
+          case 'n':
+          case 'N':
             setFilter('not_match')
             break
         }
@@ -361,11 +367,11 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-background/95 animate-in fade-in-0 duration-200"
+      className="fixed inset-0 z-50 bg-background animate-in fade-in-0 duration-200"
       data-testid="match-view"
     >
       {/* Header */}
-      <header className="h-14 border-b border-border/50 bg-card/50 flex items-center justify-between px-4">
+      <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
@@ -472,7 +478,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
       {/* Main Content */}
       <div className="flex h-[calc(100vh-3.5rem)]">
         {/* Left Config Panel */}
-        <div className="w-80 border-r border-border/50 bg-card/30 shrink-0">
+        <div className="w-80 border-r border-border bg-card shrink-0">
           <ScrollArea className="h-full">
             <MatchConfigPanel
               tables={tables}
@@ -494,7 +500,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           {hasResults ? (
             <>
               {/* Similarity Spectrum */}
-              <div className="p-4 border-b border-border/50 bg-card/30">
+              <div className="p-4 border-b border-border bg-card">
                 <SimilaritySpectrum
                   pairs={pairs}
                   maybeThreshold={maybeThreshold}
@@ -505,7 +511,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               </div>
 
               {/* Category Filter */}
-              <div className="px-4 py-3 border-b border-border/50">
+              <div className="px-4 py-3 border-b border-border">
                 <CategoryFilter
                   currentFilter={filter}
                   onFilterChange={setFilter}
@@ -520,7 +526,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
               {/* Select All */}
               {filteredPairs.length > 0 && (
-                <div className="px-4 py-2 flex items-center gap-2 border-b border-border/50 bg-muted/30">
+                <div className="px-4 py-2 flex items-center gap-2 border-b border-border bg-muted">
                   <Checkbox
                     checked={selectedIds.size === filteredPairs.length && filteredPairs.length > 0}
                     onCheckedChange={toggleSelectAll}
@@ -529,7 +535,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                     Select all ({filteredPairs.length} pairs)
                   </span>
                   <span className="text-xs text-muted-foreground ml-2">
-                    Keyboard: 1=All, 2=Definite, 3=Maybe, 4=Not Match, M=Merge, K=Keep
+                    Keyboard: A=All, D=Definite, Y=Maybe, N=Not Match, M=Merge, K=Keep
                   </span>
                 </div>
               )}
@@ -544,30 +550,30 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                     No pairs match the current filter
                   </div>
                 ) : (
-                  <div
-                    className="p-4"
-                    style={{
-                      height: `${virtualizer.getTotalSize()}px`,
-                      width: '100%',
-                      position: 'relative',
-                    }}
-                  >
-                    {virtualizer.getVirtualItems().map((virtualRow) => {
-                      const pair = filteredPairs[virtualRow.index]
-                      return (
-                        <div
-                          key={pair.id}
-                          data-index={virtualRow.index}
-                          ref={virtualizer.measureElement}
-                          style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            transform: `translateY(${virtualRow.start}px)`,
-                            paddingBottom: '8px',
-                          }}
-                        >
+                  <div className="px-4">
+                    <div
+                      style={{
+                        height: virtualizer.getTotalSize(),
+                        width: '100%',
+                        position: 'relative',
+                      }}
+                    >
+                      {virtualizer.getVirtualItems().map((virtualRow) => {
+                        const pair = filteredPairs[virtualRow.index]
+                        return (
+                          <div
+                            key={pair.id}
+                            data-index={virtualRow.index}
+                            ref={virtualizer.measureElement}
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              transform: `translateY(${virtualRow.start}px)`,
+                              paddingBottom: 8,
+                            }}
+                          >
                           <MatchRow
                             pair={pair}
                             matchColumn={matchColumn || ''}
@@ -583,6 +589,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                         </div>
                       )
                     })}
+                    </div>
                   </div>
                 )}
               </div>
@@ -591,7 +598,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               {selectedIds.size > 0 && (
                 <>
                   <Separator />
-                  <div className="p-4 flex items-center gap-3 bg-muted/30">
+                  <div className="p-4 flex items-center gap-3 bg-muted">
                     <span className="text-sm font-medium">
                       {selectedIds.size} selected
                     </span>
@@ -621,7 +628,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               {hasReviewed && selectedIds.size === 0 && (
                 <>
                   <Separator />
-                  <div className="p-4 flex items-center gap-3 bg-green-500/5">
+                  <div className="p-4 flex items-center gap-3 bg-green-950/30">
                     <span className="text-sm">
                       Ready to apply {stats.merged} merge{stats.merged !== 1 ? 's' : ''}
                     </span>
@@ -638,7 +645,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
             /* Empty State */
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
               <div className="text-center max-w-md">
-                <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-6">
+                <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-6">
                   <span className="text-4xl">🔍</span>
                 </div>
                 <h2 className="text-xl font-semibold text-foreground mb-2">

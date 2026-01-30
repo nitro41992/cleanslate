@@ -85,13 +85,15 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
         onClose()
       }
 
-      // Keyboard shortcuts for filtering
+      // Keyboard shortcuts for filtering (use letters to avoid conflict with global nav)
       if (clusters.length > 0 && !e.ctrlKey && !e.metaKey) {
         switch (e.key) {
-          case '1':
+          case 'a':
+          case 'A':
             setFilter('all')
             break
-          case '2':
+          case 't':
+          case 'T':
             setFilter('actionable')
             break
         }
@@ -193,11 +195,11 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-background/95 animate-in fade-in-0 duration-200"
+      className="fixed inset-0 z-50 bg-background animate-in fade-in-0 duration-200"
       data-testid="standardize-view"
     >
       {/* Header */}
-      <header className="h-14 border-b border-border/50 bg-card/50 flex items-center justify-between px-4">
+      <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
@@ -290,7 +292,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       {/* Main Content */}
       <div className="flex h-[calc(100vh-3.5rem)]">
         {/* Left Config Panel */}
-        <div className="w-80 border-r border-border/50 bg-card/30 shrink-0">
+        <div className="w-80 border-r border-border bg-card shrink-0">
           <ScrollArea className="h-full">
             <StandardizeConfigPanel
               tables={tables}
@@ -336,7 +338,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
               {hasSelectedChanges && (
                 <>
                   <Separator />
-                  <div className="p-4 flex items-center gap-3 bg-primary/5">
+                  <div className="p-4 flex items-center gap-3 bg-accent">
                     <span className="text-sm">
                       Ready to standardize {stats.selectedValues} value{stats.selectedValues !== 1 ? 's' : ''}
                     </span>
@@ -353,7 +355,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
             /* Empty State */
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
               <div className="text-center max-w-md">
-                <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-6">
+                <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-6">
                   <span className="text-4xl">🔗</span>
                 </div>
                 <h2 className="text-xl font-semibold text-foreground mb-2">
