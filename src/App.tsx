@@ -141,6 +141,25 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [undo, redo])
 
+  // Keyboard shortcut: W to toggle word wrap (when not in an input)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input/textarea
+      const target = e.target as HTMLElement
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+
+      if (!isTyping && e.key.toLowerCase() === 'w' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (activeTable) {
+          e.preventDefault()
+          toggleWordWrap(activeTable.id)
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [activeTable, toggleWordWrap])
+
   // Listen for file upload trigger from header
   useEffect(() => {
     const handler = () => fileInputRef.current?.click()
@@ -346,10 +365,15 @@ function App() {
                         <WrapText className="w-4 h-4" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[200px]">
-                      {isWordWrapEnabled(activeTable.id)
-                        ? 'Disable word wrap'
-                        : 'Enable word wrap (hides edit indicators)'}
+                    <TooltipContent side="bottom" sideOffset={4}>
+                      <p className="text-xs">
+                        {isWordWrapEnabled(activeTable.id)
+                          ? 'Disable word wrap'
+                          : 'Enable word wrap (hides edit indicators)'}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Press <kbd className="px-1 py-0.5 bg-muted rounded text-[10px]">W</kbd> to toggle
+                      </p>
                     </TooltipContent>
                   </Tooltip>
                 </div>
