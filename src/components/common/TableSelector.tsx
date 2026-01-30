@@ -19,6 +19,8 @@ import { useState } from 'react'
 import { duplicateTable } from '@/lib/duckdb'
 import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { formatNumber } from '@/lib/utils'
+import { useDuckDB } from '@/hooks/useDuckDB'
+import { ConfirmDeleteTableDialog } from './ConfirmDeleteTableDialog'
 
 interface TableSelectorProps {
   onNewTable?: () => void
@@ -28,12 +30,15 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
-  const removeTable = useTableStore((s) => s.removeTable)
   const checkpointTable = useTableStore((s) => s.checkpointTable)
 
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
+  const { deleteTable } = useDuckDB()
 
   const [checkpointLoading, setCheckpointLoading] = useState<string | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [tableToDelete, setTableToDelete] = useState<{ id: string; name: string; rowCount: number } | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   const activeTable = tables.find((t) => t.id === activeTableId)
 
@@ -78,15 +83,35 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
     }
   }
 
-  const handleDelete = (tableId: string, e: React.MouseEvent) => {
+  const handleDeleteClick = (table: { id: string; name: string; rowCount: number }, e: React.MouseEvent) => {
     e.stopPropagation()
-    removeTable(tableId)
-    if (activeTableId === tableId) {
-      setPreviewActiveTable(null, null)
+    setTableToDelete(table)
+    setDeleteConfirmOpen(true)
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!tableToDelete) return
+
+    setIsDeleting(true)
+    try {
+      await deleteTable(tableToDelete.id, tableToDelete.name)
+      if (activeTableId === tableToDelete.id) {
+        setPreviewActiveTable(null, null)
+      }
+    } finally {
+      setIsDeleting(false)
+      setDeleteConfirmOpen(false)
+      setTableToDelete(null)
     }
   }
 
+  const handleDeleteCancel = () => {
+    setDeleteConfirmOpen(false)
+    setTableToDelete(null)
+  }
+
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -180,7 +205,7 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
                       variant="ghost"
                       size="icon"
                       className="h-6 w-6"
-                      onClick={(e) => handleDelete(table.id, e)}
+                      onClick={(e) => handleDeleteClick({ id: table.id, name: table.name, rowCount: table.rowCount }, e)}
                     >
                       <Trash2 className="w-3 h-3" />
                     </Button>
@@ -193,5 +218,16 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+
+    <ConfirmDeleteTableDialog
+      open={deleteConfirmOpen}
+      onOpenChange={setDeleteConfirmOpen}
+      tableName={tableToDelete?.name || ''}
+      rowCount={tableToDelete?.rowCount || 0}
+      onConfirm={handleDeleteConfirm}
+      onCancel={handleDeleteCancel}
+      isDeleting={isDeleting}
+    />
+    </>
   )
 }

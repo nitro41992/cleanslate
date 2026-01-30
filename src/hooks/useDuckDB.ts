@@ -432,7 +432,20 @@ export function useDuckDB() {
 
   const deleteTable = useCallback(
     async (tableId: string, tableName: string) => {
+      // 1. Drop DuckDB table (releases WASM heap memory)
       await dropTable(tableName)
+
+      // 2. Delete OPFS Parquet file (releases disk storage)
+      try {
+        const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+        await deleteParquetSnapshot(tableName)
+        console.log(`[DuckDB] Deleted OPFS Parquet for: ${tableName}`)
+      } catch {
+        // Expected if table was never persisted to OPFS
+        console.log(`[DuckDB] No OPFS Parquet to delete for: ${tableName}`)
+      }
+
+      // 3. Remove from store (triggers timeline cleanup + app-state.json save)
       removeTable(tableId)
       addAuditEntry(tableId, tableName, 'Table Deleted', `Removed table ${tableName}`)
 

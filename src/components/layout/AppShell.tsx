@@ -36,6 +36,8 @@ import { duplicateTable } from '@/lib/duckdb'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
 import { formatNumber } from '@/lib/utils'
 import { usePersistence } from '@/hooks/usePersistence'
+import { useDuckDB } from '@/hooks/useDuckDB'
+import { ConfirmDeleteTableDialog } from '@/components/common/ConfirmDeleteTableDialog'
 
 /**
  * Format a date as a relative time string (e.g., "just now", "2 min ago")
@@ -97,15 +99,42 @@ export function AppShell({ children }: AppShellProps) {
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
-  const removeTable = useTableStore((s) => s.removeTable)
   const checkpointTable = useTableStore((s) => s.checkpointTable)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
   const lastSavedAt = useUIStore((s) => s.lastSavedAt)
 
   const { saveAllTables, isRestoring } = usePersistence()
+  const { deleteTable } = useDuckDB()
 
   const [checkpointLoading, setCheckpointLoading] = useState<string | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [tableToDelete, setTableToDelete] = useState<{ id: string; name: string; rowCount: number } | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+
+  // Delete handlers
+  const handleDeleteClick = (table: { id: string; name: string; rowCount: number }) => {
+    setTableToDelete(table)
+    setDeleteConfirmOpen(true)
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!tableToDelete) return
+
+    setIsDeleting(true)
+    try {
+      await deleteTable(tableToDelete.id, tableToDelete.name)
+    } finally {
+      setIsDeleting(false)
+      setDeleteConfirmOpen(false)
+      setTableToDelete(null)
+    }
+  }
+
+  const handleDeleteCancel = () => {
+    setDeleteConfirmOpen(false)
+    setTableToDelete(null)
+  }
 
   // Checkpoint handler - create a snapshot of the current table state
   const handleCheckpoint = async (tableId: string) => {
@@ -301,7 +330,7 @@ export function AppShell({ children }: AppShellProps) {
                                 className="h-6 w-6"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  removeTable(table.id)
+                                  handleDeleteClick({ id: table.id, name: table.name, rowCount: table.rowCount })
                                 }}
                               >
                                 <Trash2 className="w-3 h-3" />
@@ -404,6 +433,15 @@ export function AppShell({ children }: AppShellProps) {
         </main>
       </div>
 
+      <ConfirmDeleteTableDialog
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        tableName={tableToDelete?.name || ''}
+        rowCount={tableToDelete?.rowCount || 0}
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+        isDeleting={isDeleting}
+      />
     </TooltipProvider>
   )
 }
