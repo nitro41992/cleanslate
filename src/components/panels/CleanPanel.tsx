@@ -144,7 +144,8 @@ export function CleanPanel() {
     if (selectedTransform.requiresColumn && !selectedColumn) return false
     if (selectedTransform.params) {
       for (const param of selectedTransform.params) {
-        if (!params[param.name]) return false
+        // Params are required by default, unless explicitly marked required: false
+        if (param.required !== false && !params[param.name]) return false
       }
     }
     return true

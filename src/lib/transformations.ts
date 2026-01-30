@@ -53,6 +53,7 @@ export interface TransformationDefinition {
     label: string
     options?: { value: string; label: string }[]
     default?: string
+    required?: boolean
   }[]
   examples?: TransformationExample[]
   hints?: string[]
@@ -155,7 +156,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     requiresColumn: true,
     params: [
       { name: 'find', type: 'text', label: 'Find' },
-      { name: 'replace', type: 'text', label: 'Replace with' },
+      { name: 'replace', type: 'text', label: 'Replace with', required: false },
       {
         name: 'caseSensitive',
         type: 'select',
@@ -164,7 +165,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
           { value: 'true', label: 'Yes' },
           { value: 'false', label: 'No' },
         ],
-        default: 'true',
+        default: 'false',
       },
       {
         name: 'matchType',
@@ -398,7 +399,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
         ],
         default: 'delimiter',
       },
-      { name: 'delimiter', type: 'text', label: 'Delimiter', default: ' ' },
+      { name: 'delimiter', type: 'text', label: 'Delimiter', default: '' },
       { name: 'position', type: 'number', label: 'Split Position', default: '3' },
       { name: 'length', type: 'number', label: 'Character Length', default: '2' },
     ],
