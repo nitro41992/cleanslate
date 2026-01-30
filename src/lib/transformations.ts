@@ -375,11 +375,23 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     description: 'Create age column from date of birth',
     icon: '🎂',
     requiresColumn: true,
+    params: [
+      {
+        name: 'precision',
+        type: 'select',
+        label: 'Precision',
+        options: [
+          { value: 'years', label: 'Whole Years' },
+          { value: 'decimal', label: 'Decimal' },
+        ],
+        default: 'years',
+      },
+    ],
     examples: [
       { before: '"1990-05-15"', after: 'age: 34' },
       { before: '"01/15/2000"', after: 'age: 24' },
     ],
-    hints: ['Creates new "age" column', 'Supports multiple date formats'],
+    hints: ['Creates new "age" column', 'Supports multiple date formats', 'Decimal shows fractional years'],
   },
   {
     id: 'split_column',
@@ -416,7 +428,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     icon: '🔗',
     requiresColumn: false,
     params: [
-      { name: 'columns', type: 'text', label: 'Columns (comma-separated)' },
+      { name: 'columns', type: 'text', label: 'Columns' },
       { name: 'delimiter', type: 'text', label: 'Separator', default: ' ' },
       { name: 'newColumnName', type: 'text', label: 'New column name', default: 'combined' },
       {

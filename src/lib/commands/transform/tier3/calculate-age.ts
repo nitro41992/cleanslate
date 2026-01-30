@@ -8,13 +8,15 @@
 import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
-import { buildAgeExpression, buildDateParseSuccessPredicate } from '../../utils/date'
+import { buildAgeExpression, buildDateParseSuccessPredicate, type AgePrecision } from '../../utils/date'
 import { runBatchedTransform } from '../../batch-utils'
 
 export interface CalculateAgeParams extends BaseTransformParams {
   column: string
   /** Name for the new age column (default: 'age') */
   newColumnName?: string
+  /** Precision for age calculation: 'years' (default) or 'decimal' */
+  precision?: AgePrecision
 }
 
 export class CalculateAgeCommand extends Tier3TransformCommand<CalculateAgeParams> {
@@ -25,9 +27,10 @@ export class CalculateAgeCommand extends Tier3TransformCommand<CalculateAgeParam
     const tableName = ctx.table.name
     const col = this.params.column
     const newColName = this.params.newColumnName ?? 'age'
+    const precision = this.params.precision ?? 'years'
 
     // Build the age calculation expression
-    const ageExpr = buildAgeExpression(col)
+    const ageExpr = buildAgeExpression(col, precision)
 
     // Check if batching is needed
     if (ctx.batchMode) {

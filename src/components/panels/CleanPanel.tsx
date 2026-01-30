@@ -12,7 +12,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { ColumnCombobox } from '@/components/ui/combobox'
+import { MultiColumnCombobox } from '@/components/ui/multi-column-combobox'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { TransformPreview } from '@/components/clean/TransformPreview'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -57,6 +59,7 @@ export function CleanPanel() {
 
   // Keyboard navigation state
   const [columnComboboxOpen, setColumnComboboxOpen] = useState(false)
+  const [multiColumnComboboxOpen, setMultiColumnComboboxOpen] = useState(false)
   const pickerRef = useRef<GroupedTransformationPickerRef>(null)
   const applyButtonRef = useRef<HTMLButtonElement>(null)
   // Use a more flexible approach for first param - store the element directly
@@ -88,6 +91,9 @@ export function CleanPanel() {
     if (transform.requiresColumn) {
       // Small delay to let the UI render
       setTimeout(() => setColumnComboboxOpen(true), 50)
+    } else if (transform.id === 'combine_columns') {
+      // Auto-open multi-column combobox for combine_columns
+      setTimeout(() => setMultiColumnComboboxOpen(true), 50)
     } else if (transform.params && transform.params.length > 0) {
       // Focus first param input
       setTimeout(() => firstParamElementRef.current?.focus(), 50)
@@ -340,7 +346,7 @@ export function CleanPanel() {
 
       <div className="flex h-full">
         {/* Left Column: Picker (scrollable) */}
-        <div className="w-[280px] border-r border-border/50 flex flex-col">
+        <div className="w-[340px] border-r border-border/50 flex flex-col">
           <ScrollArea className="flex-1">
             <div className="p-4">
               <GroupedTransformationPicker
@@ -481,6 +487,17 @@ export function CleanPanel() {
                     </div>
                   )}
 
+                  {/* Live Preview */}
+                  {activeTable && selectedTransform.id !== 'custom_sql' && (
+                    <TransformPreview
+                      tableName={activeTable.name}
+                      column={selectedColumn || undefined}
+                      transformType={selectedTransform.id}
+                      params={params}
+                      sampleCount={10}
+                    />
+                  )}
+
                   {/* Column Selector */}
                   {selectedTransform.requiresColumn && (
                     <div className="space-y-2">
@@ -556,6 +573,20 @@ export function CleanPanel() {
                             Use DuckDB SQL syntax. Column names must be double-quoted.
                           </p>
                         </div>
+                      ) : selectedTransform.id === 'combine_columns' && param.name === 'columns' ? (
+                        /* Multi-select column picker for combine_columns */
+                        <MultiColumnCombobox
+                          columns={columns}
+                          value={(params[param.name] || '').split(',').filter(Boolean)}
+                          onValueChange={(vals) =>
+                            setParams({ ...params, [param.name]: vals.join(',') })
+                          }
+                          placeholder="Select columns to combine..."
+                          disabled={isApplying}
+                          minColumns={2}
+                          open={multiColumnComboboxOpen}
+                          onOpenChange={setMultiColumnComboboxOpen}
+                        />
                       ) : (
                         <Input
                           ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}

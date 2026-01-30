@@ -238,11 +238,25 @@ export function buildDateFormatExpression(
 }
 
 /**
+ * Age precision types
+ */
+export type AgePrecision = 'years' | 'decimal'
+
+/**
  * Build an age calculation expression from a date column
  * Returns age in years using DATE_DIFF
+ *
+ * @param column - The column name containing dates
+ * @param precision - 'years' for whole years, 'decimal' for fractional years
  */
-export function buildAgeExpression(column: string): string {
+export function buildAgeExpression(column: string, precision: AgePrecision = 'years'): string {
   const parseExpr = buildDateParseExpression(column)
+
+  if (precision === 'decimal') {
+    // Calculate fractional years using days divided by average year length (365.25)
+    return `ROUND(DATE_DIFF('day', ${parseExpr}, CURRENT_DATE) / 365.25, 1)`
+  }
+
   return `DATE_DIFF('year', ${parseExpr}, CURRENT_DATE)`
 }
 
