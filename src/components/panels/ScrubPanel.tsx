@@ -596,7 +596,8 @@ export function ScrubPanel() {
               <Label>Preview (First 10 rows)</Label>
               <div className="max-h-40 overflow-auto border rounded-lg p-2 bg-muted/30">
                 <pre className="text-xs">
-                  {JSON.stringify(previewData.slice(0, 3), null, 2)}
+                  {JSON.stringify(previewData.slice(0, 3), (_, v) =>
+                    typeof v === 'bigint' ? v.toString() : v, 2)}
                 </pre>
               </div>
             </div>
