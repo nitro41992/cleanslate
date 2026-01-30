@@ -44,9 +44,13 @@ export function ClusterList({
   const filteredClusters = useMemo(() => {
     let result = clusters
 
-    // Filter by actionable
+    // Filter by type
     if (filter === 'actionable') {
+      // Actionable = clusters with >1 values (can be standardized)
       result = result.filter((c) => c.values.length > 1)
+    } else if (filter === 'all') {
+      // "All" shows non-actionable clusters (single values, already unique)
+      result = result.filter((c) => c.values.length === 1)
     }
 
     // Filter by search query
@@ -80,6 +84,7 @@ export function ClusterList({
   })
 
   const actionableCount = clusters.filter((c) => c.values.length > 1).length
+  const uniqueCount = clusters.filter((c) => c.values.length === 1).length
 
   return (
     <div className="flex flex-col h-full">
@@ -89,6 +94,7 @@ export function ClusterList({
         <div className="flex gap-2 items-center">
           <div className="flex gap-1 p-1 rounded-lg bg-muted border border-border">
             <button
+              type="button"
               className={cn(
                 'px-3 py-1.5 text-sm rounded-md transition-all duration-200',
                 filter === 'all'
@@ -98,9 +104,10 @@ export function ClusterList({
               onClick={() => onFilterChange('all')}
               data-testid="filter-all"
             >
-              All ({clusters.length})
+              Unique ({uniqueCount})
             </button>
             <button
+              type="button"
               className={cn(
                 'px-3 py-1.5 text-sm rounded-md transition-all duration-200',
                 filter === 'actionable'
@@ -165,7 +172,7 @@ export function ClusterList({
           </div>
         </div>
       ) : (
-        <div ref={parentRef} className="flex-1 overflow-auto">
+        <div key={`${filter}-${filteredClusters.length}`} ref={parentRef} className="flex-1 overflow-auto">
           <div className="px-4">
             <div
               style={{

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Star } from 'lucide-react'
+import { ChevronDown, ChevronRight, Star, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -30,6 +30,12 @@ export function ClusterCard({
   const selectableCount = cluster.values.filter((v) => !v.isMaster).length
   const selectionRatio = selectableCount > 0 ? selectedCount / selectableCount : 0
 
+  // Render compact card for unique (single-value) clusters
+  if (!isActionable) {
+    return <UniqueValueCard cluster={cluster} />
+  }
+
+  // Render full actionable card for clusters with multiple values
   return (
     <div
       className={cn(
@@ -91,7 +97,7 @@ export function ClusterCard({
       </div>
 
       {/* Expanded Content */}
-      {isExpanded && isActionable && (
+      {isExpanded && (
         <div className="border-t border-border">
           {/* Bulk Actions with Progress Bar */}
           <div className="px-4 py-2.5 flex items-center gap-3 bg-muted text-xs">
@@ -145,13 +151,45 @@ export function ClusterCard({
           </div>
         </div>
       )}
+    </div>
+  )
+}
 
-      {/* Single Value Indicator */}
-      {isExpanded && !isActionable && (
-        <div className="px-4 py-3 text-sm text-muted-foreground border-t border-border bg-muted">
-          This cluster has only one unique value - no standardization needed.
-        </div>
+/**
+ * Compact card for unique (single-value) clusters.
+ * These are read-only informational items showing values that have no duplicates.
+ */
+function UniqueValueCard({ cluster }: { cluster: ValueCluster }) {
+  const value = cluster.values[0]
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg overflow-hidden',
+        'bg-muted/30',
+        'border border-border/50',
       )}
+      data-testid="cluster-card"
+    >
+      <div className="px-3 py-2 flex items-center gap-2.5">
+        {/* Verified indicator */}
+        <div className="p-1 rounded bg-emerald-500/10 shrink-0">
+          <Check className="h-3 w-3 text-emerald-500" />
+        </div>
+
+        {/* Value */}
+        <span
+          className="text-sm text-muted-foreground truncate flex-1"
+          title={cluster.masterValue || '(empty)'}
+        >
+          {cluster.masterValue || '(empty)'}
+        </span>
+
+        {/* Row count */}
+        <span className="text-xs text-muted-foreground/70 tabular-nums shrink-0">
+          {value?.count.toLocaleString() ?? 0} rows
+        </span>
+      </div>
     </div>
   )
 }
