@@ -927,6 +927,14 @@ export function usePersistence() {
           continue
         }
 
+        // Skip tables currently being saved - prevents redundant saves when
+        // subscription fires multiple times during a single save operation
+        if (saveInProgress.has(table.name)) {
+          knownTableIds.add(table.id)
+          lastDataVersions.set(table.id, currentVersion)
+          continue
+        }
+
         if (isNewTable || hasDataChanged) {
           tablesToSave.push({ id: table.id, name: table.name, rowCount: table.rowCount })
           knownTableIds.add(table.id)
