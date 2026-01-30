@@ -8,6 +8,7 @@ import {
   getTableData,
   getTableDataWithRowIds,
   getTableDataWithKeyset,
+  getTableColumns,
   getFilteredRowCount,
   exportToCSV,
   dropTable,
@@ -29,7 +30,7 @@ import { useAuditStore } from '@/stores/auditStore'
 import { useUIStore } from '@/stores/uiStore'
 import { toast } from '@/hooks/use-toast'
 import { generateId } from '@/lib/utils'
-import type { ColumnInfo, CSVIngestionSettings } from '@/types'
+import type { CSVIngestionSettings } from '@/types'
 
 // ===== SINGLETON INITIALIZATION =====
 // This ensures DuckDB + state restoration only runs ONCE regardless of how many
@@ -228,11 +229,9 @@ export function useDuckDB() {
           throw new Error(`Unsupported file type: ${ext}`)
         }
 
-        const columns: ColumnInfo[] = result.columns.map((name) => ({
-          name,
-          type: 'VARCHAR',
-          nullable: true,
-        }))
+        // Query actual column types from DuckDB schema instead of hardcoding VARCHAR
+        // This ensures DATE, TIMESTAMP, INTEGER etc. are properly typed for grid formatting
+        const columns = await getTableColumns(tableName)
 
         // Generate tableId BEFORE adding to store so we can create timeline/snapshot first
         const tableId = generateId()

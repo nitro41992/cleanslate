@@ -235,22 +235,45 @@ function formatValueByType(value: unknown, columnType: string | undefined): stri
 
   const baseType = columnType?.toUpperCase().replace(/\(.*\)/, '') ?? ''
 
-  // Handle DATE type (DuckDB returns days since Unix epoch)
+  // Handle DATE type
+  // DuckDB may return dates as:
+  // - Days since epoch (small numbers like 19000-20000 for recent dates)
+  // - Milliseconds since epoch (13 digits like 1706659200000)
+  // - Microseconds since epoch (16 digits)
   if (baseType === 'DATE') {
-    if (typeof value === 'number') {
-      // Validate: days since epoch should be reasonable (1970-01-01 to ~2200)
-      // Valid range: 0 to ~84000 days (about 230 years from 1970)
-      if (value >= -25567 && value <= 100000) {
-        try {
-          // Days since epoch -> milliseconds -> Date object
-          const date = new Date(value * 86400000)
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      try {
+        const numValue = Number(value)
+        let ms: number
+
+        // Detect the unit based on magnitude
+        if (Math.abs(numValue) >= 1e15) {
+          // Microseconds range (16+ digits) - divide by 1000
+          ms = numValue / 1000
+        } else if (Math.abs(numValue) >= 1e12) {
+          // Milliseconds range (13-15 digits) - use directly
+          ms = numValue
+        } else if (Math.abs(numValue) >= 1e9) {
+          // Seconds range (10-12 digits) - multiply by 1000
+          ms = numValue * 1000
+        } else if (Math.abs(numValue) >= -25567 && Math.abs(numValue) <= 100000) {
+          // Days since epoch range - convert to milliseconds
+          ms = numValue * 86400000
+        } else {
+          // Unknown format - return as string
+          return String(value)
+        }
+
+        // Validate: ms should be within JS Date range (roughly 1900 to 2200)
+        if (ms >= -2208988800000 && ms <= 7289654400000) {
+          const date = new Date(ms)
           if (!isNaN(date.getTime())) {
-            // Format as YYYY-MM-DD
+            // Format as YYYY-MM-DD (date only, no time)
             return date.toISOString().split('T')[0]
           }
-        } catch {
-          // Fall through to String(value)
         }
+      } catch {
+        // Fall through to String(value)
       }
     }
     return String(value)
