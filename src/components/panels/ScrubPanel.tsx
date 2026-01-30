@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Shield, Loader2, Key, Play, X, Info, Lock, EyeOff, Hash, Calendar, Shuffle } from 'lucide-react'
+import { useState, useCallback } from 'react'
+import { Shield, Loader2, Key, Play, X, Info, Lock, EyeOff, Hash, Calendar, Shuffle, Download, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -18,7 +18,9 @@ import { useTableStore } from '@/stores/tableStore'
 import { useScrubberStore } from '@/stores/scrubberStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { ScrubPreview } from '@/components/scrub/ScrubPreview'
-import { OBFUSCATION_METHODS } from '@/lib/obfuscation'
+import { OBFUSCATION_METHODS, obfuscateValue } from '@/lib/obfuscation'
+import { useDuckDB } from '@/hooks/useDuckDB'
+import type { KeyMapEntry } from '@/stores/scrubberStore'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
@@ -80,6 +82,8 @@ export function ScrubPanel() {
     rules,
     keyMapEnabled,
     keyMap,
+    keyMapDownloaded,
+    isGeneratingKeyMap,
     isProcessing,
     setTable,
     setSecret,
@@ -87,9 +91,14 @@ export function ScrubPanel() {
     removeRule,
     updateRule,
     setKeyMapEnabled,
+    setColumnKeyMap,
     clearKeyMap,
+    setKeyMapDownloaded,
+    setIsGeneratingKeyMap,
     setIsProcessing,
   } = useScrubberStore()
+
+  const { runQuery } = useDuckDB()
 
   // Local state for the selected rule being edited
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
@@ -134,6 +143,116 @@ export function ScrubPanel() {
     updateRule(selectedColumn, method)
   }
 
+  /**
+   * Generate key map for all configured rules.
+   * Queries DISTINCT values for each column and computes obfuscated versions.
+   */
+  const generateKeyMap = useCallback(async () => {
+    if (!tableName || rules.length === 0) return
+
+    // Filter to supported rules only
+    const supportedRules = rules.filter((r) => SUPPORTED_COMMAND_METHODS.has(r.method))
+    if (supportedRules.length === 0) {
+      toast.error('No Supported Rules', {
+        description: 'Add columns with hash, mask, redact, or year_only methods to generate a key map',
+      })
+      return
+    }
+
+    // Validate hash secret if needed
+    const MIN_SECRET_LENGTH = 5
+    const hasHashRule = supportedRules.some((r) => r.method === 'hash')
+    if (hasHashRule && (!secret || secret.length < MIN_SECRET_LENGTH)) {
+      toast.error('Secret Required', {
+        description: 'Enter a secret (min 5 characters) for hash method before generating key map',
+      })
+      return
+    }
+
+    setIsGeneratingKeyMap(true)
+    clearKeyMap()
+
+    try {
+      // Process each rule sequentially
+      for (const rule of supportedRules) {
+        // Query distinct non-null values for this column
+        const distinctQuery = `SELECT DISTINCT "${rule.column}" AS val FROM "${tableName}" WHERE "${rule.column}" IS NOT NULL`
+        const distinctValues = await runQuery(distinctQuery) as Array<{ val: unknown }>
+
+        // Generate obfuscated values for each
+        const entries: KeyMapEntry[] = []
+        for (const row of distinctValues) {
+          const originalValue = String(row.val)
+          const obfuscatedValue = await obfuscateValue(originalValue, rule.method, secret)
+          entries.push({ original: originalValue, obfuscated: obfuscatedValue })
+        }
+
+        // Store in key map
+        setColumnKeyMap(rule.column, entries)
+      }
+
+      toast.success('Key Map Generated', {
+        description: `Generated mappings for ${supportedRules.length} column(s)`,
+      })
+    } catch (error) {
+      console.error('Key map generation failed:', error)
+      toast.error('Generation Failed', {
+        description: error instanceof Error ? error.message : 'Failed to generate key map',
+      })
+      clearKeyMap()
+    } finally {
+      setIsGeneratingKeyMap(false)
+    }
+  }, [tableName, rules, secret, runQuery, setColumnKeyMap, clearKeyMap, setIsGeneratingKeyMap])
+
+  /**
+   * Download the key map as a CSV file.
+   * Format: column,original,obfuscated
+   */
+  const downloadKeyMap = useCallback(() => {
+    if (keyMap.size === 0) return
+
+    const csvLines = ['column,original,obfuscated']
+
+    // Sort columns for consistent output
+    const sortedColumns = Array.from(keyMap.keys()).sort()
+
+    for (const column of sortedColumns) {
+      const entries = keyMap.get(column) || []
+      for (const entry of entries) {
+        // Escape CSV values (double quotes -> two double quotes, wrap in quotes if needed)
+        const escapeCSV = (val: string) => {
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            return `"${val.replace(/"/g, '""')}"`
+          }
+          return val
+        }
+        csvLines.push(`${escapeCSV(column)},${escapeCSV(entry.original)},${escapeCSV(entry.obfuscated)}`)
+      }
+    }
+
+    const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `keymap_${tableName}_${new Date().toISOString().split('T')[0]}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    // Count total entries
+    let totalEntries = 0
+    keyMap.forEach((entries) => {
+      totalEntries += entries.length
+    })
+
+    setKeyMapDownloaded(true)
+    toast.success('Key Map Downloaded', {
+      description: `Saved ${totalEntries} mappings across ${keyMap.size} column(s)`,
+    })
+  }, [keyMap, tableName, setKeyMapDownloaded])
+
   const handleApply = async () => {
     if (!tableName || !tableId || rules.length === 0) return
 
@@ -144,6 +263,14 @@ export function ScrubPanel() {
     if (supportedRules.length === 0) {
       toast.error('No Supported Rules', {
         description: 'Select hash, mask, redact, or year_only methods to apply in-place',
+      })
+      return
+    }
+
+    // If key map is enabled, it must be downloaded before applying
+    if (keyMapEnabled && !keyMapDownloaded) {
+      toast.error('Key Map Required', {
+        description: 'Download the key map before applying scrub rules',
       })
       return
     }
@@ -238,10 +365,6 @@ export function ScrubPanel() {
         })
       }
 
-      if (keyMapEnabled && keyMap.size > 0) {
-        exportKeyMap()
-      }
-
       closePanel()
     } catch (error) {
       console.error('Scrubbing failed:', error)
@@ -251,29 +374,6 @@ export function ScrubPanel() {
     } finally {
       setIsProcessing(false)
     }
-  }
-
-  const exportKeyMap = () => {
-    if (keyMap.size === 0) return
-
-    const csvLines = ['Original,Obfuscated']
-    keyMap.forEach((obfuscated, original) => {
-      csvLines.push(`"${original.replace(/"/g, '""')}","${obfuscated}"`)
-    })
-
-    const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `keymap_${tableName}_${new Date().toISOString().split('T')[0]}.csv`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-
-    toast.success('Key Map Exported', {
-      description: `Saved ${keyMap.size} mappings`,
-    })
   }
 
   const getMethodInfo = (method: ObfuscationMethod | null) => {
@@ -438,17 +538,60 @@ export function ScrubPanel() {
 
         {/* Action Buttons in Left Column Footer */}
         <div className="p-4 border-t border-border/50 space-y-2">
-          {keyMapEnabled && keyMap.size > 0 && (
-            <Button variant="outline" className="w-full" onClick={exportKeyMap} disabled={isProcessing}>
-              <Key className="w-4 h-4 mr-2" />
-              Export Key Map ({keyMap.size})
-            </Button>
+          {/* Key Map Download Section - Only shown when checkbox enabled and rules exist */}
+          {keyMapEnabled && rules.filter(r => SUPPORTED_COMMAND_METHODS.has(r.method)).length > 0 && (
+            <>
+              {keyMapDownloaded ? (
+                // Key map already downloaded - show confirmation
+                <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20 text-green-400 text-sm">
+                  <Check className="w-4 h-4 shrink-0" />
+                  <span>Key map downloaded</span>
+                </div>
+              ) : keyMap.size > 0 ? (
+                // Key map generated - ready to download
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={downloadKeyMap}
+                  disabled={isProcessing || isGeneratingKeyMap}
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Download Key Map ({keyMap.size} columns)
+                </Button>
+              ) : (
+                // Need to generate key map first
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={generateKeyMap}
+                  disabled={isProcessing || isGeneratingKeyMap}
+                >
+                  {isGeneratingKeyMap ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Key className="w-4 h-4 mr-2" />
+                      Generate Key Map
+                    </>
+                  )}
+                </Button>
+              )}
+            </>
           )}
 
           <Button
             className="w-full"
             onClick={handleApply}
-            disabled={!tableId || rules.length === 0 || isProcessing}
+            disabled={
+              !tableId ||
+              rules.length === 0 ||
+              isProcessing ||
+              isGeneratingKeyMap ||
+              (keyMapEnabled && !keyMapDownloaded)
+            }
           >
             {isProcessing ? (
               <>
@@ -462,6 +605,13 @@ export function ScrubPanel() {
               </>
             )}
           </Button>
+
+          {/* Hint when key map blocks Apply */}
+          {keyMapEnabled && !keyMapDownloaded && rules.filter(r => SUPPORTED_COMMAND_METHODS.has(r.method)).length > 0 && (
+            <p className="text-xs text-muted-foreground text-center">
+              Download key map before applying
+            </p>
+          )}
         </div>
       </div>
 

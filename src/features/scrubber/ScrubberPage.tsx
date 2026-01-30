@@ -39,7 +39,6 @@ export function ScrubberPage() {
     setSecret,
     setPreviewData,
     setKeyMapEnabled,
-    addToKeyMap: _addToKeyMap,
     clearKeyMap,
     setIsProcessing,
     reset: _reset,
@@ -61,11 +60,13 @@ export function ScrubberPage() {
     setIsProcessing(true)
     try {
       const data = await getData(tableName, 0, 10)
+      // Note: applyObfuscationRules doesn't support the new keyMap structure
+      // Key map generation is handled separately in ScrubPanel
       const obfuscated = await applyObfuscationRules(
         data,
         rules,
         secret,
-        keyMapEnabled ? keyMap : undefined
+        undefined
       )
       setPreviewData(obfuscated)
       setShowPreview(true)
@@ -99,11 +100,13 @@ export function ScrubberPage() {
       const allData = await getData(tableName, 0, 100000)
 
       // Apply obfuscation
+      // Note: applyObfuscationRules doesn't support the new keyMap structure
+      // Key map generation is handled separately in ScrubPanel
       const obfuscated = await applyObfuscationRules(
         allData,
         rules,
         secret,
-        keyMapEnabled ? keyMap : undefined
+        undefined
       )
 
       // Create new table with obfuscated data
@@ -164,10 +167,26 @@ export function ScrubberPage() {
   const exportKeyMap = () => {
     if (keyMap.size === 0) return
 
-    const csvLines = ['Original,Obfuscated']
-    keyMap.forEach((obfuscated, original) => {
-      csvLines.push(`"${original.replace(/"/g, '""')}","${obfuscated}"`)
-    })
+    const csvLines = ['column,original,obfuscated']
+
+    // Sort columns for consistent output
+    const sortedColumns = Array.from(keyMap.keys()).sort()
+
+    let totalEntries = 0
+    for (const column of sortedColumns) {
+      const entries = keyMap.get(column) || []
+      for (const entry of entries) {
+        // Escape CSV values
+        const escapeCSV = (val: string) => {
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            return `"${val.replace(/"/g, '""')}"`
+          }
+          return val
+        }
+        csvLines.push(`${escapeCSV(column)},${escapeCSV(entry.original)},${escapeCSV(entry.obfuscated)}`)
+        totalEntries++
+      }
+    }
 
     const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
@@ -181,7 +200,7 @@ export function ScrubberPage() {
 
     toast({
       title: 'Key Map Exported',
-      description: `Saved ${keyMap.size} mappings`,
+      description: `Saved ${totalEntries} mappings across ${keyMap.size} column(s)`,
     })
   }
 
@@ -205,7 +224,7 @@ export function ScrubberPage() {
           {keyMapEnabled && keyMap.size > 0 && (
             <Button variant="outline" size="sm" onClick={exportKeyMap}>
               <Key className="w-4 h-4 mr-2" />
-              Export Key Map ({keyMap.size})
+              Export Key Map ({keyMap.size} columns)
             </Button>
           )}
         </div>
