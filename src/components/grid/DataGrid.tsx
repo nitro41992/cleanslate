@@ -1462,17 +1462,6 @@ export function DataGrid({
     prevWordWrapRef.current = wordWrapEnabled
   }, [wordWrapEnabled])
 
-  // When word wrap is enabled and data range changes (scroll), we need to force
-  // the grid to re-render all cells. Glide Data Grid caches cell content and doesn't
-  // re-call getCellContent for cells that scroll into view. Incrementing the key
-  // forces a complete remount, ensuring all cells get the correct allowWrapping value.
-  const prevLoadedRangeStartRef = useRef(loadedRange.start)
-  useEffect(() => {
-    if (wordWrapEnabled && prevLoadedRangeStartRef.current !== loadedRange.start) {
-      setGridKey(k => k + 1)
-    }
-    prevLoadedRangeStartRef.current = loadedRange.start
-  }, [wordWrapEnabled, loadedRange.start])
 
   if (isLoading) {
     return (
