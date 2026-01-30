@@ -1,25 +1,24 @@
 import { useState } from 'react'
-import { Shield, Eye, Loader2, Key, Play, X } from 'lucide-react'
+import { Shield, Loader2, Key, Play, X, Info, Lock, EyeOff, Hash, Calendar, Shuffle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { TableCombobox } from '@/components/ui/table-combobox'
 import { ColumnCombobox } from '@/components/ui/combobox'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { useTableStore } from '@/stores/tableStore'
 import { useScrubberStore } from '@/stores/scrubberStore'
 import { usePreviewStore } from '@/stores/previewStore'
-import { useDuckDB } from '@/hooks/useDuckDB'
-import { applyObfuscationRules, OBFUSCATION_METHODS } from '@/lib/obfuscation'
+import { ScrubPreview } from '@/components/scrub/ScrubPreview'
+import { OBFUSCATION_METHODS } from '@/lib/obfuscation'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
@@ -39,25 +38,30 @@ const METHOD_TO_COMMAND: Partial<Record<ObfuscationMethod, CommandType>> = {
 // Methods that are supported by command pattern (in-place modification)
 const SUPPORTED_COMMAND_METHODS = new Set(['hash', 'mask', 'redact', 'year_only'])
 
-// Method examples for the info card
-const METHOD_EXAMPLES: Record<string, Array<{ before: string; after: string }>> = {
-  hash: [{ before: 'john@email.com', after: 'a8f5e2b1...' }],
-  mask: [{ before: '555-123-4567', after: '5**-***-**67' }],
-  redact: [{ before: 'John Smith', after: '[REDACTED]' }],
-  year_only: [{ before: '1985-03-15', after: '1985-01-01' }],
-  faker: [{ before: 'john@email.com', after: 'sara@example.net' }],
-  scramble: [{ before: '123456789', after: '918372465' }],
-  last4: [{ before: '4532-1234-5678-9012', after: '****-****-****-9012' }],
-  zero: [{ before: '$50,000', after: '$0' }],
-  jitter: [{ before: '2024-01-15', after: '2024-01-18' }],
+// Method icons for visual clarity
+const METHOD_ICONS: Record<string, React.ReactNode> = {
+  redact: <EyeOff className="w-4 h-4" />,
+  mask: <Shield className="w-4 h-4" />,
+  hash: <Hash className="w-4 h-4" />,
+  faker: <Shuffle className="w-4 h-4" />,
+  scramble: <Shuffle className="w-4 h-4" />,
+  last4: <Lock className="w-4 h-4" />,
+  zero: <span className="font-mono text-xs">0</span>,
+  year_only: <Calendar className="w-4 h-4" />,
+  jitter: <Calendar className="w-4 h-4" />,
 }
 
-// Method hints
-const METHOD_HINTS: Record<string, string[]> = {
-  hash: ['Requires project secret for consistent results', 'One-way transformation - cannot be reversed'],
-  mask: ['Preserves first and last characters', 'Good for partial identification'],
-  redact: ['Completely removes the value', 'Best for maximum privacy'],
-  year_only: ['Converts dates to year only', 'Useful for birth dates'],
+// Method examples for the info card
+const METHOD_EXAMPLES: Record<string, { before: string; after: string }> = {
+  hash: { before: 'john@email.com', after: 'a8f5e2b1c9d3...' },
+  mask: { before: '555-123-4567', after: '5*****7' },
+  redact: { before: 'John Smith', after: '[REDACTED]' },
+  year_only: { before: '1985-03-15', after: '1985-01-01' },
+  faker: { before: 'john@email.com', after: 'sara@example.net' },
+  scramble: { before: '123456789', after: '918372465' },
+  last4: { before: '4532-1234-5678-9012', after: '****9012' },
+  zero: { before: '$50,000', after: '$00,000' },
+  jitter: { before: '2024-01-15', after: '2024-01-18' },
 }
 
 export function ScrubPanel() {
@@ -65,8 +69,6 @@ export function ScrubPanel() {
   const updateTable = useTableStore((s) => s.updateTable)
 
   const closePanel = usePreviewStore((s) => s.closePanel)
-
-  const { getData } = useDuckDB()
 
   // Hook for executing commands with confirmation when discarding redo states
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
@@ -91,7 +93,8 @@ export function ScrubPanel() {
 
   // Local state for the selected rule being edited
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
-  const [previewData, setPreviewData] = useState<Record<string, unknown>[]>([])
+  const [secretInfoOpen, setSecretInfoOpen] = useState(false)
+  const [keyMapInfoOpen, setKeyMapInfoOpen] = useState(false)
 
   const selectedTable = tables.find((t) => t.id === tableId)
   const tableOptions = tables.map(t => ({ id: t.id, name: t.name, rowCount: t.rowCount }))
@@ -107,7 +110,6 @@ export function ScrubPanel() {
 
   const handleTableSelect = (id: string, name: string) => {
     setTable(id, name)
-    setPreviewData([])
     clearKeyMap()
     setSelectedColumn(null)
   }
@@ -132,32 +134,6 @@ export function ScrubPanel() {
     updateRule(selectedColumn, method)
   }
 
-  const handlePreview = async () => {
-    if (!tableName || rules.length === 0) return
-
-    setIsProcessing(true)
-    try {
-      const data = await getData(tableName, 0, 10)
-      const obfuscated = await applyObfuscationRules(
-        data,
-        rules,
-        secret,
-        keyMapEnabled ? keyMap : undefined
-      )
-      setPreviewData(obfuscated)
-      toast.success('Preview Generated', {
-        description: 'Showing first 10 rows with obfuscation applied',
-      })
-    } catch (error) {
-      console.error('Preview failed:', error)
-      toast.error('Preview Failed', {
-        description: error instanceof Error ? error.message : 'An error occurred',
-      })
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
   const handleApply = async () => {
     if (!tableName || !tableId || rules.length === 0) return
 
@@ -172,11 +148,18 @@ export function ScrubPanel() {
       return
     }
 
-    // Hash requires a secret
+    // Hash requires a secret with minimum length
+    const MIN_SECRET_LENGTH = 5
     const hasHashRule = supportedRules.some((r) => r.method === 'hash')
     if (hasHashRule && !secret) {
       toast.error('Secret Required', {
         description: 'Please enter a project secret for consistent hashing',
+      })
+      return
+    }
+    if (hasHashRule && secret.length < MIN_SECRET_LENGTH) {
+      toast.error('Secret Too Short', {
+        description: `Secret must be at least ${MIN_SECRET_LENGTH} characters for security`,
       })
       return
     }
@@ -298,6 +281,11 @@ export function ScrubPanel() {
     return OBFUSCATION_METHODS.find((m) => m.id === method)
   }
 
+  // Group methods by category
+  const stringMethods = OBFUSCATION_METHODS.filter(m => m.category === 'string')
+  const numberMethods = OBFUSCATION_METHODS.filter(m => m.category === 'number')
+  const dateMethods = OBFUSCATION_METHODS.filter(m => m.category === 'date')
+
   if (tables.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center p-4">
@@ -331,26 +319,6 @@ export function ScrubPanel() {
               />
             </div>
 
-            {/* Secret */}
-            <div className="space-y-2">
-              <Label>
-                Project Secret
-                <span className="text-xs text-muted-foreground ml-2">
-                  (for consistent hashing)
-                </span>
-              </Label>
-              <Input
-                type="password"
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                placeholder="Enter a secret phrase"
-                disabled={isProcessing}
-              />
-              <p className="text-xs text-destructive/80">
-                Keep this secret safe! You'll need it to match hashed values later.
-              </p>
-            </div>
-
             {/* Add Column */}
             {selectedTable && (
               <div className="space-y-2">
@@ -373,6 +341,7 @@ export function ScrubPanel() {
                   {rules.map((rule) => {
                     const methodInfo = getMethodInfo(rule.method)
                     const isSelected = selectedColumn === rule.column
+                    const isSupported = SUPPORTED_COMMAND_METHODS.has(rule.method)
                     return (
                       <div
                         key={rule.column}
@@ -387,7 +356,13 @@ export function ScrubPanel() {
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <span className="text-sm font-medium truncate">{rule.column}</span>
                           {methodInfo && (
-                            <Badge variant="secondary" className="text-xs shrink-0">
+                            <Badge
+                              variant={isSupported ? "secondary" : "outline"}
+                              className={cn(
+                                "text-xs shrink-0",
+                                !isSupported && "text-muted-foreground"
+                              )}
+                            >
                               {methodInfo.label}
                             </Badge>
                           )}
@@ -412,17 +387,52 @@ export function ScrubPanel() {
             )}
 
             {/* Key Map Option */}
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="keymap"
-                checked={keyMapEnabled}
-                onCheckedChange={(checked) => setKeyMapEnabled(checked === true)}
-                disabled={isProcessing}
-              />
-              <Label htmlFor="keymap" className="text-sm cursor-pointer">
-                Generate Key Map (for reversibility)
-              </Label>
-            </div>
+            <Collapsible open={keyMapInfoOpen} onOpenChange={setKeyMapInfoOpen}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="keymap"
+                    checked={keyMapEnabled}
+                    onCheckedChange={(checked) => setKeyMapEnabled(checked === true)}
+                    disabled={isProcessing}
+                  />
+                  <Label htmlFor="keymap" className="text-sm cursor-pointer">
+                    Generate Key Map
+                  </Label>
+                </div>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                    <Info className="w-3.5 h-3.5 text-muted-foreground" />
+                  </Button>
+                </CollapsibleTrigger>
+              </div>
+              <CollapsibleContent className="mt-2">
+                <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-xs">
+                  <p className="font-medium text-foreground">What is a Key Map?</p>
+                  <p className="text-muted-foreground">
+                    A CSV file that maps <strong>original values → obfuscated values</strong>.
+                    Use it to look up what values were before obfuscation.
+                  </p>
+                  <div className="border-t border-border/50 pt-2 mt-2">
+                    <p className="font-medium text-foreground mb-1">Key points:</p>
+                    <ul className="text-muted-foreground space-y-1">
+                      <li className="flex items-start gap-1.5">
+                        <span className="text-blue-400">•</span>
+                        Works with <strong>any</strong> obfuscation method (not just Hash)
+                      </li>
+                      <li className="flex items-start gap-1.5">
+                        <span className="text-blue-400">•</span>
+                        Enables reversibility via lookup table
+                      </li>
+                      <li className="flex items-start gap-1.5">
+                        <span className="text-amber-400">•</span>
+                        Store securely - contains original sensitive data
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         </ScrollArea>
 
@@ -434,16 +444,6 @@ export function ScrubPanel() {
               Export Key Map ({keyMap.size})
             </Button>
           )}
-
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={handlePreview}
-            disabled={!tableId || rules.length === 0 || isProcessing}
-          >
-            <Eye className="w-4 h-4 mr-2" />
-            Preview
-          </Button>
 
           <Button
             className="w-full"
@@ -467,9 +467,9 @@ export function ScrubPanel() {
 
       {/* Right Column: Rule Editor */}
       <div className="flex-1 flex flex-col overflow-y-auto">
-        <div className="flex-1 flex flex-col justify-center p-4">
+        <div className="flex-1 p-4 flex flex-col">
           {showRuleEditor && selectedColumn ? (
-            <div className="space-y-4 animate-in fade-in duration-200">
+            <div className="space-y-4 animate-in fade-in duration-200 my-auto">
               {/* Info Card */}
               <div className="bg-muted/30 rounded-lg p-3 space-y-3">
                 <div>
@@ -482,102 +482,255 @@ export function ScrubPanel() {
                   </p>
                 </div>
 
-                {/* Method Examples */}
+                {/* Method Example */}
                 {selectedMethod && METHOD_EXAMPLES[selectedMethod] && (
                   <div className="border-t border-border/50 pt-2">
                     <p className="text-xs font-medium text-muted-foreground mb-1.5">Example</p>
-                    <div className="space-y-1">
-                      {METHOD_EXAMPLES[selectedMethod].map((ex, i) => (
-                        <div key={i} className="flex items-center gap-2 text-xs font-mono">
-                          <span className="text-red-400/80">{ex.before}</span>
-                          <span className="text-muted-foreground">→</span>
-                          <span className="text-green-400/80">{ex.after}</span>
-                        </div>
-                      ))}
+                    <div className="flex items-center gap-2 text-xs font-mono">
+                      <span className="text-red-400/80">{METHOD_EXAMPLES[selectedMethod].before}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span className="text-green-400/80">{METHOD_EXAMPLES[selectedMethod].after}</span>
                     </div>
                   </div>
                 )}
 
-                {/* Method Hints */}
-                {selectedMethod && METHOD_HINTS[selectedMethod] && (
+                {/* Method Description */}
+                {selectedMethod && (
                   <div className="border-t border-border/50 pt-2">
-                    <ul className="text-xs text-muted-foreground space-y-0.5">
-                      {METHOD_HINTS[selectedMethod].map((hint, i) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className="text-blue-400">•</span>
-                          {hint}
-                        </li>
-                      ))}
-                    </ul>
+                    <p className="text-xs text-muted-foreground">
+                      {getMethodInfo(selectedMethod)?.description}
+                    </p>
                   </div>
                 )}
               </div>
 
-              {/* Method Selector */}
-              <div className="space-y-2">
+              {/* Live Preview */}
+              {tableName && selectedColumn && selectedMethod && (
+                <ScrubPreview
+                  tableName={tableName}
+                  column={selectedColumn}
+                  method={selectedMethod}
+                  secret={secret}
+                />
+              )}
+
+              {/* Method Selector - Radio buttons grouped by category */}
+              <div className="space-y-4">
                 <Label>Obfuscation Method</Label>
-                <Select
+                <RadioGroup
                   value={selectedMethod || ''}
                   onValueChange={(v) => handleMethodChange(v as ObfuscationMethod)}
-                  disabled={isProcessing}
+                  className="space-y-4"
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select method..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {/* String Methods */}
-                    <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                      String Methods
+                  {/* String Methods */}
+                  <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Text</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {stringMethods.map((m) => {
+                        const isSupported = SUPPORTED_COMMAND_METHODS.has(m.id)
+                        return (
+                          <div
+                            key={m.id}
+                            className={cn(
+                              'flex items-center space-x-2 rounded-md border p-2.5 cursor-pointer transition-all',
+                              selectedMethod === m.id
+                                ? 'border-primary bg-primary/10 shadow-sm'
+                                : 'border-border/40 bg-background hover:bg-muted/50 hover:border-border',
+                              !isSupported && 'opacity-50'
+                            )}
+                            onClick={() => handleMethodChange(m.id)}
+                          >
+                            <RadioGroupItem value={m.id} id={m.id} className="sr-only" />
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <div className={cn(
+                                "shrink-0",
+                                selectedMethod === m.id ? "text-primary" : "text-muted-foreground"
+                              )}>
+                                {METHOD_ICONS[m.id]}
+                              </div>
+                              <div className="min-w-0">
+                                <label htmlFor={m.id} className="text-sm font-medium cursor-pointer block truncate">
+                                  {m.label}
+                                </label>
+                                <span className={cn(
+                                  "text-[10px] block h-3.5",
+                                  isSupported ? "invisible" : "text-amber-500/80"
+                                )}>
+                                  {isSupported ? "\u00A0" : "Preview only"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
-                    {OBFUSCATION_METHODS.filter((m) => m.category === 'string').map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        <div className="flex flex-col">
-                          <span>{m.label}</span>
-                          <span className="text-xs text-muted-foreground">{m.description}</span>
+                  </div>
+
+                  {/* Hash Secret Input - Animated appearance when Hash is selected */}
+                  <Collapsible open={selectedMethod === 'hash'}>
+                    <CollapsibleContent>
+                      <Collapsible open={secretInfoOpen} onOpenChange={setSecretInfoOpen}>
+                        <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="flex items-center gap-1.5 text-sm font-medium">
+                              <Key className="w-3.5 h-3.5" />
+                              Hash Secret
+                              <span className="text-destructive">*</span>
+                            </Label>
+                            <CollapsibleTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                                <Info className="w-3.5 h-3.5 text-muted-foreground" />
+                              </Button>
+                            </CollapsibleTrigger>
+                          </div>
+                          <Input
+                            type="password"
+                            value={secret}
+                            onChange={(e) => setSecret(e.target.value)}
+                            placeholder="Min 5 characters"
+                            disabled={isProcessing}
+                            className={cn((!secret || secret.length < 5) && "border-amber-500/50")}
+                          />
+                          {!secret ? (
+                            <p className="text-xs text-amber-500">Enter a secret phrase (min 5 chars)</p>
+                          ) : secret.length < 5 && (
+                            <p className="text-xs text-amber-500">
+                              {5 - secret.length} more character{5 - secret.length !== 1 ? 's' : ''} needed
+                            </p>
+                          )}
                         </div>
-                      </SelectItem>
-                    ))}
-                    {/* Number Methods */}
-                    <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground mt-1">
-                      Number Methods
+                        <CollapsibleContent className="mt-2">
+                          <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-xs">
+                            <p className="font-medium text-foreground">Why is this needed?</p>
+                            <p className="text-muted-foreground">
+                              The secret ensures <strong>consistent, secure hashing</strong>.
+                              Same value + same secret = same hash every time.
+                            </p>
+                            <div className="border-t border-border/50 pt-2 mt-2">
+                              <ul className="text-muted-foreground space-y-1">
+                                <li className="flex items-start gap-1.5">
+                                  <span className="text-blue-400">•</span>
+                                  Enables matching hashed values across different tables
+                                </li>
+                                <li className="flex items-start gap-1.5">
+                                  <span className="text-blue-400">•</span>
+                                  Adds security - hashes can&apos;t be reproduced without it
+                                </li>
+                                <li className="flex items-start gap-1.5">
+                                  <span className="text-amber-400">•</span>
+                                  Store it safely - you&apos;ll need it for future operations
+                                </li>
+                              </ul>
+                            </div>
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </CollapsibleContent>
+                  </Collapsible>
+
+                  {/* Number Methods */}
+                  <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Numbers</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {numberMethods.map((m) => {
+                        const isSupported = SUPPORTED_COMMAND_METHODS.has(m.id)
+                        return (
+                          <div
+                            key={m.id}
+                            className={cn(
+                              'flex items-center space-x-2 rounded-md border p-2.5 cursor-pointer transition-all',
+                              selectedMethod === m.id
+                                ? 'border-primary bg-primary/10 shadow-sm'
+                                : 'border-border/40 bg-background hover:bg-muted/50 hover:border-border',
+                              !isSupported && 'opacity-50'
+                            )}
+                            onClick={() => handleMethodChange(m.id)}
+                          >
+                            <RadioGroupItem value={m.id} id={m.id} className="sr-only" />
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <div className={cn(
+                                "shrink-0",
+                                selectedMethod === m.id ? "text-primary" : "text-muted-foreground"
+                              )}>
+                                {METHOD_ICONS[m.id]}
+                              </div>
+                              <div className="min-w-0">
+                                <label htmlFor={m.id} className="text-sm font-medium cursor-pointer block truncate">
+                                  {m.label}
+                                </label>
+                                <span className={cn(
+                                  "text-[10px] block h-3.5",
+                                  isSupported ? "invisible" : "text-amber-500/80"
+                                )}>
+                                  {isSupported ? "\u00A0" : "Preview only"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
-                    {OBFUSCATION_METHODS.filter((m) => m.category === 'number').map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        <div className="flex flex-col">
-                          <span>{m.label}</span>
-                          <span className="text-xs text-muted-foreground">{m.description}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                    {/* Date Methods */}
-                    <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground mt-1">
-                      Date Methods
+                  </div>
+
+                  {/* Date Methods */}
+                  <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Dates</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {dateMethods.map((m) => {
+                        const isSupported = SUPPORTED_COMMAND_METHODS.has(m.id)
+                        return (
+                          <div
+                            key={m.id}
+                            className={cn(
+                              'flex items-center space-x-2 rounded-md border p-2.5 cursor-pointer transition-all',
+                              selectedMethod === m.id
+                                ? 'border-primary bg-primary/10 shadow-sm'
+                                : 'border-border/40 bg-background hover:bg-muted/50 hover:border-border',
+                              !isSupported && 'opacity-50'
+                            )}
+                            onClick={() => handleMethodChange(m.id)}
+                          >
+                            <RadioGroupItem value={m.id} id={m.id} className="sr-only" />
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <div className={cn(
+                                "shrink-0",
+                                selectedMethod === m.id ? "text-primary" : "text-muted-foreground"
+                              )}>
+                                {METHOD_ICONS[m.id]}
+                              </div>
+                              <div className="min-w-0">
+                                <label htmlFor={m.id} className="text-sm font-medium cursor-pointer block truncate">
+                                  {m.label}
+                                </label>
+                                <span className={cn(
+                                  "text-[10px] block h-3.5",
+                                  isSupported ? "invisible" : "text-amber-500/80"
+                                )}>
+                                  {isSupported ? "\u00A0" : "Preview only"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
-                    {OBFUSCATION_METHODS.filter((m) => m.category === 'date').map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        <div className="flex flex-col">
-                          <span>{m.label}</span>
-                          <span className="text-xs text-muted-foreground">{m.description}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  </div>
+                </RadioGroup>
               </div>
 
-              {/* Supported Methods Note */}
+              {/* Unsupported Method Note */}
               {selectedMethod && !SUPPORTED_COMMAND_METHODS.has(selectedMethod) && (
-                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-                  <p className="text-sm text-yellow-600 dark:text-yellow-400">
-                    Note: {getMethodInfo(selectedMethod)?.label} is preview-only and will be skipped during apply.
-                    Only Hash, Mask, Redact, and Year Only are supported for in-place modification.
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                    <strong>{getMethodInfo(selectedMethod)?.label}</strong> is preview-only and will be skipped during apply.
+                    Only Redact, Mask, Hash, and Year Only support in-place modification.
                   </p>
                 </div>
               )}
             </div>
           ) : (
             /* Empty State */
-            <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
+            <div className="flex flex-col items-center justify-center my-auto min-h-[300px] text-center p-6">
               <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
                 <Shield className="w-6 h-6 text-muted-foreground" />
               </div>
@@ -587,19 +740,6 @@ export function ScrubPanel() {
                   ? 'Add a column from the left to configure its scrub method'
                   : 'Select a table first, then add columns to scrub'}
               </p>
-            </div>
-          )}
-
-          {/* Preview Data (shown below editor when available) */}
-          {previewData.length > 0 && (
-            <div className="mt-4 space-y-2">
-              <Label>Preview (First 10 rows)</Label>
-              <div className="max-h-40 overflow-auto border rounded-lg p-2 bg-muted/30">
-                <pre className="text-xs">
-                  {JSON.stringify(previewData.slice(0, 3), (_, v) =>
-                    typeof v === 'bigint' ? v.toString() : v, 2)}
-                </pre>
-              </div>
             </div>
           )}
         </div>

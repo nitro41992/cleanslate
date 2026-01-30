@@ -110,6 +110,14 @@ export default {
           from: { transform: "translateX(0) rotate(0deg)", opacity: "1" },
           to: { transform: "translateX(150%) rotate(30deg)", opacity: "0" },
         },
+        "collapsible-down": {
+          from: { height: "0", opacity: "0" },
+          to: { height: "var(--radix-collapsible-content-height)", opacity: "1" },
+        },
+        "collapsible-up": {
+          from: { height: "var(--radix-collapsible-content-height)", opacity: "1" },
+          to: { height: "0", opacity: "0" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -126,6 +134,8 @@ export default {
         "fade-out": "fade-out 0.2s ease-out",
         "card-swipe-left": "card-swipe-left 0.4s ease-out forwards",
         "card-swipe-right": "card-swipe-right 0.4s ease-out forwards",
+        "collapsible-down": "collapsible-down 0.15s ease-out",
+        "collapsible-up": "collapsible-up 0.15s ease-out",
       },
     },
   },
