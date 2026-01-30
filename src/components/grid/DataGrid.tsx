@@ -363,6 +363,7 @@ export function DataGrid({
     }
     return map
   }, [columnTypes])
+  // Data state for loaded rows
   const [data, setData] = useState<Record<string, unknown>[]>([])
   // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
@@ -918,11 +919,11 @@ export function DataGrid({
 
         // If we have all pages cached, merge them immediately
         if (missingPageIndices.length === 0 && cachedPages.length > 0) {
-          // Sort by startRow and merge
           cachedPages.sort((a, b) => a.startRow - b.startRow)
+          const rangeStart = cachedPages[0].startRow
+
           const mergedRows: Record<string, unknown>[] = []
           const idMap = new Map<string, number>()
-          const rangeStart = cachedPages[0].startRow
 
           for (const page of cachedPages) {
             for (let i = 0; i < page.rows.length; i++) {
@@ -940,6 +941,7 @@ export function DataGrid({
           setData(mergedRows)
           setCsIdToRowIndex(idMap)
           setLoadedRange({ start: rangeStart, end: rangeEnd })
+
           pendingRangeRef.current = null
           return
         }
@@ -963,11 +965,9 @@ export function DataGrid({
             const whereClause = filters.length > 0 ? buildWhereClause(filters) : undefined
             const orderByClause = sortColumn ? buildOrderByClause(sortColumn, sortDirection) : undefined
 
-            const pageResult = await getDataWithKeyset(
-              tableName,
-              { direction: 'forward', csId: targetCsId, whereClause, orderByClause },
-              PAGE_SIZE
-            )
+            const cursor = { direction: 'forward' as const, csId: targetCsId, whereClause, orderByClause }
+
+            const pageResult = await getDataWithKeyset(tableName, cursor, PAGE_SIZE)
 
             // Check abort again after async operation
             if (abortController.signal.aborted) {
@@ -1012,9 +1012,10 @@ export function DataGrid({
 
           // Merge all pages (cached + newly fetched)
           cachedPages.sort((a, b) => a.startRow - b.startRow)
+          const rangeStart = cachedPages[0].startRow
+
           const mergedRows: Record<string, unknown>[] = []
           const idMap = new Map<string, number>()
-          const rangeStart = cachedPages[0].startRow
 
           for (const page of cachedPages) {
             for (let i = 0; i < page.rows.length; i++) {
@@ -1032,6 +1033,7 @@ export function DataGrid({
           setData(mergedRows)
           setCsIdToRowIndex(idMap)
           setLoadedRange({ start: rangeStart, end: rangeEnd })
+
           pendingRangeRef.current = null
         } catch (err) {
           // Check if this was an intentional abort
@@ -1088,8 +1090,11 @@ export function DataGrid({
   const getCellContent = useCallback(
     ([col, row]: Item) => {
       const adjustedRow = row - loadedRange.start
-      const rowData = data[adjustedRow]
+      const colName = columns[col]
+      const colType = columnTypeMap.get(colName)
 
+      // Get base value from data
+      const rowData = data[adjustedRow]
       if (!rowData) {
         return {
           kind: GridCellKind.Loading as const,
@@ -1097,12 +1102,7 @@ export function DataGrid({
           allowWrapping: wordWrapEnabled,
         }
       }
-
-      const colName = columns[col]
-      const colType = columnTypeMap.get(colName)
-
-      // Get base value from DuckDB data
-      let value = rowData[colName]
+      let value: unknown = rowData[colName]
 
       // OPTIMISTIC UI: Check for pending batch edit that should overlay
       // When batching is enabled, edits are accumulated in editBatchStore before

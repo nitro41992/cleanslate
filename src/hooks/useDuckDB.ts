@@ -22,7 +22,8 @@ import {
 } from '@/lib/duckdb'
 import { buildWhereClause, buildOrderByClause } from '@/lib/duckdb/filter-builder'
 import type { ColumnFilter } from '@/types'
-import { checkMemoryCapacity, getMemoryStatus, WARNING_THRESHOLD } from '@/lib/duckdb/memory'
+import { checkMemoryCapacity, getMemoryStatus, getFullMemoryStatus, WARNING_THRESHOLD } from '@/lib/duckdb/memory'
+import { idleDetector } from '@/lib/idle-detector'
 import { useTableStore } from '@/stores/tableStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -505,6 +506,36 @@ export function useDuckDB() {
   )
 
   /**
+   * Check if memory compaction should be suggested to the user.
+   * Returns true if:
+   * - Memory usage is >1.5GB (high but not critical)
+   * - User has been idle for >2 minutes
+   *
+   * This is used for suggestion-based compaction (Phase B.1), not auto-compaction.
+   */
+  const shouldSuggestCompaction = useCallback(async (): Promise<boolean> => {
+    const status = await getFullMemoryStatus()
+    const idleTimeMs = idleDetector.getIdleTimeMs()
+
+    // Threshold: 1.5GB memory usage AND 2+ minutes idle
+    const MEMORY_THRESHOLD_BYTES = 1.5 * 1024 * 1024 * 1024 // 1.5GB
+    const IDLE_THRESHOLD_MS = 2 * 60 * 1000 // 2 minutes
+
+    const isHighMemory = status.usedBytes > MEMORY_THRESHOLD_BYTES
+    const isIdle = idleTimeMs > IDLE_THRESHOLD_MS
+
+    if (isHighMemory && isIdle) {
+      console.log('[Memory] Compaction suggested:', {
+        usedMB: Math.round(status.usedBytes / 1024 / 1024),
+        idleSeconds: Math.round(idleTimeMs / 1000),
+      })
+      return true
+    }
+
+    return false
+  }, [])
+
+  /**
    * Compact memory by restarting the WASM worker.
    * WASM linear memory pages grow but never shrink (browser limitation).
    * This terminates the worker, releases all linear memory, reinitializes DuckDB,
@@ -557,5 +588,6 @@ export function useDuckDB() {
     updateCell,
     duplicateTable,
     compactMemory,
+    shouldSuggestCompaction,
   }
 }
