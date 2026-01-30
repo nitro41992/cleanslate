@@ -1,8 +1,9 @@
 /**
  * Standardize Date Command
  *
- * Parses dates in various formats and outputs in a standard format.
+ * Parses dates in various formats and outputs in a standard TEXT format.
  * Supports both string date formats and Unix timestamps (auto-detected).
+ * Always outputs VARCHAR - use Cast Type for native DATE/TIMESTAMP types.
  * Tier 3 - Requires snapshot for undo (data format may not be recoverable).
  */
 
@@ -14,7 +15,6 @@ import {
   buildDateParseSuccessPredicate,
   detectUnixTimestampType,
   type OutputFormat,
-  type DateOutputType,
   type UnixTimestampType,
 } from '../../utils/date'
 import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
@@ -24,8 +24,6 @@ export interface StandardizeDateParams extends BaseTransformParams {
   column: string
   /** Output format (default: 'YYYY-MM-DD') */
   format?: OutputFormat
-  /** Output type: 'text' (VARCHAR), 'date' (DATE), or 'timestamp' (TIMESTAMP) */
-  outputType?: DateOutputType
 }
 
 export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDateParams> {
@@ -41,17 +39,6 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
         'INVALID_FORMAT',
         `Invalid output format: ${format}. Valid formats: ${validFormats.join(', ')}`,
         'format'
-      )
-    }
-
-    const validOutputTypes: DateOutputType[] = ['text', 'date', 'timestamp']
-    const outputType = this.params.outputType ?? 'text'
-
-    if (!validOutputTypes.includes(outputType)) {
-      return this.errorResult(
-        'INVALID_OUTPUT_TYPE',
-        `Invalid output type: ${outputType}. Valid types: ${validOutputTypes.join(', ')}`,
-        'outputType'
       )
     }
 
@@ -111,11 +98,11 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
     const col = this.params.column
     const tableName = ctx.table.name
     const format = this.params.format ?? 'YYYY-MM-DD'
-    const outputType = this.params.outputType ?? 'text'
 
     // Detect if the column contains Unix timestamps
     const detectedTimestampType = await this.detectTimestampType(ctx)
-    const dateExpr = buildDateFormatExpression(col, format, outputType, detectedTimestampType)
+    // Always output as text (VARCHAR) - use Cast Type for native DATE/TIMESTAMP
+    const dateExpr = buildDateFormatExpression(col, format, 'text', detectedTimestampType)
 
     console.log('[StandardizeDate] Using expression:', dateExpr.slice(0, 200) + '...')
 

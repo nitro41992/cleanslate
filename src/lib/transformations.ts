@@ -346,7 +346,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
   {
     id: 'standardize_date',
     label: 'Standardize Date',
-    description: 'Convert to ISO format (YYYY-MM-DD)',
+    description: 'Convert dates to a standard text format',
     icon: '📅',
     requiresColumn: true,
     params: [
@@ -361,23 +361,12 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
         ],
         default: 'YYYY-MM-DD',
       },
-      {
-        name: 'outputType',
-        type: 'select',
-        label: 'Output type',
-        options: [
-          { value: 'text', label: 'Text (VARCHAR)' },
-          { value: 'date', label: 'Date (DATE)' },
-          { value: 'timestamp', label: 'Datetime (TIMESTAMP)' },
-        ],
-        default: 'text',
-      },
     ],
     examples: [
       { before: '"01/15/2024"', after: '"2024-01-15"' },
       { before: '"20240115"', after: '"2024-01-15"' },
     ],
-    hints: ['Supports 10+ input formats', 'Auto-detects YYYYMMDD, MM/DD/YYYY, etc.', 'Choose Date or Datetime for typed output'],
+    hints: ['Supports 10+ input formats', 'Auto-detects YYYYMMDD, MM/DD/YYYY, etc.', 'Use Cast Type for native DATE/TIMESTAMP'],
   },
   {
     id: 'calculate_age',
