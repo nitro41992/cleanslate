@@ -41,6 +41,10 @@ let hydrationPromise: Promise<void> | null = null
 // Flag to signal that re-hydration is needed (after worker restart)
 let rehydrationRequested = false
 
+// Flag to suppress Parquet deletion during rehydration
+// When true, clearTables() won't trigger snapshot deletion
+let isRehydratingFlag = false
+
 // Save queue to prevent concurrent exports and coalesce rapid changes
 const saveInProgress = new Map<string, Promise<void>>()
 const pendingSave = new Map<string, boolean>()
@@ -143,6 +147,8 @@ export async function performHydration(isRehydration = false): Promise<void> {
     const existingTables = useTableStore.getState().tables
     if (existingTables.length > 0) {
       console.log(`[Persistence] Re-hydration: clearing ${existingTables.length} stale table(s) from store`)
+      // CRITICAL: Set flag to prevent deletion subscription from deleting Parquet files
+      isRehydratingFlag = true
       useTableStore.getState().clearTables()
     }
   }
@@ -245,6 +251,12 @@ export async function performHydration(isRehydration = false): Promise<void> {
         console.log(`[Persistence] Set active table to first restored: ${restoredTables[0].id}`)
       }
     }
+  }
+
+  // Reset rehydration flag - safe to delete snapshots again on normal table removal
+  if (isRehydration) {
+    isRehydratingFlag = false
+    console.log('[Persistence] Re-hydration complete, snapshot deletion re-enabled')
   }
 }
 
@@ -1198,6 +1210,12 @@ export function usePersistence() {
       // Find tables that were removed
       for (const [id, name] of previousTables) {
         if (!currentTableIds.has(id)) {
+          // Skip deletion during rehydration - we're just clearing store metadata,
+          // not actually deleting tables. The Parquet files should remain.
+          if (isRehydratingFlag) {
+            console.log(`[Persistence] Skipping snapshot deletion during rehydration: ${name}`)
+            continue
+          }
           console.log(`[Persistence] Table removed, deleting snapshot: ${name}`)
           deleteTableSnapshot(name).catch(console.error)
 

@@ -61,8 +61,15 @@ function BreakdownBar({
 }
 
 export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
-  const { memoryUsage, memoryLimit, memoryLevel, memoryBreakdown, refreshMemory, busyCount } =
-    useUIStore()
+  const {
+    memoryUsage,
+    memoryLimit,
+    memoryLevel,
+    memoryBreakdown,
+    jsHeapBytes,
+    refreshMemory,
+    busyCount,
+  } = useUIStore()
   const { isReady, compactMemory } = useDuckDB()
   const isBusy = busyCount > 0
   const [isCompacting, setIsCompacting] = useState(false)
@@ -111,13 +118,21 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
     }
   }
 
-  // Warning message based on level
+  // Warning thresholds based on JS Heap (more reliable than estimates)
+  const JS_HEAP_WARNING = 500 * 1024 * 1024   // 500 MB
+  const JS_HEAP_CRITICAL = 1024 * 1024 * 1024 // 1 GB
+
+  const jsHeapLevel = jsHeapBytes === null ? 'healthy' :
+    jsHeapBytes > JS_HEAP_CRITICAL ? 'critical' :
+    jsHeapBytes > JS_HEAP_WARNING ? 'warning' : 'healthy'
+
+  // Warning message based on JS heap (what we can actually measure)
   const getWarningMessage = () => {
-    if (isCritical) {
-      return 'Memory usage is high. Consider compacting.'
+    if (jsHeapLevel === 'critical') {
+      return 'JS Heap over 1 GB. Refresh page to reclaim memory.'
     }
-    if (isWarning) {
-      return 'Memory usage is elevated.'
+    if (jsHeapLevel === 'warning') {
+      return 'JS Heap elevated. Consider refreshing if it keeps growing.'
     }
     return null
   }
@@ -153,15 +168,48 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
         />
       </div>
 
+      {/* JS Heap Memory - what we can actually measure */}
+      {jsHeapBytes !== null && (
+        <div className="pt-2 border-t border-border space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">JS Heap</span>
+            <span className={cn(
+              'font-medium',
+              jsHeapBytes > 500 * 1024 * 1024 ? 'text-destructive' :
+              jsHeapBytes > 250 * 1024 * 1024 ? 'text-amber-500' :
+              'text-muted-foreground'
+            )}>
+              {formatBytes(jsHeapBytes)}
+            </span>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Task Manager shows ~2-3x this value (includes WASM, GPU, browser overhead).
+            Refresh page to reclaim memory.
+          </p>
+        </div>
+      )}
+
       {/* Warning message if applicable */}
       {getWarningMessage() && (
         <div
           className={cn(
             'text-xs p-2 rounded-md',
-            isCritical ? 'bg-destructive/10 text-destructive' : 'bg-amber-500/10 text-amber-500'
+            jsHeapLevel === 'critical'
+              ? 'bg-destructive/10 text-destructive'
+              : 'bg-amber-500/10 text-amber-500'
           )}
         >
           {getWarningMessage()}
+          {jsHeapLevel === 'critical' && (
+            <Button
+              variant="destructive"
+              size="sm"
+              className="w-full mt-2"
+              onClick={() => window.location.reload()}
+            >
+              Refresh Page
+            </Button>
+          )}
         </div>
       )}
 

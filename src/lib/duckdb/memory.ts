@@ -288,3 +288,47 @@ function formatBytes(bytes: number, decimals = 2): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
 }
+
+/**
+ * Get JS heap memory usage (Chrome/Edge only).
+ * This captures memory that DuckDB's internal tracking misses:
+ * - Arrow query result buffers
+ * - Cached objects and closures
+ * - WASM linear memory overhead
+ *
+ * Returns null on browsers that don't support performance.memory
+ */
+export function getJSHeapUsage(): {
+  usedJSHeapSize: number
+  totalJSHeapSize: number
+  jsHeapSizeLimit: number
+} | null {
+  // performance.memory is Chrome/Edge only (non-standard)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const memory = (performance as any).memory
+  if (!memory) return null
+
+  return {
+    usedJSHeapSize: memory.usedJSHeapSize,
+    totalJSHeapSize: memory.totalJSHeapSize,
+    jsHeapSizeLimit: memory.jsHeapSizeLimit,
+  }
+}
+
+/**
+ * Get combined memory status including JS heap.
+ * This gives a more accurate picture of actual tab memory usage.
+ */
+export async function getFullMemoryStatus(): Promise<MemoryStatus & {
+  jsHeapBytes: number | null
+  jsHeapLimitBytes: number | null
+}> {
+  const status = await getMemoryStatus()
+  const jsHeap = getJSHeapUsage()
+
+  return {
+    ...status,
+    jsHeapBytes: jsHeap?.usedJSHeapSize ?? null,
+    jsHeapLimitBytes: jsHeap?.jsHeapSizeLimit ?? null,
+  }
+}

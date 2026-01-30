@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import type { PersistenceStatus } from '@/types'
 import { getMemoryStatus, getMemoryBreakdown, MEMORY_LIMIT_BYTES } from '@/lib/duckdb/memory'
+import {
+  takeMemorySnapshot,
+  analyzeMemoryTrend,
+  runMemoryCleanup,
+  type MemoryHealthLevel,
+} from '@/lib/memory-manager'
 
 export type MemoryLevel = 'normal' | 'warning' | 'critical'
 export type CompactionStatus = 'idle' | 'running'
@@ -56,6 +62,14 @@ interface UIState {
   pendingChangelogCount: number        // Cell edits pending compaction
   // Memory breakdown (for memory indicator tooltip)
   memoryBreakdown: MemoryBreakdown
+  // JS heap memory (browser tab memory - what Task Manager shows)
+  jsHeapBytes: number | null  // null if browser doesn't support performance.memory
+  // Estimated total memory (approximates Task Manager value)
+  estimatedTotalMemory: number
+  // Memory health level based on estimated total
+  memoryHealthLevel: MemoryHealthLevel
+  // Is memory leaking (consistent growth detected)
+  isMemoryLeaking: boolean
   // Usage metrics (for future analytics)
   usageMetrics: UsageMetrics
 }
@@ -142,6 +156,12 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
     diffBytes: 0,
     overheadBytes: 0,
   },
+  // JS heap (browser memory) initial state
+  jsHeapBytes: null,
+  // Estimated total memory initial state
+  estimatedTotalMemory: 0,
+  memoryHealthLevel: 'healthy' as MemoryHealthLevel,
+  isMemoryLeaking: false,
   // Usage metrics initial state
   usageMetrics: {
     totalTables: 0,
@@ -228,12 +248,26 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
         getMemoryStatus(),
         getMemoryBreakdown(),
       ])
+      // Take memory snapshot for trend analysis
+      const snapshot = takeMemorySnapshot(status.duckdbReportedBytes)
+      const trend = analyzeMemoryTrend()
+
       set({
         memoryUsage: status.usedBytes,
         memoryLimit: status.limitBytes,
         memoryLevel: status.level,
         memoryBreakdown: breakdown,
+        jsHeapBytes: snapshot.jsHeapUsed,
+        estimatedTotalMemory: snapshot.estimatedTotalMemory,
+        memoryHealthLevel: snapshot.healthLevel,
+        isMemoryLeaking: trend.isLeaking,
       })
+
+      // Auto-cleanup caches when memory is critical
+      if (snapshot.healthLevel === 'critical' || snapshot.healthLevel === 'danger') {
+        console.log('[Memory] Critical memory level detected, running cleanup...')
+        runMemoryCleanup().catch(console.error)
+      }
       // Track peak memory for usage metrics
       const current = get()
       if (status.usedBytes > current.usageMetrics.peakMemoryBytes) {

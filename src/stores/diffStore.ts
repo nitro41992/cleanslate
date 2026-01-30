@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { DiffSummary } from '@/lib/diff-engine'
+import { clearDiffCaches } from '@/lib/diff-engine'
 
 export type DiffMode = 'compare-preview' | 'compare-tables'
 
@@ -105,7 +106,11 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   ...initialState,
 
   openView: () => set({ isViewOpen: true }),
-  closeView: () => set({ isViewOpen: false }),
+  closeView: () => {
+    // Clear diff caches when view closes to free memory
+    clearDiffCaches()
+    set({ isViewOpen: false })
+  },
   setMode: (mode) => set({
     mode,
     // Clear results when switching modes

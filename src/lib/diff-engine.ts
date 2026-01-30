@@ -5,6 +5,7 @@ import * as duckdb from '@duckdb/duckdb-wasm'
 import { formatBytes } from './duckdb/storage-info'
 import { getMemoryStatus } from './duckdb/memory'
 import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot-storage'
+import { registerMemoryCleanup } from './memory-manager'
 
 // Track which Parquet snapshots are currently registered to prevent re-registration
 const registeredParquetSnapshots = new Set<string>()
@@ -37,6 +38,9 @@ export function clearDiffCaches(): void {
   materializedDiffViews.clear()
   console.log(`[Diff] Cleared caches: ${snapshotCount} snapshots, ${cacheCount} expressions, ${viewCount} views`)
 }
+
+// Register with memory manager so caches are cleared on memory pressure
+registerMemoryCleanup('diff-engine', clearDiffCaches)
 
 /**
  * Resolve a table reference to a SQL expression, with robust Parquet handling.
