@@ -49,7 +49,9 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     markTableDirty(tableId)
     const result = await undoTimeline(tableId)
     if (result) {
-      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
+      // Derive columnOrder from columns if not provided (fallback for older timelines)
+      const columnOrder = result.columnOrder ?? result.columns.map(c => c.name)
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns, columnOrder })
     }
     refreshMemory()
   }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
@@ -59,7 +61,9 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     markTableDirty(tableId)
     const result = await redoTimeline(tableId)
     if (result) {
-      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
+      // Derive columnOrder from columns if not provided (fallback for older timelines)
+      const columnOrder = result.columnOrder ?? result.columns.map(c => c.name)
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns, columnOrder })
     }
     refreshMemory()
   }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
@@ -69,7 +73,9 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     markTableDirty(tableId)
     const result = await replayToPosition(tableId, -1)
     if (result) {
-      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
+      // Derive columnOrder from columns if not provided (fallback for older timelines)
+      const columnOrder = result.columnOrder ?? result.columns.map(c => c.name)
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns, columnOrder })
     }
     refreshMemory()
   }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
@@ -79,7 +85,9 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
     markTableDirty(tableId)
     const result = await replayToPosition(tableId, stepIndex)
     if (result) {
-      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns })
+      // Derive columnOrder from columns if not provided (fallback for older timelines)
+      const columnOrder = result.columnOrder ?? result.columns.map(c => c.name)
+      updateTable(tableId, { rowCount: result.rowCount, columns: result.columns, columnOrder })
     }
     refreshMemory()
   }, [tableId, isReplaying, updateTable, refreshMemory, markTableDirty])
