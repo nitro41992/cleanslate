@@ -8,7 +8,7 @@
 import type { CommandContext, CommandType, ValidationResult, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
-import { detectUnixTimestampType, buildUnixToTimestampExpression, type UnixTimestampType } from '../../utils/date'
+import { detectUnixTimestampType, buildUnixToTimestampExpression, buildDateParseExpression, type UnixTimestampType } from '../../utils/date'
 import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
 import { tableHasCsId } from '@/lib/duckdb'
 
@@ -112,9 +112,17 @@ export class CastTypeCommand extends Tier3TransformCommand<CastTypeParams> {
       } catch (err) {
         console.warn('[CastType] Unix detection failed:', err)
       }
+
+      // No Unix timestamp detected - use date parsing that tries multiple string formats
+      console.log('[CastType] Using date parsing with multiple format detection')
+      const dateParseExpr = buildDateParseExpression(col)
+      if (targetType === 'DATE') {
+        return `TRY_CAST(${dateParseExpr} AS DATE)`
+      }
+      return dateParseExpr  // TIMESTAMP
     }
 
-    // Default: use TRY_CAST
+    // Default for non-date types: use TRY_CAST
     console.log('[CastType] Using default TRY_CAST')
     return `TRY_CAST(${quotedCol} AS ${targetType})`
   }

@@ -369,9 +369,23 @@ async function generatePreviewSQL(
       const col = quoteCol(column)
       const targetType = params.targetType || 'VARCHAR'
 
+      // For DATE/TIMESTAMP, use date parsing that tries multiple string formats
+      // Unix timestamp detection is handled separately in the command
+      let castExpr: string
+      if (targetType === 'DATE' || targetType === 'TIMESTAMP') {
+        const dateParseExpr = buildDateParseExpression(column)
+        if (targetType === 'DATE') {
+          castExpr = `TRY_CAST(${dateParseExpr} AS DATE)`
+        } else {
+          castExpr = dateParseExpr
+        }
+      } else {
+        castExpr = `TRY_CAST(${col} AS ${targetType})`
+      }
+
       return {
         sql: `SELECT CAST(${col} AS VARCHAR) as original,
-                     CAST(TRY_CAST(${col} AS ${targetType}) AS VARCHAR) as result
+                     CAST(${castExpr} AS VARCHAR) as result
               FROM ${table}
               WHERE ${col} IS NOT NULL
               LIMIT ${limit}`,

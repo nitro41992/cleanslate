@@ -151,8 +151,12 @@ export function buildDateParseExpression(column: string): string {
 
 /**
  * Build a comprehensive date parse expression that handles:
- * 1. Unix timestamps (by digit count: ms, s, us, ns)
+ * 1. Unix timestamps (if pre-detected type is provided)
  * 2. String date formats (ISO 8601, US, EU, etc.)
+ *
+ * Note: Unix timestamp detection via CASE statements in COALESCE causes issues
+ * in DuckDB-WASM. Callers should detect Unix timestamps separately using
+ * detectUnixTimestampType() and pass the result here.
  *
  * @param column - The column name
  * @param detectedTimestampType - Pre-detected Unix timestamp type (if known)
@@ -172,31 +176,10 @@ export function buildSmartDateParseExpression(
     }
   }
 
-  // Otherwise, build a COALESCE that tries Unix timestamps first, then string formats
-  const castCol = `CAST(${quotedCol} AS VARCHAR)`
-  const bigintCol = `TRY_CAST(${quotedCol} AS BIGINT)`
-
-  // Try Unix timestamps by checking string length (digit count)
-  // This handles numeric values that could be timestamps
-  const unixAttempts = [
-    // 13 digits = milliseconds (most common for modern timestamps)
-    `CASE WHEN LENGTH(${castCol}) = 13 AND ${castCol} ~ '^[0-9]+$' THEN epoch_ms(${bigintCol}) END`,
-    // 10 digits = seconds
-    `CASE WHEN LENGTH(${castCol}) = 10 AND ${castCol} ~ '^[0-9]+$' THEN to_timestamp(${bigintCol}) END`,
-    // 16 digits = microseconds
-    `CASE WHEN LENGTH(${castCol}) = 16 AND ${castCol} ~ '^[0-9]+$' THEN make_timestamp(${bigintCol}) END`,
-  ]
-
-  // String date format attempts
-  const stringAttempts = DATE_FORMATS.map(
-    (fmt) => `TRY_STRPTIME(${castCol}, '${fmt}')`
-  )
-
-  return `COALESCE(
-    ${unixAttempts.join(',\n    ')},
-    ${stringAttempts.join(',\n    ')},
-    TRY_CAST(${quotedCol} AS TIMESTAMP)
-  )`
+  // No Unix timestamp detected - use string format parsing only
+  // Note: CASE statements for runtime Unix detection in COALESCE cause issues
+  // in DuckDB-WASM, so we rely on pre-detection instead
+  return buildDateParseExpression(column)
 }
 
 /**
