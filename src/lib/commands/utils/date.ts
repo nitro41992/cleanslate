@@ -105,6 +105,10 @@ export const DATE_FORMATS = [
   '%m-%d-%Y',     // US with dashes: 01-15-2024
   '%Y.%m.%d',     // Dot separated: 2024.01.15
   '%d.%m.%Y',     // EU with dots: 15.01.2024
+  '%B %d, %Y',    // Full month: April 5, 2018
+  '%b %d, %Y',    // Abbrev month: Apr 5, 2018
+  '%d %B %Y',     // EU full month: 5 April 2018
+  '%d %b %Y',     // EU abbrev month: 5 Apr 2018
 ] as const
 
 /**
@@ -228,8 +232,8 @@ export function buildDateFormatExpression(
 
     case 'text':
     default:
-      // Format as text string
-      return `strftime(${parseExpr}, '${strftimeFormat}')`
+      // Format as text string - cast to TIMESTAMP first to handle TIMESTAMPTZ
+      return `strftime(TRY_CAST(${parseExpr} AS TIMESTAMP), '${strftimeFormat}')`
   }
 }
 
