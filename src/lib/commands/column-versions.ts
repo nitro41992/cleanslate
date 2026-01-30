@@ -136,19 +136,22 @@ export function getBaseColumnName(originalColumn: string): string {
 
 /**
  * Check if a column name is a base column
+ * Matches both __base and __base_N (where N is a number, from DuckDB collision renaming)
  */
 export function isBaseColumn(columnName: string): boolean {
-  return columnName.endsWith('__base')
+  return /__base(_\d+)?$/.test(columnName)
 }
 
 /**
  * Extract original column name from base column name
+ * Handles both __base and __base_N patterns
  */
 export function getOriginalFromBase(baseColumnName: string): string | null {
   if (!isBaseColumn(baseColumnName)) {
     return null
   }
-  return baseColumnName.slice(0, -7) // Remove '__base' suffix
+  // Remove __base or __base_N suffix
+  return baseColumnName.replace(/__base(_\d+)?$/, '')
 }
 
 /**
@@ -556,6 +559,9 @@ export function createColumnVersionManager(
 /**
  * Scan a table for existing base columns and rebuild version store
  * Useful for recovery or migration scenarios
+ *
+ * NOTE: Uses DESCRIBE instead of information_schema.columns because
+ * DuckDB may not update information_schema immediately after CTAS operations.
  */
 export async function scanForBaseColumns(
   db: { query: <T>(sql: string) => Promise<T[]> },
@@ -563,17 +569,17 @@ export async function scanForBaseColumns(
 ): Promise<Map<string, ColumnVersionInfo>> {
   const result = new Map<string, ColumnVersionInfo>()
 
-  // Query column names from information_schema
+  // Query column names using DESCRIBE (more reliable than information_schema after CTAS)
   const columns = await db.query<{ column_name: string }>(`
     SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name = '${tableName}'
-    ORDER BY ordinal_position
+    FROM (DESCRIBE "${tableName}")
   `)
 
   // Find base columns
+  const foundBaseColumns: string[] = []
   for (const col of columns) {
     if (isBaseColumn(col.column_name)) {
+      foundBaseColumns.push(col.column_name)
       const original = getOriginalFromBase(col.column_name)
       if (original) {
         // Check if the original column also exists (computed column)
@@ -590,9 +596,14 @@ export async function scanForBaseColumns(
               },
             ],
           })
+          console.log(`[Column Versions] Recovered version info for "${original}" from "${col.column_name}"`)
         }
       }
     }
+  }
+
+  if (foundBaseColumns.length > 0 && result.size === 0) {
+    console.log(`[Column Versions] Found __base columns but no matching originals:`, foundBaseColumns)
   }
 
   return result

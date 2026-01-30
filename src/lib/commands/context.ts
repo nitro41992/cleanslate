@@ -49,6 +49,11 @@ export async function buildCommandContext(
       table.name
     )
     tableColumnVersions.set(tableId, columnVersions)
+    if (columnVersions.size > 0) {
+      console.log(`[Context] Scanned and found ${columnVersions.size} versioned column(s):`, Array.from(columnVersions.keys()))
+    } else {
+      console.log(`[Context] Scanned table, no existing __base columns found`)
+    }
   }
 
   // Build context

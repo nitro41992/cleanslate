@@ -142,7 +142,7 @@ export abstract class BaseTransformCommand<TParams extends BaseTransformParams =
       // Tier 2/3 modifications
       'unformat_currency', 'fix_negatives', 'pad_zeros',
       'standardize_date', 'calculate_age', 'fill_down', 'cast_type',
-      'replace_empty',
+      'replace_empty', 'split_column', 'combine_columns',
     ])
 
     return {

@@ -433,6 +433,23 @@ export class CommandExecutor implements ICommandExecutor {
         } catch (err) {
           console.warn('[Memory] CHECKPOINT failed (non-fatal):', err)
         }
+
+        // CRITICAL: Clear column version cache after Tier 3 transforms.
+        // Tier 3 transforms rebuild the table via CTAS, which may drop __base columns.
+        // If we don't clear the cache, subsequent Tier 1 transforms will try to use
+        // stale version info, causing captureTier1RowDetails to fail when looking
+        // for non-existent __base columns.
+        const { clearColumnVersionStore } = await import('./context')
+        clearColumnVersionStore(tableId)
+        console.log('[Executor] Cleared column version store after Tier 3 operation')
+
+        // Reset __base columns to current values for accurate subsequent audit capture.
+        // After Tier 3, the table is rebuilt but __base columns still hold original values.
+        // This causes Tier 1 audit drill-downs to fail because they compare to __base,
+        // which now represents original (not pre-transform) state.
+        // By resetting __base = current column, subsequent Tier 1 transforms will
+        // correctly show changes from the post-Tier-3 state.
+        await this.resetBaseColumnsAfterTier3(updatedCtx)
       }
 
       // Step 5: Audit logging
@@ -500,6 +517,7 @@ export class CommandExecutor implements ICommandExecutor {
         if (affectedRowIds.length === 0 && column) {
           try {
             const baseColumn = getBaseColumnName(column)
+            console.log(`[EXECUTOR] Strategy 2: Looking for ${baseColumn} in ${updatedCtx.table.name}`)
             const result = await updatedCtx.db.query<{ _cs_id: string }>(`
               SELECT _cs_id FROM "${updatedCtx.table.name}"
               WHERE "${baseColumn}" IS DISTINCT FROM "${column}"
@@ -509,9 +527,12 @@ export class CommandExecutor implements ICommandExecutor {
             if (affectedRowIds.length > 0) {
               fallbackMetrics.baseColumnSuccess++
               console.log(`[EXECUTOR] Strategy 2 (__base column) succeeded: ${affectedRowIds.length} rows`)
+            } else {
+              console.log(`[EXECUTOR] Strategy 2: Query returned 0 rows (no differences found)`)
             }
-          } catch {
+          } catch (err) {
             // __base column may not exist for non-tier-1 commands
+            console.log(`[EXECUTOR] Strategy 2 failed:`, err instanceof Error ? err.message : String(err))
           }
         }
 
@@ -596,11 +617,14 @@ export class CommandExecutor implements ICommandExecutor {
 
       // Capture row-level details for Tier 1 only (uses __base columns, must be AFTER execution)
       // Tier 2/3 already captured BEFORE execution in Step 3.5
-      if (!skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1) {
+      const shouldCaptureTier1 = !skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1
+      console.log(`[EXECUTOR] Tier 1 audit capture check: skipAudit=${skipAudit}, hasRowDetails=${auditInfo?.hasRowDetails}, auditEntryId=${!!auditInfo?.auditEntryId}, tier=${tier}, shouldCapture=${shouldCaptureTier1}`)
+
+      if (shouldCaptureTier1) {
         try {
           await this.captureTier1RowDetails(updatedCtx,
             (command.params as { column?: string }).column!,
-            auditInfo.auditEntryId
+            auditInfo!.auditEntryId
           )
         } catch (err) {
           console.warn('[EXECUTOR] Failed to capture Tier 1 row details:', err)
@@ -1021,6 +1045,68 @@ export class CommandExecutor implements ICommandExecutor {
     // For now, rely on timeline system's built-in snapshot management
   }
 
+  /**
+   * Reset __base columns to current column values after Tier 3 transforms.
+   *
+   * After a Tier 3 transform (e.g., Split Column), the table is rebuilt via CTAS.
+   * Any existing __base columns are preserved but still hold their ORIGINAL values
+   * (from before ALL transforms). This causes audit drill-downs to fail for
+   * subsequent Tier 1 transforms because:
+   *
+   * 1. Tier 1 audit capture compares column vs column__base
+   * 2. After Tier 3, __base = original value (not post-Tier-3 value)
+   * 3. If the Tier 1 transform produces similar output to __base, drill-down shows nothing
+   *
+   * By resetting __base = current column value after Tier 3, we ensure:
+   * - Subsequent Tier 1 transforms compare to post-Tier-3 state
+   * - Audit drill-downs correctly show changes made by THIS transform
+   *
+   * Trade-off: We lose "cumulative change from original" visibility, but gain
+   * correct "change from previous state" which is more useful for debugging.
+   */
+  private async resetBaseColumnsAfterTier3(ctx: CommandContext): Promise<void> {
+    try {
+      // Get all columns from table using DESCRIBE
+      const columns = await ctx.db.query<{ column_name: string }>(`
+        SELECT column_name FROM (DESCRIBE "${ctx.table.name}")
+      `)
+
+      const columnNames = columns.map(c => c.column_name)
+
+      // Find __base columns and their corresponding source columns
+      const baseColumnsToReset: Array<{ baseCol: string; sourceCol: string }> = []
+
+      for (const colName of columnNames) {
+        if (colName.endsWith('__base')) {
+          const sourceCol = colName.replace(/__base$/, '')
+          // Check if source column exists
+          if (columnNames.includes(sourceCol)) {
+            baseColumnsToReset.push({ baseCol: colName, sourceCol })
+          }
+        }
+      }
+
+      if (baseColumnsToReset.length === 0) {
+        console.log('[Executor] No __base columns to reset after Tier 3')
+        return
+      }
+
+      // Reset each __base column to current source value
+      for (const { baseCol, sourceCol } of baseColumnsToReset) {
+        await ctx.db.execute(`
+          UPDATE "${ctx.table.name}"
+          SET "${baseCol}" = "${sourceCol}"
+        `)
+        console.log(`[Executor] Reset ${baseCol} to current ${sourceCol} values`)
+      }
+
+      console.log(`[Executor] Reset ${baseColumnsToReset.length} __base column(s) after Tier 3`)
+    } catch (err) {
+      // Non-fatal - don't fail the command if reset fails
+      console.warn('[Executor] Failed to reset __base columns after Tier 3:', err)
+    }
+  }
+
   private async restoreFromSnapshot(
     tableName: string,
     snapshot: SnapshotMetadata
@@ -1272,21 +1358,37 @@ export class CommandExecutor implements ICommandExecutor {
 
   /**
    * Capture row details for Tier 1 commands using versioned columns.
+   *
    * After a Tier 1 transform:
    *   - column = transformed value (new)
-   *   - column__base = original value (before)
+   *   - column__base = pre-transform value (reset after each Tier 3)
+   *
+   * The __base column is reset after Tier 3 operations via resetBaseColumnsAfterTier3(),
+   * ensuring it always represents the state BEFORE the current transform chain.
+   * This makes audit drill-downs work correctly even after Tier 3 transforms.
+   *
+   * For chained Tier 1 transforms (without intervening Tier 3):
+   *   - First transform: __base captures original value
+   *   - Each subsequent transform sees __base = original (not intermediate)
+   *   - This shows "cumulative change from start of chain" in drill-down
+   *
+   * After a Tier 3 transform:
+   *   - __base is reset to current column value
+   *   - Next Tier 1 transform shows "change from post-Tier-3 state"
    */
   private async captureTier1RowDetails(
     ctx: CommandContext,
     column: string,
     auditEntryId: string
   ): Promise<void> {
+    console.log(`[EXECUTOR] captureTier1RowDetails called for column: ${column}, auditEntryId: ${auditEntryId}`)
+
     // Ensure audit details table exists before inserting
     await ensureAuditDetailsTable(ctx.db)
 
     const baseColumn = getBaseColumnName(column)
     const quotedCol = `"${column}"`
-    const quotedBase = `"${baseColumn}"`
+    const quotedBaseCol = `"${baseColumn}"`
     const escapedColumn = column.replace(/'/g, "''")
 
     // Check if base column exists (it should for Tier 1)
@@ -1299,6 +1401,7 @@ export class CommandExecutor implements ICommandExecutor {
         WHERE column_name = '${baseColumn}'
       `)
       baseColumnExists = colsResult.length > 0
+      console.log(`[EXECUTOR] Base column check: ${baseColumn} exists = ${baseColumnExists}`)
     } catch (err) {
       console.warn(`[EXECUTOR] Failed to check for base column ${baseColumn}:`, err)
       return
@@ -1309,8 +1412,8 @@ export class CommandExecutor implements ICommandExecutor {
       return
     }
 
-    // Insert row details: previous = base column, new = transformed column
-    // Only include rows where values actually differ
+    // Simple comparison: __base (reset after Tier 3) vs current column value
+    // No need for complex expression reconstruction - __base is always the correct baseline
     const sql = `
       INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)
       SELECT
@@ -1318,16 +1421,17 @@ export class CommandExecutor implements ICommandExecutor {
         '${auditEntryId}',
         rowid,
         '${escapedColumn}',
-        CAST(${quotedBase} AS VARCHAR),
+        CAST(${quotedBaseCol} AS VARCHAR),
         CAST(${quotedCol} AS VARCHAR),
         CURRENT_TIMESTAMP
       FROM "${ctx.table.name}"
-      WHERE ${quotedBase} IS DISTINCT FROM ${quotedCol}
+      WHERE ${quotedBaseCol} IS DISTINCT FROM ${quotedCol}
       LIMIT 50000
     `
 
     try {
       await ctx.db.execute(sql)
+      console.log(`[EXECUTOR] Captured Tier 1 audit details comparing ${column} vs ${baseColumn}`)
     } catch (err) {
       // Log detailed error context for debugging
       console.error(`[EXECUTOR] Failed to capture Tier 1 row details for column "${column}":`, {
