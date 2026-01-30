@@ -1,8 +1,9 @@
 import { useRef, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Search } from 'lucide-react'
+import { Search, Layers } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { ClusterCard } from './ClusterCard'
+import { cn } from '@/lib/utils'
 import type { ValueCluster } from '@/types'
 import type { ClusterFilter } from '@/stores/standardizerStore'
 
@@ -80,45 +81,49 @@ export function ClusterList({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Filter Bar */}
-      <div className="p-4 border-b space-y-3">
-        {/* Filter Tabs */}
-        <div className="flex gap-2">
-          <button
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              filter === 'all'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80 text-muted-foreground'
-            }`}
-            onClick={() => onFilterChange('all')}
-            data-testid="filter-all"
-          >
-            All ({clusters.length})
-          </button>
-          <button
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              filter === 'actionable'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80 text-muted-foreground'
-            }`}
-            onClick={() => onFilterChange('actionable')}
-            data-testid="filter-actionable"
-          >
-            Actionable ({actionableCount})
-          </button>
+      {/* Filter Bar - Glass morphic styling */}
+      <div className="p-4 border-b border-border/30 space-y-3 bg-gradient-to-b from-muted/20 to-transparent backdrop-blur-sm">
+        {/* Filter Tabs - Pill style */}
+        <div className="flex gap-2 items-center">
+          <div className="flex gap-1 p-1 rounded-lg bg-muted/30 ring-1 ring-border/20">
+            <button
+              className={cn(
+                'px-3 py-1.5 text-sm rounded-md transition-all duration-200',
+                filter === 'all'
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+              onClick={() => onFilterChange('all')}
+              data-testid="filter-all"
+            >
+              All ({clusters.length})
+            </button>
+            <button
+              className={cn(
+                'px-3 py-1.5 text-sm rounded-md transition-all duration-200',
+                filter === 'actionable'
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+              onClick={() => onFilterChange('actionable')}
+              data-testid="filter-actionable"
+            >
+              Actionable ({actionableCount})
+            </button>
+          </div>
 
           {/* Bulk Selection */}
           <div className="flex-1" />
           <button
-            className="px-3 py-1.5 text-sm text-primary hover:underline"
+            className="px-3 py-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
             onClick={onSelectAllClusters}
             data-testid="select-all-clusters"
           >
             Select All
           </button>
-          <span className="text-muted-foreground py-1.5">|</span>
+          <span className="text-border/60">|</span>
           <button
-            className="px-3 py-1.5 text-sm text-primary hover:underline"
+            className="px-3 py-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
             onClick={onDeselectAllClusters}
             data-testid="deselect-all-clusters"
           >
@@ -126,15 +131,17 @@ export function ClusterList({
           </button>
         </div>
 
-        {/* Search */}
+        {/* Search - Enhanced styling */}
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1 rounded bg-muted/30">
+            <Search className="h-3.5 w-3.5 text-muted-foreground" />
+          </div>
           <Input
             type="text"
             placeholder="Search values..."
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="pl-9"
+            className="pl-10 bg-muted/20 border-border/30 focus:border-primary/50 focus:ring-primary/20"
             data-testid="cluster-search"
           />
         </div>
@@ -143,11 +150,16 @@ export function ClusterList({
       {/* Cluster List */}
       {filteredClusters.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <div className="text-center">
-            <p className="text-sm">No clusters found</p>
-            {searchQuery && (
-              <p className="text-xs mt-1">Try adjusting your search</p>
-            )}
+          <div className="text-center space-y-3">
+            <div className="mx-auto w-12 h-12 rounded-xl bg-muted/30 ring-1 ring-border/20 flex items-center justify-center">
+              <Layers className="w-6 h-6 text-muted-foreground/60" />
+            </div>
+            <div>
+              <p className="text-sm font-medium">No clusters found</p>
+              {searchQuery && (
+                <p className="text-xs text-muted-foreground/70 mt-1">Try adjusting your search</p>
+              )}
+            </div>
           </div>
         </div>
       ) : (

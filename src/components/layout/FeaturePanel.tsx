@@ -53,7 +53,7 @@ export function FeaturePanel({ children }: FeaturePanelProps) {
     <Sheet open={isOpen} onOpenChange={(open) => !open && setActivePanel(null)}>
       <SheetContent
         side="right"
-        className={`${activePanel === 'clean' ? 'w-[880px] sm:max-w-[880px]' : 'w-[400px] sm:max-w-[400px]'} p-0 flex flex-col`}
+        className={`${['clean', 'combine', 'scrub'].includes(activePanel || '') ? 'w-[880px] sm:max-w-[880px]' : 'w-[400px] sm:max-w-[400px]'} p-0 flex flex-col`}
         aria-describedby="feature-panel-description"
       >
         {meta && (

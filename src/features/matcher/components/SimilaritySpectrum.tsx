@@ -65,30 +65,39 @@ export function SimilaritySpectrum({
 
   return (
     <div className="space-y-3">
-      <div className="text-sm font-medium">Similarity Spectrum</div>
+      <div className="text-sm font-medium flex items-center gap-2">
+        Similarity Spectrum
+        <span className="text-xs text-muted-foreground font-normal">
+          (drag thresholds to adjust)
+        </span>
+      </div>
 
-      {/* Histogram */}
-      <div className="relative h-16">
-        <div className="absolute inset-0 flex items-end gap-px">
+      {/* Histogram - Enhanced with glow */}
+      <div className="relative h-16 rounded-lg overflow-hidden bg-muted/10 ring-1 ring-border/20">
+        <div className="absolute inset-0 flex items-end gap-px p-1">
           {histogram.map((bucket, index) => {
             // Determine bucket color based on thresholds (use midpoint of bucket)
             const bucketMid = bucket.min + (bucket.max - bucket.min) / 2
-            let bgColor = 'bg-red-500/40'
+            let bgColor = 'bg-red-500/50'
+            let glowColor = 'shadow-red-500/20'
             if (bucketMid >= definiteThreshold) {
-              bgColor = 'bg-green-500/40'
+              bgColor = 'bg-green-500/50'
+              glowColor = 'shadow-green-500/20'
             } else if (bucketMid >= maybeThreshold) {
-              bgColor = 'bg-yellow-500/40'
+              bgColor = 'bg-yellow-500/50'
+              glowColor = 'shadow-yellow-500/20'
             }
 
             return (
               <div
                 key={index}
                 className={cn(
-                  'flex-1 rounded-t transition-all',
+                  'flex-1 rounded-t transition-all duration-200',
                   bgColor,
-                  bucket.count === 0 && 'opacity-30'
+                  bucket.count > 0 && `shadow-sm ${glowColor}`,
+                  bucket.count === 0 && 'opacity-20'
                 )}
-                style={{ height: `${Math.max(bucket.height, 8)}%` }}
+                style={{ height: `${Math.max(bucket.height, 6)}%` }}
                 title={`${bucket.min.toFixed(0)}-${bucket.max.toFixed(0)}%: ${bucket.count} pairs`}
               />
             )
@@ -118,29 +127,29 @@ export function SimilaritySpectrum({
         <span>100%</span>
       </div>
 
-      {/* Zone Legend */}
-      <div className="flex justify-between text-xs pt-2 border-t border-border/50">
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded bg-red-500/40" />
-          <span className="text-muted-foreground">Not Match</span>
-          <span className="font-medium">({zoneCounts.notMatch})</span>
+      {/* Zone Legend - Enhanced with pills */}
+      <div className="flex justify-between text-xs pt-3 border-t border-border/20">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/10 ring-1 ring-red-500/20">
+          <div className="w-2 h-2 rounded-full bg-red-500/60" />
+          <span className="text-red-400/80">Not Match</span>
+          <span className="font-medium text-red-400 tabular-nums">({zoneCounts.notMatch})</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded bg-yellow-500/40" />
-          <span className="text-muted-foreground">Maybe</span>
-          <span className="font-medium">({zoneCounts.maybe})</span>
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-500/10 ring-1 ring-yellow-500/20">
+          <div className="w-2 h-2 rounded-full bg-yellow-500/60" />
+          <span className="text-yellow-400/80">Maybe</span>
+          <span className="font-medium text-yellow-400 tabular-nums">({zoneCounts.maybe})</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded bg-green-500/40" />
-          <span className="text-muted-foreground">Definite</span>
-          <span className="font-medium">({zoneCounts.definite})</span>
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 ring-1 ring-green-500/20">
+          <div className="w-2 h-2 rounded-full bg-green-500/60" />
+          <span className="text-green-400/80">Definite</span>
+          <span className="font-medium text-green-400 tabular-nums">({zoneCounts.definite})</span>
         </div>
       </div>
 
-      {/* Threshold Values */}
-      <div className="flex justify-between text-xs text-muted-foreground">
-        <span>Maybe cutoff: {maybeThreshold}%</span>
-        <span>Definite cutoff: {definiteThreshold}%</span>
+      {/* Threshold Values - Enhanced */}
+      <div className="flex justify-between text-xs text-muted-foreground/80">
+        <span className="tabular-nums">Maybe cutoff: <span className="text-yellow-400">{maybeThreshold}%</span></span>
+        <span className="tabular-nums">Definite cutoff: <span className="text-green-400">{definiteThreshold}%</span></span>
       </div>
     </div>
   )

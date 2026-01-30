@@ -1,20 +1,13 @@
-import { useState } from 'react'
-import { Layers, Link2, Play, Loader2, X, Sparkles, Merge, Check } from 'lucide-react'
+import { Layers, Link2, Play, Loader2, X, Sparkles, Merge, Check, ArrowUp, ArrowDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { TableCombobox } from '@/components/ui/table-combobox'
+import { ColumnCombobox } from '@/components/ui/combobox'
 import { ValidationWarnings } from '@/features/combiner/components/ValidationWarnings'
 import { useTableStore } from '@/stores/tableStore'
 import { useCombinerStore } from '@/stores/combinerStore'
@@ -68,19 +61,51 @@ export function CombinePanel() {
   // Hook for executing commands with confirmation when discarding redo states
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
-  const [selectedTable, setSelectedTable] = useState<string>('')
+
+  // Handle mode change - clear validation state
+  const handleModeChange = (newMode: 'stack' | 'join') => {
+    setMode(newMode)
+    // Clear validation state when switching modes
+    setStackValidation(null)
+    setJoinValidation(null)
+  }
 
   // Stack handlers
-  const handleAddTable = () => {
-    if (selectedTable && !stackTableIds.includes(selectedTable)) {
-      addStackTable(selectedTable)
-      setSelectedTable('')
+  const handleAddTable = (tableId: string, _tableName: string) => {
+    if (tableId && !stackTableIds.includes(tableId) && stackTableIds.length < 2) {
+      addStackTable(tableId)
       setStackValidation(null)
     }
   }
 
   const handleRemoveTable = (id: string) => {
     removeStackTable(id)
+    setStackValidation(null)
+  }
+
+  // Reorder tables for stack
+  const moveTableUp = (index: number) => {
+    if (index <= 0) return
+    // Need to swap by removing and re-adding in correct order
+    const currentIds = [...stackTableIds]
+    const temp = currentIds[index]
+    currentIds[index] = currentIds[index - 1]
+    currentIds[index - 1] = temp
+    // Clear and re-add
+    stackTableIds.forEach(id => removeStackTable(id))
+    currentIds.forEach(id => addStackTable(id))
+    setStackValidation(null)
+  }
+
+  const moveTableDown = (index: number) => {
+    if (index >= stackTableIds.length - 1) return
+    const currentIds = [...stackTableIds]
+    const temp = currentIds[index]
+    currentIds[index] = currentIds[index + 1]
+    currentIds[index + 1] = temp
+    // Clear and re-add
+    stackTableIds.forEach(id => removeStackTable(id))
+    currentIds.forEach(id => addStackTable(id))
     setStackValidation(null)
   }
 
@@ -313,8 +338,10 @@ export function CombinePanel() {
   }
 
   const selectedTables = stackTableIds.map((id) => tables.find((t) => t.id === id)).filter(Boolean)
-  const availableTables = tables.filter((t) => !stackTableIds.includes(t.id))
   const hasWhitespaceWarning = joinValidation?.warnings.some((w) => w.includes('whitespace'))
+
+  // Prepare table options for combobox
+  const tableOptions = tables.map(t => ({ id: t.id, name: t.name, rowCount: t.rowCount }))
 
   if (tables.length < 2) {
     return (
@@ -328,289 +355,441 @@ export function CombinePanel() {
     )
   }
 
+  // Determine if right column should show config (stack: 2 tables, join: both tables selected)
+  const showStackConfig = mode === 'stack' && stackTableIds.length === 2
+  const showJoinConfig = mode === 'join' && leftTableId && rightTableId
+
   return (
-    <Tabs value={mode} onValueChange={(v) => setMode(v as 'stack' | 'join')} className="flex flex-col h-full">
-      <div className="px-4 pt-4">
-        <TabsList className="w-full">
-          <TabsTrigger value="stack" className="flex-1" data-testid="combiner-stack-tab">
-            <Layers className="w-4 h-4 mr-2" />
-            Stack
-          </TabsTrigger>
-          <TabsTrigger value="join" className="flex-1" data-testid="combiner-join-tab">
-            <Link2 className="w-4 h-4 mr-2" />
-            Join
-          </TabsTrigger>
-        </TabsList>
-      </div>
+    <Tabs value={mode} onValueChange={(v) => handleModeChange(v as 'stack' | 'join')} className="flex h-full">
+      {/* Left Column: Mode Selection & Table Selection */}
+      <div className="w-[340px] border-r border-border/50 flex flex-col">
+        <div className="px-4 pt-4">
+          <TabsList className="w-full">
+            <TabsTrigger value="stack" className="flex-1" data-testid="combiner-stack-tab">
+              <Layers className="w-4 h-4 mr-2" />
+              Stack
+            </TabsTrigger>
+            <TabsTrigger value="join" className="flex-1" data-testid="combiner-join-tab">
+              <Link2 className="w-4 h-4 mr-2" />
+              Join
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-      <ScrollArea className="flex-1">
-        {/* Stack Tab */}
-        <TabsContent value="stack" className="mt-0 p-4 space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Combine rows from multiple tables vertically (UNION ALL).
-          </p>
-
-          <div className="space-y-2">
-            <Label>Select Tables to Stack</Label>
-            <div className="flex gap-2">
-              <Select value={selectedTable} onValueChange={setSelectedTable}>
-                <SelectTrigger className="flex-1">
-                  <SelectValue placeholder="Select a table" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableTables.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.name} ({t.rowCount} rows)
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button variant="outline" onClick={handleAddTable} disabled={!selectedTable || stackTableIds.length >= 2}>
-                Add
-              </Button>
-            </div>
-          </div>
-
-          {selectedTables.length > 0 && (
+        <ScrollArea className="flex-1">
+          {/* Stack Tab - Left Column */}
+          <TabsContent value="stack" className="mt-0 p-4 space-y-4">
             <div className="space-y-2">
-              <Label>Selected Tables</Label>
-              <div className="space-y-2">
-                {selectedTables.map((table, index) => (
-                  <div key={table!.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline">{index + 1}</Badge>
-                      <span className="text-sm">{table!.name}</span>
-                      <span className="text-xs text-muted-foreground">({table!.rowCount} rows)</span>
-                    </div>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleRemoveTable(table!.id)}>
-                      <X className="w-3 h-3" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {stackTableIds.length === 2 && (
-            <Button
-              variant="outline"
-              onClick={handleValidateStack}
-              className={`w-full ${stackValidation ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : ''}`}
-            >
-              {stackValidation ? (
-                <>
-                  <Check className="w-4 h-4 mr-2" />
-                  Validated
-                </>
-              ) : (
-                'Validate Compatibility'
-              )}
-            </Button>
-          )}
-
-          {stackValidation && <ValidationWarnings warnings={stackValidation.warnings} />}
-
-          {stackTableIds.length === 2 && (
-            <div className="space-y-2">
-              <Label>Result Table Name</Label>
-              <Input
-                value={resultTableName}
-                onChange={(e) => setResultTableName(e.target.value)}
-                placeholder="e.g., combined_sales"
+              <Label>Add Tables to Stack</Label>
+              <TableCombobox
+                tables={tableOptions}
+                value={null}
+                onValueChange={handleAddTable}
+                placeholder="Select a table to add..."
+                disabled={stackTableIds.length >= 2 || isProcessing}
+                excludeIds={stackTableIds}
+                autoFocus
               />
+              <p className="text-xs text-muted-foreground">
+                Select 2 tables to combine their rows
+              </p>
             </div>
-          )}
-        </TabsContent>
 
-        {/* Join Tab */}
-        <TabsContent value="join" className="mt-0 p-4 space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Combine tables horizontally by matching rows on a key column.
-          </p>
+            {selectedTables.length > 0 && (
+              <div className="space-y-2">
+                <Label>Selected Tables ({selectedTables.length}/2)</Label>
+                <div className="space-y-2">
+                  {selectedTables.map((table, index) => (
+                    <div key={table!.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Badge variant="outline" className="shrink-0">{index + 1}</Badge>
+                        <span className="text-sm truncate">{table!.name}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">
+                          ({table!.rowCount.toLocaleString()} rows)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 ml-2">
+                        {stackTableIds.length === 2 && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => moveTableUp(index)}
+                              disabled={index === 0 || isProcessing}
+                            >
+                              <ArrowUp className="w-3 h-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => moveTableDown(index)}
+                              disabled={index === stackTableIds.length - 1 || isProcessing}
+                            >
+                              <ArrowDown className="w-3 h-3" />
+                            </Button>
+                          </>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => handleRemoveTable(table!.id)}
+                          disabled={isProcessing}
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </TabsContent>
 
-          <div className="space-y-2">
-            <Label>Left Table</Label>
-            <Select
-              value={leftTableId || ''}
-              onValueChange={(v) => {
-                setLeftTableId(v)
-                setKeyColumn(null)
-                setJoinValidation(null)
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select left table" />
-              </SelectTrigger>
-              <SelectContent>
-                {tables.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name} ({t.rowCount} rows)
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label>Right Table</Label>
-            <Select
-              value={rightTableId || ''}
-              onValueChange={(v) => {
-                setRightTableId(v)
-                setKeyColumn(null)
-                setJoinValidation(null)
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select right table" />
-              </SelectTrigger>
-              <SelectContent>
-                {tables.filter((t) => t.id !== leftTableId).map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name} ({t.rowCount} rows)
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {commonColumns.length > 0 && (
+          {/* Join Tab - Left Column */}
+          <TabsContent value="join" className="mt-0 p-4 space-y-4">
             <div className="space-y-2">
-              <Label>Key Column</Label>
-              <Select
-                value={keyColumn || ''}
-                onValueChange={(v) => {
-                  setKeyColumn(v)
+              <Label>Left Table</Label>
+              <TableCombobox
+                tables={tableOptions}
+                value={leftTableId}
+                onValueChange={(id, _name) => {
+                  setLeftTableId(id)
+                  setKeyColumn(null)
                   setJoinValidation(null)
                 }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select key column" />
-                </SelectTrigger>
-                <SelectContent>
-                  {commonColumns.map((col) => (
-                    <SelectItem key={col} value={col}>
-                      {col}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          {keyColumn && (
-            <div className="space-y-2">
-              <Label>Join Type</Label>
-              <RadioGroup
-                value={joinType}
-                onValueChange={(v) => setJoinType(v as JoinType)}
-                className="grid grid-cols-3 gap-2"
-              >
-                <div className="flex items-center space-x-2 p-2 border rounded-lg">
-                  <RadioGroupItem value="inner" id="inner" />
-                  <Label htmlFor="inner" className="cursor-pointer text-sm">Inner</Label>
-                </div>
-                <div className="flex items-center space-x-2 p-2 border rounded-lg">
-                  <RadioGroupItem value="left" id="left" />
-                  <Label htmlFor="left" className="cursor-pointer text-sm">Left</Label>
-                </div>
-                <div className="flex items-center space-x-2 p-2 border rounded-lg">
-                  <RadioGroupItem value="full_outer" id="full_outer" />
-                  <Label htmlFor="full_outer" className="cursor-pointer text-sm">Full</Label>
-                </div>
-              </RadioGroup>
-            </div>
-          )}
-
-          {keyColumn && (
-            <Button
-              variant="outline"
-              onClick={handleValidateJoin}
-              className={`w-full ${joinValidation ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : ''}`}
-            >
-              {joinValidation ? (
-                <>
-                  <Check className="w-4 h-4 mr-2" />
-                  Validated
-                </>
-              ) : (
-                'Validate Join'
-              )}
-            </Button>
-          )}
-
-          {joinValidation && (
-            <>
-              <ValidationWarnings warnings={joinValidation.warnings} />
-              {hasWhitespaceWarning && (
-                <Button variant="outline" onClick={handleAutoClean} disabled={isProcessing} className="w-full">
-                  <Sparkles className="w-4 h-4 mr-2" />
-                  Auto-Clean Keys
-                </Button>
-              )}
-            </>
-          )}
-
-          {keyColumn && (
-            <div className="space-y-2">
-              <Label>Result Table Name</Label>
-              <Input
-                value={resultTableName}
-                onChange={(e) => setResultTableName(e.target.value)}
-                placeholder="e.g., orders_with_customers"
+                placeholder="Select left table..."
+                disabled={isProcessing}
+                autoFocus
               />
             </div>
-          )}
-        </TabsContent>
-      </ScrollArea>
 
-      <Separator />
-
-      {/* Action Button */}
-      <div className="p-4">
-        {mode === 'stack' ? (
-          <Button
-            className="w-full"
-            onClick={handleStack}
-            disabled={stackTableIds.length < 2 || !resultTableName.trim() || isProcessing}
-            data-testid="combiner-stack-btn"
-          >
-            {isProcessing ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Stacking...
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 mr-2" />
-                Stack Tables
-              </>
-            )}
-          </Button>
-        ) : (
-          <Button
-            className="w-full"
-            onClick={handleJoin}
-            disabled={!leftTableId || !rightTableId || !keyColumn || !resultTableName.trim() || isProcessing}
-            data-testid="combiner-join-btn"
-          >
-            {isProcessing ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Joining...
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 mr-2" />
-                Join Tables
-              </>
-            )}
-          </Button>
-        )}
-
-        {/* Confirm Discard Undone Operations Dialog */}
-        <ConfirmDiscardDialog {...confirmDialogProps} />
+            <div className="space-y-2">
+              <Label>Right Table</Label>
+              <TableCombobox
+                tables={tableOptions}
+                value={rightTableId}
+                onValueChange={(id, _name) => {
+                  setRightTableId(id)
+                  setKeyColumn(null)
+                  setJoinValidation(null)
+                }}
+                placeholder="Select right table..."
+                disabled={isProcessing}
+                excludeIds={leftTableId ? [leftTableId] : []}
+              />
+            </div>
+          </TabsContent>
+        </ScrollArea>
       </div>
+
+      {/* Right Column: Configuration */}
+      <div className="flex-1 flex flex-col overflow-y-auto">
+        <div className="flex-1 flex flex-col justify-center p-4">
+          {/* Stack Config */}
+          {mode === 'stack' && showStackConfig && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+              {/* Stack Info Card */}
+              <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+                <div>
+                  <h3 className="font-medium flex items-center gap-2">
+                    <Layers className="w-4 h-4" />
+                    Stack Tables (UNION ALL)
+                  </h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Combine rows from both tables vertically
+                  </p>
+                </div>
+
+                <div className="border-t border-border/50 pt-2">
+                  <p className="text-xs font-medium text-muted-foreground mb-1.5">Preview</p>
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className="text-muted-foreground">{selectedTables[0]?.name}</span>
+                    <span className="text-muted-foreground">({selectedTables[0]?.rowCount} rows)</span>
+                    <span className="text-muted-foreground">+</span>
+                    <span className="text-muted-foreground">{selectedTables[1]?.name}</span>
+                    <span className="text-muted-foreground">({selectedTables[1]?.rowCount} rows)</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-mono mt-1">
+                    <span className="text-muted-foreground">→</span>
+                    <span className="text-green-400/80">
+                      {(selectedTables[0]?.rowCount || 0) + (selectedTables[1]?.rowCount || 0)} rows
+                    </span>
+                  </div>
+                </div>
+
+                <div className="border-t border-border/50 pt-2">
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
+                    <li className="flex items-start gap-1.5">
+                      <span className="text-blue-400">•</span>
+                      Tables can have different columns - missing values become NULL
+                    </li>
+                    <li className="flex items-start gap-1.5">
+                      <span className="text-blue-400">•</span>
+                      Reorder tables above to control row order in result
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Validate Button */}
+              <Button
+                variant="outline"
+                onClick={handleValidateStack}
+                className={`w-full ${stackValidation ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : ''}`}
+                disabled={isProcessing}
+              >
+                {stackValidation ? (
+                  <>
+                    <Check className="w-4 h-4 mr-2" />
+                    Validated
+                  </>
+                ) : (
+                  'Validate Compatibility'
+                )}
+              </Button>
+
+              {stackValidation && <ValidationWarnings warnings={stackValidation.warnings} />}
+
+              {/* Result Table Name */}
+              <div className="space-y-2">
+                <Label>Result Table Name</Label>
+                <Input
+                  value={resultTableName}
+                  onChange={(e) => setResultTableName(e.target.value)}
+                  placeholder="e.g., combined_sales"
+                  disabled={isProcessing}
+                />
+              </div>
+
+              {/* Stack Button */}
+              <Button
+                className="w-full"
+                onClick={handleStack}
+                disabled={!resultTableName.trim() || isProcessing}
+                data-testid="combiner-stack-btn"
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Stacking...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4 mr-2" />
+                    Stack Tables
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+
+          {/* Join Config */}
+          {mode === 'join' && showJoinConfig && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+              {/* Join Info Card */}
+              <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+                <div>
+                  <h3 className="font-medium flex items-center gap-2">
+                    <Link2 className="w-4 h-4" />
+                    Join Tables
+                  </h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Combine tables horizontally by matching rows on a key column
+                  </p>
+                </div>
+
+                <div className="border-t border-border/50 pt-2">
+                  <p className="text-xs font-medium text-muted-foreground mb-1.5">Example</p>
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className="text-red-400/80">orders.customer_id</span>
+                    <span className="text-muted-foreground">=</span>
+                    <span className="text-green-400/80">customers.customer_id</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Key Column */}
+              {commonColumns.length > 0 ? (
+                <div className="space-y-2">
+                  <Label>Key Column</Label>
+                  <ColumnCombobox
+                    columns={commonColumns}
+                    value={keyColumn || ''}
+                    onValueChange={(v) => {
+                      setKeyColumn(v)
+                      setJoinValidation(null)
+                    }}
+                    placeholder="Select key column..."
+                    disabled={isProcessing}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {commonColumns.length} column{commonColumns.length !== 1 ? 's' : ''} shared between tables
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
+                  <p className="text-sm text-destructive">
+                    No common columns found between the selected tables
+                  </p>
+                </div>
+              )}
+
+              {/* Join Type */}
+              {keyColumn && (
+                <div className="space-y-2">
+                  <Label>Join Type</Label>
+                  <RadioGroup
+                    value={joinType}
+                    onValueChange={(v) => setJoinType(v as JoinType)}
+                    className="space-y-2"
+                  >
+                    <div
+                      className={`flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                        joinType === 'inner' ? 'border-primary bg-primary/5' : 'border-border/50 hover:bg-muted/50'
+                      }`}
+                      onClick={() => setJoinType('inner')}
+                    >
+                      <RadioGroupItem value="inner" id="inner" className="mt-0.5" />
+                      <div className="flex-1">
+                        <label htmlFor="inner" className="text-sm font-medium cursor-pointer">Inner Join</label>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Only rows with matching keys in both tables
+                        </p>
+                      </div>
+                    </div>
+                    <div
+                      className={`flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                        joinType === 'left' ? 'border-primary bg-primary/5' : 'border-border/50 hover:bg-muted/50'
+                      }`}
+                      onClick={() => setJoinType('left')}
+                    >
+                      <RadioGroupItem value="left" id="left" className="mt-0.5" />
+                      <div className="flex-1">
+                        <label htmlFor="left" className="text-sm font-medium cursor-pointer">Left Join</label>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          All rows from left table, matching from right
+                        </p>
+                      </div>
+                    </div>
+                    <div
+                      className={`flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                        joinType === 'full_outer' ? 'border-primary bg-primary/5' : 'border-border/50 hover:bg-muted/50'
+                      }`}
+                      onClick={() => setJoinType('full_outer')}
+                    >
+                      <RadioGroupItem value="full_outer" id="full_outer" className="mt-0.5" />
+                      <div className="flex-1">
+                        <label htmlFor="full_outer" className="text-sm font-medium cursor-pointer">Full Outer Join</label>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          All rows from both tables, NULLs where no match
+                        </p>
+                      </div>
+                    </div>
+                  </RadioGroup>
+                </div>
+              )}
+
+              {/* Validate Button */}
+              {keyColumn && (
+                <Button
+                  variant="outline"
+                  onClick={handleValidateJoin}
+                  className={`w-full ${joinValidation ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : ''}`}
+                  disabled={isProcessing}
+                >
+                  {joinValidation ? (
+                    <>
+                      <Check className="w-4 h-4 mr-2" />
+                      Validated
+                    </>
+                  ) : (
+                    'Validate Join'
+                  )}
+                </Button>
+              )}
+
+              {joinValidation && (
+                <>
+                  <ValidationWarnings warnings={joinValidation.warnings} />
+                  {hasWhitespaceWarning && (
+                    <Button variant="outline" onClick={handleAutoClean} disabled={isProcessing} className="w-full">
+                      <Sparkles className="w-4 h-4 mr-2" />
+                      Auto-Clean Keys
+                    </Button>
+                  )}
+                </>
+              )}
+
+              {/* Result Table Name */}
+              {keyColumn && (
+                <div className="space-y-2">
+                  <Label>Result Table Name</Label>
+                  <Input
+                    value={resultTableName}
+                    onChange={(e) => setResultTableName(e.target.value)}
+                    placeholder="e.g., orders_with_customers"
+                    disabled={isProcessing}
+                  />
+                </div>
+              )}
+
+              {/* Join Button */}
+              {keyColumn && (
+                <Button
+                  className="w-full"
+                  onClick={handleJoin}
+                  disabled={!resultTableName.trim() || isProcessing}
+                  data-testid="combiner-join-btn"
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Joining...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      Join Tables
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* Stack Empty State */}
+          {mode === 'stack' && !showStackConfig && (
+            <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
+              <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
+                <Layers className="w-6 h-6 text-muted-foreground" />
+              </div>
+              <h3 className="font-medium mb-1">Stack Tables</h3>
+              <p className="text-sm text-muted-foreground">
+                Select at least 2 tables from the left to stack
+              </p>
+            </div>
+          )}
+
+          {/* Join Empty State */}
+          {mode === 'join' && !showJoinConfig && (
+            <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
+              <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
+                <Link2 className="w-6 h-6 text-muted-foreground" />
+              </div>
+              <h3 className="font-medium mb-1">Join Tables</h3>
+              <p className="text-sm text-muted-foreground">
+                Select Left and Right tables from the left to configure join
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Confirm Discard Undone Operations Dialog */}
+      <ConfirmDiscardDialog {...confirmDialogProps} />
     </Tabs>
   )
 }
