@@ -29,35 +29,77 @@ interface StrategyInfo {
   examples: Array<{ before: string; after: string }>
 }
 
+// Strategy display order - Fast options first, then accurate, then small-data-only
+const STRATEGY_ORDER: BlockingStrategy[] = [
+  // Fast SQL-only (no JS preprocessing)
+  'first_2_chars',
+  'first_letter',
+  // Accurate phonetic (requires JS preprocessing - slower but better matching)
+  'metaphone_block',
+  'token_phonetic_block',
+  'fingerprint_block',
+  // Small datasets only
+  'none',
+]
+
+// Maximum row count for 'none' strategy (O(n²) becomes impractical above this)
+const MAX_ROWS_FOR_NONE = 1000
+
 const strategyInfo: Record<BlockingStrategy, StrategyInfo> = {
+  // Fast SQL-only strategies
+  first_2_chars: {
+    title: 'First 2 Characters',
+    description: 'Groups by first 2 letters. Fast for large datasets.',
+    badge: 'Fast',
+    badgeVariant: 'secondary',
+    examples: [
+      { before: 'Smith', after: 'Smyth' },
+    ],
+  },
   first_letter: {
-    title: 'First Letter (Fastest)',
-    description: 'Only compare records starting with same letter. Best for clean data, 100k+ rows.',
+    title: 'First Letter',
+    description: 'Groups by first letter only. Fastest option for very large datasets.',
+    badge: 'Fastest',
+    badgeVariant: 'secondary',
     examples: [
       { before: 'Smith', after: 'Smythe' },
     ],
   },
-  double_metaphone: {
-    title: 'Phonetic - Double Metaphone',
-    description: 'Compare records that sound similar. Best for name variations.',
-    badge: 'Recommended',
+  // Accurate phonetic strategies
+  metaphone_block: {
+    title: 'Phonetic (Sound-Alike)',
+    description: 'Groups values that sound similar. More accurate but slower.',
+    badge: 'Accurate',
     badgeVariant: 'default',
     examples: [
       { before: 'Smith', after: 'Smyth' },
       { before: 'John', after: 'Jon' },
+      { before: 'Catherine', after: 'Katherine' },
     ],
   },
-  ngram: {
-    title: 'Character Similarity (N-Gram)',
-    description: 'Compare records sharing character sequences. Best for typos, misspellings.',
+  token_phonetic_block: {
+    title: 'Token Phonetic (Full Names)',
+    description: 'Phonetic + word order handling. Best accuracy for full names.',
+    badge: 'Best for names',
+    badgeVariant: 'default',
     examples: [
-      { before: 'Jhon', after: 'John' },
+      { before: 'John Smith', after: 'Smith, Jon' },
+      { before: 'Jon Smyth', after: 'John Smith' },
     ],
   },
+  fingerprint_block: {
+    title: 'Fingerprint (Word-Order Safe)',
+    description: 'Groups values with same words regardless of order. Best for addresses.',
+    examples: [
+      { before: 'John Smith', after: 'Smith, John' },
+      { before: 'ACME Inc.', after: 'ACME, Inc' },
+    ],
+  },
+  // Small datasets only
   none: {
-    title: 'Compare All (Slowest)',
-    description: 'Compare every record pair. Best for small datasets under 1,000 rows.',
-    badge: 'May be slow',
+    title: 'Compare All Pairs',
+    description: `Compares every record pair. Only for tables with ≤${MAX_ROWS_FOR_NONE.toLocaleString()} rows.`,
+    badge: 'Small datasets',
     badgeVariant: 'secondary',
     examples: [],
   },
@@ -86,6 +128,12 @@ export function MatchConfigPanel({
   const handleTableSelect = (id: string, name: string) => {
     onTableChange(id, name)
     onMatchColumnChange(null)
+
+    // If 'none' is selected but new table exceeds row limit, switch to default
+    const newTable = tables.find(t => t.id === id)
+    if (blockingStrategy === 'none' && newTable && newTable.rowCount > MAX_ROWS_FOR_NONE) {
+      onBlockingStrategyChange('first_2_chars')
+    }
   }
 
   const handleColumnChange = (column: string) => {
@@ -146,32 +194,53 @@ export function MatchConfigPanel({
             onValueChange={(v) => onBlockingStrategyChange(v as BlockingStrategy)}
             className="space-y-2"
           >
-            {(Object.keys(strategyInfo) as BlockingStrategy[]).map((strategy) => {
+            {STRATEGY_ORDER.map((strategy) => {
               const info = strategyInfo[strategy]
               const isSelected = blockingStrategy === strategy
+              // Disable 'none' strategy for tables with > 1000 rows
+              const isDisabled = strategy === 'none' && selectedTable.rowCount > MAX_ROWS_FOR_NONE
+              const rowCountExceeded = strategy === 'none' && selectedTable.rowCount > MAX_ROWS_FOR_NONE
+
               return (
                 <div
                   key={strategy}
                   className={cn(
-                    'flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors',
-                    isSelected
+                    'flex items-start space-x-3 rounded-lg border p-3 transition-colors',
+                    isDisabled
+                      ? 'opacity-50 cursor-not-allowed'
+                      : 'cursor-pointer',
+                    isSelected && !isDisabled
                       ? 'border-l-2 border-l-primary border-primary bg-accent'
-                      : 'border-border hover:bg-muted'
+                      : 'border-border',
+                    !isDisabled && !isSelected && 'hover:bg-muted'
                   )}
-                  onClick={() => onBlockingStrategyChange(strategy)}
+                  onClick={() => !isDisabled && onBlockingStrategyChange(strategy)}
                 >
-                  <RadioGroupItem value={strategy} id={strategy} className="mt-0.5" />
+                  <RadioGroupItem
+                    value={strategy}
+                    id={strategy}
+                    className="mt-0.5"
+                    disabled={isDisabled}
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <label
                         htmlFor={strategy}
-                        className="text-sm font-medium cursor-pointer"
+                        className={cn(
+                          'text-sm font-medium',
+                          isDisabled ? 'cursor-not-allowed' : 'cursor-pointer'
+                        )}
                       >
                         {info.title}
                       </label>
-                      {info.badge && (
+                      {info.badge && !rowCountExceeded && (
                         <Badge variant={info.badgeVariant || 'default'} className="text-xs">
                           {info.badge}
+                        </Badge>
+                      )}
+                      {rowCountExceeded && (
+                        <Badge variant="destructive" className="text-xs">
+                          {selectedTable.rowCount.toLocaleString()} rows (max {MAX_ROWS_FOR_NONE.toLocaleString()})
                         </Badge>
                       )}
                     </div>

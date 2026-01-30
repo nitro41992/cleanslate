@@ -112,7 +112,7 @@ const initialState: MatcherState = {
   tableId: null,
   tableName: null,
   matchColumn: null,
-  blockingStrategy: 'double_metaphone',
+  blockingStrategy: 'first_2_chars',
   definiteThreshold: 95,
   maybeThreshold: 85,
   pairs: [],

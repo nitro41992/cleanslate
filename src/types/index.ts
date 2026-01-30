@@ -140,7 +140,16 @@ export interface DiffResult {
   modifiedColumns?: string[]
 }
 
-export type BlockingStrategy = 'first_letter' | 'double_metaphone' | 'ngram' | 'none'
+export type BlockingStrategy =
+  // Fast SQL-only strategies (no JS preprocessing)
+  | 'first_letter'           // Groups by first letter - fastest
+  | 'first_2_chars'          // Groups by first 2 letters - fast
+  // Accurate phonetic strategies (requires JS preprocessing)
+  | 'fingerprint_block'      // Word-order independent: normalize + sort tokens
+  | 'metaphone_block'        // True phonetic: full Double Metaphone codes
+  | 'token_phonetic_block'   // Best for names: metaphone per word, sorted
+  // Small datasets only
+  | 'none'                   // Compare all pairs (only for ≤1000 rows)
 
 export type FieldSimilarityStatus = 'exact' | 'similar' | 'different'
 

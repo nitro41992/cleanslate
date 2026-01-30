@@ -1,7 +1,12 @@
-import { query } from '@/lib/duckdb'
+import { query, initDuckDB } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { MatchPair, BlockingStrategy, FieldSimilarity, FieldSimilarityStatus } from '@/types'
 import { generateId } from '@/lib/utils'
+import {
+  generateFingerprint,
+  generateMetaphoneKey,
+  generateTokenPhoneticKey,
+} from '@/lib/standardizer-engine'
 
 /**
  * Block analysis result for chunked processing
@@ -48,38 +53,85 @@ export function distanceToSimilarity(distance: number, maxLength: number): numbe
 }
 
 /**
- * Calculate Levenshtein distance between two strings (JavaScript fallback)
- * Used for field-by-field comparison since DuckDB only provides it in SQL
+ * Calculate Jaro similarity between two strings
+ * Returns 0-1 where 1 is exact match
  */
-function levenshteinDistance(a: string, b: string): number {
-  const aLower = a.toLowerCase()
-  const bLower = b.toLowerCase()
+function jaroSimilarity(s1: string, s2: string): number {
+  const a = s1.toLowerCase()
+  const b = s2.toLowerCase()
 
-  if (aLower === bLower) return 0
-  if (aLower.length === 0) return bLower.length
-  if (bLower.length === 0) return aLower.length
+  if (a === b) return 1.0
+  if (a.length === 0 || b.length === 0) return 0.0
 
-  const matrix: number[][] = []
+  // Maximum matching distance
+  const matchDistance = Math.floor(Math.max(a.length, b.length) / 2) - 1
 
-  for (let i = 0; i <= bLower.length; i++) {
-    matrix[i] = [i]
-  }
-  for (let j = 0; j <= aLower.length; j++) {
-    matrix[0][j] = j
-  }
+  const aMatches = new Array(a.length).fill(false)
+  const bMatches = new Array(b.length).fill(false)
 
-  for (let i = 1; i <= bLower.length; i++) {
-    for (let j = 1; j <= aLower.length; j++) {
-      const cost = bLower[i - 1] === aLower[j - 1] ? 0 : 1
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost
-      )
+  let matches = 0
+  let transpositions = 0
+
+  // Find matches
+  for (let i = 0; i < a.length; i++) {
+    const start = Math.max(0, i - matchDistance)
+    const end = Math.min(i + matchDistance + 1, b.length)
+
+    for (let j = start; j < end; j++) {
+      if (bMatches[j] || a[i] !== b[j]) continue
+      aMatches[i] = true
+      bMatches[j] = true
+      matches++
+      break
     }
   }
 
-  return matrix[bLower.length][aLower.length]
+  if (matches === 0) return 0.0
+
+  // Count transpositions
+  let k = 0
+  for (let i = 0; i < a.length; i++) {
+    if (!aMatches[i]) continue
+    while (!bMatches[k]) k++
+    if (a[i] !== b[k]) transpositions++
+    k++
+  }
+
+  return (
+    (matches / a.length +
+      matches / b.length +
+      (matches - transpositions / 2) / matches) /
+    3
+  )
+}
+
+/**
+ * Calculate Jaro-Winkler similarity between two strings
+ * Adds a prefix bonus to Jaro similarity for strings that match at the beginning
+ * Returns 0-100 percentage (higher = more similar)
+ *
+ * Jaro-Winkler is better than Levenshtein for names because:
+ * - Weights prefix matches higher (important for names)
+ * - Handles transpositions better (Jon vs John)
+ * - More forgiving of minor character differences
+ */
+export function jaroWinklerSimilarity(s1: string, s2: string): number {
+  const jaro = jaroSimilarity(s1, s2)
+
+  // Find common prefix (up to 4 characters)
+  const a = s1.toLowerCase()
+  const b = s2.toLowerCase()
+  let prefix = 0
+  for (let i = 0; i < Math.min(4, a.length, b.length); i++) {
+    if (a[i] === b[i]) prefix++
+    else break
+  }
+
+  // Winkler modification: scaling factor of 0.1
+  const similarity = jaro + prefix * 0.1 * (1 - jaro)
+
+  // Convert to 0-100 scale and round to 1 decimal
+  return Math.round(similarity * 1000) / 10
 }
 
 /**
@@ -357,6 +409,7 @@ export function generateBigrams(text: string): string[] {
 
 /**
  * Calculate field-by-field similarities for a match pair
+ * Uses Jaro-Winkler for better name matching (prefix-weighted, transposition-friendly)
  */
 export function calculateFieldSimilarities(
   rowA: Record<string, unknown>,
@@ -371,16 +424,14 @@ export function calculateFieldSimilarities(
     const strA = valueA === null || valueA === undefined ? '' : String(valueA)
     const strB = valueB === null || valueB === undefined ? '' : String(valueB)
 
-    // Calculate similarity
+    // Calculate similarity using Jaro-Winkler (better for names)
     let similarity: number
     if (strA === strB) {
       similarity = 100
     } else if (strA === '' || strB === '') {
       similarity = 0
     } else {
-      const maxLen = Math.max(strA.length, strB.length)
-      const distance = levenshteinDistance(strA, strB)
-      similarity = distanceToSimilarity(distance, maxLen)
+      similarity = jaroWinklerSimilarity(strA, strB)
     }
 
     // Determine status
@@ -455,45 +506,158 @@ function stratifiedSort(pairs: MatchPair[]): MatchPair[] {
 }
 
 /**
+ * Check if a blocking strategy requires phonetic key preprocessing in JavaScript
+ */
+function isPhoneticBlockingStrategy(strategy: BlockingStrategy): boolean {
+  return ['fingerprint_block', 'metaphone_block', 'token_phonetic_block'].includes(strategy)
+}
+
+/**
+ * Generate a blocking key for a value based on the algorithm
+ */
+function generateBlockingKey(value: string, strategy: BlockingStrategy): string {
+  if (!value) return ''
+  switch (strategy) {
+    case 'fingerprint_block':
+      return generateFingerprint(value)
+    case 'metaphone_block':
+      return generateMetaphoneKey(value)
+    case 'token_phonetic_block':
+      return generateTokenPhoneticKey(value)
+    default:
+      return value
+  }
+}
+
+/**
+ * Create a temporary table with phonetic blocking keys
+ * Uses CSV registration for bulk loading (much faster than individual INSERTs)
+ *
+ * CRITICAL: Only process DISTINCT values from the match column to avoid O(n) JS processing
+ * For 1M rows with 50k distinct values, we process 50k not 1M
+ */
+async function createPhoneticBlockingTable(
+  tableName: string,
+  matchColumn: string,
+  strategy: BlockingStrategy
+): Promise<string> {
+  const tempTableName = `_phonetic_keys_${Date.now()}`
+
+  // 1. Query DISTINCT values only (crucial for performance)
+  const distinctValues = await query<{ value: string }>(`
+    SELECT DISTINCT CAST("${matchColumn}" AS VARCHAR) as value
+    FROM "${tableName}"
+    WHERE "${matchColumn}" IS NOT NULL
+      AND LENGTH(TRIM(CAST("${matchColumn}" AS VARCHAR))) > 0
+  `)
+
+  if (distinctValues.length === 0) {
+    // Create empty table
+    await query(`CREATE TEMP TABLE ${tempTableName} (value VARCHAR, block_key VARCHAR)`)
+    return tempTableName
+  }
+
+  // 2. Generate keys in JavaScript
+  const mappings: { value: string; key: string }[] = []
+  for (const row of distinctValues) {
+    const value = row.value
+    const key = generateBlockingKey(value, strategy)
+    if (key) {
+      mappings.push({ value, key })
+    }
+  }
+
+  // 3. Bulk load via CSV registration
+  // Escape CSV values: wrap in quotes, escape internal quotes by doubling
+  const escapeCsvValue = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const csvContent = 'value,block_key\n' +
+    mappings.map(m => `${escapeCsvValue(m.value)},${escapeCsvValue(m.key)}`).join('\n')
+
+  // Register CSV and create temp table
+  const db = await initDuckDB()
+  const csvFileName = `_phonetic_keys_${Date.now()}.csv`
+  await db.registerFileText(csvFileName, csvContent)
+
+  await query(`
+    CREATE TEMP TABLE ${tempTableName} AS
+    SELECT * FROM read_csv_auto('${csvFileName}', header=true)
+  `)
+
+  return tempTableName
+}
+
+/**
+ * Check if a strategy is a fast SQL-only strategy (no JS preprocessing)
+ */
+function isFastSqlStrategy(strategy: BlockingStrategy): boolean {
+  return ['first_letter', 'first_2_chars', 'none'].includes(strategy)
+}
+
+/**
  * Get blocking key SQL expression based on strategy
+ * For phonetic strategies, this returns a placeholder that will be replaced by JOIN
  */
 function getBlockKeyExpr(matchColumn: string, blockingStrategy: BlockingStrategy): string {
   switch (blockingStrategy) {
+    // Fast SQL-only strategies
     case 'first_letter':
       return `UPPER(SUBSTR("${matchColumn}", 1, 1))`
-    case 'double_metaphone':
-      // Approximation: first 2 letters (normalized, letters only)
-      return `UPPER(SUBSTR(REGEXP_REPLACE("${matchColumn}", '[^A-Za-z]', '', 'g'), 1, 2))`
-    case 'ngram':
-      // Use first 3 chars as blocking key
-      return `UPPER(SUBSTR("${matchColumn}", 1, 3))`
+    case 'first_2_chars':
+      return `UPPER(SUBSTR(REGEXP_REPLACE("${matchColumn}", '[^A-Za-z0-9]', '', 'g'), 1, 2))`
     case 'none':
-      // No blocking - compare all pairs
       return `'ALL'`
+    // Phonetic strategies use temp table JOIN, not SQL expression
+    case 'fingerprint_block':
+    case 'metaphone_block':
+    case 'token_phonetic_block':
+      return `'PHONETIC'`
     default:
-      return `UPPER(SUBSTR("${matchColumn}", 1, 1))`
+      return `'PHONETIC'`
   }
 }
 
 /**
  * Analyze block distribution for chunked processing
  * Returns blocks sorted by size (smallest first for faster progress)
+ *
+ * For phonetic strategies, uses the temp table created by createPhoneticBlockingTable
  */
 async function analyzeBlocks(
   tableName: string,
   matchColumn: string,
-  blockKeyExpr: string
+  blockKeyExpr: string,
+  phoneticTableName?: string
 ): Promise<BlockInfo[]> {
-  const result = await query<{ block_key: string; cnt: number }>(`
-    SELECT
-      ${blockKeyExpr} as block_key,
-      COUNT(*) as cnt
-    FROM "${tableName}"
-    WHERE "${matchColumn}" IS NOT NULL
-      AND LENGTH(COALESCE("${matchColumn}", '')) > 0
-    GROUP BY block_key
-    ORDER BY cnt ASC
-  `)
+  let sql: string
+
+  if (phoneticTableName) {
+    // For phonetic strategies, join with the temp table to get block keys
+    sql = `
+      SELECT
+        pk.block_key,
+        COUNT(*) as cnt
+      FROM "${tableName}" t
+      INNER JOIN ${phoneticTableName} pk
+        ON CAST(t."${matchColumn}" AS VARCHAR) = pk.value
+      WHERE t."${matchColumn}" IS NOT NULL
+        AND LENGTH(TRIM(CAST(t."${matchColumn}" AS VARCHAR))) > 0
+      GROUP BY pk.block_key
+      ORDER BY cnt ASC
+    `
+  } else {
+    sql = `
+      SELECT
+        ${blockKeyExpr} as block_key,
+        COUNT(*) as cnt
+      FROM "${tableName}"
+      WHERE "${matchColumn}" IS NOT NULL
+        AND LENGTH(COALESCE("${matchColumn}", '')) > 0
+      GROUP BY block_key
+      ORDER BY cnt ASC
+    `
+  }
+
+  const result = await query<{ block_key: string; cnt: number }>(sql)
 
   return result.map((r) => ({
     blockKey: r.block_key ?? 'NULL',
@@ -503,7 +667,7 @@ async function analyzeBlocks(
 }
 
 /**
- * Process a single block and return match pairs
+ * Process a single block and return match pairs using Jaro-Winkler similarity
  */
 async function processBlock(
   tableName: string,
@@ -511,8 +675,9 @@ async function processBlock(
   blockKey: string,
   blockKeyExpr: string,
   strategy: 'full' | 'strict' | 'sample',
-  maxDistance: number,
-  columns: string[]
+  jwThreshold: number,
+  columns: string[],
+  phoneticTableName?: string
 ): Promise<{
   results: Record<string, unknown>[]
   wasSampled: boolean
@@ -521,68 +686,139 @@ async function processBlock(
   const selectColsA = columns.map((c) => `a."${c}" as "a_${c}"`).join(', ')
   const selectColsB = columns.map((c) => `b."${c}" as "b_${c}"`).join(', ')
 
-  // Stricter distance for large blocks
-  const effectiveDistance = strategy === 'strict'
-    ? Math.max(2, maxDistance - 2)
-    : maxDistance
+  // Stricter threshold for large blocks (add 5% to threshold)
+  const effectiveThreshold = strategy === 'strict'
+    ? Math.min(0.95, jwThreshold + 0.05)
+    : jwThreshold
 
-  // For sampled blocks, we need a different approach
-  // DuckDB-WASM doesn't support TABLESAMPLE, so we use ORDER BY RANDOM() LIMIT
+  // For sampled blocks, limit input rows
   const sampleClause = strategy === 'sample'
     ? 'ORDER BY RANDOM() LIMIT 500'
     : ''
 
-  // Build the query differently for sampled vs non-sampled
+  const escapedBlockKey = blockKey.replace(/'/g, "''")
   let sql: string
-  if (strategy === 'sample') {
-    sql = `
-      WITH sampled_data AS (
-        SELECT *
-        FROM "${tableName}"
-        WHERE ${blockKeyExpr} = '${blockKey.replace(/'/g, "''")}'
-          AND "${matchColumn}" IS NOT NULL
-          AND LENGTH(COALESCE("${matchColumn}", '')) > 0
-        ${sampleClause}
-      ),
-      block_data AS (
-        SELECT ROW_NUMBER() OVER () as row_id, *
-        FROM sampled_data
-      )
-      SELECT
-        ${selectColsA},
-        ${selectColsB},
-        levenshtein(LOWER(COALESCE(a."${matchColumn}", '')), LOWER(COALESCE(b."${matchColumn}", ''))) as distance,
-        GREATEST(LENGTH(a."${matchColumn}"), LENGTH(b."${matchColumn}")) as max_len
-      FROM block_data a
-      JOIN block_data b
-        ON a.row_id < b.row_id
-      WHERE ABS(LENGTH(a."${matchColumn}") - LENGTH(b."${matchColumn}")) <= ${effectiveDistance}
-        AND levenshtein(LOWER(COALESCE(a."${matchColumn}", '')), LOWER(COALESCE(b."${matchColumn}", ''))) <= ${effectiveDistance}
-      ORDER BY distance ASC
-      LIMIT 1000
-    `
+
+  if (phoneticTableName) {
+    // Phonetic blocking: join with temp table
+    if (strategy === 'sample') {
+      sql = `
+        WITH sampled_data AS (
+          SELECT t.*
+          FROM "${tableName}" t
+          INNER JOIN ${phoneticTableName} pk
+            ON CAST(t."${matchColumn}" AS VARCHAR) = pk.value
+          WHERE pk.block_key = '${escapedBlockKey}'
+            AND t."${matchColumn}" IS NOT NULL
+            AND LENGTH(TRIM(CAST(t."${matchColumn}" AS VARCHAR))) > 0
+          ${sampleClause}
+        ),
+        block_data AS (
+          SELECT ROW_NUMBER() OVER () as row_id, *
+          FROM sampled_data
+        )
+        SELECT
+          ${selectColsA},
+          ${selectColsB},
+          jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) as similarity
+        FROM block_data a
+        JOIN block_data b ON a.row_id < b.row_id
+        WHERE jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) >= ${effectiveThreshold}
+        ORDER BY similarity DESC
+        LIMIT 1000
+      `
+    } else {
+      sql = `
+        WITH block_data AS (
+          SELECT ROW_NUMBER() OVER () as row_id, t.*
+          FROM "${tableName}" t
+          INNER JOIN ${phoneticTableName} pk
+            ON CAST(t."${matchColumn}" AS VARCHAR) = pk.value
+          WHERE pk.block_key = '${escapedBlockKey}'
+            AND t."${matchColumn}" IS NOT NULL
+            AND LENGTH(TRIM(CAST(t."${matchColumn}" AS VARCHAR))) > 0
+        )
+        SELECT
+          ${selectColsA},
+          ${selectColsB},
+          jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) as similarity
+        FROM block_data a
+        JOIN block_data b ON a.row_id < b.row_id
+        WHERE jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) >= ${effectiveThreshold}
+        ORDER BY similarity DESC
+        LIMIT 1000
+      `
+    }
   } else {
-    sql = `
-      WITH block_data AS (
-        SELECT ROW_NUMBER() OVER () as row_id, *
-        FROM "${tableName}"
-        WHERE ${blockKeyExpr} = '${blockKey.replace(/'/g, "''")}'
-          AND "${matchColumn}" IS NOT NULL
-          AND LENGTH(COALESCE("${matchColumn}", '')) > 0
-      )
-      SELECT
-        ${selectColsA},
-        ${selectColsB},
-        levenshtein(LOWER(COALESCE(a."${matchColumn}", '')), LOWER(COALESCE(b."${matchColumn}", ''))) as distance,
-        GREATEST(LENGTH(a."${matchColumn}"), LENGTH(b."${matchColumn}")) as max_len
-      FROM block_data a
-      JOIN block_data b
-        ON a.row_id < b.row_id
-      WHERE ABS(LENGTH(a."${matchColumn}") - LENGTH(b."${matchColumn}")) <= ${effectiveDistance}
-        AND levenshtein(LOWER(COALESCE(a."${matchColumn}", '')), LOWER(COALESCE(b."${matchColumn}", ''))) <= ${effectiveDistance}
-      ORDER BY distance ASC
-      LIMIT 1000
-    `
+    // Legacy SQL-based blocking
+    if (strategy === 'sample') {
+      sql = `
+        WITH sampled_data AS (
+          SELECT *
+          FROM "${tableName}"
+          WHERE ${blockKeyExpr} = '${escapedBlockKey}'
+            AND "${matchColumn}" IS NOT NULL
+            AND LENGTH(COALESCE("${matchColumn}", '')) > 0
+          ${sampleClause}
+        ),
+        block_data AS (
+          SELECT ROW_NUMBER() OVER () as row_id, *
+          FROM sampled_data
+        )
+        SELECT
+          ${selectColsA},
+          ${selectColsB},
+          jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) as similarity
+        FROM block_data a
+        JOIN block_data b ON a.row_id < b.row_id
+        WHERE jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) >= ${effectiveThreshold}
+        ORDER BY similarity DESC
+        LIMIT 1000
+      `
+    } else {
+      sql = `
+        WITH block_data AS (
+          SELECT ROW_NUMBER() OVER () as row_id, *
+          FROM "${tableName}"
+          WHERE ${blockKeyExpr} = '${escapedBlockKey}'
+            AND "${matchColumn}" IS NOT NULL
+            AND LENGTH(COALESCE("${matchColumn}", '')) > 0
+        )
+        SELECT
+          ${selectColsA},
+          ${selectColsB},
+          jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) as similarity
+        FROM block_data a
+        JOIN block_data b ON a.row_id < b.row_id
+        WHERE jaro_winkler_similarity(
+            LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+            LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+          ) >= ${effectiveThreshold}
+        ORDER BY similarity DESC
+        LIMIT 1000
+      `
+    }
   }
 
   const results = await query<Record<string, unknown>>(sql)
@@ -593,7 +829,7 @@ async function processBlock(
 }
 
 /**
- * Find duplicates using chunked multi-pass processing
+ * Find duplicates using chunked multi-pass processing with Jaro-Winkler similarity
  *
  * This approach:
  * 1. Analyzes block distribution first (fast)
@@ -601,6 +837,9 @@ async function processBlock(
  * 3. Reports progress after each block
  * 4. Handles oversized blocks by sampling
  * 5. Supports cancellation between blocks
+ *
+ * Phonetic blocking strategies (fingerprint, metaphone, token_phonetic) use
+ * JavaScript preprocessing with bulk CSV registration.
  *
  * Scales to 2M+ rows with predictable performance.
  */
@@ -615,123 +854,141 @@ export async function findDuplicatesChunked(
 ): Promise<ChunkedMatchResult> {
   return withDuckDBLock(async () => {
     const columns = await getTableColumns(tableName)
-  const blockKeyExpr = getBlockKeyExpr(matchColumn, blockingStrategy)
-  const maxDistance = Math.max(10, Math.ceil((100 - maybeThreshold) / 5))
+    const blockKeyExpr = getBlockKeyExpr(matchColumn, blockingStrategy)
+    // Convert threshold from percentage to 0-1 scale for Jaro-Winkler
+    const jwThreshold = maybeThreshold / 100
 
-  // Phase 1: Analyze block distribution
-  onProgress({
-    phase: 'analyzing',
-    currentBlock: 0,
-    totalBlocks: 0,
-    pairsFound: 0,
-    maybeCount: 0,
-    definiteCount: 0,
-    oversizedBlocks: 0,
-  })
-
-  const blocks = await analyzeBlocks(tableName, matchColumn, blockKeyExpr)
-  const oversizedCount = blocks.filter((b) => b.strategy === 'sample').length
-
-  if (shouldCancel()) {
-    return {
-      pairs: [],
-      totalFound: 0,
-      oversizedBlocksCount: oversizedCount,
-      blocksProcessed: 0,
-      totalBlocks: blocks.length,
-    }
-  }
-
-  // Phase 2: Process blocks sequentially
-  const allPairs: MatchPair[] = []
-  let maybeCount = 0
-  let definiteCount = 0
-
-  for (let i = 0; i < blocks.length; i++) {
-    if (shouldCancel()) break
-
-    const block = blocks[i]
+    // Phase 1: Analyze block distribution
     onProgress({
-      phase: 'processing',
-      currentBlock: i + 1,
-      totalBlocks: blocks.length,
-      pairsFound: allPairs.length,
-      maybeCount,
-      definiteCount,
-      currentBlockKey: block.blockKey,
-      oversizedBlocks: oversizedCount,
+      phase: 'analyzing',
+      currentBlock: 0,
+      totalBlocks: 0,
+      pairsFound: 0,
+      maybeCount: 0,
+      definiteCount: 0,
+      oversizedBlocks: 0,
     })
 
+    // For phonetic strategies, create the temp table first
+    let phoneticTableName: string | undefined
+    if (isPhoneticBlockingStrategy(blockingStrategy)) {
+      phoneticTableName = await createPhoneticBlockingTable(tableName, matchColumn, blockingStrategy)
+    }
+
     try {
-      const { results } = await processBlock(
-        tableName,
-        matchColumn,
-        block.blockKey,
-        blockKeyExpr,
-        block.strategy,
-        maxDistance,
-        columns
-      )
+      const blocks = await analyzeBlocks(tableName, matchColumn, blockKeyExpr, phoneticTableName)
+      const oversizedCount = blocks.filter((b) => b.strategy === 'sample').length
 
-      // Convert results to MatchPair objects
-      for (const row of results) {
-        const rowA = extractRow(row, columns, 'a_')
-        const rowB = extractRow(row, columns, 'b_')
-        const distance = Number(row.distance)
-        const maxLen = Number(row.max_len) || 1
-        const similarity = distanceToSimilarity(distance, maxLen)
-
-        // Filter by minimum threshold
-        if (similarity < maybeThreshold) continue
-
-        const fieldSimilarities = calculateFieldSimilarities(rowA, rowB, columns)
-
-        const pair: MatchPair = {
-          id: generateId(),
-          rowA,
-          rowB,
-          score: distance,
-          similarity,
-          fieldSimilarities,
-          status: 'pending',
-          keepRow: 'A',
-        }
-
-        allPairs.push(pair)
-
-        // Track counts
-        if (similarity >= definiteThreshold) {
-          definiteCount++
-        } else {
-          maybeCount++
+      if (shouldCancel()) {
+        return {
+          pairs: [],
+          totalFound: 0,
+          oversizedBlocksCount: oversizedCount,
+          blocksProcessed: 0,
+          totalBlocks: blocks.length,
         }
       }
-    } catch (error) {
-      console.error(`Error processing block ${block.blockKey}:`, error)
-      // Continue with next block
-    }
-  }
 
-  // Phase 3: Complete
-  onProgress({
-    phase: 'complete',
-    currentBlock: blocks.length,
-    totalBlocks: blocks.length,
-    pairsFound: allPairs.length,
-    maybeCount,
-    definiteCount,
-    oversizedBlocks: oversizedCount,
-  })
+      // Phase 2: Process blocks sequentially
+      const allPairs: MatchPair[] = []
+      let maybeCount = 0
+      let definiteCount = 0
 
-    // Apply stratified sorting: fuzzy matches first (most valuable for human review)
-    const sortedPairs = stratifiedSort(allPairs)
+      for (let i = 0; i < blocks.length; i++) {
+        if (shouldCancel()) break
 
-    return {
-      pairs: sortedPairs,
-      totalFound: allPairs.length,
-      oversizedBlocksCount: oversizedCount,
-      blocksProcessed: blocks.length,
-      totalBlocks: blocks.length,
+        const block = blocks[i]
+        onProgress({
+          phase: 'processing',
+          currentBlock: i + 1,
+          totalBlocks: blocks.length,
+          pairsFound: allPairs.length,
+          maybeCount,
+          definiteCount,
+          currentBlockKey: block.blockKey,
+          oversizedBlocks: oversizedCount,
+        })
+
+        try {
+          const { results } = await processBlock(
+            tableName,
+            matchColumn,
+            block.blockKey,
+            blockKeyExpr,
+            block.strategy,
+            jwThreshold,
+            columns,
+            phoneticTableName
+          )
+
+          // Convert results to MatchPair objects
+          for (const row of results) {
+            const rowA = extractRow(row, columns, 'a_')
+            const rowB = extractRow(row, columns, 'b_')
+            // Jaro-Winkler returns 0-1, convert to 0-100
+            const similarity = Math.round(Number(row.similarity) * 1000) / 10
+
+            // Filter by minimum threshold (double-check)
+            if (similarity < maybeThreshold) continue
+
+            const fieldSimilarities = calculateFieldSimilarities(rowA, rowB, columns)
+
+            const pair: MatchPair = {
+              id: generateId(),
+              rowA,
+              rowB,
+              score: Math.round(100 - similarity), // Backwards compat: lower score = better match
+              similarity,
+              fieldSimilarities,
+              status: 'pending',
+              keepRow: 'A',
+            }
+
+            allPairs.push(pair)
+
+            // Track counts
+            if (similarity >= definiteThreshold) {
+              definiteCount++
+            } else {
+              maybeCount++
+            }
+          }
+        } catch (error) {
+          console.error(`Error processing block ${block.blockKey}:`, error)
+          // Continue with next block
+        }
+      }
+
+      // Phase 3: Complete
+      onProgress({
+        phase: 'complete',
+        currentBlock: blocks.length,
+        totalBlocks: blocks.length,
+        pairsFound: allPairs.length,
+        maybeCount,
+        definiteCount,
+        oversizedBlocks: oversizedCount,
+      })
+
+      // Apply stratified sorting: fuzzy matches first (most valuable for human review)
+      const sortedPairs = stratifiedSort(allPairs)
+
+      return {
+        pairs: sortedPairs,
+        totalFound: allPairs.length,
+        oversizedBlocksCount: oversizedCount,
+        blocksProcessed: blocks.length,
+        totalBlocks: blocks.length,
+      }
+    } finally {
+      // Clean up temp table if created
+      if (phoneticTableName) {
+        try {
+          await query(`DROP TABLE IF EXISTS ${phoneticTableName}`)
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     }
   })
 }
@@ -760,8 +1017,11 @@ function extractRow(row: Record<string, unknown>, columns: string[], prefix: str
 /**
  * Find duplicate records using fuzzy matching
  *
- * All strategies now use DuckDB-native SQL for scalability (supports 2M+ rows).
- * Processing happens entirely in DuckDB to avoid JS memory limits.
+ * Uses Jaro-Winkler similarity (native DuckDB function) for better name matching.
+ * Phonetic blocking strategies (fingerprint, metaphone, token_phonetic) use
+ * JavaScript preprocessing with bulk CSV registration for efficiency.
+ *
+ * Scales to 2M+ rows with predictable performance.
  */
 export async function findDuplicates(
   tableName: string,
@@ -773,98 +1033,131 @@ export async function findDuplicates(
   return withDuckDBLock(async () => {
     const columns = await getTableColumns(tableName)
 
-  // Build blocking key SQL expression based on strategy
-  // All strategies now use SQL-based blocking for scalability
-  let blockKeyExpr: string
-  switch (blockingStrategy) {
-    case 'first_letter':
-      // Simple first letter blocking
-      blockKeyExpr = `UPPER(SUBSTR("${matchColumn}", 1, 1))`
-      break
-    case 'double_metaphone':
-      // Approximation: first 2 letters (normalized, letters only)
-      // This catches common phonetic variations (Smith/Smyth, Jon/John)
-      blockKeyExpr = `UPPER(SUBSTR(REGEXP_REPLACE("${matchColumn}", '[^A-Za-z]', '', 'g'), 1, 2))`
-      break
-    case 'ngram':
-      // Use first 3 chars as blocking key
-      blockKeyExpr = `UPPER(SUBSTR("${matchColumn}", 1, 3))`
-      break
-    case 'none':
-      // No blocking - compare all pairs (warning: O(n²) for large datasets!)
-      blockKeyExpr = `'ALL'`
-      break
-    default:
-      blockKeyExpr = `UPPER(SUBSTR("${matchColumn}", 1, 1))`
-  }
+    // Build select columns for both a and b
+    const selectColsA = columns.map((c) => `a."${c}" as "a_${c}"`).join(', ')
+    const selectColsB = columns.map((c) => `b."${c}" as "b_${c}"`).join(', ')
 
-  // Build select columns for both a and b
-  const selectColsA = columns.map((c) => `a."${c}" as "a_${c}"`).join(', ')
-  const selectColsB = columns.map((c) => `b."${c}" as "b_${c}"`).join(', ')
+    // Convert threshold from percentage to 0-1 scale for Jaro-Winkler
+    const jwThreshold = maybeThreshold / 100
 
-  // Calculate max distance from threshold
-  // If maybeThreshold = 60%, max_distance ≈ (100 - 60) / 10 = 4
-  // Use a reasonable upper bound to allow fuzzy matches
-  const maxDistance = Math.max(10, Math.ceil((100 - maybeThreshold) / 5))
+    let matchQuery: string
+    let phoneticTableName: string | null = null
 
-  // SQL-based fuzzy matching query
-  // All processing happens in DuckDB for scalability
-  // Results are limited to 10,000 pairs to keep UI responsive
-  const matchQuery = `
-    WITH blocked AS (
-      SELECT
-        ROW_NUMBER() OVER () as row_id,
-        ${blockKeyExpr} as block_key,
-        *
-      FROM "${tableName}"
-      WHERE "${matchColumn}" IS NOT NULL
-        AND LENGTH(COALESCE("${matchColumn}", '')) > 0
-    )
-    SELECT
-      ${selectColsA},
-      ${selectColsB},
-      levenshtein(LOWER(COALESCE(a."${matchColumn}", '')), LOWER(COALESCE(b."${matchColumn}", ''))) as distance,
-      GREATEST(LENGTH(a."${matchColumn}"), LENGTH(b."${matchColumn}")) as max_len
-    FROM blocked a
-    JOIN blocked b
-      ON a.block_key = b.block_key
-      AND a.row_id < b.row_id
-    WHERE levenshtein(LOWER(COALESCE(a."${matchColumn}", '')), LOWER(COALESCE(b."${matchColumn}", ''))) <= ${maxDistance}
-    ORDER BY distance ASC, max_len DESC
-    LIMIT 10000
-  `
+    try {
+      // Check if this is a phonetic blocking strategy requiring JS preprocessing
+      if (isPhoneticBlockingStrategy(blockingStrategy)) {
+        // Create temp table with phonetic keys
+        phoneticTableName = await createPhoneticBlockingTable(tableName, matchColumn, blockingStrategy)
 
-  const results = await query<Record<string, unknown>>(matchQuery)
+        // Query using phonetic key JOIN and Jaro-Winkler similarity
+        matchQuery = `
+          WITH base_data AS (
+            SELECT ROW_NUMBER() OVER () as row_id, *
+            FROM "${tableName}"
+            WHERE "${matchColumn}" IS NOT NULL
+              AND LENGTH(TRIM(CAST("${matchColumn}" AS VARCHAR))) > 0
+          ),
+          blocked AS (
+            SELECT bd.*, pk.block_key
+            FROM base_data bd
+            INNER JOIN ${phoneticTableName} pk
+              ON CAST(bd."${matchColumn}" AS VARCHAR) = pk.value
+          )
+          SELECT
+            ${selectColsA},
+            ${selectColsB},
+            jaro_winkler_similarity(
+              LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+              LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+            ) as similarity
+          FROM blocked a
+          JOIN blocked b
+            ON a.block_key = b.block_key
+            AND a.row_id < b.row_id
+          WHERE jaro_winkler_similarity(
+              LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+              LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+            ) >= ${jwThreshold}
+          ORDER BY similarity DESC
+          LIMIT 10000
+        `
+      } else if (isFastSqlStrategy(blockingStrategy)) {
+        // Fast SQL-only strategies (first_letter, first_2_chars, none)
+        const blockKeyExpr = getBlockKeyExpr(matchColumn, blockingStrategy)
 
-  // Convert to MatchPair objects (max 10k from SQL)
-  const pairs: MatchPair[] = []
+        matchQuery = `
+          WITH blocked AS (
+            SELECT
+              ROW_NUMBER() OVER () as row_id,
+              ${blockKeyExpr} as block_key,
+              *
+            FROM "${tableName}"
+            WHERE "${matchColumn}" IS NOT NULL
+              AND LENGTH(COALESCE("${matchColumn}", '')) > 0
+          )
+          SELECT
+            ${selectColsA},
+            ${selectColsB},
+            jaro_winkler_similarity(
+              LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+              LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+            ) as similarity
+          FROM blocked a
+          JOIN blocked b
+            ON a.block_key = b.block_key
+            AND a.row_id < b.row_id
+          WHERE jaro_winkler_similarity(
+              LOWER(COALESCE(CAST(a."${matchColumn}" AS VARCHAR), '')),
+              LOWER(COALESCE(CAST(b."${matchColumn}" AS VARCHAR), ''))
+            ) >= ${jwThreshold}
+          ORDER BY similarity DESC
+          LIMIT 10000
+        `
+      } else {
+        // Fallback (shouldn't happen)
+        throw new Error(`Unknown blocking strategy: ${blockingStrategy}`)
+      }
 
-  for (const row of results) {
-    const rowA = extractRow(row, columns, 'a_')
-    const rowB = extractRow(row, columns, 'b_')
-    const distance = Number(row.distance)
-    const maxLen = Number(row.max_len) || 1
-    const similarity = distanceToSimilarity(distance, maxLen)
+      const results = await query<Record<string, unknown>>(matchQuery)
 
-    // Filter by minimum threshold
-    if (similarity < maybeThreshold) continue
+      // Convert to MatchPair objects (max 10k from SQL)
+      const pairs: MatchPair[] = []
 
-    const fieldSimilarities = calculateFieldSimilarities(rowA, rowB, columns)
+      for (const row of results) {
+        const rowA = extractRow(row, columns, 'a_')
+        const rowB = extractRow(row, columns, 'b_')
+        // Jaro-Winkler returns 0-1, convert to 0-100
+        const similarity = Math.round(Number(row.similarity) * 1000) / 10
 
-    pairs.push({
-      id: generateId(),
-      rowA,
-      rowB,
-      score: distance, // Keep raw score for backwards compatibility
-      similarity,
-      fieldSimilarities,
-      status: 'pending',
-      keepRow: 'A', // Default to keeping first row
-    })
-  }
+        // Filter by minimum threshold (double-check)
+        if (similarity < maybeThreshold) continue
 
-    // Apply stratified sorting: fuzzy matches first
-    return stratifiedSort(pairs)
+        const fieldSimilarities = calculateFieldSimilarities(rowA, rowB, columns)
+
+        pairs.push({
+          id: generateId(),
+          rowA,
+          rowB,
+          score: Math.round(100 - similarity), // Backwards compat: lower score = better match
+          similarity,
+          fieldSimilarities,
+          status: 'pending',
+          keepRow: 'A',
+        })
+      }
+
+      // Apply stratified sorting: fuzzy matches first
+      return stratifiedSort(pairs)
+    } finally {
+      // Clean up temp table if created
+      if (phoneticTableName) {
+        try {
+          await query(`DROP TABLE IF EXISTS ${phoneticTableName}`)
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    }
   })
 }
 

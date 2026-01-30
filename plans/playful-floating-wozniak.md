@@ -1,5 +1,29 @@
 # Plan: Align Match Algorithms with Standardize
 
+## Implementation Status: ✅ COMPLETE
+
+All phases implemented:
+- [x] Added `fingerprint_block`, `metaphone_block`, `token_phonetic_block` to `BlockingStrategy` type
+- [x] Implemented `jaroWinklerSimilarity()` function (JS + DuckDB native)
+- [x] Created `createPhoneticBlockingTable()` with CSV bulk registration
+- [x] Updated `findDuplicates()` and `findDuplicatesChunked()` to use Jaro-Winkler + phonetic blocking
+- [x] Updated `calculateFieldSimilarities()` to use Jaro-Winkler
+- [x] Updated `MatchConfigPanel.tsx` with new strategy options
+- [x] Changed default blocking strategy to `metaphone_block`
+- [x] **Removed legacy strategies:** `first_letter`, `double_metaphone`, `ngram`
+- [x] **Added row limit for `none` strategy:** Disabled for tables >1000 rows
+- [x] Build passes, lint passes on changed files
+
+### Final Strategy List
+| Strategy | Description | Row Limit |
+|----------|-------------|-----------|
+| `metaphone_block` | True phonetic (Double Metaphone) | Unlimited |
+| `token_phonetic_block` | Per-word phonetic + sorting | Unlimited |
+| `fingerprint_block` | Word-order independent | Unlimited |
+| `none` | Compare all pairs O(n²) | ≤1000 rows |
+
+---
+
 ## Problem Statement
 
 The **Standardize** feature uses sophisticated clustering algorithms (Fingerprint, Double Metaphone, Token Phonetic) that work well for grouping similar values. However, the **Match** feature uses **Levenshtein distance** for similarity calculation, with blocking strategies that only serve as performance optimization (reducing comparison pairs), not improving match quality.
@@ -136,11 +160,18 @@ function jaroWinklerSimilarity(s1: string, s2: string): number {
 
 | File | Changes |
 |------|---------|
-| `src/types/index.ts` | Add `fingerprint_block`, `metaphone_block`, `token_phonetic_block` to `BlockingStrategy` |
-| `src/lib/fuzzy-matcher.ts` | Add `jaroWinklerSimilarity()`, `createPhoneticBlockingTable()`, update blocking logic |
-| `src/lib/standardizer-engine.ts` | Export `generateFingerprint`, `generateMetaphoneKey`, `generateTokenPhoneticKey` |
-| `src/features/matcher/components/MatchConfigPanel.tsx` | Add new strategy options with descriptions |
-| `src/stores/matcherStore.ts` | Update default strategy to `metaphone_block`, handle migration for old configs |
+| `src/types/index.ts:143` | Add `fingerprint_block`, `metaphone_block`, `token_phonetic_block` to `BlockingStrategy` union |
+| `src/lib/fuzzy-matcher.ts` | Add `jaroWinklerSimilarity()`, `createPhoneticBlockingTable()`, update SQL queries |
+| `src/lib/standardizer-engine.ts` | Export existing functions (already implemented, just need exports) |
+| `src/features/matcher/components/MatchConfigPanel.tsx` | Add new strategy options to `strategyInfo` object (follow existing pattern with `examples` array) |
+| `src/stores/matcherStore.ts:115` | Update `blockingStrategy` default from `'double_metaphone'` to `'metaphone_block'` |
+
+**UI Consistency Note**: Recent commits (6ac1846, 22f2918) modernized Match/Standardize UIs. The `MatchConfigPanel` already uses:
+- `StrategyInfo` interface with `examples` array
+- `TableCombobox` / `ColumnCombobox` components
+- Flat design with `bg-muted` cards and border patterns
+
+New strategies should follow the same pattern.
 
 ---
 
@@ -200,24 +231,55 @@ WHERE jaro_winkler_similarity(a.val, b.val) >= 0.85  -- Filter in SQL, not JS!
 
 ### 3. `src/features/matcher/components/MatchConfigPanel.tsx`
 
-Add new strategy options:
+**Follow existing UI patterns** from recent commits (flat design, examples array):
+
 ```typescript
-fingerprint_block: {
-  title: 'Fingerprint (Word-Order Safe)',
-  description: 'Groups values with same words regardless of order. "John Smith" matches "Smith, John".',
-  badge: 'Best for addresses',
-},
-metaphone_block: {
-  title: 'True Phonetic (Sound-Alike)',
-  description: 'Groups values that sound similar. "Smyth" matches "Smith", "Jon" matches "John".',
-  badge: 'Best for names',
-},
-token_phonetic_block: {
-  title: 'Token Phonetic (Names)',
-  description: 'Handles both word order AND sound variations. Best for full names.',
-  badge: 'Recommended',
-},
+// Extend strategyInfo record (matches existing StrategyInfo interface)
+const strategyInfo: Record<BlockingStrategy, StrategyInfo> = {
+  // ... existing strategies ...
+
+  // Rename existing double_metaphone in UI only:
+  double_metaphone: {
+    title: 'First 2 Characters',  // RENAMED from "Phonetic - Double Metaphone"
+    description: 'Compare records sharing first 2 letters. Fast but may miss variations.',
+    examples: [{ before: 'Smith', after: 'Smyth' }],
+  },
+
+  // NEW strategies:
+  fingerprint_block: {
+    title: 'Fingerprint (Word-Order Safe)',
+    description: 'Groups values with same words regardless of order.',
+    badge: 'Best for addresses',
+    examples: [
+      { before: 'John Smith', after: 'Smith, John' },
+      { before: 'ACME Inc.', after: 'ACME, Inc' },
+    ],
+  },
+  metaphone_block: {
+    title: 'True Phonetic (Sound-Alike)',
+    description: 'Groups values that sound similar using Double Metaphone.',
+    badge: 'Best for names',
+    badgeVariant: 'default',
+    examples: [
+      { before: 'Smith', after: 'Smyth' },
+      { before: 'John', after: 'Jon' },
+      { before: 'Catherine', after: 'Katherine' },
+    ],
+  },
+  token_phonetic_block: {
+    title: 'Token Phonetic (Names)',
+    description: 'Phonetic + word order handling. Best for full names.',
+    badge: 'Recommended',
+    badgeVariant: 'default',
+    examples: [
+      { before: 'John Smith', after: 'Smith, Jon' },
+      { before: 'Jon Smyth', after: 'John Smith' },
+    ],
+  },
+}
 ```
+
+**Note**: Uses same `StrategyInfo` interface with `examples` array as existing code.
 
 ---
 
