@@ -19,6 +19,7 @@ import { useEditBatchStore, type PendingEdit, isBatchingEnabled } from '@/stores
 import { updateCell, estimateCsIdForRow } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { registerMemoryCleanup, unregisterMemoryCleanup } from '@/lib/memory-manager'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from '@/hooks/use-toast'
@@ -522,6 +523,22 @@ export function DataGrid({
       }
     })
   }, [tableId, tableName])
+
+  // Register page cache for memory cleanup when memory is critical
+  // This allows the memory manager to clear grid caches when JS heap is high
+  useEffect(() => {
+    if (!tableId) return
+
+    const cleanupId = `datagrid-${tableId}`
+    registerMemoryCleanup(cleanupId, () => {
+      pageCacheRef.current.clear()
+      console.log(`[DataGrid] Cleared page cache for ${tableId}`)
+    })
+
+    return () => {
+      unregisterMemoryCleanup(cleanupId)
+    }
+  }, [tableId])
 
   // Get saved column preferences for this table
   const columnPreferences = useTableStore((s) =>

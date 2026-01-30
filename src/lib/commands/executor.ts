@@ -1459,7 +1459,7 @@ export class CommandExecutor implements ICommandExecutor {
     if (!diffViewName) return []
 
     try {
-      const MAX_HIGHLIGHT_ROWS = 10000
+      const MAX_HIGHLIGHT_ROWS = 1000
 
       const sql = `
         SELECT _row_id

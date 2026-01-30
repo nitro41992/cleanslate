@@ -17,6 +17,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { scanForBackupColumns } from './column-versions'
 import { reorderColumns } from './utils/column-ordering'
+import { registerMemoryCleanup } from '@/lib/memory-manager'
 
 // Global column version store per table
 // Key: tableId, Value: Map<columnName, ColumnVersionInfo>
@@ -164,4 +165,30 @@ export function createTestContext(
     },
     columnVersions: new Map(),
   }
+}
+
+/**
+ * Clean up orphaned column version entries.
+ * Called during memory pressure to remove entries for tables that no longer exist.
+ */
+export function cleanupOrphanedColumnVersions(): void {
+  const tableStore = useTableStore.getState()
+  const activeTableIds = new Set(tableStore.tables.map(t => t.id))
+
+  let cleaned = 0
+  for (const tableId of tableColumnVersions.keys()) {
+    if (!activeTableIds.has(tableId)) {
+      tableColumnVersions.delete(tableId)
+      cleaned++
+    }
+  }
+
+  if (cleaned > 0) {
+    console.log(`[Context] Cleaned up ${cleaned} orphaned column version entries`)
+  }
+}
+
+// Register cleanup callback for memory pressure situations
+if (typeof window !== 'undefined') {
+  registerMemoryCleanup('column-versions', cleanupOrphanedColumnVersions)
 }

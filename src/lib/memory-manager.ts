@@ -21,12 +21,13 @@ const GB = 1024 * 1024 * 1024
 const MB = 1024 * 1024
 
 export const MEMORY_THRESHOLDS = {
+  SOFT: 1.0 * GB,         // 1.0 GB - start soft eviction (cache clearing)
   WARNING: 1.5 * GB,      // 1.5 GB - show warning
   CRITICAL: 2.5 * GB,     // 2.5 GB - recommend refresh
   DANGER: 3.5 * GB,       // 3.5 GB - strongly recommend refresh
 } as const
 
-export type MemoryHealthLevel = 'healthy' | 'warning' | 'critical' | 'danger'
+export type MemoryHealthLevel = 'healthy' | 'soft' | 'warning' | 'critical' | 'danger'
 
 export interface MemorySnapshot {
   timestamp: number
@@ -129,9 +130,16 @@ export function estimateTotalMemory(jsHeapUsed: number | null, wasmEstimate: num
 /**
  * Determine health level based on estimated total memory.
  * Uses consecutive reading counter to avoid flashing warnings on transient spikes.
+ * Note: 'soft' level is returned without debouncing to enable proactive cleanup.
  */
 function getHealthLevel(estimatedTotal: number): MemoryHealthLevel {
   const rawLevel = getRawHealthLevel(estimatedTotal)
+
+  // Soft level doesn't need debouncing - it's for proactive cleanup
+  // and doesn't show UI warnings to the user
+  if (rawLevel === 'soft') {
+    return 'soft'
+  }
 
   // Track consecutive high readings to debounce warnings
   if (rawLevel !== 'healthy') {
@@ -156,6 +164,7 @@ function getRawHealthLevel(estimatedTotal: number): MemoryHealthLevel {
   if (estimatedTotal >= MEMORY_THRESHOLDS.DANGER) return 'danger'
   if (estimatedTotal >= MEMORY_THRESHOLDS.CRITICAL) return 'critical'
   if (estimatedTotal >= MEMORY_THRESHOLDS.WARNING) return 'warning'
+  if (estimatedTotal >= MEMORY_THRESHOLDS.SOFT) return 'soft'
   return 'healthy'
 }
 

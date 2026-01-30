@@ -8,6 +8,11 @@ import {
   type MemoryHealthLevel,
 } from '@/lib/memory-manager'
 
+// Debounce cleanup attempts - only run once per 30 seconds
+let lastCleanupAttempt = 0
+let cleanupInProgress = false
+const CLEANUP_DEBOUNCE_MS = 30_000
+
 export type MemoryLevel = 'normal' | 'warning' | 'critical'
 export type CompactionStatus = 'idle' | 'running'
 
@@ -263,10 +268,28 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
         isMemoryLeaking: trend.isLeaking,
       })
 
-      // Auto-cleanup caches when memory is critical
-      if (snapshot.healthLevel === 'critical' || snapshot.healthLevel === 'danger') {
-        console.log('[Memory] Critical memory level detected, running cleanup...')
-        runMemoryCleanup().catch(console.error)
+      // Auto-cleanup caches when memory reaches soft threshold or higher (debounced to avoid spam)
+      // Soft eviction at 1GB prevents reaching critical thresholds
+      const now = Date.now()
+      const needsCleanup =
+        snapshot.healthLevel === 'soft' ||
+        snapshot.healthLevel === 'warning' ||
+        snapshot.healthLevel === 'critical' ||
+        snapshot.healthLevel === 'danger'
+
+      if (
+        needsCleanup &&
+        now - lastCleanupAttempt > CLEANUP_DEBOUNCE_MS &&
+        !cleanupInProgress
+      ) {
+        cleanupInProgress = true
+        lastCleanupAttempt = now
+        console.log(`[Memory] ${snapshot.healthLevel} memory level detected, running cleanup...`)
+        runMemoryCleanup()
+          .catch(console.error)
+          .finally(() => {
+            cleanupInProgress = false
+          })
       }
       // Track peak memory for usage metrics
       const current = get()

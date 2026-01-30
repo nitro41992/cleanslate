@@ -47,6 +47,49 @@ async function getOPFSRoot(): Promise<FileSystemDirectoryHandle | null> {
  * Save application state to OPFS
  * Called by debounced store subscriptions after user actions
  */
+/**
+ * Compact timeline commands to reduce memory and storage.
+ * - Clears large arrays (affectedRowIds, cellChanges) from old commands
+ * - Preserves rowsAffected count for audit display
+ */
+function compactTimelines(timelines: SerializedTableTimeline[]): SerializedTableTimeline[] {
+  const KEEP_FULL_COMMANDS = 10 // Keep full data for last 10 commands per timeline
+
+  return timelines.map(timeline => {
+    const currentPos = timeline.currentPosition
+    const compactedCommands = timeline.commands.map((cmd, index) => {
+      const isRecent = index >= currentPos - KEEP_FULL_COMMANDS && index <= currentPos
+
+      if (isRecent) {
+        return cmd // Keep recent commands intact for highlighting
+      }
+
+      // Compact old commands by clearing large arrays
+      const compacted = { ...cmd }
+
+      // Store rowsAffected count before clearing, if not already set
+      if (compacted.affectedRowIds && compacted.affectedRowIds.length > 0) {
+        if (compacted.rowsAffected === undefined) {
+          compacted.rowsAffected = compacted.affectedRowIds.length
+        }
+        compacted.affectedRowIds = undefined
+      }
+
+      // Clear cellChanges from old commands (can be very large for batch edits)
+      if (compacted.cellChanges && compacted.cellChanges.length > 0) {
+        compacted.cellChanges = undefined
+      }
+
+      return compacted
+    })
+
+    return {
+      ...timeline,
+      commands: compactedCommands,
+    }
+  })
+}
+
 export async function saveAppState(
   tables: TableInfo[],
   activeTableId: string | null,
@@ -60,6 +103,9 @@ export async function saveAppState(
   }
 
   try {
+    // Compact timelines to reduce storage and memory on reload
+    const compactedTimelines = compactTimelines(timelines)
+
     // Serialize TableInfo (convert Dates to ISO strings)
     const serializedTables = tables.map(table => ({
       ...table,
@@ -80,7 +126,7 @@ export async function saveAppState(
       lastUpdated: new Date().toISOString(),
       tables: serializedTables as unknown as TableInfo[],
       activeTableId,
-      timelines,
+      timelines: compactedTimelines,
       uiPreferences: {
         sidebarCollapsed,
       },

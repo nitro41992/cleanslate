@@ -11,6 +11,7 @@ import type {
 } from '@/types'
 import { generateId } from '@/lib/utils'
 import { EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
+import { registerMemoryCleanup } from '@/lib/memory-manager'
 
 /**
  * Check if a command type/params combination is expensive.
@@ -89,6 +90,16 @@ interface TimelineActions {
   // Persistence
   getSerializedTimelines: () => SerializedTableTimeline[]
   loadTimelines: (timelines: SerializedTableTimeline[]) => void
+
+  // Memory management
+  /**
+   * Prune timeline to reduce memory usage.
+   * - Removes commands beyond keepCount from current position
+   * - Clears large arrays (affectedRowIds, cellChanges) from old commands
+   * @param tableId - Table to prune timeline for
+   * @param keepCount - Number of commands to keep before current position
+   */
+  pruneTimeline: (tableId: string, keepCount: number) => void
 
   // Dirty cell tracking (derived from timeline)
   getDirtyCellsAtPosition: (tableId: string) => Set<string>
@@ -512,6 +523,75 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     set({ timelines })
   },
 
+  pruneTimeline: (tableId, keepCount) => {
+    set((state) => {
+      const timeline = state.timelines.get(tableId)
+      if (!timeline || timeline.commands.length === 0) return state
+
+      const currentPos = timeline.currentPosition
+      const commands = [...timeline.commands]
+
+      // Use the smaller of keepCount and CLEAR_THRESHOLD for array clearing
+      // CLEAR_THRESHOLD ensures we keep arrays for recent commands for highlighting
+      const CLEAR_THRESHOLD = Math.min(keepCount, 5)
+      for (let i = 0; i < commands.length; i++) {
+        const isRecent = i >= currentPos - CLEAR_THRESHOLD && i <= currentPos
+        if (!isRecent) {
+          // Store the count for display, then clear the array
+          const cmd = commands[i]
+          if (cmd.affectedRowIds && cmd.affectedRowIds.length > 0) {
+            // Preserve rowsAffected count if not already set
+            if (cmd.rowsAffected === undefined) {
+              commands[i] = {
+                ...cmd,
+                rowsAffected: cmd.affectedRowIds.length,
+                affectedRowIds: undefined, // Clear the array
+              }
+            } else {
+              commands[i] = {
+                ...cmd,
+                affectedRowIds: undefined,
+              }
+            }
+          }
+          // Clear cellChanges for old commands
+          if (cmd.cellChanges && cmd.cellChanges.length > 0 && !isRecent) {
+            commands[i] = {
+              ...commands[i],
+              cellChanges: undefined,
+            }
+          }
+        }
+      }
+
+      // Remove orphaned future commands (beyond currentPosition)
+      // These become unreachable after any new action
+      const prunedCommands = commands.slice(0, currentPos + 1)
+
+      // Remove orphaned snapshots
+      const snapshots = new Map(timeline.snapshots)
+      for (const [idx] of snapshots) {
+        if (idx > currentPos) {
+          snapshots.delete(idx)
+        }
+      }
+
+      const updatedTimeline: TableTimeline = {
+        ...timeline,
+        commands: prunedCommands,
+        snapshots,
+        updatedAt: new Date(),
+      }
+
+      const newTimelines = new Map(state.timelines)
+      newTimelines.set(tableId, updatedTimeline)
+
+      console.log(`[TimelineStore] Pruned timeline for ${tableId}: ${commands.length} -> ${prunedCommands.length} commands`)
+
+      return { timelines: newTimelines }
+    })
+  },
+
   getDirtyCellsAtPosition: (tableId) => {
     const timeline = get().timelines.get(tableId)
     if (!timeline) return new Set()
@@ -601,5 +681,15 @@ if (typeof window !== 'undefined') {
         )
       })
     })
+  })
+
+  // Register timeline cleanup for memory pressure situations
+  // Prunes all timelines to last 20 commands when memory is critical
+  registerMemoryCleanup('timeline-store', () => {
+    const state = useTimelineStore.getState()
+    for (const [tableId] of state.timelines) {
+      state.pruneTimeline(tableId, 20)
+    }
+    console.log('[TimelineStore] Pruned all timelines for memory cleanup')
   })
 }
