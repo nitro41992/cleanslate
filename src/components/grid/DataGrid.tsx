@@ -741,13 +741,26 @@ export function DataGrid({
 
   // Force grid re-render when timeline position changes (undo/redo)
   // This ensures dirty cell indicators (red triangles) update correctly
+  // Must invalidate ALL columns since cell indicators appear in col > 0
   const timelinePosition = timeline?.currentPosition ?? -1
   useEffect(() => {
     if (prevTimelinePosition.current !== timelinePosition) {
-      invalidateVisibleCells()
+      invalidateVisibleCells(true)
     }
     prevTimelinePosition.current = timelinePosition
   }, [timelinePosition, invalidateVisibleCells])
+
+  // Force grid re-render when executor timeline version changes (batch flush)
+  // After edits are flushed to DuckDB, we need to update the cell indicators
+  // from orange (pending) to green (committed) or clear them
+  // Must invalidate ALL columns since cell indicators appear in col > 0
+  const prevExecutorVersionRef = useRef(executorTimelineVersion)
+  useEffect(() => {
+    if (prevExecutorVersionRef.current !== executorTimelineVersion) {
+      invalidateVisibleCells(true)
+    }
+    prevExecutorVersionRef.current = executorTimelineVersion
+  }, [executorTimelineVersion, invalidateVisibleCells])
 
   // Force grid re-render when loaded range changes (scroll)
   // This ensures word wrap is applied correctly to cells that scroll back into view
