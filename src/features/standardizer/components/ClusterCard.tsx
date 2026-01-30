@@ -1,7 +1,10 @@
-import { ChevronDown, ChevronRight, Star, Check } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { ChevronDown, ChevronRight, Star, Check, Pencil, X, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import type { ValueCluster, ClusterValue } from '@/types'
 
@@ -13,6 +16,7 @@ interface ClusterCardProps {
   onSetMaster: (valueId: string) => void
   onSelectAll: () => void
   onDeselectAll: () => void
+  onSetReplacement?: (valueId: string, replacement: string | null) => void
 }
 
 export function ClusterCard({
@@ -23,6 +27,7 @@ export function ClusterCard({
   onSetMaster,
   onSelectAll,
   onDeselectAll,
+  onSetReplacement,
 }: ClusterCardProps) {
   const isActionable = cluster.values.length > 1
   const hasSelectedChanges = cluster.selectedCount > 0
@@ -32,7 +37,7 @@ export function ClusterCard({
 
   // Render compact card for unique (single-value) clusters
   if (!isActionable) {
-    return <UniqueValueCard cluster={cluster} />
+    return <UniqueValueCard cluster={cluster} onSetReplacement={onSetReplacement} />
   }
 
   // Render full actionable card for clusters with multiple values
@@ -145,7 +150,7 @@ export function ClusterCard({
                 value={value}
                 onToggle={() => onToggleValue(value.id)}
                 onSetMaster={() => onSetMaster(value.id)}
-                animationDelay={index * 30}
+                animationDelay={index * 10}
               />
             ))}
           </div>
@@ -157,33 +162,177 @@ export function ClusterCard({
 
 /**
  * Compact card for unique (single-value) clusters.
- * These are read-only informational items showing values that have no duplicates.
+ * Users can click to add a custom replacement for the value.
  */
-function UniqueValueCard({ cluster }: { cluster: ValueCluster }) {
+function UniqueValueCard({
+  cluster,
+  onSetReplacement,
+}: {
+  cluster: ValueCluster
+  onSetReplacement?: (valueId: string, replacement: string | null) => void
+}) {
   const value = cluster.values[0]
+  const hasReplacement = value?.customReplacement && value.customReplacement !== value.value
+  const [isEditing, setIsEditing] = useState(false)
+  const [editValue, setEditValue] = useState(value?.customReplacement || '')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Focus input when popover opens
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
+
+  const handleOpenChange = (open: boolean) => {
+    if (open) {
+      setEditValue(value?.customReplacement || value?.value || '')
+    }
+    setIsEditing(open)
+  }
+
+  const handleConfirm = () => {
+    if (onSetReplacement && value) {
+      const trimmed = editValue.trim()
+      // Set null if empty or same as original
+      if (!trimmed || trimmed === value.value) {
+        onSetReplacement(value.id, null)
+      } else {
+        onSetReplacement(value.id, trimmed)
+      }
+    }
+    setIsEditing(false)
+  }
+
+  const handleClear = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onSetReplacement && value) {
+      onSetReplacement(value.id, null)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleConfirm()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      setIsEditing(false)
+    }
+  }
 
   return (
     <div
       className={cn(
         'rounded-lg overflow-hidden',
-        'bg-muted/30',
-        'border border-border/50',
+        hasReplacement ? 'bg-primary/5' : 'bg-muted/30',
+        hasReplacement ? 'border border-primary/30' : 'border border-border/50',
       )}
       data-testid="cluster-card"
     >
       <div className="px-3 py-2 flex items-center gap-2.5">
-        {/* Verified indicator */}
-        <div className="p-1 rounded bg-emerald-500/10 shrink-0">
-          <Check className="h-3 w-3 text-emerald-500" />
-        </div>
+        {/* Status indicator */}
+        {hasReplacement ? (
+          <Checkbox
+            checked={true}
+            disabled
+            className="h-4 w-4 shrink-0"
+            data-testid={`unique-value-checkbox-${value?.id}`}
+          />
+        ) : (
+          <div className="p-1 rounded bg-emerald-500/10 shrink-0">
+            <Check className="h-3 w-3 text-emerald-500" />
+          </div>
+        )}
 
-        {/* Value */}
-        <span
-          className="text-sm text-muted-foreground truncate flex-1"
-          title={cluster.masterValue || '(empty)'}
-        >
-          {cluster.masterValue || '(empty)'}
-        </span>
+        {/* Value display with edit popover */}
+        <Popover open={isEditing} onOpenChange={handleOpenChange}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                'group flex-1 flex items-center gap-2 min-w-0 text-left',
+                'hover:bg-muted/50 rounded px-1 -mx-1 py-0.5 transition-colors'
+              )}
+            >
+              {hasReplacement ? (
+                <>
+                  <span
+                    className="text-sm text-muted-foreground/60 line-through truncate"
+                    title={value?.value || '(empty)'}
+                  >
+                    {value?.value || '(empty)'}
+                  </span>
+                  <ArrowRight className="h-3 w-3 text-primary shrink-0" />
+                  <span
+                    className="text-sm text-primary font-medium truncate"
+                    title={value?.customReplacement}
+                  >
+                    {value?.customReplacement}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span
+                    className="text-sm text-muted-foreground truncate"
+                    title={value?.value || '(empty)'}
+                  >
+                    {value?.value || '(empty)'}
+                  </span>
+                  <Pencil className="h-3 w-3 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                </>
+              )}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-64 p-3" align="start">
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">
+                Replace with:
+              </label>
+              <Input
+                ref={inputRef}
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Enter replacement value"
+                className="h-8 text-sm"
+                data-testid="unique-value-replacement-input"
+              />
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 h-7 text-xs"
+                  onClick={() => setIsEditing(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="flex-1 h-7 text-xs"
+                  onClick={handleConfirm}
+                  data-testid="unique-value-replacement-confirm"
+                >
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
+
+        {/* Clear button when replacement is set */}
+        {hasReplacement && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={handleClear}
+            data-testid={`unique-value-clear-${value?.id}`}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        )}
 
         {/* Row count */}
         <span className="text-xs text-muted-foreground/70 tabular-nums shrink-0">
@@ -206,7 +355,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
     <div
       className={cn(
         'group px-4 py-2.5 flex items-center gap-3 transition-colors',
-        'animate-in fade-in-0 slide-in-from-left-1',
+        'animate-in fade-in-0 slide-in-from-left-1 duration-75',
         value.isMaster
           ? 'bg-amber-950/40'
           : 'hover:bg-muted'

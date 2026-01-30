@@ -74,6 +74,9 @@ interface StandardizerActions {
   setValidationError: (error: string | null) => void
   setUniqueValueCount: (count: number) => void
 
+  // Custom replacement for unique values
+  setCustomReplacement: (clusterId: string, valueId: string, replacement: string | null) => void
+
   // Utility
   getFilteredClusters: () => ValueCluster[]
   getSelectedMappings: () => { fromValue: string; toValue: string; rowCount: number }[]
@@ -117,7 +120,12 @@ function calculateStats(clusters: ValueCluster[]) {
       actionableClusters++
     }
     for (const value of cluster.values) {
+      // Count selected non-master values in multi-value clusters
       if (value.isSelected && !value.isMaster) {
+        selectedValues++
+      }
+      // Count unique values with custom replacements (single-value clusters)
+      if (cluster.values.length === 1 && value.customReplacement && value.customReplacement !== value.value) {
         selectedValues++
       }
     }
@@ -295,6 +303,44 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
     })
   },
 
+  // Custom replacement for unique values
+  setCustomReplacement: (clusterId, valueId, replacement) => {
+    const { clusters } = get()
+    const updatedClusters = clusters.map((cluster) => {
+      if (cluster.id !== clusterId) return cluster
+
+      const updatedValues = cluster.values.map((value) => {
+        if (value.id !== valueId) return value
+
+        // Clear replacement if null/empty or same as original
+        if (!replacement || replacement.trim() === '' || replacement === value.value) {
+          return {
+            ...value,
+            customReplacement: undefined,
+            isSelected: false,
+          }
+        }
+
+        // Set replacement and auto-select
+        return {
+          ...value,
+          customReplacement: replacement,
+          isSelected: true,
+        }
+      })
+
+      return {
+        ...cluster,
+        values: updatedValues,
+      }
+    })
+
+    set({
+      clusters: updatedClusters,
+      stats: calculateStats(updatedClusters),
+    })
+  },
+
   // Bulk selection across all clusters
   selectAllClusters: () => {
     const { clusters } = get()
@@ -393,6 +439,20 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
     const mappings: { fromValue: string; toValue: string; rowCount: number }[] = []
 
     for (const cluster of clusters) {
+      // Handle single-value clusters (unique values) with custom replacements
+      if (cluster.values.length === 1) {
+        const value = cluster.values[0]
+        if (value.customReplacement && value.customReplacement !== value.value) {
+          mappings.push({
+            fromValue: value.value,
+            toValue: value.customReplacement,
+            rowCount: value.count,
+          })
+        }
+        continue
+      }
+
+      // Handle multi-value clusters (actionable clusters)
       const masterValue = cluster.values.find((v) => v.isMaster)
       if (!masterValue) continue
 

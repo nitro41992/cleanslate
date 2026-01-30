@@ -63,6 +63,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     setMasterValue,
     selectAllClusters,
     deselectAllClusters,
+    setCustomReplacement,
     getSelectedMappings,
     clearClusters,
     reset,
@@ -331,6 +332,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
                   onDeselectAll={deselectAllInCluster}
                   onSelectAllClusters={selectAllClusters}
                   onDeselectAllClusters={deselectAllClusters}
+                  onSetReplacement={setCustomReplacement}
                 />
               </div>
 

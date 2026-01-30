@@ -279,6 +279,7 @@ export interface ClusterValue {
   count: number                   // Frequency in dataset
   isSelected: boolean
   isMaster: boolean
+  customReplacement?: string      // User-defined replacement for unique values
 }
 
 export interface StandardizationMapping {

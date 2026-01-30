@@ -77,9 +77,20 @@ async function runFullInitialization(): Promise<void> {
     const savedState = await restoreAppState()
 
     if (savedState) {
+      // Get valid table IDs from saved state
+      const validTableIds = new Set(savedState.tables.map(t => t.id))
+
+      // Filter out orphaned timelines (from previously deleted tables)
+      const validTimelines = savedState.timelines.filter(t => validTableIds.has(t.tableId))
+      const orphanedCount = savedState.timelines.length - validTimelines.length
+
+      if (orphanedCount > 0) {
+        console.log(`[Persistence] Cleaned up ${orphanedCount} orphaned timeline(s)`)
+      }
+
       // Restore timelines (for undo/redo history)
       const { useTimelineStore } = await import('@/stores/timelineStore')
-      useTimelineStore.getState().loadTimelines(savedState.timelines)
+      useTimelineStore.getState().loadTimelines(validTimelines)
 
       // Restore UI preferences
       useUIStore.getState().setSidebarCollapsed(savedState.uiPreferences.sidebarCollapsed)
@@ -578,7 +589,11 @@ export function useDuckDB() {
     await performHydration(true) // true = re-hydration mode
     console.log('[DuckDB] Tables re-hydrated from Parquet')
 
-    // 6. Ready again
+    // 6. Clear memory history so trend analysis starts fresh
+    const { clearMemoryHistory } = await import('@/lib/memory-manager')
+    clearMemoryHistory()
+
+    // 7. Ready again
     setIsReady(true)
     refreshMemory()
 

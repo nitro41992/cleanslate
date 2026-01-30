@@ -1,320 +1,376 @@
-# Plan: Align Match Algorithms with Standardize
-
-## Implementation Status: ✅ COMPLETE
-
-All phases implemented:
-- [x] Added `fingerprint_block`, `metaphone_block`, `token_phonetic_block` to `BlockingStrategy` type
-- [x] Implemented `jaroWinklerSimilarity()` function (JS + DuckDB native)
-- [x] Created `createPhoneticBlockingTable()` with CSV bulk registration
-- [x] Updated `findDuplicates()` and `findDuplicatesChunked()` to use Jaro-Winkler + phonetic blocking
-- [x] Updated `calculateFieldSimilarities()` to use Jaro-Winkler
-- [x] Updated `MatchConfigPanel.tsx` with new strategy options
-- [x] Changed default blocking strategy to `metaphone_block`
-- [x] **Removed legacy strategies:** `first_letter`, `double_metaphone`, `ngram`
-- [x] **Added row limit for `none` strategy:** Disabled for tables >1000 rows
-- [x] Build passes, lint passes on changed files
-
-### Final Strategy List
-| Strategy | Description | Row Limit |
-|----------|-------------|-----------|
-| `metaphone_block` | True phonetic (Double Metaphone) | Unlimited |
-| `token_phonetic_block` | Per-word phonetic + sorting | Unlimited |
-| `fingerprint_block` | Word-order independent | Unlimited |
-| `none` | Compare all pairs O(n²) | ≤1000 rows |
-
----
+# Plan: Optimize Phonetic Blocking Performance
 
 ## Problem Statement
 
-The **Standardize** feature uses sophisticated clustering algorithms (Fingerprint, Double Metaphone, Token Phonetic) that work well for grouping similar values. However, the **Match** feature uses **Levenshtein distance** for similarity calculation, with blocking strategies that only serve as performance optimization (reducing comparison pairs), not improving match quality.
+The phonetic blocking strategies (`metaphone_block`, `token_phonetic_block`, `fingerprint_block`) are slow because they **recompute phonetic keys every time "Find Duplicates" is clicked**. For 50k distinct values, this takes 5-18 seconds of CPU-bound JavaScript processing.
 
-The user has observed that Standardize's algorithms work better and wants them aligned.
-
----
-
-## Industry Best Practices (2025-2026 Research)
-
-### Algorithm Categories
-| Type | Examples | Best For |
-|------|----------|----------|
-| **Character-based** | Levenshtein, Jaro-Winkler | Typos, short strings |
-| **Phonetic** | Soundex, Double Metaphone | Sound-alike names |
-| **Token-based** | Jaccard, Cosine | Word reordering |
-| **Probabilistic** | Fellegi-Sunter | Weighted field matching |
-
-### Key Research Findings
-
-1. **Jaro-Winkler > Levenshtein for names** - Achieves ~10% higher sensitivity than exact matching, better handles transpositions and prefix similarities
-
-2. **Double Metaphone Blocking is state-of-the-art** - A 2025 paper ([Springer](https://link.springer.com/chapter/10.1007/978-981-95-0695-8_12)) shows Double Metaphone blocking outperforms other record linkage algorithms with higher F-1 scores
-
-3. **Hybrid approach recommended** - Combine phonetic blocking + multiple similarity algorithms + human review
-
-4. **Standard workflow**: Normalization → Blocking → Scoring → Thresholding → Human Review
-
-### Current State vs Best Practice
-| Aspect | Standardize | Match | Best Practice |
-|--------|-------------|-------|---------------|
-| Phonetic | ✅ Double Metaphone | ❌ First 2 letters only | Double Metaphone |
-| Similarity | N/A (grouping) | ❌ Levenshtein | Jaro-Winkler |
-| Token handling | ✅ Fingerprint sorts | ❌ None | Token-based |
-| Human review | ✅ Cluster selection | ✅ Multi-column compare | ✅ |
-
----
-
-## Current State Analysis
-
-### Standardize Algorithms (`src/lib/standardizer-engine.ts`)
-| Algorithm | How It Works | Strength |
-|-----------|--------------|----------|
-| **Fingerprint** | Normalize → remove accents → sort tokens → join | Order-independent ("John Smith" = "Smith, John") |
-| **Double Metaphone** | Full phonetic encoding (250+ lines of rules) | Spelling variations (Smith/Smyth, Jon/John) |
-| **Token Phonetic** | Metaphone per word → sort phonetic codes | Both word-order + spelling variations |
-
-### Match Blocking Strategies (`src/lib/fuzzy-matcher.ts`)
-| Strategy | Implementation | Limitation |
-|----------|----------------|------------|
-| `first_letter` | First character only | Misses "Jon" vs "John" |
-| `double_metaphone` | **Just first 2 letters** (not actual phonetic) | Misses "Smyth" vs "Smith" |
-| `ngram` | First 3 characters | Misses rearranged names |
-| `none` | Compare all pairs | O(n²) - unusable at scale |
-
-### Core Issue
-Match's "double_metaphone" blocking is misleading - it's NOT using the same phonetic algorithm as Standardize. The actual similarity is calculated via Levenshtein, which:
-- Penalizes character differences equally (Jon→John = 1 edit)
-- Doesn't understand phonetic equivalence (Smyth→Smith = 2 edits)
-- Doesn't handle word reordering ("John Smith" vs "Smith, John" = many edits)
-
----
-
-## Implementation Plan
-
-### Phase 1: Add True Phonetic Blocking Strategies
-
-**Challenge**: DuckDB has no built-in Metaphone function, so phonetic keys must be computed in JavaScript.
-
-**Solution**: Preprocessing approach with bulk ingestion:
-1. Query `SELECT DISTINCT matchColumn` (crucial - don't process all rows)
-2. Compute phonetic keys in JavaScript using existing `doubleMetaphone()`
-3. **Bulk load via CSV registration** (NOT individual INSERTs):
-   ```typescript
-   // Generate CSV string from key mappings
-   const csvContent = mappings.map(m => `"${escape(m.value)}","${m.key}"`).join('\n')
-   db.registerFileText('_phonetic_keys.csv', csvContent)
-   await query(`CREATE TEMP TABLE _keys AS SELECT * FROM read_csv_auto('_phonetic_keys.csv')`)
-   ```
-4. Join on phonetic_key for blocking
-
-#### New Blocking Strategies
-
-| Strategy | Description | Best For |
-|----------|-------------|----------|
-| `fingerprint_block` | Normalize → sort tokens → join | Word reordering ("John Smith" = "Smith, John") |
-| `metaphone_block` | Full Double Metaphone codes | Sound-alike ("Smyth" = "Smith") |
-| `token_phonetic_block` | Metaphone per word → sort | Both variations (recommended for names) |
-
----
-
-### Phase 2: Add Jaro-Winkler Similarity
-
-Replace Levenshtein with Jaro-Winkler for better name matching.
-
-**Why Jaro-Winkler is better for names:**
-- Weights prefix matches higher (important for names)
-- Handles transpositions better (Jon vs John)
-- More forgiving of minor character differences
-- Research shows ~10% higher sensitivity than exact matching
-
-**Key Insight: DuckDB has native `jaro_winkler_similarity()`!**
-
-Use native SQL for filtering candidates, JS implementation only for `calculateFieldSimilarities()`:
-
-```sql
--- Use native DuckDB function for efficient SQL filtering
-SELECT a.*, b.*, jaro_winkler_similarity(a.name, b.name) as similarity
-FROM block_data a
-JOIN block_data b ON a.block_key = b.block_key AND a.row_id < b.row_id
-WHERE jaro_winkler_similarity(a.name, b.name) >= 0.85  -- Filter in SQL!
+### Current Bottleneck Flow
+```
+Click "Find Duplicates"
+  ↓
+Query DISTINCT values (1-2 sec)           ← DB
+  ↓
+Generate phonetic keys in JS loop (5-18 sec) ← CPU BOTTLENECK
+  ↓
+Build CSV string (0.5 sec)                ← CPU
+  ↓
+Register CSV + CREATE TEMP TABLE (1-2 sec) ← DB
+  ↓
+Process blocks with SQL JOINs             ← DB (fast)
 ```
 
-**Critical: Threshold Logic Inversion**
-- Levenshtein is **distance** (0 = exact match, higher = worse)
-- Jaro-Winkler is **similarity** (1.0 = exact match, higher = better)
+**Root cause:** Line 562-568 in `fuzzy-matcher.ts` loops through distinct values calling `generateBlockingKey()` synchronously.
 
-| Old Query | New Query |
-|-----------|-----------|
-| `WHERE levenshtein(...) <= distance` | `WHERE jaro_winkler_similarity(...) >= (threshold / 100.0)` |
+---
 
-**JS Implementation (~50 lines)** - Only needed for `calculateFieldSimilarities()`:
+## Research: Industry Best Practices
+
+| Strategy | Source | Benefit |
+|----------|--------|---------|
+| **Pre-compute phonetic codes** | [Python Record Linkage Toolkit](https://recordlinkage.readthedocs.io/en/latest/performance.html) | "After phonetic encoding of string variables, exact comparing can be used instead of computing string similarity" |
+| **Persist as columns** | [Splink](https://moj-analytical-services.github.io/splink/index.html) | Splink deduplicates 7M records in 2 min by pre-computing blocking keys |
+| **Multi-column blocking** | Research consensus | "Block on 2+ variables dramatically reduces block sizes" |
+| **Meta-blocking** | [arXiv Survey](https://arxiv.org/pdf/1905.06167) | Prunes 30-66% redundant comparisons |
+
+---
+
+## Proposed Solution: Persist Phonetic Keys as Hidden Columns
+
+### Strategy
+Compute phonetic keys **once** when the user first selects a phonetic strategy for a column, then persist them as hidden table columns (like `_cs_id`). Subsequent "Find Duplicates" clicks reuse the persisted keys.
+
+### Key Insight
+The codebase already has this pattern:
+- `_cs_id` is a hidden column that persists in Parquet but is filtered from `columnOrder`
+- `__base` backup columns work the same way
+- Zero changes needed to persistence layer
+
+### Expected Performance Gain
+| Scenario | Before | After |
+|----------|--------|-------|
+| First search (cold) | 8-20 sec | 8-20 sec (same) |
+| Subsequent searches | 8-20 sec | **< 2 sec** |
+| After page refresh | 8-20 sec | **< 2 sec** (loaded from Parquet) |
+
+---
+
+## Implementation Phases
+
+### Phase 1: Add Hidden Phonetic Key Columns
+
+**Concept:** When user selects a phonetic strategy, check if the key column exists. If not, compute and persist it.
+
+**Column naming convention:**
+```
+_phonetic_{column}_{algorithm}
+```
+Examples:
+- `_phonetic_name_metaphone`
+- `_phonetic_email_fingerprint`
+- `_phonetic_full_name_token_phonetic`
+
+**File: `src/lib/fuzzy-matcher.ts`**
+
+New function:
 ```typescript
-function jaroWinklerSimilarity(s1: string, s2: string): number {
-  // 1. Calculate Jaro similarity (matching chars + transpositions)
-  // 2. Add Winkler prefix bonus (up to 4 chars, scaling factor 0.1)
-  // 3. Convert to 0-100 scale
+async function ensurePhoneticKeyColumn(
+  tableName: string,
+  matchColumn: string,
+  strategy: BlockingStrategy
+): Promise<string> {
+  const keyColumnName = `_phonetic_${matchColumn}_${strategy}`
+
+  // Check if column already exists
+  const columns = await query(`DESCRIBE "${tableName}"`)
+  if (columns.some(c => c.column_name === keyColumnName)) {
+    return keyColumnName  // Already computed, reuse
+  }
+
+  // Column doesn't exist - compute and persist
+  // 1. Query DISTINCT values
+  // 2. Generate keys in JS (same logic as now)
+  // 3. Bulk load via CSV into temp table
+  // 4. ALTER TABLE ADD COLUMN
+  // 5. UPDATE table SET keyColumn = tempTable.key WHERE value matches
+
+  return keyColumnName
 }
 ```
 
+### Phase 2: Update Block Analysis to Use Persisted Keys
+
+**File: `src/lib/fuzzy-matcher.ts`**
+
+Update `analyzeBlocks()` and `processBlock()` to:
+- Check for existing key column first
+- Skip CSV registration if key column exists
+- JOIN directly on the persisted column
+
+```sql
+-- Before (temp table JOIN):
+SELECT pk.block_key, COUNT(*) as cnt
+FROM "table" t
+INNER JOIN _phonetic_temp pk ON CAST(t.column AS VARCHAR) = pk.value
+GROUP BY pk.block_key
+
+-- After (persisted column):
+SELECT t._phonetic_name_metaphone as block_key, COUNT(*) as cnt
+FROM "table" t
+WHERE t._phonetic_name_metaphone IS NOT NULL
+GROUP BY t._phonetic_name_metaphone
+```
+
+### Phase 3: Filter Hidden Columns from UI
+
+**File: `src/stores/tableStore.ts`**
+
+Update column filtering to hide phonetic key columns:
+```typescript
+const isInternalColumn = (name: string) =>
+  name === '_cs_id' ||
+  name.endsWith('__base') ||
+  name.startsWith('_phonetic_')  // NEW
+```
+
+### Phase 4: Add Progress Indicator for Key Generation
+
+**File: `src/features/matcher/components/MatchConfigPanel.tsx`**
+
+Show progress during initial key computation:
+```
+┌─────────────────────────────────────┐
+│ Preparing phonetic index...         │
+│ ████████████░░░░░░░░  60%           │
+│ Processing 30,000 of 50,000 values  │
+└─────────────────────────────────────┘
+```
+
+**File: `src/stores/matcherStore.ts`**
+
+Add state for indexing progress:
+```typescript
+indexingPhase: 'idle' | 'indexing' | 'ready'
+indexingProgress: number  // 0-100
+```
+
 ---
 
-## File Changes
+## File Changes Summary
 
 | File | Changes |
 |------|---------|
-| `src/types/index.ts:143` | Add `fingerprint_block`, `metaphone_block`, `token_phonetic_block` to `BlockingStrategy` union |
-| `src/lib/fuzzy-matcher.ts` | Add `jaroWinklerSimilarity()`, `createPhoneticBlockingTable()`, update SQL queries |
-| `src/lib/standardizer-engine.ts` | Export existing functions (already implemented, just need exports) |
-| `src/features/matcher/components/MatchConfigPanel.tsx` | Add new strategy options to `strategyInfo` object (follow existing pattern with `examples` array) |
-| `src/stores/matcherStore.ts:115` | Update `blockingStrategy` default from `'double_metaphone'` to `'metaphone_block'` |
-
-**UI Consistency Note**: Recent commits (6ac1846, 22f2918) modernized Match/Standardize UIs. The `MatchConfigPanel` already uses:
-- `StrategyInfo` interface with `examples` array
-- `TableCombobox` / `ColumnCombobox` components
-- Flat design with `bg-muted` cards and border patterns
-
-New strategies should follow the same pattern.
+| `src/lib/fuzzy-matcher.ts` | Add `ensurePhoneticKeyColumn()`, update `analyzeBlocks()` and `processBlock()` to use persisted columns |
+| `src/stores/tableStore.ts` | Add `_phonetic_*` to internal column filter |
+| `src/stores/matcherStore.ts` | Add `indexingPhase`, `indexingProgress` state |
+| `src/features/matcher/components/MatchConfigPanel.tsx` | Show indexing progress UI |
 
 ---
 
-## Detailed Changes
+## Detailed Implementation
 
-### 1. `src/types/index.ts`
+### 1. `src/lib/fuzzy-matcher.ts`
+
+**New helper - check/create phonetic key column:**
 ```typescript
-export type BlockingStrategy =
-  | 'first_letter'
-  | 'double_metaphone'  // Keep for backwards compat (rename in UI to "First 2 Chars")
-  | 'ngram'
-  | 'none'
-  | 'fingerprint_block'      // NEW
-  | 'metaphone_block'        // NEW
-  | 'token_phonetic_block'   // NEW
-```
+const PHONETIC_COLUMN_PREFIX = '_phonetic_'
 
-### 2. `src/lib/fuzzy-matcher.ts`
+function getPhoneticColumnName(matchColumn: string, strategy: BlockingStrategy): string {
+  // Sanitize column name for SQL identifier
+  const sanitized = matchColumn.replace(/[^a-zA-Z0-9_]/g, '_')
+  return `${PHONETIC_COLUMN_PREFIX}${sanitized}_${strategy}`
+}
 
-**Add Jaro-Winkler algorithm (~50 lines):**
-- `jaroSimilarity()` - Core Jaro calculation (for JS-side field comparison)
-- `jaroWinklerSimilarity()` - Add Winkler prefix bonus, return 0-100 scale
+async function ensurePhoneticKeyColumn(
+  tableName: string,
+  matchColumn: string,
+  strategy: BlockingStrategy,
+  onProgress?: (percent: number, current: number, total: number) => void
+): Promise<string> {
+  const keyColumnName = getPhoneticColumnName(matchColumn, strategy)
 
-**Add phonetic blocking with bulk CSV registration:**
-```typescript
-async function createPhoneticBlockingTable(tableName: string, matchColumn: string, algorithm: string) {
-  // 1. Query DISTINCT values only
-  const distinctValues = await query(`SELECT DISTINCT "${matchColumn}" as value FROM "${tableName}" WHERE ...`)
+  // Check if column exists
+  const tableInfo = await query<{ column_name: string }>(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = '${tableName}'
+  `)
 
-  // 2. Generate keys in JS
-  const mappings = distinctValues.map(r => ({ value: r.value, key: keyFunction(r.value) }))
+  if (tableInfo.some(c => c.column_name === keyColumnName)) {
+    return keyColumnName  // Already computed
+  }
 
-  // 3. BULK LOAD via CSV registration (not individual INSERTs!)
-  const csvContent = 'value,block_key\n' + mappings.map(m => `"${escape(m.value)}","${m.key}"`).join('\n')
-  db.registerFileText('_phonetic_keys.csv', csvContent)
-  await query(`CREATE TEMP TABLE _phonetic_keys AS SELECT * FROM read_csv_auto('_phonetic_keys.csv')`)
+  // Compute and persist the key column
+  // 1. Add the column
+  await query(`ALTER TABLE "${tableName}" ADD COLUMN "${keyColumnName}" VARCHAR`)
 
-  // 4. Return temp table name for JOIN
+  // 2. Query distinct values
+  const distinctValues = await query<{ value: string, row_ids: string }>(`
+    SELECT CAST("${matchColumn}" AS VARCHAR) as value
+    FROM "${tableName}"
+    WHERE "${matchColumn}" IS NOT NULL
+  `)
+
+  // 3. Generate keys in batches with progress
+  const BATCH_SIZE = 5000
+  const total = distinctValues.length
+  const updates: { value: string, key: string }[] = []
+
+  for (let i = 0; i < total; i += BATCH_SIZE) {
+    const batch = distinctValues.slice(i, i + BATCH_SIZE)
+    for (const row of batch) {
+      const key = generateBlockingKey(row.value, strategy)
+      if (key) updates.push({ value: row.value, key })
+    }
+    onProgress?.(Math.round((i + batch.length) / total * 100), i + batch.length, total)
+  }
+
+  // 4. Bulk update via temp table + UPDATE JOIN
+  const csvContent = 'value,block_key\n' +
+    updates.map(u => `${escapeCsvValue(u.value)},${escapeCsvValue(u.key)}`).join('\n')
+
+  const db = await initDuckDB()
+  const csvFileName = `_keys_${Date.now()}.csv`
+  await db.registerFileText(csvFileName, csvContent)
+
+  await query(`
+    CREATE TEMP TABLE _key_updates AS
+    SELECT * FROM read_csv_auto('${csvFileName}', header=true)
+  `)
+
+  await query(`
+    UPDATE "${tableName}" t
+    SET "${keyColumnName}" = k.block_key
+    FROM _key_updates k
+    WHERE CAST(t."${matchColumn}" AS VARCHAR) = k.value
+  `)
+
+  await query(`DROP TABLE IF EXISTS _key_updates`)
+
+  return keyColumnName
 }
 ```
 
-**Update `processBlock()` SQL to use native Jaro-Winkler:**
-```sql
--- OLD: WHERE levenshtein(...) <= maxDistance
--- NEW: Use native DuckDB function + INNER JOIN with phonetic keys
-SELECT a.*, b.*, jaro_winkler_similarity(a.val, b.val) as similarity
-FROM blocked_data a
-INNER JOIN _phonetic_keys ka ON a.match_col = ka.value
-INNER JOIN blocked_data b ON ka.block_key = kb.block_key AND a.row_id < b.row_id
-INNER JOIN _phonetic_keys kb ON b.match_col = kb.value
-WHERE jaro_winkler_similarity(a.val, b.val) >= 0.85  -- Filter in SQL, not JS!
-```
-
-**Update `calculateFieldSimilarities()` (JS-side):**
-- Add `similarityAlgorithm` parameter (default: `'jaro_winkler'`)
-- Use JS Jaro-Winkler for per-field comparison in UI
-
-### 3. `src/features/matcher/components/MatchConfigPanel.tsx`
-
-**Follow existing UI patterns** from recent commits (flat design, examples array):
-
+**Update `findDuplicatesChunked()`:**
 ```typescript
-// Extend strategyInfo record (matches existing StrategyInfo interface)
-const strategyInfo: Record<BlockingStrategy, StrategyInfo> = {
-  // ... existing strategies ...
-
-  // Rename existing double_metaphone in UI only:
-  double_metaphone: {
-    title: 'First 2 Characters',  // RENAMED from "Phonetic - Double Metaphone"
-    description: 'Compare records sharing first 2 letters. Fast but may miss variations.',
-    examples: [{ before: 'Smith', after: 'Smyth' }],
-  },
-
-  // NEW strategies:
-  fingerprint_block: {
-    title: 'Fingerprint (Word-Order Safe)',
-    description: 'Groups values with same words regardless of order.',
-    badge: 'Best for addresses',
-    examples: [
-      { before: 'John Smith', after: 'Smith, John' },
-      { before: 'ACME Inc.', after: 'ACME, Inc' },
-    ],
-  },
-  metaphone_block: {
-    title: 'True Phonetic (Sound-Alike)',
-    description: 'Groups values that sound similar using Double Metaphone.',
-    badge: 'Best for names',
-    badgeVariant: 'default',
-    examples: [
-      { before: 'Smith', after: 'Smyth' },
-      { before: 'John', after: 'Jon' },
-      { before: 'Catherine', after: 'Katherine' },
-    ],
-  },
-  token_phonetic_block: {
-    title: 'Token Phonetic (Names)',
-    description: 'Phonetic + word order handling. Best for full names.',
-    badge: 'Recommended',
-    badgeVariant: 'default',
-    examples: [
-      { before: 'John Smith', after: 'Smith, Jon' },
-      { before: 'Jon Smyth', after: 'John Smith' },
-    ],
-  },
+// Before block analysis, ensure key column exists
+let keyColumnName: string | null = null
+if (isPhoneticBlockingStrategy(blockingStrategy)) {
+  keyColumnName = await ensurePhoneticKeyColumn(
+    tableName,
+    matchColumn,
+    blockingStrategy,
+    (percent, current, total) => {
+      onProgress?.({
+        phase: 'indexing',
+        progress: percent,
+        message: `Building phonetic index: ${current.toLocaleString()} of ${total.toLocaleString()}`
+      })
+    }
+  )
 }
+
+// Then use keyColumnName in block analysis/processing
 ```
 
-**Note**: Uses same `StrategyInfo` interface with `examples` array as existing code.
+### 2. `src/stores/tableStore.ts`
+
+**Update column visibility filter:**
+```typescript
+// In getVisibleColumns or similar:
+const isInternalColumn = (name: string): boolean =>
+  name === '_cs_id' ||
+  name.endsWith('__base') ||
+  name.startsWith('_phonetic_')
+```
+
+### 3. `src/stores/matcherStore.ts`
+
+**Add indexing state:**
+```typescript
+interface MatcherState {
+  // ... existing fields ...
+
+  // Indexing state (for phonetic key column creation)
+  indexingPhase: 'idle' | 'indexing' | 'ready'
+  indexingProgress: number
+  indexingMessage: string | null
+}
+
+// Initial state
+indexingPhase: 'idle',
+indexingProgress: 0,
+indexingMessage: null,
+
+// Action
+setIndexingProgress: (phase, progress, message) => set({
+  indexingPhase: phase,
+  indexingProgress: progress,
+  indexingMessage: message
+})
+```
+
+### 4. `src/features/matcher/components/MatchConfigPanel.tsx`
+
+**Show indexing progress when building index:**
+```typescript
+{store.indexingPhase === 'indexing' && (
+  <div className="bg-muted rounded-lg p-3 space-y-2">
+    <div className="flex items-center gap-2 text-sm">
+      <Loader2 className="w-4 h-4 animate-spin" />
+      <span>Building phonetic index...</span>
+    </div>
+    <Progress value={store.indexingProgress} />
+    <p className="text-xs text-muted-foreground">
+      {store.indexingMessage}
+    </p>
+  </div>
+)}
+```
+
+---
+
+## Edge Cases
+
+| Case | Handling |
+|------|----------|
+| Column data changes after indexing | Key column becomes stale. **Solution:** Invalidate key columns when data in source column changes (via Command hooks) |
+| Multiple strategies on same column | Each creates its own key column (`_phonetic_name_metaphone`, `_phonetic_name_fingerprint`) |
+| Table imported from Parquet with key columns | Works automatically - columns persist and load |
+| Column with special characters in name | Sanitize to valid SQL identifier |
+| Empty/NULL values | Skip indexing, handle in block analysis |
 
 ---
 
 ## Verification Plan
 
-### Test Cases
-
-| Test | Input A | Input B | Old Result | New Result |
-|------|---------|---------|------------|------------|
-| Word Order | "John Smith" | "Smith, John" | ❌ Different blocks | ✅ Same block (fingerprint) |
-| Phonetic | "Jon Smyth" | "John Smith" | ⚠️ Low similarity | ✅ Same block + high JW score |
-| Combined | "Smyth, Jon" | "John Smith" | ❌ Never compared | ✅ Matched (token_phonetic) |
-| JW vs Lev | "Johnson" | "Jonson" | 85% (Lev) | 93% (JW) |
-
-### E2E Test File
-Create `e2e/tests/matcher-algorithms.spec.ts` with fixture `e2e/fixtures/csv/fr_c1_phonetic_dedupe.csv`
+### Manual Testing
+1. Import table with 50k+ rows
+2. Select phonetic strategy → observe indexing progress
+3. Click "Find Duplicates" → should complete in < 2 sec
+4. Refresh page → click "Find Duplicates" again → should still be fast (key column persisted)
+5. Verify key columns hidden from data grid
+6. Verify key columns included in CSV/Parquet export
 
 ### Performance Benchmark
-Add console timer to "Analyze Block Distribution" phase:
 ```typescript
-console.time('phonetic-key-generation')
-// Generate keys for DISTINCT values only (crucial!)
-console.timeEnd('phonetic-key-generation')
-```
+console.time('first-search')  // Should be 8-20 sec (key generation)
+await findDuplicates()
+console.timeEnd('first-search')
 
-**Constraint**: Always `SELECT DISTINCT matchColumn` before generating keys in JS. Generating Double Metaphone for 1M rows (vs 50k distinct) will hang the browser.
+console.time('second-search')  // Should be < 2 sec (reuse keys)
+await findDuplicates()
+console.timeEnd('second-search')
+```
 
 ---
 
-## Backwards Compatibility
+## Future Optimizations (Out of Scope)
 
-1. Keep existing `double_metaphone` strategy working (remains first-2-letters blocking)
-2. Rename it in UI to "First 2 Characters" to avoid confusion
-3. Default new sessions to `metaphone_block`
-4. **Migration handling**: If user loads old saved config with `strategy: 'double_metaphone'`, UI must display "First 2 Characters" (not break)
+| Optimization | Effort | Benefit |
+|--------------|--------|---------|
+| Web Worker for key generation | High | Non-blocking UI during indexing |
+| Multi-column blocking UI | Medium | 10x fewer comparisons |
+| Meta-blocking (prune pairs) | High | 30-66% fewer comparisons |
+| Incremental indexing | Medium | Only index new/changed rows |
 
 ---
 
@@ -322,8 +378,7 @@ console.timeEnd('phonetic-key-generation')
 
 | File | Purpose |
 |------|---------|
-| `src/lib/fuzzy-matcher.ts` | Core: Jaro-Winkler + phonetic blocking |
-| `src/lib/standardizer-engine.ts` | Source of phonetic algorithms (import from here) |
-| `src/features/matcher/components/MatchConfigPanel.tsx` | UI for selecting strategy |
-| `src/types/index.ts` | Extend `BlockingStrategy` type |
-| `src/stores/matcherStore.ts` | Update default strategy |
+| `src/lib/fuzzy-matcher.ts` | Core: `ensurePhoneticKeyColumn()`, update block analysis |
+| `src/stores/tableStore.ts` | Filter `_phonetic_*` columns from visibility |
+| `src/stores/matcherStore.ts` | Add indexing progress state |
+| `src/features/matcher/components/MatchConfigPanel.tsx` | Indexing progress UI |
