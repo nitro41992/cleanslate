@@ -2,10 +2,10 @@ import type { ColumnInfo } from '@/types'
 
 /**
  * Check if a column name is an internal column that should be excluded from user-facing columnOrder
- * Internal columns: _cs_id, columns ending with __base
+ * Internal columns: _cs_id, columns ending with __base or __base_N (versioned backup columns)
  */
 export function isInternalColumn(columnName: string): boolean {
-  return columnName === '_cs_id' || columnName.endsWith('__base')
+  return columnName === '_cs_id' || /__base(_\d+)?$/.test(columnName)
 }
 
 /**

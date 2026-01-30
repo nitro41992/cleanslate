@@ -465,12 +465,27 @@ async function applyStandardizeCommand(
 
 /**
  * Apply a batch edit command
+ *
+ * Handles both correct top-level structure and legacy nested structure for backwards
+ * compatibility with existing timelines:
+ * - Correct: { type: 'batch_edit', changes: [...] }
+ * - Legacy:  { type: 'batch_edit', params: { changes: [...] } }
  */
 async function applyBatchEditCommand(
   tableName: string,
-  params: BatchEditParams
+  params: BatchEditParams | { type: 'batch_edit'; params?: { changes: { csId: string; columnName: string; newValue: unknown }[] } }
 ): Promise<void> {
-  for (const change of params.changes) {
+  // Handle both legacy nested structure and correct top-level structure
+  const changes = 'changes' in params && Array.isArray(params.changes)
+    ? params.changes
+    : (params as { params?: { changes: { csId: string; columnName: string; newValue: unknown }[] } }).params?.changes
+
+  if (!changes || !Array.isArray(changes)) {
+    console.error('[REPLAY] batch_edit has no valid changes array:', params)
+    return
+  }
+
+  for (const change of changes) {
     await updateCellByRowId(tableName, change.csId, change.columnName, change.newValue)
   }
 }

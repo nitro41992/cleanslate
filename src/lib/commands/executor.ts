@@ -1435,6 +1435,33 @@ export class CommandExecutor implements ICommandExecutor {
         previousValue: editParams.previousValue,
         newValue: editParams.newValue,
       } as import('@/types').ManualEditParams
+    } else if (command.type === 'edit:batch') {
+      // Batch edits need changes at TOP LEVEL (not nested in params.params)
+      // applyBatchEditCommand expects params.changes, not params.params.changes
+      const batchParams = command.params as { changes: import('@/types').CellChange[] }
+      timelineParams = {
+        type: 'batch_edit',
+        changes: batchParams.changes,
+      } as import('@/types').BatchEditParams
+    } else if (command.type === 'match:merge') {
+      // Match merge needs pairs transformed to mergedPairs format
+      // MatchMergeCommand has pairs: MatchPair[], but applyMergeCommand expects mergedPairs
+      const mergeParams = command.params as {
+        matchColumn: string
+        pairs: import('@/types').MatchPair[]
+      }
+      // Transform pairs to mergedPairs format expected by applyMergeCommand
+      const mergedPairs = mergeParams.pairs
+        .filter(p => p.status === 'merged')
+        .map(p => ({
+          keepRowId: p.keepRow === 'A' ? String(p.rowA._cs_id) : String(p.rowB._cs_id),
+          deleteRowId: p.keepRow === 'A' ? String(p.rowB._cs_id) : String(p.rowA._cs_id),
+        }))
+      timelineParams = {
+        type: 'merge',
+        matchColumn: mergeParams.matchColumn,
+        mergedPairs,
+      } as import('@/types').MergeParams
     } else {
       // Extract custom params (excluding tableId, column, tableName) for nested params property
       // Uses extractCustomParams for type-safe extraction and consistent handling

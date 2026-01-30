@@ -148,7 +148,7 @@ export function validateParamSync(
  */
 export const COMMANDS_WITH_CUSTOM_PARAMS: Readonly<Record<string, readonly string[]>> = {
   // High risk (Tier 3 - snapshot-based undo)
-  'transform:split_column': ['delimiter', 'newColumnNames', 'mode'],
+  'transform:split_column': ['splitMode', 'delimiter', 'position', 'length'],
   'transform:combine_columns': ['delimiter', 'newColumnName', 'ignoreEmpty'],
   'match:merge': ['pairs'],
 
