@@ -346,8 +346,10 @@ function App() {
                         <WrapText className="w-4 h-4" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      {isWordWrapEnabled(activeTable.id) ? 'Disable word wrap' : 'Enable word wrap'}
+                    <TooltipContent side="bottom" className="max-w-[200px]">
+                      {isWordWrapEnabled(activeTable.id)
+                        ? 'Disable word wrap'
+                        : 'Enable word wrap (hides edit indicators)'}
                     </TooltipContent>
                   </Tooltip>
                 </div>

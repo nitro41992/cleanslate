@@ -1,0 +1,16 @@
+id,name,description
+1,Alice,This is a very long description that should wrap to multiple lines when word wrap is enabled in the data grid
+2,Bob,Another lengthy piece of text that demonstrates the word wrap functionality working correctly across different rows
+3,Charlie,Short text
+4,Diana,Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua
+5,Eve,Brief
+6,Frank,The quick brown fox jumps over the lazy dog multiple times to create a sufficiently long text for testing purposes
+7,Grace,Testing word wrap persistence after scrolling down and back up in the virtualized data grid component
+8,Henry,More text here
+9,Iris,Yet another row with a moderately long description to ensure we have enough content for scroll testing
+10,Jack,This row contains text that should demonstrate proper word wrapping behavior when the feature is enabled
+11,Kate,Row eleven with additional content
+12,Leo,The final row in our test dataset with enough text to verify word wrap works consistently throughout
+13,Mia,Extra row to ensure scrolling
+14,Noah,Additional row for scroll buffer
+15,Olivia,One more row with long text content to make sure we have sufficient data for comprehensive scroll testing

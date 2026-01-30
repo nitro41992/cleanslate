@@ -542,7 +542,8 @@ export function DataGrid({
     [columns, columnTypeMap, columnPreferences, viewState]
   )
 
-  // Memoize theme to prevent unnecessary re-renders that can break text wrapping cache
+  // Memoize theme to prevent unnecessary re-renders
+  // Note: Matching VirtualizedDiffGrid theme (no lineHeight/padding overrides)
   const gridTheme = useMemo(() => ({
     bgCell: '#18191c',
     bgCellMedium: '#28292d',
@@ -562,10 +563,6 @@ export function DataGrid({
     baseFontStyle: '13px',
     headerFontStyle: '600 13px',
     editorFontSize: '13px',
-    // Text wrapping requires these properties
-    lineHeight: 1.4,
-    cellHorizontalPadding: 8,
-    cellVerticalPadding: 3,
   }), [])
 
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
@@ -715,18 +712,22 @@ export function DataGrid({
   const prevTimelinePosition = useRef<number>(-1)
 
   // Helper to invalidate visible cells in the grid
-  const invalidateVisibleCells = useCallback(() => {
+  // For full grid refresh (e.g., word wrap), set allColumns=true
+  const invalidateVisibleCells = useCallback((allColumns = false) => {
     if (!gridRef.current) return
     const cellsToUpdate: { cell: [number, number] }[] = []
     const visibleStart = loadedRange.start
-    const visibleEnd = Math.min(loadedRange.end, loadedRange.start + 50) // Limit to 50 cells for performance
+    const visibleEnd = Math.min(loadedRange.end, loadedRange.start + 50) // Limit to 50 rows for performance
+    const colCount = allColumns ? columns.length : 1
     for (let row = visibleStart; row < visibleEnd; row++) {
-      cellsToUpdate.push({ cell: [0, row] })
+      for (let col = 0; col < colCount; col++) {
+        cellsToUpdate.push({ cell: [col, row] })
+      }
     }
     if (cellsToUpdate.length > 0) {
       gridRef.current.updateCells(cellsToUpdate)
     }
-  }, [loadedRange])
+  }, [loadedRange, columns.length])
 
   // Force grid re-render when highlight changes (set or cleared)
   // Canvas-based grids need explicit invalidation to redraw cells with new highlight state
@@ -747,6 +748,18 @@ export function DataGrid({
     }
     prevTimelinePosition.current = timelinePosition
   }, [timelinePosition, invalidateVisibleCells])
+
+  // Force grid re-render when loaded range changes (scroll)
+  // This ensures word wrap is applied correctly to cells that scroll back into view
+  const prevLoadedRangeRef = useRef(loadedRange)
+  useEffect(() => {
+    if (prevLoadedRangeRef.current.start !== loadedRange.start ||
+        prevLoadedRangeRef.current.end !== loadedRange.end) {
+      // Invalidate all columns to ensure word wrap is applied correctly
+      invalidateVisibleCells(true)
+    }
+    prevLoadedRangeRef.current = loadedRange
+  }, [loadedRange, invalidateVisibleCells])
 
   // Debounce delay for scroll handling (ms) - shorter for responsive feel
   const SCROLL_DEBOUNCE_MS = 50
@@ -993,6 +1006,7 @@ export function DataGrid({
         return {
           kind: GridCellKind.Loading as const,
           allowOverlay: false,
+          allowWrapping: wordWrapEnabled,
         }
       }
 
@@ -1023,11 +1037,10 @@ export function DataGrid({
         displayData: value === null || value === undefined ? '' : String(value),
         allowOverlay: true,
         readonly: !editable,
-        // TEMP: Hardcoded true for testing text wrap propagation
-        allowWrapping: true,
+        allowWrapping: wordWrapEnabled,
       }
     },
-    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId]
+    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled]
   )
 
   // Helper to convert BigInt values to strings for command serialization
@@ -1420,7 +1433,7 @@ export function DataGrid({
   // Using fixed heights for performance with large datasets (400k+ rows)
   // Dynamic per-row calculation is too expensive as it requires O(rows × columns) operations
   const BASE_ROW_HEIGHT = 33
-  const WORD_WRAP_ROW_HEIGHT = 120 // Fixed height to accommodate ~5 lines of wrapped text
+  const WORD_WRAP_ROW_HEIGHT = 80 // Match official demo row height
 
   // Track word wrap changes to force grid remount
   // When row height changes dramatically (33px ↔ 80px), Glide Data Grid's virtualization
@@ -1435,6 +1448,18 @@ export function DataGrid({
     }
     prevWordWrapRef.current = wordWrapEnabled
   }, [wordWrapEnabled])
+
+  // When word wrap is enabled and data range changes (scroll), we need to force
+  // the grid to re-render all cells. Glide Data Grid caches cell content and doesn't
+  // re-call getCellContent for cells that scroll into view. Incrementing the key
+  // forces a complete remount, ensuring all cells get the correct allowWrapping value.
+  const prevLoadedRangeStartRef = useRef(loadedRange.start)
+  useEffect(() => {
+    if (wordWrapEnabled && prevLoadedRangeStartRef.current !== loadedRange.start) {
+      setGridKey(k => k + 1)
+    }
+    prevLoadedRangeStartRef.current = loadedRange.start
+  }, [wordWrapEnabled, loadedRange.start])
 
   if (isLoading) {
     return (
@@ -1497,7 +1522,10 @@ export function DataGrid({
                 : undefined
             }
             onCellEdited={editable ? onCellEdited : undefined}
-            drawCell={editable ? drawCell : undefined}
+            // drawCell provides edit indicators (orange/green gutter bars, yellow highlights)
+            // but conflicts with word wrap - glide-data-grid's draw() doesn't forward allowWrapping.
+            // Trade-off: word wrap ON = no edit indicators, word wrap OFF = edit indicators work
+            drawCell={editable && !wordWrapEnabled ? drawCell : undefined}
             // Fixed row height for word wrap (dynamic calculation too expensive for large datasets)
             rowHeight={wordWrapEnabled ? WORD_WRAP_ROW_HEIGHT : BASE_ROW_HEIGHT}
             // Column resize support
@@ -1512,7 +1540,9 @@ export function DataGrid({
             width={gridWidth}
             height={gridHeight}
             smoothScrollX
-            smoothScrollY={false}
+            smoothScrollY
+            // Enable experimental hyperWrapping for proper text wrapping support
+            experimental={{ hyperWrapping: true }}
             theme={gridTheme}
           />
         )}
