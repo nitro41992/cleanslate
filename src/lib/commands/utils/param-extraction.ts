@@ -165,7 +165,7 @@ export const COMMANDS_WITH_CUSTOM_PARAMS: Readonly<Record<string, readonly strin
   'transform:custom_sql': ['sql', 'newColumnName'],
   'transform:calculate_age': ['referenceDate', 'dateFormat'],
   'transform:fill_down': ['limit'],
-  'transform:standardize_date': ['inputFormat', 'outputFormat'],
+  'transform:standardize_date': ['inputFormat', 'outputFormat', 'format', 'outputType'],
   'transform:unformat_currency': ['currencySymbols', 'thousandsSeparator'],
   'transform:jitter': ['min', 'max', 'distribution'],
   'scrub:faker': ['fakerType', 'locale'],

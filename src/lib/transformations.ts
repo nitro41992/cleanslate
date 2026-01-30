@@ -211,6 +211,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
           { value: 'INTEGER', label: 'Integer' },
           { value: 'DOUBLE', label: 'Decimal' },
           { value: 'DATE', label: 'Date' },
+          { value: 'TIMESTAMP', label: 'Datetime' },
           { value: 'BOOLEAN', label: 'Boolean' },
         ],
       },
@@ -218,8 +219,9 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     examples: [
       { before: '"123" (Text)', after: '123 (Integer)' },
       { before: '"2024-01-15"', after: '2024-01-15 (Date)' },
+      { before: '1608422400000', after: '2020-12-20 00:00:00' },
     ],
-    hints: ['Invalid values become NULL', 'Preview shows how many will fail'],
+    hints: ['Invalid values become NULL', 'Auto-detects Unix timestamps', 'Preview shows how many will fail'],
   },
   {
     id: 'custom_sql',
@@ -359,12 +361,23 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
         ],
         default: 'YYYY-MM-DD',
       },
+      {
+        name: 'outputType',
+        type: 'select',
+        label: 'Output type',
+        options: [
+          { value: 'text', label: 'Text (VARCHAR)' },
+          { value: 'date', label: 'Date (DATE)' },
+          { value: 'timestamp', label: 'Datetime (TIMESTAMP)' },
+        ],
+        default: 'text',
+      },
     ],
     examples: [
       { before: '"01/15/2024"', after: '"2024-01-15"' },
       { before: '"20240115"', after: '"2024-01-15"' },
     ],
-    hints: ['Supports 10+ input formats', 'Auto-detects YYYYMMDD, MM/DD/YYYY, etc.'],
+    hints: ['Supports 10+ input formats', 'Auto-detects YYYYMMDD, MM/DD/YYYY, etc.', 'Choose Date or Datetime for typed output'],
   },
   {
     id: 'calculate_age',

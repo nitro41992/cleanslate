@@ -224,6 +224,81 @@ function getTypeDescription(type: string): string {
   return 'Data value'
 }
 
+/**
+ * Format a value for display based on its column type.
+ * DuckDB returns DATE as days since epoch and TIMESTAMP as microseconds since epoch
+ * via Arrow format - this function converts them to human-readable strings.
+ */
+function formatValueByType(value: unknown, columnType: string | undefined): string {
+  if (value === null || value === undefined) return ''
+
+  const baseType = columnType?.toUpperCase().replace(/\(.*\)/, '') ?? ''
+
+  // Handle DATE type (DuckDB returns days since Unix epoch)
+  if (baseType === 'DATE') {
+    if (typeof value === 'number') {
+      // Validate: days since epoch should be reasonable (1970-01-01 to ~2200)
+      // Valid range: 0 to ~84000 days (about 230 years from 1970)
+      if (value >= -25567 && value <= 100000) {
+        try {
+          // Days since epoch -> milliseconds -> Date object
+          const date = new Date(value * 86400000)
+          if (!isNaN(date.getTime())) {
+            // Format as YYYY-MM-DD
+            return date.toISOString().split('T')[0]
+          }
+        } catch {
+          // Fall through to String(value)
+        }
+      }
+    }
+    return String(value)
+  }
+
+  // Handle TIMESTAMP types (DuckDB returns microseconds since Unix epoch via Arrow)
+  // However, depending on how the TIMESTAMP was created, it may come as milliseconds
+  if (baseType.includes('TIMESTAMP')) {
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      try {
+        const numValue = Number(value)
+
+        // Detect the unit based on magnitude:
+        // - Milliseconds for 2020: ~1,600,000,000,000 (13 digits)
+        // - Microseconds for 2020: ~1,600,000,000,000,000 (16 digits)
+        // - Nanoseconds for 2020: ~1,600,000,000,000,000,000 (19 digits)
+        let ms: number
+        if (Math.abs(numValue) >= 1e15) {
+          // Microseconds range (16+ digits) - divide by 1000
+          ms = numValue / 1000
+        } else if (Math.abs(numValue) >= 1e12) {
+          // Milliseconds range (13-15 digits) - use directly
+          ms = numValue
+        } else if (Math.abs(numValue) >= 1e9) {
+          // Seconds range (10-12 digits) - multiply by 1000
+          ms = numValue * 1000
+        } else {
+          // Very small number - likely days or invalid
+          ms = numValue
+        }
+
+        // Validate: ms should be within JS Date range (roughly 1900 to 2200)
+        if (ms >= -2208988800000 && ms <= 7289654400000) {
+          const date = new Date(ms)
+          if (!isNaN(date.getTime())) {
+            // Format as YYYY-MM-DD HH:MM:SS
+            return date.toISOString().replace('T', ' ').slice(0, 19)
+          }
+        }
+      } catch {
+        // Fall through to String(value)
+      }
+    }
+    return String(value)
+  }
+
+  return String(value)
+}
+
 interface DataGridProps {
   tableName: string
   rowCount: number
@@ -1024,6 +1099,7 @@ export function DataGrid({
       }
 
       const colName = columns[col]
+      const colType = columnTypeMap.get(colName)
 
       // Get base value from DuckDB data
       let value = rowData[colName]
@@ -1044,16 +1120,19 @@ export function DataGrid({
         }
       }
 
+      // Format value based on column type (handles DATE/TIMESTAMP from DuckDB Arrow format)
+      const displayValue = formatValueByType(value, colType)
+
       return {
         kind: GridCellKind.Text as const,
-        data: value === null || value === undefined ? '' : String(value),
-        displayData: value === null || value === undefined ? '' : String(value),
+        data: displayValue,
+        displayData: displayValue,
         allowOverlay: true,
         readonly: !editable,
         allowWrapping: wordWrapEnabled,
       }
     },
-    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled]
+    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled, columnTypeMap]
   )
 
   // Helper to convert BigInt values to strings for command serialization
