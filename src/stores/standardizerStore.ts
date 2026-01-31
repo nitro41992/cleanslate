@@ -37,6 +37,11 @@ interface StandardizerState {
     totalValues: number
     selectedValues: number
   }
+
+  // Record preview drawer state
+  previewClusterId: string | null
+  previewRecords: Record<string, unknown>[] | null
+  previewLoading: boolean
 }
 
 interface StandardizerActions {
@@ -77,6 +82,12 @@ interface StandardizerActions {
   // Custom replacement for unique values
   setCustomReplacement: (clusterId: string, valueId: string, replacement: string | null) => void
 
+  // Record preview drawer
+  setPreviewCluster: (clusterId: string | null) => void
+  setPreviewRecords: (records: Record<string, unknown>[] | null) => void
+  setPreviewLoading: (loading: boolean) => void
+  closePreview: () => void
+
   // Utility
   getFilteredClusters: () => ValueCluster[]
   getSelectedMappings: () => { fromValue: string; toValue: string; rowCount: number }[]
@@ -107,6 +118,9 @@ const initialState: StandardizerState = {
     totalValues: 0,
     selectedValues: 0,
   },
+  previewClusterId: null,
+  previewRecords: null,
+  previewLoading: false,
 }
 
 function calculateStats(clusters: ValueCluster[]) {
@@ -412,6 +426,16 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
   setValidationError: (error) => set({ validationError: error }),
   setUniqueValueCount: (count) => set({ uniqueValueCount: count }),
 
+  // Record preview drawer
+  setPreviewCluster: (clusterId) => set({ previewClusterId: clusterId }),
+  setPreviewRecords: (records) => set({ previewRecords: records }),
+  setPreviewLoading: (loading) => set({ previewLoading: loading }),
+  closePreview: () => set({
+    previewClusterId: null,
+    previewRecords: null,
+    previewLoading: false,
+  }),
+
   // Utility
   getFilteredClusters: () => {
     const { clusters, filter, searchQuery } = get()
@@ -481,6 +505,9 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
     currentChunk: 0,
     totalChunks: 0,
     stats: initialState.stats,
+    previewClusterId: null,
+    previewRecords: null,
+    previewLoading: false,
   }),
 
   reset: () => set({ ...initialState }),
