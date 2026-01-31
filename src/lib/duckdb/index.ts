@@ -503,6 +503,20 @@ export async function queryArrow(sql: string) {
   })
 }
 
+/**
+ * Execute a query and return the Arrow Table directly (no JSON conversion).
+ * This is the zero-copy path for grid rendering - use vector.get(index) for O(1) cell access.
+ *
+ * @param sql - SQL query to execute
+ * @returns Arrow Table with O(1) columnar access
+ */
+export async function queryArrowDirect(sql: string): Promise<import('apache-arrow').Table> {
+  return withMutex(async () => {
+    const connection = await getConnection()
+    return await connection.query(sql)
+  })
+}
+
 export async function execute(sql: string): Promise<void> {
   return withMutex(async () => {
     const connection = await getConnection()
@@ -910,6 +924,139 @@ export async function getTableDataWithKeyset(
 export function estimateCsIdForRow(rowIndex: number): string {
   // _cs_id uses ROW_NUMBER() which is 1-indexed
   return String(rowIndex + 1)
+}
+
+/**
+ * Result from Arrow-based keyset pagination query.
+ * Returns Arrow Table for O(1) cell access plus metadata for grid integration.
+ */
+export interface ArrowKeysetPageResult {
+  /** Arrow Table with columnar data - use getChildAt(col).get(row) for O(1) access */
+  arrowTable: import('apache-arrow').Table
+  /** Column names in order (excluding internal columns like _cs_id) */
+  columns: string[]
+  /** Map of row index (within this page) to _cs_id for timeline highlighting */
+  rowIndexToCsId: Map<number, string>
+  /** First _cs_id in this page (for backward pagination) */
+  firstCsId: string | null
+  /** Last _cs_id in this page (for forward pagination) */
+  lastCsId: string | null
+  /** Whether there are more rows beyond this page */
+  hasMore: boolean
+  /** Starting row index in the global table (for offset calculation in grid) */
+  startRow: number
+}
+
+/**
+ * Get table data using keyset pagination, returning Arrow Table for O(1) cell access.
+ *
+ * This is the zero-copy path for grid rendering. Instead of converting Arrow → JSON,
+ * returns the Arrow Table directly. Use `arrowTable.getChildAt(colIndex).get(rowIndex)`
+ * for O(1) cell access.
+ *
+ * @param tableName - Name of the table to query
+ * @param cursor - Pagination cursor (null csId for first page)
+ * @param limit - Number of rows to fetch (default 500)
+ * @param startRow - Starting row index for this page (for grid offset calculation)
+ * @returns Arrow Table with metadata for grid integration
+ */
+export async function getTableDataArrowWithKeyset(
+  tableName: string,
+  cursor: KeysetCursor,
+  limit = 500,
+  startRow = 0
+): Promise<ArrowKeysetPageResult> {
+  return withMutex(async () => {
+    const connection = await getConnection()
+
+    // Build WHERE clause components
+    const whereConditions: string[] = []
+
+    // Add filter conditions if provided
+    if (cursor.whereClause) {
+      whereConditions.push(`(${cursor.whereClause})`)
+    }
+
+    // Determine ORDER BY clause
+    const hasCustomSort = Boolean(cursor.orderByClause)
+    const orderByClause = cursor.orderByClause || `"${CS_ID_COLUMN}"`
+
+    let query: string
+
+    if (!cursor.csId) {
+      // First page - no cursor, start from beginning
+      const whereStr = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY ${orderByClause} LIMIT ${limit + 1}`
+    } else if (hasCustomSort) {
+      // Custom sort: Fall back to simple query (keyset unreliable with custom sort)
+      const whereStr = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY ${orderByClause} LIMIT ${limit + 1}`
+    } else if (cursor.direction === 'forward') {
+      // Scroll down - get rows after cursor
+      whereConditions.push(`"${CS_ID_COLUMN}" > ${cursor.csId}`)
+      const whereStr = `WHERE ${whereConditions.join(' AND ')}`
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY ${orderByClause} LIMIT ${limit + 1}`
+    } else {
+      // Scroll up - get rows before cursor, then reverse
+      whereConditions.push(`"${CS_ID_COLUMN}" < ${cursor.csId}`)
+      const whereStr = `WHERE ${whereConditions.join(' AND ')}`
+      query = `SELECT * FROM "${tableName}" ${whereStr} ORDER BY "${CS_ID_COLUMN}" DESC LIMIT ${limit + 1}`
+    }
+
+    const result = await connection.query(query)
+
+    // Check if there are more rows beyond this page
+    const hasMore = result.numRows > limit
+
+    // Get column info from schema
+    const allColumns = result.schema.fields.map(f => f.name)
+    const columns = filterInternalColumns(allColumns)
+
+    // Find the _cs_id column index for extracting row IDs
+    const csIdColIndex = allColumns.indexOf(CS_ID_COLUMN)
+
+    // Build rowIndex → csId map for timeline highlighting
+    const rowIndexToCsId = new Map<number, string>()
+    const rowCount = Math.min(result.numRows, limit)
+
+    // Extract csIds from the _cs_id column vector
+    if (csIdColIndex >= 0) {
+      const csIdVector = result.getChildAt(csIdColIndex)
+      if (csIdVector) {
+        for (let i = 0; i < rowCount; i++) {
+          const csIdValue = csIdVector.get(i)
+          if (csIdValue !== null && csIdValue !== undefined) {
+            rowIndexToCsId.set(i, normalizeCsId(csIdValue))
+          }
+        }
+      }
+    }
+
+    // Get first/last csIds for pagination
+    let firstCsId: string | null = null
+    let lastCsId: string | null = null
+    if (rowCount > 0 && csIdColIndex >= 0) {
+      const csIdVector = result.getChildAt(csIdColIndex)
+      if (csIdVector) {
+        firstCsId = normalizeCsId(csIdVector.get(0))
+        lastCsId = normalizeCsId(csIdVector.get(rowCount - 1))
+      }
+    }
+
+    // If scrolling backward, we need to handle the reverse order
+    // Note: Arrow Table rows are immutable, so for backward scroll we track this in metadata
+    // The grid will need to account for this when accessing rows
+
+    return {
+      arrowTable: result,
+      columns,
+      rowIndexToCsId,
+      firstCsId,
+      lastCsId,
+      hasMore,
+      startRow,
+    }
+  })
 }
 
 export async function getTableColumns(

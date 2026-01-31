@@ -9,6 +9,7 @@ import DataGridLib, {
   DataEditorRef,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
+import { Table as ArrowTable } from 'apache-arrow'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useEditStore } from '@/stores/editStore'
@@ -350,14 +351,32 @@ const MAX_CACHED_PAGES = 10  // LRU cache: 10 pages = ~5000 rows
 
 /**
  * LRU page cache entry for keyset pagination.
- * Caches pages by their starting row index for O(1) lookup.
+ * Now stores Arrow Table for O(1) columnar access instead of JSON arrays.
+ */
+interface CachedArrowPage {
+  startRow: number
+  /** Arrow Table with columnar data - use getChildAt(col).get(row) for O(1) access */
+  arrowTable: ArrowTable
+  /** Column names in order (excluding internal columns) */
+  columns: string[]
+  /** Map of row index (within page) to _cs_id for timeline highlighting */
+  rowIndexToCsId: Map<number, string>
+  firstCsId: string | null
+  lastCsId: string | null
+  /** Row count in this page (may be less than PAGE_SIZE for last page) */
+  rowCount: number
+  timestamp: number          // For LRU eviction
+}
+
+/**
+ * Legacy JSON-based cache entry (kept for fallback compatibility)
  */
 interface CachedPage {
   startRow: number
   rows: { csId: string; data: Record<string, unknown> }[]
   firstCsId: string | null
   lastCsId: string | null
-  timestamp: number          // For LRU eviction
+  timestamp: number
 }
 
 export function DataGrid({
@@ -375,7 +394,7 @@ export function DataGrid({
   dataVersion,
   wordWrapEnabled = false,
 }: DataGridProps) {
-  const { getData, getDataWithRowIds, getDataWithKeyset, getFilteredCount } = useDuckDB()
+  const { getData, getDataWithRowIds, getDataWithKeyset, getDataArrowWithKeyset, getFilteredCount } = useDuckDB()
 
   // Create a lookup map for column types (used for validation and display)
   const columnTypeMap = useMemo(() => {
@@ -387,7 +406,19 @@ export function DataGrid({
     }
     return map
   }, [columnTypes])
-  // Data state for loaded rows
+
+  // ===== ARROW-BASED DATA STORAGE (Phase 2: Zero-Copy Transport) =====
+  // Arrow Tables provide O(1) columnar access via vector.get(index)
+  // This eliminates JSON serialization overhead for large datasets
+
+  // Arrow page cache for O(1) cell access (keyed by start row)
+  const arrowPageCacheRef = useRef<Map<number, CachedArrowPage>>(new Map())
+  // Currently loaded Arrow pages for the visible range
+  const loadedArrowPagesRef = useRef<CachedArrowPage[]>([])
+  // Column name to index mapping for Arrow vector access
+  const [arrowColumnIndexMap, setArrowColumnIndexMap] = useState<Map<string, number>>(new Map())
+
+  // Legacy JSON data state (fallback for edits and compatibility)
   const [data, setData] = useState<Record<string, unknown>[]>([])
   // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
@@ -401,8 +432,7 @@ export function DataGrid({
   // This preserves the user's view position across structural changes (column adds, transforms)
   const scrollPositionRef = useRef<{ col: number; row: number } | null>(null)
 
-  // LRU page cache for efficient scrolling (keyed by approximate start row)
-  // Caches up to MAX_CACHED_PAGES pages (~5000 rows) for instant access on scroll-back
+  // Legacy LRU page cache for fallback (JSON-based)
   const pageCacheRef = useRef<Map<number, CachedPage>>(new Map())
 
   // Debounce timer for scroll handling - prevents excessive fetches during rapid scrolling
@@ -722,10 +752,12 @@ export function DataGrid({
     const savedScrollPosition = scrollPositionRef.current
 
     setIsLoading(true)
-    setData([]) // Clear stale data immediately
+    setData([]) // Clear stale JSON data immediately
     setLoadedRange({ start: 0, end: 0 }) // Reset loaded range
     setCsIdToRowIndex(new Map()) // Reset row ID mapping
-    pageCacheRef.current.clear() // Clear LRU cache on data reload
+    pageCacheRef.current.clear() // Clear legacy JSON cache
+    arrowPageCacheRef.current.clear() // Clear Arrow cache
+    loadedArrowPagesRef.current = [] // Clear loaded Arrow pages
 
     // Build filter/sort clauses from viewState
     const filters = viewState?.filters ?? []
@@ -751,7 +783,7 @@ export function DataGrid({
       setFilteredRowCount(null)
     }
 
-    // Load initial data using keyset pagination with optional filter/sort
+    // Load initial data using Arrow-based keyset pagination (Phase 2: Zero-Copy Transport)
     const cursor = {
       direction: 'forward' as const,
       csId: null,
@@ -759,44 +791,64 @@ export function DataGrid({
       orderByClause,
     }
 
-    getDataWithKeyset(tableName, cursor, PAGE_SIZE)
-      .then((pageResult) => {
-        console.log('[DATAGRID] Data fetched with keyset, row count:', pageResult.rows.length)
-        // Build _cs_id -> row index map
+    getDataArrowWithKeyset(tableName, cursor, PAGE_SIZE, 0)
+      .then((arrowResult) => {
+        const arrowRowCount = Math.min(arrowResult.arrowTable.numRows, PAGE_SIZE)
+        console.log('[DATAGRID] Arrow data fetched, row count:', arrowRowCount)
+
+        // Build column index map for O(1) Arrow vector lookup
+        const colIndexMap = new Map<string, number>()
+        const allCols = arrowResult.arrowTable.schema.fields.map(f => f.name)
+        allCols.forEach((name, idx) => colIndexMap.set(name, idx))
+        setArrowColumnIndexMap(colIndexMap)
+
+        // Cache this Arrow page
+        const arrowPage: CachedArrowPage = {
+          startRow: 0,
+          arrowTable: arrowResult.arrowTable,
+          columns: arrowResult.columns,
+          rowIndexToCsId: arrowResult.rowIndexToCsId,
+          firstCsId: arrowResult.firstCsId,
+          lastCsId: arrowResult.lastCsId,
+          rowCount: arrowRowCount,
+          timestamp: Date.now(),
+        }
+        arrowPageCacheRef.current.set(0, arrowPage)
+        loadedArrowPagesRef.current = [arrowPage]
+
+        // Build csId -> global row index map for timeline highlighting
         const idMap = new Map<string, number>()
-        const rows = pageResult.rows.map((row, index) => {
-          if (row.csId) {
-            idMap.set(row.csId, index)
-          }
-          return row.data
+        arrowResult.rowIndexToCsId.forEach((csId, localIdx) => {
+          idMap.set(csId, localIdx) // localIdx == globalIdx for first page
         })
 
-        // Log first row for debugging
-        if (rows.length > 0) {
-          console.log('[DATAGRID] First row sample:', rows[0])
+        // Extract JSON data for cell editing compatibility
+        // This is still needed because cell edits update local state
+        const jsonRows: Record<string, unknown>[] = []
+        for (let i = 0; i < arrowRowCount; i++) {
+          const row: Record<string, unknown> = {}
+          for (const colName of arrowResult.columns) {
+            const colIdx = colIndexMap.get(colName)
+            if (colIdx !== undefined) {
+              const vector = arrowResult.arrowTable.getChildAt(colIdx)
+              row[colName] = vector?.get(i)
+            }
+          }
+          jsonRows.push(row)
         }
 
-        // Cache this initial page
-        pageCacheRef.current.set(0, {
-          startRow: 0,
-          rows: pageResult.rows,
-          firstCsId: pageResult.firstCsId,
-          lastCsId: pageResult.lastCsId,
-          timestamp: Date.now(),
-        })
-
-        setData(rows)
+        setData(jsonRows)
         setCsIdToRowIndex(idMap)
-        setLoadedRange({ start: 0, end: rows.length })
+        setLoadedRange({ start: 0, end: arrowRowCount })
         setIsLoading(false)
 
-        // Restore scroll position after data loads (for structural changes like transforms)
-        // Use requestAnimationFrame to ensure grid has rendered before scrolling
+        console.log('[DATAGRID] Arrow + JSON data ready for rendering')
+
+        // Restore scroll position after data loads
         if (savedScrollPosition && gridRef.current) {
           requestAnimationFrame(() => {
             if (gridRef.current) {
               const { col, row } = savedScrollPosition
-              // Clamp row to valid range (in case row count decreased)
               const clampedRow = Math.min(row, Math.max(0, rowCount - 1))
               gridRef.current.scrollTo(col, clampedRow)
               console.log('[DATAGRID] Restored scroll position:', { col, row: clampedRow })
@@ -805,17 +857,26 @@ export function DataGrid({
         }
       })
       .catch((err) => {
-        console.error('Error loading data with keyset:', err)
-        // Fallback to OFFSET-based getData if keyset fails
-        getDataWithRowIds(tableName, 0, PAGE_SIZE)
-          .then((rowsWithIds) => {
+        console.error('[DATAGRID] Arrow fetch failed, falling back to JSON:', err)
+        // Fallback to legacy JSON-based getData
+        getDataWithKeyset(tableName, cursor, PAGE_SIZE)
+          .then((pageResult) => {
             const idMap = new Map<string, number>()
-            const rows = rowsWithIds.map((row, index) => {
+            const rows = pageResult.rows.map((row, index) => {
               if (row.csId) {
                 idMap.set(row.csId, index)
               }
               return row.data
             })
+
+            pageCacheRef.current.set(0, {
+              startRow: 0,
+              rows: pageResult.rows,
+              firstCsId: pageResult.firstCsId,
+              lastCsId: pageResult.lastCsId,
+              timestamp: Date.now(),
+            })
+
             setData(rows)
             setCsIdToRowIndex(idMap)
             setLoadedRange({ start: 0, end: rows.length })
@@ -826,7 +887,7 @@ export function DataGrid({
             setIsLoading(false)
           })
       })
-  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, getFilteredCount, rowCount, dataVersion, isReplaying, isBusy, viewState])
+  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, getDataArrowWithKeyset, getFilteredCount, rowCount, dataVersion, isReplaying, isBusy, viewState])
 
   // Track previous values to detect changes
   const prevHighlightCommandId = useRef<string | null | undefined>(undefined)
@@ -947,42 +1008,57 @@ export function DataGrid({
         const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
         const lastPageIdx = Math.floor((needEnd - 1) / PAGE_SIZE)
 
-        // Collect all cached pages that cover our range
-        const cachedPages: CachedPage[] = []
-        const missingPageIndices: number[] = []
+        // ===== PHASE 2: Check Arrow cache first =====
+        const cachedArrowPages: CachedArrowPage[] = []
+        const missingArrowPageIndices: number[] = []
 
         for (let pageIdx = firstPageIdx; pageIdx <= lastPageIdx; pageIdx++) {
           const pageStartRow = pageIdx * PAGE_SIZE
-          const cached = pageCacheRef.current.get(pageStartRow)
-          if (cached && cached.rows.length > 0) {
+          const cached = arrowPageCacheRef.current.get(pageStartRow)
+          if (cached && cached.rowCount > 0) {
             cached.timestamp = Date.now() // Update LRU timestamp
-            cachedPages.push(cached)
+            cachedArrowPages.push(cached)
           } else {
-            missingPageIndices.push(pageIdx)
+            missingArrowPageIndices.push(pageIdx)
           }
         }
 
-        // If we have all pages cached, merge them immediately
-        if (missingPageIndices.length === 0 && cachedPages.length > 0) {
-          cachedPages.sort((a, b) => a.startRow - b.startRow)
-          const rangeStart = cachedPages[0].startRow
+        // If we have all Arrow pages cached, use them
+        if (missingArrowPageIndices.length === 0 && cachedArrowPages.length > 0) {
+          cachedArrowPages.sort((a, b) => a.startRow - b.startRow)
+          const rangeStart = cachedArrowPages[0].startRow
 
-          const mergedRows: Record<string, unknown>[] = []
+          // Update Arrow pages ref for getCellContent
+          loadedArrowPagesRef.current = cachedArrowPages
+
+          // Build csId -> global row index map
           const idMap = new Map<string, number>()
+          let totalRows = 0
+          for (const page of cachedArrowPages) {
+            page.rowIndexToCsId.forEach((csId, localIdx) => {
+              idMap.set(csId, page.startRow + localIdx)
+            })
+            totalRows += page.rowCount
+          }
 
-          for (const page of cachedPages) {
-            for (let i = 0; i < page.rows.length; i++) {
-              const row = page.rows[i]
-              const globalIdx = page.startRow + i
-              if (row.csId) {
-                idMap.set(row.csId, globalIdx)
+          // Extract JSON for compatibility (cell edits need it)
+          const mergedRows: Record<string, unknown>[] = []
+          for (const page of cachedArrowPages) {
+            for (let i = 0; i < page.rowCount; i++) {
+              const row: Record<string, unknown> = {}
+              for (const colName of page.columns) {
+                const colIdx = arrowColumnIndexMap.get(colName)
+                if (colIdx !== undefined) {
+                  const vector = page.arrowTable.getChildAt(colIdx)
+                  row[colName] = vector?.get(i)
+                }
               }
-              mergedRows.push(row.data)
+              mergedRows.push(row)
             }
           }
 
-          const rangeEnd = rangeStart + mergedRows.length
-          console.log(`[DATAGRID] Cache hit: merged ${cachedPages.length} pages (rows ${rangeStart}-${rangeEnd})`)
+          const rangeEnd = rangeStart + totalRows
+          console.log(`[DATAGRID] Arrow cache hit: ${cachedArrowPages.length} pages (rows ${rangeStart}-${rangeEnd})`)
           setData(mergedRows)
           setCsIdToRowIndex(idMap)
           setLoadedRange({ start: rangeStart, end: rangeEnd })
@@ -991,10 +1067,9 @@ export function DataGrid({
           return
         }
 
-        // Fetch missing pages using keyset pagination
+        // Fetch missing pages using Arrow-based keyset pagination
         try {
-          for (const pageIdx of missingPageIndices) {
-            // Check if this fetch was aborted (user scrolled to different position)
+          for (const pageIdx of missingArrowPageIndices) {
             if (abortController.signal.aborted) {
               console.log('[DATAGRID] Fetch aborted - scroll position changed')
               return
@@ -1012,81 +1087,99 @@ export function DataGrid({
 
             const cursor = { direction: 'forward' as const, csId: targetCsId, whereClause, orderByClause }
 
-            const pageResult = await getDataWithKeyset(tableName, cursor, PAGE_SIZE)
+            // Use Arrow-based fetch (Phase 2)
+            const arrowResult = await getDataArrowWithKeyset(tableName, cursor, PAGE_SIZE, pageStartRow)
 
-            // Check abort again after async operation
             if (abortController.signal.aborted) {
-              console.log('[DATAGRID] Fetch aborted after page load - scroll position changed')
+              console.log('[DATAGRID] Fetch aborted after page load')
               return
             }
 
-            // Add to LRU cache
-            const newPage: CachedPage = {
+            const arrowRowCount = Math.min(arrowResult.arrowTable.numRows, PAGE_SIZE)
+
+            // Add to Arrow cache
+            const newArrowPage: CachedArrowPage = {
               startRow: pageStartRow,
-              rows: pageResult.rows,
-              firstCsId: pageResult.firstCsId,
-              lastCsId: pageResult.lastCsId,
+              arrowTable: arrowResult.arrowTable,
+              columns: arrowResult.columns,
+              rowIndexToCsId: arrowResult.rowIndexToCsId,
+              firstCsId: arrowResult.firstCsId,
+              lastCsId: arrowResult.lastCsId,
+              rowCount: arrowRowCount,
               timestamp: Date.now(),
             }
-            pageCacheRef.current.set(pageStartRow, newPage)
-            cachedPages.push(newPage)
+            arrowPageCacheRef.current.set(pageStartRow, newArrowPage)
+            cachedArrowPages.push(newArrowPage)
 
-            // Evict oldest pages if cache is full
-            while (pageCacheRef.current.size > MAX_CACHED_PAGES) {
+            // Evict oldest Arrow pages if cache is full
+            while (arrowPageCacheRef.current.size > MAX_CACHED_PAGES) {
               let oldestKey = -1
               let oldestTime = Infinity
-              for (const [key, page] of pageCacheRef.current.entries()) {
+              for (const [key, page] of arrowPageCacheRef.current.entries()) {
                 if (page.timestamp < oldestTime) {
                   oldestTime = page.timestamp
                   oldestKey = key
                 }
               }
               if (oldestKey >= 0) {
-                pageCacheRef.current.delete(oldestKey)
+                arrowPageCacheRef.current.delete(oldestKey)
               } else {
                 break
               }
             }
           }
 
-          // Final abort check before updating state
           if (abortController.signal.aborted) {
             console.log('[DATAGRID] Fetch aborted before state update')
             return
           }
 
-          // Merge all pages (cached + newly fetched)
-          cachedPages.sort((a, b) => a.startRow - b.startRow)
-          const rangeStart = cachedPages[0].startRow
+          // Merge all Arrow pages
+          cachedArrowPages.sort((a, b) => a.startRow - b.startRow)
+          const rangeStart = cachedArrowPages[0].startRow
 
-          const mergedRows: Record<string, unknown>[] = []
+          // Update Arrow pages ref for getCellContent
+          loadedArrowPagesRef.current = cachedArrowPages
+
+          // Build csId -> global row index map
           const idMap = new Map<string, number>()
+          let totalRows = 0
+          for (const page of cachedArrowPages) {
+            page.rowIndexToCsId.forEach((csId, localIdx) => {
+              idMap.set(csId, page.startRow + localIdx)
+            })
+            totalRows += page.rowCount
+          }
 
-          for (const page of cachedPages) {
-            for (let i = 0; i < page.rows.length; i++) {
-              const row = page.rows[i]
-              const globalIdx = page.startRow + i
-              if (row.csId) {
-                idMap.set(row.csId, globalIdx)
+          // Extract JSON for compatibility
+          const mergedRows: Record<string, unknown>[] = []
+          for (const page of cachedArrowPages) {
+            for (let i = 0; i < page.rowCount; i++) {
+              const row: Record<string, unknown> = {}
+              for (const colName of page.columns) {
+                const colIdx = arrowColumnIndexMap.get(colName)
+                if (colIdx !== undefined) {
+                  const vector = page.arrowTable.getChildAt(colIdx)
+                  row[colName] = vector?.get(i)
+                }
               }
-              mergedRows.push(row.data)
+              mergedRows.push(row)
             }
           }
 
-          const rangeEnd = rangeStart + mergedRows.length
-          console.log(`[DATAGRID] Fetched ${missingPageIndices.length} pages, merged ${cachedPages.length} total (rows ${rangeStart}-${rangeEnd})`)
+          const rangeEnd = rangeStart + totalRows
+          console.log(`[DATAGRID] Arrow fetch: ${missingArrowPageIndices.length} new pages, ${cachedArrowPages.length} total (rows ${rangeStart}-${rangeEnd})`)
           setData(mergedRows)
           setCsIdToRowIndex(idMap)
           setLoadedRange({ start: rangeStart, end: rangeEnd })
 
           pendingRangeRef.current = null
         } catch (err) {
-          // Check if this was an intentional abort
           if (abortController.signal.aborted) {
             return
           }
-          // Fallback to OFFSET-based getData if keyset fails
-          console.log('[DATAGRID] Keyset pagination failed, falling back to OFFSET:', err)
+          // Fallback to legacy JSON-based fetch if Arrow fails
+          console.log('[DATAGRID] Arrow fetch failed, falling back to JSON:', err)
           try {
             const rowsWithIds = await getDataWithRowIds(tableName, needStart, needEnd - needStart)
             if (abortController.signal.aborted) return
@@ -1107,7 +1200,7 @@ export function DataGrid({
         }
       }, SCROLL_DEBOUNCE_MS)
     },
-    [getData, getDataWithRowIds, getDataWithKeyset, tableName, rowCount, loadedRange, viewState]
+    [getData, getDataWithRowIds, getDataWithKeyset, getDataArrowWithKeyset, tableName, rowCount, loadedRange, viewState, arrowColumnIndexMap]
   )
 
   // Cleanup debounce timer and abort controller on unmount
@@ -1138,16 +1231,41 @@ export function DataGrid({
       const colName = columns[col]
       const colType = columnTypeMap.get(colName)
 
-      // Get base value from data
-      const rowData = data[adjustedRow]
-      if (!rowData) {
-        return {
-          kind: GridCellKind.Loading as const,
-          allowOverlay: false,
-          allowWrapping: wordWrapEnabled,
+      // ===== PHASE 2: O(1) Arrow Vector Access =====
+      // Try to get value from Arrow pages first (zero-copy path)
+      // This eliminates JSON serialization overhead for read-only cells
+      let value: unknown = undefined
+      let foundInArrow = false
+
+      // Find the Arrow page containing this row
+      const arrowPages = loadedArrowPagesRef.current
+      for (const page of arrowPages) {
+        if (row >= page.startRow && row < page.startRow + page.rowCount) {
+          const localRow = row - page.startRow
+          const colIdx = arrowColumnIndexMap.get(colName)
+          if (colIdx !== undefined) {
+            const vector = page.arrowTable.getChildAt(colIdx)
+            if (vector) {
+              value = vector.get(localRow)
+              foundInArrow = true
+            }
+          }
+          break
         }
       }
-      let value: unknown = rowData[colName]
+
+      // Fall back to JSON data if Arrow not available (for edits, compatibility)
+      if (!foundInArrow) {
+        const rowData = data[adjustedRow]
+        if (!rowData) {
+          return {
+            kind: GridCellKind.Loading as const,
+            allowOverlay: false,
+            allowWrapping: wordWrapEnabled,
+          }
+        }
+        value = rowData[colName]
+      }
 
       // OPTIMISTIC UI: Check for pending batch edit that should overlay
       // When batching is enabled, edits are accumulated in editBatchStore before
@@ -1177,7 +1295,7 @@ export function DataGrid({
         allowWrapping: wordWrapEnabled,
       }
     },
-    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled, columnTypeMap]
+    [data, columns, loadedRange.start, editable, rowIndexToCsId, tableId, wordWrapEnabled, columnTypeMap, arrowColumnIndexMap]
   )
 
   // Helper to convert BigInt values to strings for command serialization

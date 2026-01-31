@@ -8,6 +8,7 @@ import {
   getTableData,
   getTableDataWithRowIds,
   getTableDataWithKeyset,
+  getTableDataArrowWithKeyset,
   getTableColumns,
   getFilteredRowCount,
   exportToCSV,
@@ -20,6 +21,7 @@ import {
   isDuckDBReadOnly,
   terminateAndReinitialize,
   type KeysetCursor,
+  type ArrowKeysetPageResult,
 } from '@/lib/duckdb'
 import { buildWhereClause, buildOrderByClause } from '@/lib/duckdb/filter-builder'
 import type { ColumnFilter } from '@/types'
@@ -376,6 +378,23 @@ export function useDuckDB() {
   )
 
   /**
+   * Get table data using keyset pagination, returning Arrow Table for O(1) cell access.
+   * This is the zero-copy path for grid rendering - eliminates JSON serialization overhead.
+   *
+   * @param tableName - Name of the table to query
+   * @param cursor - Pagination cursor
+   * @param limit - Number of rows to fetch
+   * @param startRow - Starting row index for this page
+   * @returns Arrow Table with metadata for grid integration
+   */
+  const getDataArrowWithKeyset = useCallback(
+    async (tableName: string, cursor: KeysetCursor, limit = 500, startRow = 0): Promise<ArrowKeysetPageResult> => {
+      return getTableDataArrowWithKeyset(tableName, cursor, limit, startRow)
+    },
+    []
+  )
+
+  /**
    * Get filtered and sorted data using keyset pagination.
    * Filters and sort are applied as SQL WHERE/ORDER BY clauses.
    *
@@ -615,6 +634,7 @@ export function useDuckDB() {
     getData,
     getDataWithRowIds,
     getDataWithKeyset,
+    getDataArrowWithKeyset,
     getFilteredDataWithKeyset,
     getFilteredCount,
     runQuery,
