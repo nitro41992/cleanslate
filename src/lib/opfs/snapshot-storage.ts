@@ -462,8 +462,10 @@ export async function exportTableToParquet(
 /**
  * Helper to register a file with retry and memory fallback
  * OPFS file handles can have locking issues - this provides resilience
+ *
+ * Exported for use by diff-engine.ts to handle the same file handle conflicts.
  */
-async function registerFileWithRetry(
+export async function registerFileWithRetry(
   db: AsyncDuckDB,
   fileHandle: FileSystemFileHandle,
   fileName: string,

@@ -1,10 +1,9 @@
 import { query, execute, tableExists, isInternalColumn, getConnection, initDuckDB } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
-import * as duckdb from '@duckdb/duckdb-wasm'
 import { formatBytes } from './duckdb/storage-info'
 import { getMemoryStatus } from './duckdb/memory'
-import { exportTableToParquet, deleteParquetSnapshot } from '@/lib/opfs/snapshot-storage'
+import { exportTableToParquet, deleteParquetSnapshot, registerFileWithRetry } from '@/lib/opfs/snapshot-storage'
 import { registerMemoryCleanup } from './memory-manager'
 
 // Track which Parquet snapshots are currently registered to prevent re-registration
@@ -96,12 +95,7 @@ async function resolveTableRef(tableName: string): Promise<string> {
     const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
     const fileHandle = await snapshots.getFileHandle(exactFile, { create: false })
 
-    await db.registerFileHandle(
-      exactFile,
-      fileHandle,
-      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-      false // read-only
-    )
+    await registerFileWithRetry(db, fileHandle, exactFile)
 
     // Mark as registered and cache the expression for fast lookups during scroll
     const expr = `read_parquet('${exactFile}')`
@@ -130,12 +124,7 @@ async function resolveTableRef(tableName: string): Promise<string> {
         const fileName = `${snapshotId}_part_${partIndex}.parquet`
         const fileHandle = await snapshots.getFileHandle(fileName, { create: false })
 
-        await db.registerFileHandle(
-          fileName,
-          fileHandle,
-          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-          false
-        )
+        await registerFileWithRetry(db, fileHandle, fileName)
 
         partIndex++
       } catch {
@@ -343,7 +332,6 @@ export async function runDiff(
     try {
     // Check if source is a Parquet snapshot
     const isParquetSource = tableA.startsWith('parquet:')
-    const snapshotId = isParquetSource ? tableA.substring(8) : null // Remove 'parquet:' prefix
 
     // 🟢 NEW: Register Parquet files IMMEDIATELY (before schema query)
     let sourceTableExpr: string
@@ -375,18 +363,29 @@ export async function runDiff(
 
     // Get columns AND types from both tables
     let colsAAll: { column_name: string; data_type: string }[]
-    if (isParquetSource && snapshotId) {
-      // Read column info from Parquet file using glob pattern
-      // Matches both single files (snapshotId.parquet) and chunked files (snapshotId_part_*.parquet)
-      // IMPORTANT: Use root path (no /cleanslate/snapshots/ prefix) to match registration path
-      const globPattern = `${snapshotId}*.parquet`
+    if (isParquetSource) {
+      // CRITICAL: Use the EXACT same expression as resolveTableRef() to ensure consistency
+      // Previously used a loose glob pattern which could match extra files with different schemas
+      // Example bug: glob 'original_foo*.parquet' could match timeline snapshots, causing
+      // parquet_schema() to return columns that don't exist in the actual source file
+      //
+      // sourceTableExpr is already resolved above (line 341) and contains the precise expression:
+      // - Single file: "read_parquet('original_foo.parquet')"
+      // - Chunked: "read_parquet('original_foo_part_*.parquet')"
+      //
+      // Extract the file pattern from sourceTableExpr for parquet_schema()
+      const filePatternMatch = sourceTableExpr.match(/read_parquet\('([^']+)'\)/)
+      if (!filePatternMatch) {
+        throw new Error(`[Diff] Could not parse file pattern from sourceTableExpr: ${sourceTableExpr}`)
+      }
+      const filePattern = filePatternMatch[1]
+
       const parquetColumns = await query<{ column_name: string; column_type: string }>(
-        `SELECT name AS column_name, type AS column_type FROM parquet_schema('${globPattern}')`
+        `SELECT name AS column_name, type AS column_type FROM parquet_schema('${filePattern}')`
       )
-      // CRITICAL FIX: Deduplicate columns by name for chunked Parquet files
+      // Deduplicate columns by name for chunked Parquet files
       // parquet_schema() with glob returns all columns from all files, creating duplicates
       // Example: 5 chunks × 30 columns = 150 duplicate columns
-      // We only need the unique column names and their types
       const uniqueColumns = new Map<string, string>()
       for (const col of parquetColumns) {
         if (!uniqueColumns.has(col.column_name)) {
@@ -969,12 +968,7 @@ export async function fetchDiffPage(
                 const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
                 fileHandles.push(fileHandle)
 
-                await db.registerFileHandle(
-                  fileName,
-                  fileHandle,
-                  duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-                  false  // read-only
-                )
+                await registerFileWithRetry(db, fileHandle, fileName)
 
                 partIndex++
               } catch {
@@ -1018,12 +1012,7 @@ export async function fetchDiffPage(
           const registrationPromise = (async () => {
             const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
 
-            await db.registerFileHandle(
-              `${tempTableName}.parquet`,
-              fileHandle,
-              duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-              false  // read-only
-            )
+            await registerFileWithRetry(db, fileHandle, `${tempTableName}.parquet`)
 
             // Mark as registered after successful registration
             registeredDiffTables.add(tempTableName)
@@ -1411,12 +1400,7 @@ export async function materializeDiffForPagination(
       try {
         const fileName = `${diffTableName}_part_${partIndex}.parquet`
         const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-        await db.registerFileHandle(
-          fileName,
-          fileHandle,
-          duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-          false
-        )
+        await registerFileWithRetry(db, fileHandle, fileName)
         partIndex++
       } catch {
         break
@@ -1427,12 +1411,7 @@ export async function materializeDiffForPagination(
   } else {
     // Single file
     const fileHandle = await snapshotsDir.getFileHandle(`${diffTableName}.parquet`, { create: false })
-    await db.registerFileHandle(
-      `${diffTableName}.parquet`,
-      fileHandle,
-      duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-      false
-    )
+    await registerFileWithRetry(db, fileHandle, `${diffTableName}.parquet`)
     parquetExpr = `read_parquet('${diffTableName}.parquet')`
   }
 
