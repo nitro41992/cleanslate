@@ -504,6 +504,36 @@ export function DataGrid({
     [tableId, timeline, executorTimelineVersion]
   )
 
+  /**
+   * Invalidate Arrow pages containing the specified rows.
+   * Forces getCellContent to read from React state on next access.
+   *
+   * This fixes the "stale Arrow cache" bug where cell edits succeed in DuckDB
+   * but the grid shows old values because getCellContent reads from cached Arrow pages.
+   */
+  const invalidateArrowPagesForRows = useCallback((affectedRows: number[]) => {
+    if (affectedRows.length === 0) return
+
+    const minRow = Math.min(...affectedRows)
+    const maxRow = Math.max(...affectedRows)
+
+    // Clear affected pages from cache ref
+    for (const [pageStart, page] of arrowPageCacheRef.current) {
+      const pageEnd = pageStart + page.rowCount
+      if (!(maxRow < pageStart || minRow >= pageEnd)) {
+        arrowPageCacheRef.current.delete(pageStart)
+      }
+    }
+
+    // Clear from loaded pages array
+    loadedArrowPagesRef.current = loadedArrowPagesRef.current.filter(page => {
+      const pageEnd = page.startRow + page.rowCount
+      return maxRow < page.startRow || minRow >= pageEnd
+    })
+
+    console.log(`[DataGrid] Invalidated Arrow cache for rows ${minRow}-${maxRow}`)
+  }, [])
+
   // Audit store for logging edits
 
   // Edit batch store for batching rapid edits
@@ -552,6 +582,21 @@ export function DataGrid({
         if (result.success) {
           console.log(`[DATAGRID] Batch edit successful: ${edits.length} cells`)
 
+          // Invalidate Arrow cache for edited rows (only for current table's DataGrid)
+          // This fixes the "stale Arrow cache" bug where cell edits succeed but grid shows old values
+          if (batchTableId === tableId) {
+            const editedRowIndices: number[] = []
+            for (const edit of edits) {
+              for (const [csId, rowIdx] of csIdToRowIndex) {
+                if (csId === edit.csId) {
+                  editedRowIndices.push(rowIdx)
+                  break
+                }
+              }
+            }
+            invalidateArrowPagesForRows(editedRowIndices)
+          }
+
           // Save to changelog for fast persistence (non-blocking)
           // This avoids triggering full Parquet export for cell edits
           const { saveCellEditsToChangelog } = await import('@/hooks/usePersistence')
@@ -580,7 +625,7 @@ export function DataGrid({
         console.error('[DATAGRID] Failed to execute batch edit:', error)
       }
     })
-  }, [tableId, tableName, executeWithConfirmation])
+  }, [tableId, tableName, executeWithConfirmation, invalidateArrowPagesForRows, csIdToRowIndex])
 
   // Register page cache for memory cleanup when memory is critical
   // This allows the memory manager to clear grid caches when JS heap is high
@@ -1452,6 +1497,10 @@ export function DataGrid({
           if (result.success) {
             console.log('[DATAGRID] Cell edit successful via CommandExecutor')
 
+            // Invalidate Arrow cache for edited row
+            // This fixes the "stale Arrow cache" bug where cell edits succeed but grid shows old values
+            invalidateArrowPagesForRows([row])
+
             // Update local data state
             setData((prevData) => {
               const newData = [...prevData]
@@ -1485,7 +1534,7 @@ export function DataGrid({
         console.error('Failed to process cell edit:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch, columnTypeMap, executeWithConfirmation]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch, columnTypeMap, executeWithConfirmation, invalidateArrowPagesForRows]
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights

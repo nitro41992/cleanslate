@@ -489,6 +489,12 @@ export async function compactChangelog(force = false): Promise<number> {
             },
           })
 
+          // Mark table as clean and recently saved to prevent redundant debounced save
+          // This is critical - without this, the debounced save subscription will
+          // also export the same data again since it doesn't know compaction just saved it
+          useUIStore.getState().markTableClean(tableId)
+          markTableAsRecentlySaved(tableId, 10_000) // 10s window for large tables
+
           useUIStore.getState().removeSavingTable(table.name)
 
           // Clear changelog for this table
@@ -518,9 +524,9 @@ export async function compactChangelog(force = false): Promise<number> {
 }
 
 // Track tables that were just saved (e.g., during import) to skip redundant auto-saves
-// Uses timestamp-based Map with time window to handle multiple subscription calls
+// Stores expiry timestamp (Date.now() + duration) for each table
 const recentlySavedTables = new Map<string, number>()
-const RECENTLY_SAVED_WINDOW_MS = 5_000 // 5 second window
+const DEFAULT_RECENTLY_SAVED_WINDOW_MS = 5_000 // 5 second default window
 
 // Track when each table first became dirty (for maxWait enforcement)
 // This ensures saves happen even during continuous rapid editing
@@ -528,11 +534,18 @@ const firstDirtyAt = new Map<string, number>()
 
 /**
  * Mark a table as recently saved to prevent redundant auto-save.
- * Called by useDuckDB after direct Parquet export during import.
+ * Called by useDuckDB after direct Parquet export during import,
+ * and by timeline-engine after snapshot creation.
+ *
+ * @param tableId - The table ID to mark
+ * @param durationMs - Optional custom duration (defaults to DEFAULT_RECENTLY_SAVED_WINDOW_MS)
  */
-export function markTableAsRecentlySaved(tableId: string): void {
-  recentlySavedTables.set(tableId, Date.now())
-  console.log(`[Persistence] Marked ${tableId} as recently saved (will skip auto-save for ${RECENTLY_SAVED_WINDOW_MS}ms)`)
+export function markTableAsRecentlySaved(tableId: string, durationMs?: number): void {
+  // Store expiry timestamp (when this entry should expire)
+  const effectiveWindow = durationMs ?? DEFAULT_RECENTLY_SAVED_WINDOW_MS
+  const expiryTime = Date.now() + effectiveWindow
+  recentlySavedTables.set(tableId, expiryTime)
+  console.log(`[Persistence] Marked ${tableId} as recently saved (will skip auto-save for ${effectiveWindow}ms)`)
 }
 
 /**
@@ -615,16 +628,15 @@ export async function forceSaveAll(): Promise<void> {
 }
 
 /**
- * Check if a table was recently saved (within the time window).
+ * Check if a table was recently saved (within its time window).
  * Returns true if the table should be skipped, false otherwise.
  * Does NOT consume the flag - allows multiple subscription calls to see it.
  */
 function wasRecentlySaved(tableId: string): boolean {
-  const savedAt = recentlySavedTables.get(tableId)
-  if (!savedAt) return false
+  const expiryTime = recentlySavedTables.get(tableId)
+  if (!expiryTime) return false
 
-  const elapsed = Date.now() - savedAt
-  if (elapsed > RECENTLY_SAVED_WINDOW_MS) {
+  if (Date.now() >= expiryTime) {
     // Expired - clean up and return false
     recentlySavedTables.delete(tableId)
     return false
@@ -967,11 +979,21 @@ export function usePersistence() {
       const { useUIStore } = await import('@/stores/uiStore')
       useUIStore.getState().removeSavingTable(tableName)
 
-      // If another save was requested while we were saving, save again with latest data
+      // If another save was requested while we were saving, re-save only if table is actually dirty
+      // This prevents the "spinning persistence loop" where pendingSave blindly re-saves
       if (pendingSave.get(tableName)) {
-        console.log(`[Persistence] ${tableName} has pending changes, re-saving...`)
         pendingSave.delete(tableName)
-        saveTable(tableName).catch(console.error)
+
+        // CRITICAL: Only re-save if table is actually dirty
+        const table = useTableStore.getState().tables.find(t => t.name === tableName)
+        const tableIdForCheck = table?.id
+
+        if (tableIdForCheck && useUIStore.getState().dirtyTableIds.has(tableIdForCheck)) {
+          console.log(`[Persistence] ${tableName} still dirty, re-saving...`)
+          saveTable(tableName).catch(console.error)
+        } else {
+          console.log(`[Persistence] ${tableName} is clean, dropping pending save`)
+        }
       }
     })
 

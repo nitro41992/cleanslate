@@ -105,6 +105,34 @@ export async function listFiles(
 }
 
 /**
+ * Copy a file within the same directory.
+ * Much faster than re-exporting from DuckDB - uses direct byte copy.
+ *
+ * Used to create persistence copies from timeline snapshots without
+ * redundant DuckDB exports (eliminates "double tax" on import).
+ *
+ * @param dir Directory handle containing the files
+ * @param sourceName Source file name
+ * @param destName Destination file name
+ */
+export async function copyFile(
+  dir: FileSystemDirectoryHandle,
+  sourceName: string,
+  destName: string
+): Promise<void> {
+  const sourceHandle = await dir.getFileHandle(sourceName, { create: false })
+  const sourceFile = await sourceHandle.getFile()
+  const content = await sourceFile.arrayBuffer()
+
+  const destHandle = await dir.getFileHandle(destName, { create: true })
+  const writable = await destHandle.createWritable()
+  await writable.write(content)
+  await writable.close()
+
+  console.log(`[OPFS] Copied ${sourceName} → ${destName}`)
+}
+
+/**
  * Clean up orphaned temp files (*.tmp) in a directory.
  * Called on startup to remove partial writes from crashed sessions.
  *

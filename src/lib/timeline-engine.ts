@@ -146,6 +146,39 @@ export async function createTimelineOriginalSnapshot(
     // Export to OPFS Parquet using direct call (no wrapper needed)
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
+    // Create persistence copy via file copy (instant, no re-export needed)
+    // This eliminates the "double tax" where import exports data twice
+    try {
+      const root = await navigator.storage.getDirectory()
+      const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+      const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+      const { copyFile, listFiles } = await import('@/lib/opfs/opfs-helpers')
+
+      // Check if this is a chunked export (multiple _part_N files)
+      const chunkFiles = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
+
+      if (chunkFiles.length > 0) {
+        // Copy chunked files: original_foo_part_0.parquet → foo_part_0.parquet
+        for (const chunkFile of chunkFiles) {
+          const destFile = chunkFile.replace(`${snapshotId}_`, `${sanitizedTableName}_`)
+          await copyFile(snapshotsDir, chunkFile, destFile)
+        }
+        console.log(`[Timeline] Created persistence copy via file copy (${chunkFiles.length} chunks)`)
+      } else {
+        // Copy single file: original_foo.parquet → foo.parquet
+        await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+        console.log(`[Timeline] Created persistence copy via file copy`)
+      }
+
+      // Mark as recently saved to suppress auto-save
+      if (_tableId) {
+        const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
+        markTableAsRecentlySaved(_tableId, 10_000) // 10 second window
+      }
+    } catch (copyError) {
+      console.warn('[Timeline] Failed to create persistence copy (will rely on auto-save):', copyError)
+    }
+
     // Return special prefix to signal Parquet storage (keeps store type as string)
     return `parquet:${snapshotId}`
   }
@@ -165,6 +198,26 @@ export async function createTimelineOriginalSnapshot(
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
     console.log(`[Timeline] Exported original snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+    // Create persistence copy via file copy (instant, no re-export needed)
+    try {
+      const root = await navigator.storage.getDirectory()
+      const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+      const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+      const { copyFile } = await import('@/lib/opfs/opfs-helpers')
+
+      // Copy single file: original_foo.parquet → foo.parquet
+      await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+      console.log(`[Timeline] Created persistence copy via file copy`)
+
+      // Mark as recently saved to suppress auto-save
+      if (_tableId) {
+        const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
+        markTableAsRecentlySaved(_tableId, 10_000) // 10 second window
+      }
+    } catch (copyError) {
+      console.warn('[Timeline] Failed to create persistence copy (will rely on auto-save):', copyError)
+    }
 
     // Return Parquet reference (same as large table path)
     return `parquet:${snapshotId}`
@@ -325,6 +378,14 @@ export async function createStepSnapshot(
     // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
+    // Suppress auto-save - the snapshot IS the save for this step
+    // This prevents the "save storm" where one transform triggers 3 saves
+    if (tableId) {
+      const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
+      markTableAsRecentlySaved(tableId, 10_000) // 10 second window
+      console.log(`[Snapshot] Suppressing auto-save for ${tableId}`)
+    }
+
     // Register in store with parquet: prefix and hot table name
     console.log('[SNAPSHOT] Registering snapshot in store:', {
       tableId,
@@ -357,6 +418,13 @@ export async function createStepSnapshot(
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
     console.log(`[Timeline] Exported step ${stepIndex} snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+    // Suppress auto-save - the snapshot IS the save for this step
+    if (tableId) {
+      const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
+      markTableAsRecentlySaved(tableId, 10_000) // 10 second window
+      console.log(`[Snapshot] Suppressing auto-save for ${tableId}`)
+    }
 
     // Register in store with Parquet reference and hot table name
     console.log('[SNAPSHOT] Registering small table snapshot in store:', {

@@ -260,41 +260,9 @@ export function useDuckDB() {
           // Non-fatal - timeline will be created on first edit (old behavior)
         }
 
-        // Persist to Parquet BEFORE showing grid
-        // This ensures manual edits can happen instantly (no pending save in progress)
-        setLoadingMessage('Saving to storage...')
-        try {
-          const { exportTableToParquet } = await import('@/lib/opfs/snapshot-storage')
-          const { initDuckDB, getConnection } = await import('@/lib/duckdb')
-          const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
-          const { useUIStore } = await import('@/stores/uiStore')
-          const db = await initDuckDB()
-          const conn = await getConnection()
-
-          // Track save progress in UI store for status bar indicator
-          useUIStore.getState().addSavingTable(tableName)
-          useUIStore.getState().setPersistenceStatus('saving')
-
-          await exportTableToParquet(db, conn, tableName, tableName, {
-            onChunkProgress: (current, total, table) => {
-              useUIStore.getState().setChunkProgress({ tableName: table, currentChunk: current, totalChunks: total })
-            },
-          })
-
-          // Clear save progress
-          useUIStore.getState().removeSavingTable(tableName)
-          useUIStore.getState().setPersistenceStatus('saved')
-
-          // Tell auto-save system we already saved this table - prevents redundant save
-          markTableAsRecentlySaved(tableId)
-          console.log('[Import] Table persisted to Parquet')
-        } catch (error) {
-          console.warn('[Import] Failed to persist to Parquet:', error)
-          // Non-fatal - usePersistence will retry on next change
-          const { useUIStore } = await import('@/stores/uiStore')
-          useUIStore.getState().removeSavingTable(tableName)
-          useUIStore.getState().setPersistenceStatus('error')
-        }
+        // Timeline snapshot now serves as persistence (via file copy in createTimelineOriginalSnapshot)
+        // This eliminates the "double tax" where import used to export twice
+        console.log('[Import] Timeline snapshot serves as persistence (via file copy)')
 
         // NOW add to store - this triggers grid rendering
         // Table is already persisted, so user can edit immediately
