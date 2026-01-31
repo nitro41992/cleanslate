@@ -24,7 +24,8 @@ export class StandardizeViewPage {
    */
   async waitForOpen(): Promise<void> {
     await expect(this.container).toBeVisible({ timeout: 10000 })
-    await expect(this.page.getByText('VALUE STANDARDIZER')).toBeVisible()
+    // Use h1 role to avoid ambiguity with h2 "Value Standardizer" in config panel
+    await expect(this.container.getByRole('heading', { level: 1, name: 'VALUE STANDARDIZER' })).toBeVisible()
   }
 
   /**
@@ -39,7 +40,10 @@ export class StandardizeViewPage {
    * Select a table to standardize
    */
   async selectTable(tableName: string): Promise<void> {
-    const tableSelect = this.page.getByTestId('standardize-table-select')
+    // Table combobox is within the config panel, find by role within container
+    // There may be multiple comboboxes, table is the first enabled one
+    const tableSelect = this.container.getByRole('combobox').first()
+    await tableSelect.waitFor({ state: 'visible', timeout: 5000 })
     await tableSelect.click()
     await this.page.getByRole('option', { name: new RegExp(tableName) }).click()
   }
@@ -48,7 +52,9 @@ export class StandardizeViewPage {
    * Select a column to standardize
    */
   async selectColumn(columnName: string): Promise<void> {
-    const columnSelect = this.page.getByTestId('standardize-column-select')
+    // Column combobox is the second combobox (after table selection enables it)
+    const columnSelect = this.container.getByRole('combobox').nth(1)
+    await columnSelect.waitFor({ state: 'visible', timeout: 5000 })
     await columnSelect.click()
     await this.page.getByRole('option', { name: columnName }).click()
   }

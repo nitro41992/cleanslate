@@ -307,15 +307,13 @@ test.describe('Column Order Preservation', () => {
     await expect(page.locator('text=Stack').first()).toBeVisible()
     await expect(page.getByTestId('combiner-stack-tab')).toBeVisible()
 
-    // Add first table
+    // Add first table (selecting auto-adds)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'stack_table_1' }).click()
-    await page.getByRole('button', { name: 'Add' }).click()
 
     // Add second table
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'stack_table_2' }).click()
-    await page.getByRole('button', { name: 'Add' }).click()
 
     // Enter result table name
     await page.getByPlaceholder('e.g., combined_sales').fill('stacked_result')
@@ -408,14 +406,12 @@ test.describe('Column Order Preservation', () => {
     await laundromat.openCombinePanel()
     await expect(page.locator('text=Stack').first()).toBeVisible()
 
-    // Add tables and stack
+    // Add tables and stack (selecting auto-adds)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'stack_table_1' }).click()
-    await page.getByRole('button', { name: 'Add' }).click()
 
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'stack_table_2' }).click()
-    await page.getByRole('button', { name: 'Add' }).click()
 
     await page.getByPlaceholder('e.g., combined_sales').fill('stacked_result')
     await page.getByTestId('combiner-stack-btn').click()

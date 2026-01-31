@@ -226,7 +226,8 @@ export class MatchViewPage {
     await expect(pair).toBeVisible({ timeout: 5000 })
 
     // The merge button has title="Merge (M)" - go up to the row container and find the button
-    const rowContainer = pair.locator('xpath=ancestor::div[contains(@class, "border") and contains(@class, "rounded-lg")]')
+    // Note: MatchRow uses rounded-xl class, not rounded-lg
+    const rowContainer = pair.locator('xpath=ancestor::div[contains(@class, "border") and contains(@class, "rounded-xl")]')
     const mergeButton = rowContainer.locator('button[title*="Merge"]')
     await expect(mergeButton).toBeVisible({ timeout: 5000 })
     await mergeButton.click()
@@ -245,7 +246,8 @@ export class MatchViewPage {
     await expect(pair).toBeVisible({ timeout: 5000 })
 
     // The keep separate button has title="Keep Separate (K)"
-    const rowContainer = pair.locator('xpath=ancestor::div[contains(@class, "border") and contains(@class, "rounded-lg")]')
+    // Note: MatchRow uses rounded-xl class, not rounded-lg
+    const rowContainer = pair.locator('xpath=ancestor::div[contains(@class, "border") and contains(@class, "rounded-xl")]')
     const keepButton = rowContainer.locator('button[title*="Keep"]')
     await expect(keepButton).toBeVisible({ timeout: 5000 })
     await keepButton.click()
@@ -255,7 +257,7 @@ export class MatchViewPage {
    * Select a pair checkbox (0-indexed)
    */
   async selectPair(index: number): Promise<void> {
-    const pairs = this.page.locator('[data-testid="match-view"]').locator('.border.rounded-lg')
+    const pairs = this.page.locator('[data-testid="match-view"]').locator('.border.rounded-xl')
     const pair = pairs.nth(index)
     const checkbox = pair.getByRole('checkbox')
     await checkbox.click()
@@ -290,7 +292,7 @@ export class MatchViewPage {
    * Get the similarity percentage from a pair (0-indexed)
    */
   async getPairSimilarity(index: number): Promise<number> {
-    const pairs = this.page.locator('[data-testid="match-view"]').locator('.border.rounded-lg')
+    const pairs = this.page.locator('[data-testid="match-view"]').locator('.border.rounded-xl')
     const pair = pairs.nth(index)
     const similarityText = await pair.locator('text=/\\d+% Similar/').textContent()
     const match = similarityText?.match(/(\d+)% Similar/)
