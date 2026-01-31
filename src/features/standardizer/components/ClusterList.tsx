@@ -22,6 +22,7 @@ interface ClusterListProps {
   onSelectAllClusters: () => void
   onDeselectAllClusters: () => void
   onSetReplacement?: (clusterId: string, valueId: string, replacement: string | null) => void
+  onReviewClick?: (clusterId: string) => void
 }
 
 export function ClusterList({
@@ -39,6 +40,7 @@ export function ClusterList({
   onSelectAllClusters,
   onDeselectAllClusters,
   onSetReplacement,
+  onReviewClick,
 }: ClusterListProps) {
   const parentRef = useRef<HTMLDivElement>(null)
 
@@ -208,6 +210,7 @@ export function ClusterList({
                       onSelectAll={() => onSelectAll(cluster.id)}
                       onDeselectAll={() => onDeselectAll(cluster.id)}
                       onSetReplacement={onSetReplacement ? (valueId, replacement) => onSetReplacement(cluster.id, valueId, replacement) : undefined}
+                      onReviewClick={onReviewClick ? () => onReviewClick(cluster.id) : undefined}
                     />
                   </div>
                 )

@@ -16,6 +16,7 @@ import {
 import { StandardizeConfigPanel } from './components/StandardizeConfigPanel'
 import { ClusterList } from './components/ClusterList'
 import { ClusterProgress } from './components/ClusterProgress'
+import { RecordPreviewDrawer } from './components/RecordPreviewDrawer'
 import { useTableStore } from '@/stores/tableStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useStandardizer } from '@/hooks/useStandardizer'
@@ -51,6 +52,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     validationError,
     uniqueValueCount,
     stats,
+    previewClusterId,
     setTable,
     setColumn,
     setAlgorithm,
@@ -64,6 +66,8 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     selectAllClusters,
     deselectAllClusters,
     setCustomReplacement,
+    setPreviewCluster,
+    closePreview,
     getSelectedMappings,
     clearClusters,
     reset,
@@ -317,7 +321,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
           {hasResults ? (
             <>
               {/* Cluster List */}
-              <div className="flex-1 min-h-0">
+              <div className="flex-1 min-h-0 overflow-hidden">
                 <ClusterList
                   clusters={clusters}
                   filter={filter}
@@ -333,8 +337,15 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
                   onSelectAllClusters={selectAllClusters}
                   onDeselectAllClusters={deselectAllClusters}
                   onSetReplacement={setCustomReplacement}
+                  onReviewClick={setPreviewCluster}
                 />
               </div>
+
+              {/* Record Preview Drawer */}
+              <RecordPreviewDrawer
+                open={!!previewClusterId}
+                onClose={closePreview}
+              />
 
               {/* Apply Bar */}
               {hasSelectedChanges && (

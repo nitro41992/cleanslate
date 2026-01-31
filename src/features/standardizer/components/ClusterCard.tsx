@@ -1,10 +1,16 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Star, Check, Pencil, X, ArrowRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Star, Check, Pencil, X, ArrowRight, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { ValueCluster, ClusterValue } from '@/types'
 
@@ -17,6 +23,7 @@ interface ClusterCardProps {
   onSelectAll: () => void
   onDeselectAll: () => void
   onSetReplacement?: (valueId: string, replacement: string | null) => void
+  onReviewClick?: () => void
 }
 
 export function ClusterCard({
@@ -28,12 +35,20 @@ export function ClusterCard({
   onSelectAll,
   onDeselectAll,
   onSetReplacement,
+  onReviewClick,
 }: ClusterCardProps) {
   const isActionable = cluster.values.length > 1
   const hasSelectedChanges = cluster.selectedCount > 0
-  const selectedCount = cluster.values.filter((v) => v.isSelected).length
+  // Fix: Exclude master from selectedCount to match selectableCount calculation
+  const selectedCount = cluster.values.filter((v) => v.isSelected && !v.isMaster).length
   const selectableCount = cluster.values.filter((v) => !v.isMaster).length
   const selectionRatio = selectableCount > 0 ? selectedCount / selectableCount : 0
+
+  // Calculate row counts for the badge
+  const masterRowCount = cluster.values.find((v) => v.isMaster)?.count ?? 0
+  const selectedVariationRowCount = cluster.values
+    .filter((v) => v.isSelected && !v.isMaster)
+    .reduce((sum, v) => sum + v.count, 0)
 
   // Render compact card for unique (single-value) clusters
   if (!isActionable) {
@@ -52,52 +67,65 @@ export function ClusterCard({
       data-testid="cluster-card"
     >
       {/* Header */}
-      <button
-        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-muted transition-colors"
-        onClick={onToggleExpand}
-      >
-        <div className={cn(
-          'p-1.5 rounded-md transition-colors',
-          isExpanded ? 'bg-accent' : 'bg-muted'
-        )}>
-          {isExpanded ? (
-            <ChevronDown className="h-3.5 w-3.5 text-primary shrink-0" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          )}
-        </div>
-
-        <span className="font-medium text-sm truncate flex-1 text-left">
-          "{cluster.masterValue || '(empty)'}"
-        </span>
-
-        <Badge
-          variant="secondary"
-          className="shrink-0 bg-muted text-muted-foreground border-0"
+      <div className="w-full px-4 py-3 flex items-center gap-3 hover:bg-muted transition-colors">
+        <button
+          className="flex items-center gap-3 flex-1 min-w-0"
+          onClick={onToggleExpand}
         >
-          {cluster.values.length} value{cluster.values.length !== 1 ? 's' : ''}
-        </Badge>
+          <div className={cn(
+            'p-1.5 rounded-md transition-colors',
+            isExpanded ? 'bg-accent' : 'bg-muted'
+          )}>
+            {isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 text-primary shrink-0" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            )}
+          </div>
 
-        {hasSelectedChanges && (
-          <Badge
-            variant="default"
-            className="shrink-0 bg-primary/20 text-primary border border-primary hover:bg-primary/30"
+          <span className="font-medium text-sm truncate flex-1 text-left">
+            {cluster.masterValue || '(empty)'}
+          </span>
+        </button>
+
+        {/* Combined badge with tooltip */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="shrink-0">
+                <Badge
+                  variant="secondary"
+                  className="tabular-nums bg-muted text-muted-foreground border-0"
+                >
+                  {masterRowCount.toLocaleString()} → {hasSelectedChanges ? selectedVariationRowCount.toLocaleString() : selectableCount}
+                </Badge>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[250px]">
+              <p>{masterRowCount.toLocaleString()} rows remain as "{cluster.masterValue || '(empty)'}"</p>
+              {hasSelectedChanges ? (
+                <p>{selectedVariationRowCount.toLocaleString()} rows will be standardized</p>
+              ) : (
+                <p>{selectableCount} variations available to standardize</p>
+              )}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        {/* Review button */}
+        {onReviewClick && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation()
+              onReviewClick()
+            }}
+            data-testid={`review-cluster-${cluster.id}`}
           >
-            {cluster.selectedCount} to change
-          </Badge>
-        )}
-      </button>
-
-      {/* Master Value Summary */}
-      <div className="px-4 pb-3 text-xs text-muted-foreground flex items-center gap-2">
-        <span className="tabular-nums">
-          {cluster.values.find((v) => v.isMaster)?.count.toLocaleString()} rows
-        </span>
-        {cluster.values.length > 1 && (
-          <>
-            <span className="text-border">·</span>
-            <span>{cluster.values.length - 1} variation{cluster.values.length > 2 ? 's' : ''}</span>
-          </>
+            <Eye className="h-3.5 w-3.5" />
+          </Button>
         )}
       </div>
 
@@ -380,7 +408,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
         )}
         title={value.value}
       >
-        "{value.value}"
+        {value.value}
       </span>
 
       <Badge
