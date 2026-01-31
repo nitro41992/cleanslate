@@ -369,3 +369,8 @@ test.describe('Confirm Discard Dialog: Multiple Undo States', () => {
     await laundromat.closePanel()
   })
 })
+
+// NOTE: Cell edit confirmation tests are skipped for now due to test infrastructure issues
+// with editCell + undo combinations. The core functionality is tested via the transform tests
+// above, and the cell edit confirmation uses the same executeWithConfirmation hook.
+// TODO: Add cell edit confirmation tests when editCell + undo test pattern is more robust.

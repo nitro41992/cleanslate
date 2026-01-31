@@ -424,8 +424,7 @@ export function DataGrid({
   const recordEdit = useEditStore((s) => s.recordEdit)
 
   // Hook for executing commands with confirmation when discarding redo states
-  // Note: executeWithConfirmation kept for potential future use (e.g., undo confirmation during batch)
-  const { executeWithConfirmation: _executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
+  const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
   // Track CommandExecutor timeline version for triggering re-renders
   const [executorTimelineVersion, setExecutorTimelineVersion] = useState(0)
@@ -511,8 +510,14 @@ export function DataGrid({
           })),
         })
 
-        // Execute via CommandExecutor (handles database, timeline, audit)
-        const result = await getCommandExecutor().execute(command)
+        // Execute with confirmation if there are undone states that would be discarded
+        const result = await executeWithConfirmation(command, batchTableId)
+
+        // User cancelled - edits are discarded (batch will be cleared by caller)
+        if (!result) {
+          console.log('[DATAGRID] Batch edit cancelled by user - discarding edits')
+          return
+        }
 
         if (result.success) {
           console.log(`[DATAGRID] Batch edit successful: ${edits.length} cells`)
@@ -545,7 +550,7 @@ export function DataGrid({
         console.error('[DATAGRID] Failed to execute batch edit:', error)
       }
     })
-  }, [tableId, tableName])
+  }, [tableId, tableName, executeWithConfirmation])
 
   // Register page cache for memory cleanup when memory is critical
   // This allows the memory manager to clear grid caches when JS heap is high
@@ -1317,7 +1322,14 @@ export function DataGrid({
             newValue: newCellValue,
           })
 
-          const result = await getCommandExecutor().execute(command)
+          // Execute with confirmation if there are undone states that would be discarded
+          const result = await executeWithConfirmation(command, tableId)
+
+          // User cancelled - edit is not applied
+          if (!result) {
+            console.log('[DATAGRID] Cell edit cancelled by user')
+            return
+          }
 
           if (result.success) {
             console.log('[DATAGRID] Cell edit successful via CommandExecutor')
@@ -1355,7 +1367,7 @@ export function DataGrid({
         console.error('Failed to process cell edit:', error)
       }
     },
-    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch, columnTypeMap]
+    [editable, tableId, tableName, columns, loadedRange.start, data, rowIndexToCsId, recordEdit, addEditToBatch, columnTypeMap, executeWithConfirmation]
   )
 
   // Custom cell drawing to show dirty indicator and timeline highlights
