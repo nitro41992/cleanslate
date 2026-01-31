@@ -6,7 +6,7 @@ import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { getAuditEntriesForTable, getAllAuditEntries } from '@/lib/audit-from-timeline'
 import { formatDate } from '@/lib/utils'
-import { Download, Trash2, Clock, FileText, Rows3 } from 'lucide-react'
+import { Download, Trash2, Clock, FileText, Rows3, Zap, HardDrive } from 'lucide-react'
 import { AuditDetailModal } from './AuditDetailModal'
 import type { AuditLogEntry } from '@/types'
 
@@ -28,15 +28,55 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
   // Subscribe to timeline changes to trigger re-render when undo/redo happens
   // This ensures the audit log always reflects the current timeline position
   const timelines = useTimelineStore((s) => s.timelines)
+  const getSnapshotInfo = useTimelineStore((s) => s.getSnapshotInfo)
 
-  // Derive audit entries from timeline (computed, not stored)
-  const entries = useMemo(() => {
+  // Derive audit entries from timeline with snapshot status (computed, not stored)
+  const entriesWithSnapshotStatus = useMemo(() => {
     // timelines dependency ensures re-computation on timeline changes
-    if (tableId) {
-      return getAuditEntriesForTable(tableId)
-    }
-    return getAllAuditEntries()
-  }, [tableId, timelines])
+    const rawEntries = tableId ? getAuditEntriesForTable(tableId) : getAllAuditEntries()
+
+    // Enhance entries with hot/cold snapshot status
+    // Entries are newest-first, so we need to look up by original index
+    return rawEntries.map((entry) => {
+      // For single-table view, get the timeline and find original command index
+      const timeline = timelines.get(entry.tableId)
+      if (!timeline) {
+        return { ...entry, snapshotStatus: null as 'hot' | 'cold' | null }
+      }
+
+      // Find command index (entries are reversed, and there's an import entry at the end)
+      // Command entries: reverseIndex 0 = newest command (index = commands.length - 1)
+      // Import entry is always last (oldest), has id starting with 'import_'
+      if (entry.id.startsWith('import_')) {
+        return { ...entry, snapshotStatus: null as 'hot' | 'cold' | null }
+      }
+
+      // Find the original index of this command
+      const commandIndex = timeline.commands.findIndex(cmd => cmd.id === entry.id)
+      if (commandIndex === -1) {
+        return { ...entry, snapshotStatus: null as 'hot' | 'cold' | null }
+      }
+
+      // Snapshot at index N = state BEFORE command at N+1 was executed
+      // So command at index C has a snapshot at index C-1 that can undo it
+      // But actually we create snapshot at position = currentPosition BEFORE the expensive command
+      // So snapshot at index N is created when position was N, before command N+1
+      // Therefore, to undo command C, we need snapshot at C-1
+
+      // For simplicity, check if there's a snapshot at this command's index
+      // (snapshot created AFTER this command was executed, for undoing the NEXT expensive command)
+      const snapshotInfo = getSnapshotInfo(entry.tableId, commandIndex)
+
+      let snapshotStatus: 'hot' | 'cold' | null = null
+      if (snapshotInfo) {
+        snapshotStatus = snapshotInfo.hotTableName ? 'hot' : 'cold'
+      }
+
+      return { ...entry, snapshotStatus }
+    })
+  }, [tableId, timelines, getSnapshotInfo])
+
+  const entries = entriesWithSnapshotStatus
 
   const clearEntries = useAuditStore((s) => s.clearEntries)
   const exportLog = useAuditStore((s) => s.exportLog)
@@ -132,6 +172,27 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
                           <Badge variant="secondary" className="text-xs">
                             <Rows3 className="w-3 h-3 mr-1" />
                             -
+                          </Badge>
+                        )}
+                        {/* Hot/Cold snapshot indicator (LRU undo cache - Phase 3) */}
+                        {entry.snapshotStatus === 'hot' && (
+                          <Badge
+                            variant="outline"
+                            className="text-xs bg-amber-500/20 text-amber-400 border-amber-500/30"
+                            data-testid="snapshot-hot-badge"
+                          >
+                            <Zap className="w-3 h-3 mr-1" />
+                            Instant
+                          </Badge>
+                        )}
+                        {entry.snapshotStatus === 'cold' && (
+                          <Badge
+                            variant="outline"
+                            className="text-xs text-muted-foreground"
+                            data-testid="snapshot-cold-badge"
+                          >
+                            <HardDrive className="w-3 h-3 mr-1" />
+                            ~2s
                           </Badge>
                         )}
                         {isClickable && (

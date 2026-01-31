@@ -8,6 +8,7 @@ import type {
   CellChange,
   SerializedTableTimeline,
   SerializedTimelineCommand,
+  SnapshotInfo,
 } from '@/types'
 import { generateId } from '@/lib/utils'
 import { EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
@@ -68,8 +69,14 @@ interface TimelineActions {
   ) => TimelineCommand
 
   // Snapshot management
-  createSnapshot: (tableId: string, stepIndex: number, snapshotTableName: string) => void
+  createSnapshot: (tableId: string, stepIndex: number, snapshotTableName: string, options?: { hotTableName?: string }) => void
   getSnapshotBefore: (tableId: string, targetIndex: number) => { tableName: string; index: number } | null
+
+  // Hot snapshot management (LRU undo cache - Phase 3)
+  setHotSnapshot: (tableId: string, stepIndex: number, hotTableName: string) => void
+  clearHotSnapshot: (tableId: string, stepIndex: number) => void
+  getSnapshotInfo: (tableId: string, stepIndex: number) => SnapshotInfo | null
+  isSnapshotHot: (tableId: string, stepIndex: number) => boolean
 
   // Undo/Redo (position management - actual replay is in timeline-engine)
   canUndo: (tableId: string) => boolean
@@ -243,13 +250,17 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     return command
   },
 
-  createSnapshot: (tableId, stepIndex, snapshotTableName) => {
+  createSnapshot: (tableId, stepIndex, snapshotTableName, options = {}) => {
     set((state) => {
       const timeline = state.timelines.get(tableId)
       if (!timeline) return state
 
       const snapshots = new Map(timeline.snapshots)
-      snapshots.set(stepIndex, snapshotTableName)
+      const snapshotInfo: SnapshotInfo = {
+        parquetId: snapshotTableName,
+        hotTableName: options.hotTableName,
+      }
+      snapshots.set(stepIndex, snapshotInfo)
 
       const updatedTimeline: TableTimeline = {
         ...timeline,
@@ -272,8 +283,9 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
     const snapshotIndices = [...timeline.snapshots.keys()].sort((a, b) => b - a)
     for (const idx of snapshotIndices) {
       if (idx <= targetIndex) {
+        const snapshotInfo = timeline.snapshots.get(idx)!
         return {
-          tableName: timeline.snapshots.get(idx)!,
+          tableName: snapshotInfo.parquetId,
           index: idx,
         }
       }
@@ -284,6 +296,74 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
       tableName: timeline.originalSnapshotName,
       index: -1,
     }
+  },
+
+  // Hot snapshot management (LRU undo cache - Phase 3)
+  setHotSnapshot: (tableId, stepIndex, hotTableName) => {
+    set((state) => {
+      const timeline = state.timelines.get(tableId)
+      if (!timeline) return state
+
+      const snapshotInfo = timeline.snapshots.get(stepIndex)
+      if (!snapshotInfo) return state
+
+      const snapshots = new Map(timeline.snapshots)
+      snapshots.set(stepIndex, {
+        ...snapshotInfo,
+        hotTableName,
+      })
+
+      const updatedTimeline: TableTimeline = {
+        ...timeline,
+        snapshots,
+        updatedAt: new Date(),
+      }
+
+      const newTimelines = new Map(state.timelines)
+      newTimelines.set(tableId, updatedTimeline)
+
+      return { timelines: newTimelines }
+    })
+  },
+
+  clearHotSnapshot: (tableId, stepIndex) => {
+    set((state) => {
+      const timeline = state.timelines.get(tableId)
+      if (!timeline) return state
+
+      const snapshotInfo = timeline.snapshots.get(stepIndex)
+      if (!snapshotInfo || !snapshotInfo.hotTableName) return state
+
+      const snapshots = new Map(timeline.snapshots)
+      snapshots.set(stepIndex, {
+        parquetId: snapshotInfo.parquetId,
+        // hotTableName intentionally omitted to clear it
+      })
+
+      const updatedTimeline: TableTimeline = {
+        ...timeline,
+        snapshots,
+        updatedAt: new Date(),
+      }
+
+      const newTimelines = new Map(state.timelines)
+      newTimelines.set(tableId, updatedTimeline)
+
+      return { timelines: newTimelines }
+    })
+  },
+
+  getSnapshotInfo: (tableId, stepIndex) => {
+    const timeline = get().timelines.get(tableId)
+    if (!timeline) return null
+    return timeline.snapshots.get(stepIndex) ?? null
+  },
+
+  isSnapshotHot: (tableId, stepIndex) => {
+    const timeline = get().timelines.get(tableId)
+    if (!timeline) return false
+    const snapshotInfo = timeline.snapshots.get(stepIndex)
+    return !!snapshotInfo?.hotTableName
   },
 
   canUndo: (tableId) => {
@@ -468,13 +548,18 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
         columnOrderAfter: cmd.columnOrderAfter,
       }))
 
+      // Serialize snapshots - only persist parquetId, not hotTableName (hot snapshots don't survive refresh)
+      const serializedSnapshots: [number, { parquetId: string }][] = [...timeline.snapshots.entries()].map(
+        ([idx, info]) => [idx, { parquetId: info.parquetId }]
+      )
+
       serialized.push({
         id: timeline.id,
         tableId: timeline.tableId,
         tableName: timeline.tableName,
         commands: serializedCommands,
         currentPosition: timeline.currentPosition,
-        snapshots: [...timeline.snapshots.entries()],
+        snapshots: serializedSnapshots,
         originalSnapshotName: timeline.originalSnapshotName,
         createdAt: timeline.createdAt.toISOString(),
         updatedAt: timeline.updatedAt.toISOString(),
@@ -505,13 +590,27 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
         columnOrderAfter: cmd.columnOrderAfter,
       }))
 
+      // Deserialize snapshots - handle both old format (string) and new format (SnapshotInfo)
+      // Old format: [number, string][] - from before LRU cache implementation
+      // New format: [number, { parquetId: string }][] - LRU cache format
+      const deserializedSnapshots = new Map<number, SnapshotInfo>()
+      for (const [idx, snapshot] of st.snapshots) {
+        if (typeof snapshot === 'string') {
+          // Old format - convert to new SnapshotInfo
+          deserializedSnapshots.set(idx, { parquetId: snapshot })
+        } else {
+          // New format - use as-is (hotTableName will be undefined after page refresh)
+          deserializedSnapshots.set(idx, { parquetId: snapshot.parquetId })
+        }
+      }
+
       const timeline: TableTimeline = {
         id: st.id,
         tableId: st.tableId,
         tableName: st.tableName,
         commands,
         currentPosition: st.currentPosition,
-        snapshots: new Map(st.snapshots),
+        snapshots: deserializedSnapshots,
         originalSnapshotName: st.originalSnapshotName,
         createdAt: new Date(st.createdAt),
         updatedAt: new Date(st.updatedAt),

@@ -232,8 +232,54 @@ export async function restoreTimelineOriginalSnapshot(
 }
 
 /**
+ * Naming convention for hot snapshot tables (LRU undo cache - Phase 3)
+ */
+function getHotSnapshotName(timelineId: string, stepIndex: number): string {
+  return `_hot_${timelineId}_${stepIndex}`
+}
+
+/**
+ * Evict previous hot snapshots for a table to maintain 1-slot LRU cache.
+ * Only one hot snapshot is kept per table to limit RAM usage.
+ * (~150MB per hot snapshot per 1M rows)
+ */
+async function evictPreviousHotSnapshots(tableId: string, currentStepIndex: number): Promise<void> {
+  const timeline = useTimelineStore.getState().getTimeline(tableId)
+  if (!timeline) return
+
+  // Find and drop all hot tables except the current one
+  for (const [position, snapshotInfo] of timeline.snapshots) {
+    if (position !== currentStepIndex && snapshotInfo.hotTableName) {
+      try {
+        await dropTable(snapshotInfo.hotTableName)
+        console.log(`[LRU] Evicted hot snapshot: ${snapshotInfo.hotTableName}`)
+      } catch {
+        // Ignore errors - table may already be dropped
+      }
+      // Clear hot flag in store
+      useTimelineStore.getState().clearHotSnapshot(tableId, position)
+    }
+  }
+}
+
+/**
+ * Restore from a hot (in-memory) snapshot - instant undo path
+ */
+async function restoreFromHotSnapshot(targetTable: string, hotTable: string): Promise<void> {
+  const hotExists = await tableExists(hotTable)
+  if (!hotExists) {
+    throw new Error(`Hot snapshot table not found: ${hotTable}`)
+  }
+  await dropTable(targetTable)
+  await duplicateTable(hotTable, targetTable, true)
+}
+
+/**
  * Create a snapshot at a specific step index (before expensive operation)
- * Uses Parquet storage for large tables to prevent RAM spikes
+ * Uses Parquet storage for large tables to prevent RAM spikes.
+ *
+ * LRU Cache (Phase 3): Also creates an in-memory "hot" copy for instant undo.
+ * Only the most recent snapshot is kept hot; previous hot snapshots are evicted.
  */
 export async function createStepSnapshot(
   tableName: string,
@@ -249,6 +295,26 @@ export async function createStepSnapshot(
   const rowCount = Number(countResult[0].count)
   console.log('[SNAPSHOT] Table row count:', rowCount)
 
+  // Get tableId for store operations
+  const tableId = findTableIdByTimeline(timelineId)
+
+  // LRU Cache: Create hot (in-memory) snapshot for instant undo
+  // This happens BEFORE Parquet export so we capture the exact current state
+  let hotTableName: string | undefined
+  if (tableId) {
+    hotTableName = getHotSnapshotName(timelineId, stepIndex)
+    try {
+      await duplicateTable(tableName, hotTableName, true)
+      console.log(`[LRU] Created hot snapshot: ${hotTableName}`)
+
+      // Evict previous hot snapshots (1-slot LRU cache)
+      await evictPreviousHotSnapshots(tableId, stepIndex)
+    } catch (error) {
+      console.warn('[LRU] Failed to create hot snapshot, undo will use cold path:', error)
+      hotTableName = undefined
+    }
+  }
+
   if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
     console.log(`[Timeline] Creating Parquet step snapshot for ${rowCount.toLocaleString()} rows at step ${stepIndex}...`)
 
@@ -259,16 +325,16 @@ export async function createStepSnapshot(
     // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
-    // Register in store with parquet: prefix
-    const tableId = findTableIdByTimeline(timelineId)
+    // Register in store with parquet: prefix and hot table name
     console.log('[SNAPSHOT] Registering snapshot in store:', {
       tableId,
       stepIndex,
       snapshotName: `parquet:${snapshotId}`,
+      hotTableName,
       foundTableId: !!tableId,
     })
     if (tableId) {
-      useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+      useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`, { hotTableName })
       // Verify it was registered
       const timeline = useTimelineStore.getState().getTimeline(tableId)
       console.log('[SNAPSHOT] After registration, snapshots:', [...(timeline?.snapshots.entries() ?? [])])
@@ -292,16 +358,16 @@ export async function createStepSnapshot(
 
     console.log(`[Timeline] Exported step ${stepIndex} snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
 
-    // Register in store with Parquet reference
-    const tableId = findTableIdByTimeline(timelineId)
+    // Register in store with Parquet reference and hot table name
     console.log('[SNAPSHOT] Registering small table snapshot in store:', {
       tableId,
       stepIndex,
       snapshotName: `parquet:${snapshotId}`,
+      hotTableName,
       foundTableId: !!tableId,
     })
     if (tableId) {
-      useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`)
+      useTimelineStore.getState().createSnapshot(tableId, stepIndex, `parquet:${snapshotId}`, { hotTableName })
       // Verify it was registered
       const timeline = useTimelineStore.getState().getTimeline(tableId)
       console.log('[SNAPSHOT] After registration (small table), snapshots:', [...(timeline?.snapshots.entries() ?? [])])
@@ -318,10 +384,9 @@ export async function createStepSnapshot(
     const tempSnapshotName = getTimelineSnapshotName(timelineId, stepIndex)
     await duplicateTable(tableName, tempSnapshotName, true)
 
-    // Register in-memory table
-    const tableId = findTableIdByTimeline(timelineId)
+    // Register in-memory table (hot snapshot is still valid)
     if (tableId) {
-      useTimelineStore.getState().createSnapshot(tableId, stepIndex, tempSnapshotName)
+      useTimelineStore.getState().createSnapshot(tableId, stepIndex, tempSnapshotName, { hotTableName })
     }
 
     return tempSnapshotName
@@ -602,14 +667,28 @@ export async function replayToPosition(
       store.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
     }
 
-    onProgress?.(10, `Restoring from ${snapshotIndex === -1 ? 'original' : `step ${snapshotIndex}`}...`)
+    // LRU Cache: Check if this snapshot has a hot (in-memory) copy for instant restore
+    const snapshotInfo = snapshotIndex >= 0 ? store.getSnapshotInfo(tableId, snapshotIndex) : null
+    const hasHotSnapshot = snapshotInfo?.hotTableName && await tableExists(snapshotInfo.hotTableName)
 
-    // Restore from snapshot (handle both Parquet and in-memory)
-    console.log('[REPLAY] Restoring table from snapshot:', { tableName, snapshotTableName, isParquetSnapshot })
+    if (hasHotSnapshot) {
+      onProgress?.(10, 'Instant restore from hot snapshot...')
+      console.log('[REPLAY] HOT PATH: Instant restore from in-memory snapshot:', snapshotInfo!.hotTableName)
+    } else {
+      onProgress?.(10, `Restoring from ${snapshotIndex === -1 ? 'original' : `step ${snapshotIndex}`}...`)
+      console.log('[REPLAY] COLD PATH: Restoring from disk snapshot:', { tableName, snapshotTableName, isParquetSnapshot })
+    }
+
+    // Restore from snapshot (hot path is instant, cold path loads from Parquet)
     try {
-      if (snapshotTableName.startsWith('parquet:')) {
+      if (hasHotSnapshot) {
+        // HOT PATH: Instant restore from in-memory table
+        await restoreFromHotSnapshot(tableName, snapshotInfo!.hotTableName!)
+      } else if (snapshotTableName.startsWith('parquet:')) {
+        // COLD PATH: Load from Parquet
         await restoreTimelineOriginalSnapshot(tableName, snapshotTableName)
       } else {
+        // In-memory snapshot (fallback from Parquet export failure)
         await execute(`DROP TABLE IF EXISTS "${tableName}"`)
         await duplicateTable(snapshotTableName, tableName, true)
       }
@@ -1086,18 +1165,24 @@ export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
     console.warn(`Failed to drop original snapshot: ${e}`)
   }
 
-  // Drop all step snapshots
-  for (const snapshotName of timeline.snapshots.values()) {
+  // Drop all step snapshots (both cold Parquet and hot in-memory)
+  for (const snapshotInfo of timeline.snapshots.values()) {
     try {
-      if (snapshotName.startsWith('parquet:')) {
-        const snapshotId = snapshotName.replace('parquet:', '')
+      // Drop cold (Parquet) snapshot
+      if (snapshotInfo.parquetId.startsWith('parquet:')) {
+        const snapshotId = snapshotInfo.parquetId.replace('parquet:', '')
         await deleteParquetSnapshot(snapshotId)
         console.log(`[Timeline] Deleted Parquet step snapshot: ${snapshotId}`)
       } else {
-        await dropTable(snapshotName)
+        await dropTable(snapshotInfo.parquetId)
+      }
+      // Drop hot (in-memory) snapshot if exists
+      if (snapshotInfo.hotTableName) {
+        await dropTable(snapshotInfo.hotTableName)
+        console.log(`[Timeline] Deleted hot snapshot table: ${snapshotInfo.hotTableName}`)
       }
     } catch (e) {
-      console.warn(`Failed to drop snapshot ${snapshotName}: ${e}`)
+      console.warn(`Failed to drop snapshot ${snapshotInfo.parquetId}: ${e}`)
     }
   }
 

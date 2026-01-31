@@ -256,7 +256,9 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
             {/* Command steps */}
             {commands.map((cmd, index) => {
               const isCurrentStep = position === index
-              const hasSnapshot = snapshots.has(index)
+              const snapshotInfo = snapshots.get(index)
+              const hasSnapshot = !!snapshotInfo
+              const isHotSnapshot = !!snapshotInfo?.hotTableName
               const isPastStep = index <= position
 
               return (
@@ -275,16 +277,19 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
                             ? 'bg-primary border-primary'
                             : isPastStep
                               ? 'border-primary/70 bg-primary/30'
-                              : 'border-muted-foreground/50 hover:border-primary'
+                              : 'border-muted-foreground/50 hover:border-primary',
+                          // Hot snapshot: amber glow (LRU cache - Phase 3)
+                          hasSnapshot && isHotSnapshot && !isCurrentStep && 'border-amber-400 bg-amber-400/30 shadow-[0_0_4px_rgba(251,191,36,0.5)]'
                         )}
                         aria-label={`Step ${index + 1}: ${cmd.label}`}
+                        data-testid={hasSnapshot ? (isHotSnapshot ? 'snapshot-hot' : 'snapshot-cold') : undefined}
                       />
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="max-w-[200px]">
                       <p className="font-medium">{cmd.label}</p>
                       <p className="text-xs text-muted-foreground">
                         Step {index + 1}
-                        {hasSnapshot && ' (snapshot)'}
+                        {hasSnapshot && (isHotSnapshot ? ' • Instant undo' : ' • ~2s undo')}
                       </p>
                       {cmd.rowsAffected !== undefined && (
                         <p className="text-xs text-muted-foreground">

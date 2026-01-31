@@ -398,6 +398,16 @@ export interface BatchEditParams {
 }
 
 /**
+ * Snapshot info for LRU undo cache (Phase 3)
+ * - parquetId: Cold storage reference (e.g., "parquet:snapshot_abc_1")
+ * - hotTableName: In-memory table name for instant undo (only for most recent snapshot)
+ */
+export interface SnapshotInfo {
+  parquetId: string           // e.g., "parquet:snapshot_abc_1" or in-memory table name
+  hotTableName?: string       // e.g., "_hot_abc_1" (only for most recent snapshot)
+}
+
+/**
  * Timeline for a single table
  */
 export interface TableTimeline {
@@ -406,10 +416,19 @@ export interface TableTimeline {
   tableName: string
   commands: TimelineCommand[]
   currentPosition: number            // Index in commands (-1 = original state)
-  snapshots: Map<number, string>     // Step index → snapshot table name
+  snapshots: Map<number, SnapshotInfo> // Step index → snapshot info with hot/cold status
   originalSnapshotName: string       // Original state snapshot table name
   createdAt: Date
   updatedAt: Date
+}
+
+/**
+ * Serialized snapshot info for persistence
+ * Note: hotTableName is NOT persisted since hot snapshots are lost on refresh
+ */
+export interface SerializedSnapshotInfo {
+  parquetId: string
+  // hotTableName is intentionally omitted - hot snapshots don't survive page refresh
 }
 
 /**
@@ -421,7 +440,7 @@ export interface SerializedTableTimeline {
   tableName: string
   commands: SerializedTimelineCommand[]
   currentPosition: number
-  snapshots: [number, string][]      // Array of [index, tableName] pairs
+  snapshots: [number, SerializedSnapshotInfo][]  // Array of [index, SnapshotInfo] pairs
   originalSnapshotName: string
   createdAt: string
   updatedAt: string
