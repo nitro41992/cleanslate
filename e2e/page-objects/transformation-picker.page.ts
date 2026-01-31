@@ -131,14 +131,20 @@ export class TransformationPickerPage {
     await columnSelect.waitFor({ state: 'visible', timeout: 10000 })
     await columnSelect.click()
 
-    // Wait for dropdown to open and option to be available
+    // Wait for popover to fully open (data-state="open" indicates animation started)
+    // The Radix popover has CSS animations that make elements unstable during open
+    const popoverContent = this.page.locator('[data-radix-popper-content-wrapper]')
+    await popoverContent.waitFor({ state: 'visible', timeout: 5000 })
+
+    // Wait for the option to be visible and use force click to bypass animation instability
+    // The Radix popover uses zoom/fade animations that can make elements "not stable"
     const option = this.page.getByRole('option', { name: columnName })
     await option.waitFor({ state: 'visible', timeout: 5000 })
-    await option.click()
+    await option.click({ force: true })
 
     // Wait for dropdown to close after selection
     // The dropdown uses Radix UI which wraps content in a popper wrapper
-    await this.page.locator('[data-radix-popper-content-wrapper]').waitFor({
+    await popoverContent.waitFor({
       state: 'hidden',
       timeout: 2000
     }).catch(async () => {
@@ -175,7 +181,12 @@ export class TransformationPickerPage {
     const labelElement = this.page.locator('label').filter({ hasText: paramLabel })
     const selectTrigger = labelElement.locator('..').locator('[role="combobox"]')
     await selectTrigger.click()
-    await this.page.getByRole('option', { name: optionLabel }).click()
+
+    // Wait for dropdown content to be visible before clicking option
+    // Radix Select uses animations that can make elements unstable
+    const option = this.page.getByRole('option', { name: optionLabel })
+    await option.waitFor({ state: 'visible', timeout: 5000 })
+    await option.click({ force: true })
   }
 
   /**
