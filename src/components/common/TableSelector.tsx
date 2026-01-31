@@ -1,4 +1,4 @@
-import { Table, Plus, ChevronDown, Trash2, Copy, Loader2 } from 'lucide-react'
+import { Table, Plus, ChevronDown, Trash2, Copy, Loader2, Snowflake } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -21,6 +21,7 @@ import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { formatNumber } from '@/lib/utils'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { ConfirmDeleteTableDialog } from './ConfirmDeleteTableDialog'
+import { toast } from 'sonner'
 
 interface TableSelectorProps {
   onNewTable?: () => void
@@ -30,6 +31,9 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
+  const switchToTable = useTableStore((s) => s.switchToTable)
+  const isContextSwitching = useTableStore((s) => s.isContextSwitching)
+  const isTableFrozen = useTableStore((s) => s.isTableFrozen)
   const checkpointTable = useTableStore((s) => s.checkpointTable)
 
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
@@ -42,10 +46,32 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
 
   const activeTable = tables.find((t) => t.id === activeTableId)
 
-  const handleSelectTable = (tableId: string) => {
+  const handleSelectTable = async (tableId: string) => {
+    // If context switch is already in progress, ignore
+    if (isContextSwitching) {
+      return
+    }
+
     const table = tables.find((t) => t.id === tableId)
-    setActiveTable(tableId)
-    setPreviewActiveTable(tableId, table?.name || null)
+    if (!table) return
+
+    // Check if this is a frozen table that needs thawing
+    const isFrozen = isTableFrozen(tableId)
+
+    if (isFrozen || (activeTableId && activeTableId !== tableId)) {
+      // Use switchToTable for freeze/thaw workflow
+      console.log(`[TableSelector] Switching to table: ${table.name} (frozen: ${isFrozen})`)
+      const success = await switchToTable(tableId)
+      if (success) {
+        setPreviewActiveTable(tableId, table.name)
+      } else {
+        toast.error(`Failed to switch to ${table.name}`)
+      }
+    } else {
+      // Simple switch (no freeze/thaw needed - same table or first table)
+      setActiveTable(tableId)
+      setPreviewActiveTable(tableId, table.name)
+    }
   }
 
   const handleCheckpoint = async (tableId: string, e: React.MouseEvent) => {
@@ -160,19 +186,32 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
             Drop a CSV file to get started.
           </div>
         ) : (
-          tables.map((table) => (
+          tables.map((table) => {
+            const isFrozen = isTableFrozen(table.id)
+            const isActive = table.id === activeTableId
+            return (
             <DropdownMenuItem
               key={table.id}
               className="flex items-center justify-between group cursor-pointer"
               onClick={() => handleSelectTable(table.id)}
+              disabled={isContextSwitching}
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
-                <Table className="w-4 h-4 shrink-0 text-muted-foreground" />
+                {isContextSwitching && table.id === activeTableId ? (
+                  <Loader2 className="w-4 h-4 shrink-0 text-muted-foreground animate-spin" />
+                ) : isFrozen ? (
+                  <Snowflake className="w-4 h-4 shrink-0 text-blue-400" />
+                ) : (
+                  <Table className="w-4 h-4 shrink-0 text-muted-foreground" />
+                )}
                 <div className="min-w-0">
                   <p className="truncate text-sm">
                     {table.name}
                     {table.isCheckpoint && (
                       <span className="ml-1 text-[10px] text-muted-foreground">(checkpoint)</span>
+                    )}
+                    {isFrozen && !isActive && (
+                      <span className="ml-1 text-[10px] text-blue-400">(on disk)</span>
                     )}
                   </p>
                   <p className="text-xs text-muted-foreground">
@@ -214,7 +253,8 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
                 </Tooltip>
               </div>
             </DropdownMenuItem>
-          ))
+            )
+          })
         )}
       </DropdownMenuContent>
     </DropdownMenu>

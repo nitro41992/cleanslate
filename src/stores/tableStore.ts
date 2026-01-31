@@ -9,6 +9,16 @@ interface TableState {
   activeTableId: string | null
   isLoading: boolean
   error: string | null
+  /**
+   * Tables that are "frozen" (exported to OPFS, dropped from DuckDB memory).
+   * Part of Single Active Table Policy: Only ONE table lives in DuckDB at a time.
+   */
+  frozenTables: Set<string>
+  /**
+   * Whether a table context switch is in progress (freeze/thaw operation).
+   * Used to show loading overlay and prevent concurrent switches.
+   */
+  isContextSwitching: boolean
 }
 
 interface TableActions {
@@ -48,6 +58,20 @@ interface TableActions {
   clearViewState: (tableId: string) => void
   /** Get current view state for a table */
   getViewState: (tableId: string) => TableViewState | undefined
+  /**
+   * Switch to a table with freeze/thaw logic.
+   * Freezes the current active table to OPFS and thaws the target table.
+   * Part of Single Active Table Policy.
+   */
+  switchToTable: (targetTableId: string) => Promise<boolean>
+  /** Mark a table as frozen (in OPFS, not in DuckDB) */
+  markTableFrozen: (tableId: string) => void
+  /** Mark a table as thawed (loaded in DuckDB) */
+  markTableThawed: (tableId: string) => void
+  /** Check if a table is frozen */
+  isTableFrozen: (tableId: string) => boolean
+  /** Set context switching state */
+  setContextSwitching: (isSwitching: boolean) => void
 }
 
 export const useTableStore = create<TableState & TableActions>((set, get) => ({
@@ -55,6 +79,8 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
   activeTableId: null,
   isLoading: false,
   error: null,
+  frozenTables: new Set<string>(),
+  isContextSwitching: false,
 
   addTable: (name, columns, rowCount, existingId) => {
     const id = existingId || generateId()
@@ -370,6 +396,108 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
     const state = get()
     const table = state.tables.find((t) => t.id === tableId)
     return table?.viewState
+  },
+
+  switchToTable: async (targetTableId) => {
+    const state = get()
+
+    // If already switching, don't allow concurrent switches
+    if (state.isContextSwitching) {
+      console.warn('[TableStore] Context switch already in progress')
+      return false
+    }
+
+    // If target is already active, nothing to do
+    if (state.activeTableId === targetTableId) {
+      return true
+    }
+
+    const targetTable = state.tables.find((t) => t.id === targetTableId)
+    if (!targetTable) {
+      console.error(`[TableStore] Target table ${targetTableId} not found`)
+      return false
+    }
+
+    const currentTable = state.tables.find((t) => t.id === state.activeTableId)
+
+    set({ isContextSwitching: true })
+
+    try {
+      // Dynamically import DuckDB and snapshot functions to avoid circular dependencies
+      const { initDuckDB, getConnection } = await import('@/lib/duckdb')
+      const { freezeTable, thawTable } = await import('@/lib/opfs/snapshot-storage')
+
+      const db = await initDuckDB()
+      const conn = await getConnection()
+
+      // Step 1: Freeze current table (if any)
+      if (currentTable && state.activeTableId) {
+        console.log(`[TableStore] Freezing current table: ${currentTable.name}`)
+        const freezeSuccess = await freezeTable(db, conn, currentTable.name, state.activeTableId)
+        if (!freezeSuccess) {
+          console.error(`[TableStore] Failed to freeze ${currentTable.name}`)
+          set({ isContextSwitching: false })
+          return false
+        }
+        // Mark as frozen
+        const updatedFrozen = new Set(state.frozenTables)
+        updatedFrozen.add(state.activeTableId)
+        set({ frozenTables: updatedFrozen })
+      }
+
+      // Step 2: Thaw target table
+      console.log(`[TableStore] Thawing target table: ${targetTable.name}`)
+      const thawSuccess = await thawTable(db, conn, targetTable.name)
+      if (!thawSuccess) {
+        console.error(`[TableStore] Failed to thaw ${targetTable.name}`)
+        // Attempt to re-thaw the original table
+        if (currentTable && state.activeTableId) {
+          await thawTable(db, conn, currentTable.name)
+        }
+        set({ isContextSwitching: false })
+        return false
+      }
+
+      // Mark target as thawed
+      const newFrozenTables = new Set(state.frozenTables)
+      newFrozenTables.delete(targetTableId)
+      set({
+        frozenTables: newFrozenTables,
+        activeTableId: targetTableId,
+        isContextSwitching: false,
+      })
+
+      console.log(`[TableStore] Context switch complete: ${currentTable?.name || 'none'} → ${targetTable.name}`)
+      return true
+    } catch (error) {
+      console.error('[TableStore] Context switch failed:', error)
+      set({ isContextSwitching: false })
+      return false
+    }
+  },
+
+  markTableFrozen: (tableId) => {
+    set((state) => {
+      const updated = new Set(state.frozenTables)
+      updated.add(tableId)
+      return { frozenTables: updated }
+    })
+  },
+
+  markTableThawed: (tableId) => {
+    set((state) => {
+      const updated = new Set(state.frozenTables)
+      updated.delete(tableId)
+      return { frozenTables: updated }
+    })
+  },
+
+  isTableFrozen: (tableId) => {
+    return get().frozenTables.has(tableId)
+  },
+
+  setContextSwitching: (isSwitching) => {
+    set({ isContextSwitching: isSwitching })
   },
 }))
 

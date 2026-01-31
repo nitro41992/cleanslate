@@ -57,6 +57,7 @@ function App() {
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
   const addTable = useTableStore((s) => s.addTable)
+  const isContextSwitching = useTableStore((s) => s.isContextSwitching)
 
   // Compute display columns in correct order using columnOrder from tableStore
   const displayColumns = useMemo(() => {
@@ -391,6 +392,15 @@ function App() {
                     wordWrapEnabled={isWordWrapEnabled(activeTable.id)}
                   />
                 </div>
+                {/* Context Switching Overlay */}
+                {isContextSwitching && (
+                  <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+                      <p className="text-sm text-muted-foreground">Switching tables...</p>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}

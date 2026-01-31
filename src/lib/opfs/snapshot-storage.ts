@@ -636,6 +636,133 @@ export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
 }
 
 /**
+ * Freeze a table to OPFS (export to Parquet and DROP from DuckDB).
+ *
+ * Part of the Single Active Table Policy: Only ONE table lives in DuckDB memory at a time.
+ * When switching tabs, the current table is "frozen" (exported + dropped) and the new
+ * table is "thawed" (imported from Parquet).
+ *
+ * Uses Safe Save pattern: write to temp file → rename → DROP table.
+ * NEVER drops table until Parquet save is confirmed successful.
+ *
+ * @param db - DuckDB instance
+ * @param conn - Active DuckDB connection
+ * @param tableName - Name of the table to freeze
+ * @param tableId - Table ID for dirty state tracking
+ * @returns Promise<boolean> - true if freeze succeeded, false otherwise
+ */
+export async function freezeTable(
+  db: AsyncDuckDB,
+  conn: AsyncDuckDBConnection,
+  tableName: string,
+  tableId: string
+): Promise<boolean> {
+  console.log(`[Freeze] Freezing table: ${tableName}`)
+
+  try {
+    // Step 1: Check if table exists in DuckDB
+    const tableCheckResult = await conn.query(`
+      SELECT COUNT(*) as count FROM information_schema.tables
+      WHERE table_name = '${tableName}'
+    `)
+    const tableExists = Number(tableCheckResult.toArray()[0]?.toJSON()?.count ?? 0) > 0
+
+    if (!tableExists) {
+      console.log(`[Freeze] Table ${tableName} doesn't exist in DuckDB, skipping freeze`)
+      return true // Not an error - table may already be frozen
+    }
+
+    // Step 2: Check if table is dirty (has unsaved changes)
+    // If dirty, we MUST save to Parquet before dropping
+    const { useUIStore } = await import('@/stores/uiStore')
+    const isDirty = useUIStore.getState().dirtyTableIds.has(tableId)
+
+    if (isDirty) {
+      console.log(`[Freeze] Table ${tableName} is dirty, exporting to Parquet first`)
+
+      // Export to Parquet using Safe Save pattern
+      // This writes to temp file → renames → confirms success
+      await exportTableToParquet(db, conn, tableName, tableName)
+
+      // Mark table as clean after successful export
+      useUIStore.getState().markTableClean(tableId)
+    } else {
+      // Table is clean, but verify Parquet exists before dropping
+      const snapshotExists = await checkSnapshotFileExists(tableName)
+      if (!snapshotExists) {
+        console.log(`[Freeze] No Parquet snapshot for clean table ${tableName}, creating one`)
+        await exportTableToParquet(db, conn, tableName, tableName)
+      }
+    }
+
+    // Step 3: DROP table from DuckDB (safe now that Parquet exists)
+    await conn.query(`DROP TABLE IF EXISTS "${tableName}"`)
+    console.log(`[Freeze] Dropped ${tableName} from DuckDB memory`)
+
+    // Step 4: CHECKPOINT to release DuckDB buffer pool memory
+    try {
+      await conn.query('CHECKPOINT')
+      console.log(`[Freeze] CHECKPOINT after dropping ${tableName}`)
+    } catch {
+      // Non-fatal - CHECKPOINT failure shouldn't fail the freeze
+    }
+
+    return true
+  } catch (error) {
+    console.error(`[Freeze] Failed to freeze ${tableName}:`, error)
+    return false
+  }
+}
+
+/**
+ * Thaw a table from OPFS (import from Parquet into DuckDB).
+ *
+ * Part of the Single Active Table Policy: Restores a frozen table to DuckDB memory.
+ *
+ * @param db - DuckDB instance
+ * @param conn - Active DuckDB connection
+ * @param tableName - Name of the table to thaw
+ * @returns Promise<boolean> - true if thaw succeeded, false otherwise
+ */
+export async function thawTable(
+  db: AsyncDuckDB,
+  conn: AsyncDuckDBConnection,
+  tableName: string
+): Promise<boolean> {
+  console.log(`[Thaw] Thawing table: ${tableName}`)
+
+  try {
+    // Step 1: Check if table already exists in DuckDB
+    const tableCheckResult = await conn.query(`
+      SELECT COUNT(*) as count FROM information_schema.tables
+      WHERE table_name = '${tableName}'
+    `)
+    const tableExists = Number(tableCheckResult.toArray()[0]?.toJSON()?.count ?? 0) > 0
+
+    if (tableExists) {
+      console.log(`[Thaw] Table ${tableName} already exists in DuckDB, skipping thaw`)
+      return true // Already thawed
+    }
+
+    // Step 2: Check if Parquet snapshot exists
+    const snapshotExists = await checkSnapshotFileExists(tableName)
+    if (!snapshotExists) {
+      console.error(`[Thaw] No Parquet snapshot found for ${tableName}`)
+      return false
+    }
+
+    // Step 3: Import from Parquet
+    await importTableFromParquet(db, conn, tableName, tableName)
+    console.log(`[Thaw] Imported ${tableName} into DuckDB from Parquet`)
+
+    return true
+  } catch (error) {
+    console.error(`[Thaw] Failed to thaw ${tableName}:`, error)
+    return false
+  }
+}
+
+/**
  * Check if a Parquet snapshot file exists in OPFS
  * Handles both single files and chunked files
  *

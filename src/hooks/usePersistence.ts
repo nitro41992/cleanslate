@@ -135,6 +135,10 @@ async function replayChangelogEntries(
  * Perform hydration - import tables from Parquet files into DuckDB.
  * Can be called from useEffect (initial load) or after worker restart.
  *
+ * LAZY HYDRATION (Phase 4): Only the activeTableId table is fully imported.
+ * All other tables are added to the store with metadata only (marked frozen).
+ * This supports the Single Active Table Policy for memory efficiency.
+ *
  * @param isRehydration - If true, skips state restoration (already done) and clears tableStore
  * @returns Promise that resolves when hydration is complete
  */
@@ -158,12 +162,16 @@ export async function performHydration(isRehydration = false): Promise<void> {
   const conn = await getConnection()
 
   // Wait for state restoration to complete (only on initial load, not re-hydration)
+  // This provides savedTableIds and savedActiveTableId
+  let savedActiveTableId: string | null = null
   if (!isRehydration) {
     const { stateRestorationPromise } = await import('@/hooks/useDuckDB')
     if (stateRestorationPromise) {
       await stateRestorationPromise
       console.log('[Persistence] State restoration complete, proceeding with hydration')
     }
+    // Get saved active table ID for lazy hydration
+    savedActiveTableId = (window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__ ?? null
   }
 
   // Clean up corrupt and orphaned files
@@ -195,7 +203,40 @@ export async function performHydration(isRehydration = false): Promise<void> {
 
   console.log(`[Persistence] Found ${uniqueTables.length} tables to restore:`, uniqueTables)
 
+  // Get saved table IDs for consistency
+  const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
+
+  // Build tableName → tableId mapping
+  const tableNameToId = new Map<string, string>()
+  for (const tableName of uniqueTables) {
+    const tableId = savedTableIds?.[tableName] ?? tableName
+    tableNameToId.set(tableName, tableId)
+  }
+
+  // Determine which table to thaw (load into DuckDB)
+  // Priority: savedActiveTableId > first table
+  let tableToThaw: string | null = null
+
+  if (savedActiveTableId) {
+    // Find the table name for the saved active table ID
+    for (const [name, id] of tableNameToId) {
+      if (id === savedActiveTableId) {
+        tableToThaw = name
+        break
+      }
+    }
+  }
+
+  // Fallback to first table if savedActiveTableId not found
+  if (!tableToThaw && uniqueTables.length > 0) {
+    tableToThaw = uniqueTables[0]
+    console.log(`[Persistence] Saved active table not found, using first table: ${tableToThaw}`)
+  }
+
+  console.log(`[Persistence] Lazy hydration - will thaw: ${tableToThaw}, freeze ${uniqueTables.length - 1} other table(s)`)
+
   const addTable = useTableStore.getState().addTable
+  const markTableFrozen = useTableStore.getState().markTableFrozen
   let restoredCount = 0
   const tableIdToName = new Map<string, string>()
 
@@ -208,31 +249,60 @@ export async function performHydration(isRehydration = false): Promise<void> {
         continue
       }
 
-      // Import from Parquet into DuckDB
-      await importTableFromParquet(db, conn, tableName, tableName)
+      const tableId = tableNameToId.get(tableName) ?? tableName
+      const shouldThaw = tableName === tableToThaw
 
-      // Get metadata
-      const cols = await getTableColumns(tableName)
-      const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-      const rowCount = Number(countResult.toArray()[0].toJSON().count)
+      if (shouldThaw) {
+        // THAW: Import from Parquet into DuckDB (full hydration)
+        await importTableFromParquet(db, conn, tableName, tableName)
 
-      // Get saved tableId for consistency
-      const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
-      const tableId = savedTableIds?.[tableName] ?? tableName
+        // Get metadata from DuckDB
+        const cols = await getTableColumns(tableName)
+        const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+        const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-      // Track tableId → tableName mapping for changelog replay
-      tableIdToName.set(tableId, tableName)
+        // Track tableId → tableName mapping for changelog replay
+        tableIdToName.set(tableId, tableName)
 
-      addTable(tableName, cols, rowCount, tableId)
+        addTable(tableName, cols, rowCount, tableId)
+        console.log(`[Persistence] Thawed ${tableName} (${rowCount.toLocaleString()} rows)`)
+      } else {
+        // FREEZE: Add metadata only, don't import into DuckDB
+        // Get metadata from saved app-state (already restored) or from Parquet header
+        const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
+        const savedTable = savedTables?.find(t => t.id === tableId || t.name === tableName)
+
+        if (savedTable) {
+          // Use saved metadata
+          addTable(tableName, savedTable.columns, savedTable.rowCount, tableId)
+          markTableFrozen(tableId)
+          console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
+        } else {
+          // Fallback: Read Parquet metadata directly
+          // We need to briefly import to get accurate metadata, then drop
+          console.log(`[Persistence] No saved metadata for ${tableName}, reading from Parquet header...`)
+          await importTableFromParquet(db, conn, tableName, tableName)
+          const cols = await getTableColumns(tableName)
+          const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+          const rowCount = Number(countResult.toArray()[0].toJSON().count)
+
+          // Drop from DuckDB memory (it's frozen, not active)
+          await conn.query(`DROP TABLE IF EXISTS "${tableName}"`)
+
+          addTable(tableName, cols, rowCount, tableId)
+          markTableFrozen(tableId)
+          console.log(`[Persistence] Frozen ${tableName} (${rowCount.toLocaleString()} rows) - metadata from Parquet`)
+        }
+      }
+
       restoredCount++
-      console.log(`[Persistence] Restored ${tableName} (${rowCount.toLocaleString()} rows)`)
     } catch (err) {
       console.error(`[Persistence] Failed to restore ${tableName}:`, err)
     }
   }
 
-  // Replay changelog entries after all tables are restored
-  // This applies any pending cell edits that weren't yet compacted into Parquet
+  // Replay changelog entries only for the thawed table
+  // (Frozen tables will replay when thawed via switchToTable)
   if (tableIdToName.size > 0) {
     const replayedCount = await replayChangelogEntries(conn, tableIdToName)
     if (replayedCount > 0) {
@@ -241,15 +311,13 @@ export async function performHydration(isRehydration = false): Promise<void> {
   }
 
   if (restoredCount > 0) {
-    console.log(`[Persistence] Hydration complete: restored ${restoredCount} table(s)`)
+    console.log(`[Persistence] Hydration complete: restored ${restoredCount} table(s), thawed 1, frozen ${restoredCount - 1}`)
 
-    // Restore active table selection (for re-hydration, use the first table)
-    if (isRehydration) {
-      const restoredTables = useTableStore.getState().tables
-      if (restoredTables.length > 0) {
-        useTableStore.getState().setActiveTable(restoredTables[0].id)
-        console.log(`[Persistence] Set active table to first restored: ${restoredTables[0].id}`)
-      }
+    // Set active table to the thawed table
+    const tableId = tableNameToId.get(tableToThaw!)
+    if (tableId) {
+      useTableStore.getState().setActiveTable(tableId)
+      console.log(`[Persistence] Set active table to thawed: ${tableId}`)
     }
   }
 
@@ -629,12 +697,15 @@ export function usePersistence() {
 
         // Wait for state restoration to complete (sets __CLEANSLATE_SAVED_TABLE_IDS__)
         // Skip during re-hydration - state restoration already happened
+        let savedActiveTableId: string | null = null
         if (!isRehydration) {
           const { stateRestorationPromise } = await import('@/hooks/useDuckDB')
           if (stateRestorationPromise) {
             await stateRestorationPromise
             console.log('[Persistence] State restoration complete, proceeding with hydration')
           }
+          // Get saved active table ID for lazy hydration
+          savedActiveTableId = (window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__ ?? null
         }
 
         // Clean up any corrupt 0-byte files from failed writes
@@ -677,7 +748,41 @@ export function usePersistence() {
 
         console.log(`[Persistence] Found ${uniqueTables.length} tables to restore:`, uniqueTables)
 
+        // Get saved table IDs for consistency
+        const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
+
+        // Build tableName → tableId mapping
+        const tableNameToId = new Map<string, string>()
+        for (const tableName of uniqueTables) {
+          const tableId = savedTableIds?.[tableName] ?? tableName
+          tableNameToId.set(tableName, tableId)
+        }
+
+        // LAZY HYDRATION (Phase 4): Determine which table to thaw
+        // Priority: savedActiveTableId > first table
+        let tableToThaw: string | null = null
+
+        if (savedActiveTableId) {
+          // Find the table name for the saved active table ID
+          for (const [name, id] of tableNameToId) {
+            if (id === savedActiveTableId) {
+              tableToThaw = name
+              break
+            }
+          }
+        }
+
+        // Fallback to first table if savedActiveTableId not found
+        if (!tableToThaw && uniqueTables.length > 0) {
+          tableToThaw = uniqueTables[0]
+          console.log(`[Persistence] Saved active table not found, using first table: ${tableToThaw}`)
+        }
+
+        console.log(`[Persistence] Lazy hydration - will thaw: ${tableToThaw}, freeze ${uniqueTables.length - 1} other table(s)`)
+
+        const markTableFrozen = useTableStore.getState().markTableFrozen
         let restoredCount = 0
+        const tableIdToName = new Map<string, string>()
 
         for (const tableName of uniqueTables) {
           try {
@@ -688,39 +793,60 @@ export function usePersistence() {
               continue
             }
 
-            // 1. Load Parquet into DuckDB memory
-            await importTableFromParquet(db, conn, tableName, tableName)
+            const tableId = tableNameToId.get(tableName) ?? tableName
+            const shouldThaw = tableName === tableToThaw
 
-            // 2. Fetch metadata for UI
-            const cols = await getTableColumns(tableName)
+            if (shouldThaw) {
+              // THAW: Import from Parquet into DuckDB (full hydration)
+              await importTableFromParquet(db, conn, tableName, tableName)
 
-            const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
-            const rowCount = Number(countResult.toArray()[0].toJSON().count)
+              // Get metadata from DuckDB
+              const cols = await getTableColumns(tableName)
+              const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+              const rowCount = Number(countResult.toArray()[0].toJSON().count)
 
-            // 3. Sync with UI store
-            // Use saved tableId if available (from app-state.json), otherwise use tableName
-            // This ensures tableIds remain consistent across refreshes so timelines match
-            const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
-            const tableId = savedTableIds?.[tableName] ?? tableName
-            console.log(`[Persistence] Using tableId '${tableId}' for '${tableName}'`, {
-              fromSavedState: !!savedTableIds?.[tableName],
-            })
-            addTable(tableName, cols, rowCount, tableId)
+              // Track tableId → tableName mapping for changelog replay
+              tableIdToName.set(tableId, tableName)
+
+              addTable(tableName, cols, rowCount, tableId)
+              console.log(`[Persistence] Thawed ${tableName} (${rowCount.toLocaleString()} rows)`)
+            } else {
+              // FREEZE: Add metadata only, don't import into DuckDB
+              // Get metadata from saved app-state (already restored) or from Parquet header
+              const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
+              const savedTable = savedTables?.find(t => t.id === tableId || t.name === tableName)
+
+              if (savedTable) {
+                // Use saved metadata
+                addTable(tableName, savedTable.columns, savedTable.rowCount, tableId)
+                markTableFrozen(tableId)
+                console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
+              } else {
+                // Fallback: Read Parquet metadata directly (requires brief import)
+                console.log(`[Persistence] No saved metadata for ${tableName}, reading from Parquet header...`)
+                await importTableFromParquet(db, conn, tableName, tableName)
+                const cols = await getTableColumns(tableName)
+                const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
+                const rowCount = Number(countResult.toArray()[0].toJSON().count)
+
+                // Drop from DuckDB memory (it's frozen, not active)
+                await conn.query(`DROP TABLE IF EXISTS "${tableName}"`)
+
+                addTable(tableName, cols, rowCount, tableId)
+                markTableFrozen(tableId)
+                console.log(`[Persistence] Frozen ${tableName} (${rowCount.toLocaleString()} rows) - metadata from Parquet`)
+              }
+            }
 
             restoredCount++
-            console.log(`[Persistence] Restored ${tableName} (${rowCount.toLocaleString()} rows)`)
           } catch (err) {
             console.error(`[Persistence] Failed to restore ${tableName}:`, err)
           }
         }
 
-        // Replay changelog entries after all tables are restored
-        // This applies any pending cell edits that weren't yet compacted into Parquet
-        if (restoredCount > 0) {
-          const restoredTables = useTableStore.getState().tables
-          const tableIdToName = new Map<string, string>()
-          restoredTables.forEach(t => tableIdToName.set(t.id, t.name))
-
+        // Replay changelog entries only for the thawed table
+        // (Frozen tables will replay when thawed via switchToTable)
+        if (tableIdToName.size > 0) {
           const replayedCount = await replayChangelogEntries(conn, tableIdToName)
           if (replayedCount > 0) {
             console.log(`[Persistence] Applied ${replayedCount} pending cell edits from changelog`)
@@ -728,20 +854,14 @@ export function usePersistence() {
         }
 
         if (restoredCount > 0) {
-          toast.success(`Restored ${restoredCount} table(s) from storage`)
+          const frozenCount = restoredCount - 1
+          toast.success(`Restored ${restoredCount} table(s) from storage${frozenCount > 0 ? ` (${frozenCount} on disk)` : ''}`)
 
-          // Restore the active table selection from saved state
-          // This must happen AFTER all tables are added, since addTable() overwrites activeTableId
-          const savedActiveTableId = (window as Window & { __CLEANSLATE_SAVED_ACTIVE_TABLE_ID__?: string | null }).__CLEANSLATE_SAVED_ACTIVE_TABLE_ID__
-          if (savedActiveTableId) {
-            const restoredTables = useTableStore.getState().tables
-            const activeTableExists = restoredTables.some(t => t.id === savedActiveTableId)
-            if (activeTableExists) {
-              useTableStore.getState().setActiveTable(savedActiveTableId)
-              console.log(`[Persistence] Restored active table: ${savedActiveTableId}`)
-            } else {
-              console.log(`[Persistence] Saved active table ${savedActiveTableId} not found in restored tables`)
-            }
+          // Set active table to the thawed table
+          const thawedTableId = tableNameToId.get(tableToThaw!)
+          if (thawedTableId) {
+            useTableStore.getState().setActiveTable(thawedTableId)
+            console.log(`[Persistence] Set active table to thawed: ${thawedTableId}`)
           }
         }
       } catch (err) {

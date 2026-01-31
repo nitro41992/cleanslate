@@ -99,6 +99,9 @@ export function AppShell({ children }: AppShellProps) {
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
   const setActiveTable = useTableStore((s) => s.setActiveTable)
+  const switchToTable = useTableStore((s) => s.switchToTable)
+  const isContextSwitching = useTableStore((s) => s.isContextSwitching)
+  const isTableFrozen = useTableStore((s) => s.isTableFrozen)
   const checkpointTable = useTableStore((s) => s.checkpointTable)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const persistenceStatus = useUIStore((s) => s.persistenceStatus)
@@ -171,6 +174,24 @@ export function AppShell({ children }: AppShellProps) {
       console.error('Failed to create checkpoint:', error)
     } finally {
       setCheckpointLoading(null)
+    }
+  }
+
+  // Handle table selection with freeze/thaw logic
+  const handleTableClick = async (tableId: string) => {
+    if (isContextSwitching) return
+
+    const table = tables.find((t) => t.id === tableId)
+    if (!table) return
+
+    const isFrozen = isTableFrozen(tableId)
+
+    if (isFrozen || (activeTableId && activeTableId !== tableId)) {
+      // Use switchToTable for freeze/thaw workflow
+      await switchToTable(tableId)
+    } else {
+      // Simple switch (no freeze/thaw needed)
+      setActiveTable(tableId)
     }
   }
 
@@ -275,23 +296,33 @@ export function AppShell({ children }: AppShellProps) {
                       Drop a file to get started.
                     </p>
                   ) : (
-                    tables.map((table) => (
+                    tables.map((table) => {
+                      const isFrozen = isTableFrozen(table.id)
+                      return (
                       <div
                         key={table.id}
                         className={cn(
                           'group flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors',
                           activeTableId === table.id
                             ? 'bg-accent text-accent-foreground'
-                            : 'hover:bg-muted/50'
+                            : 'hover:bg-muted/50',
+                          isContextSwitching && 'opacity-50 pointer-events-none'
                         )}
-                        onClick={() => setActiveTable(table.id)}
+                        onClick={() => handleTableClick(table.id)}
                       >
-                        <Table className="w-4 h-4 shrink-0 text-muted-foreground" />
+                        {isContextSwitching && table.id === activeTableId ? (
+                          <Loader2 className="w-4 h-4 shrink-0 text-muted-foreground animate-spin" />
+                        ) : (
+                          <Table className="w-4 h-4 shrink-0 text-muted-foreground" />
+                        )}
                         <div className="flex-1 min-w-0">
                           <p className="text-sm truncate">
                             {table.name}
                             {table.isCheckpoint && (
                               <span className="ml-1 text-[10px] text-muted-foreground">(checkpoint)</span>
+                            )}
+                            {isFrozen && activeTableId !== table.id && (
+                              <span className="ml-1 text-[10px] text-blue-400">(on disk)</span>
                             )}
                           </p>
                           <p className="text-xs text-muted-foreground">
@@ -342,7 +373,8 @@ export function AppShell({ children }: AppShellProps) {
                           </Tooltip>
                         </div>
                       </div>
-                    ))
+                      )
+                    })
                   )}
                 </div>
               </ScrollArea>
