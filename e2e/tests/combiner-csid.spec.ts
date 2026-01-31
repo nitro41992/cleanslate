@@ -70,20 +70,18 @@ test.describe('Combiner _cs_id column', () => {
     const combineDialog = page.getByRole('dialog', { name: 'Combine Tables' })
     await combineDialog.waitFor({ state: 'visible' })
 
-    // Select first table - click the combobox within the Stack tabpanel
+    // Select first table - selecting from combobox auto-adds the table
     const stackPanel = combineDialog.getByRole('tabpanel', { name: 'Stack' })
     await stackPanel.getByRole('combobox').click()
     await page.getByRole('option', { name: /stack_table_1/ }).click()
-    await stackPanel.getByRole('button', { name: 'Add' }).click()
 
-    // Select second table
+    // Select second table (combobox resets after each selection)
     await stackPanel.getByRole('combobox').click()
     await page.getByRole('option', { name: /stack_table_2/ }).click()
-    await stackPanel.getByRole('button', { name: 'Add' }).click()
 
     // 5. Wait for Result Table Name input to appear (shows when 2 tables selected)
-    // Note: The input's accessible name is its placeholder, not the label
-    const resultNameInput = stackPanel.getByPlaceholder('e.g., combined_sales')
+    // Note: The result name input is in the right column, outside the tabpanel
+    const resultNameInput = combineDialog.getByPlaceholder('e.g., combined_sales')
     await resultNameInput.waitFor({ state: 'visible', timeout: 10000 })
 
     // 6. Enter result table name and stack
@@ -137,26 +135,29 @@ test.describe('Combiner _cs_id column', () => {
     // 5. Click Join tab
     await combineDialog.getByRole('tab', { name: 'Join' }).click()
 
-    // 6. Select tables and key column within the Join tabpanel
+    // 6. Select tables and key column
     const joinPanel = combineDialog.getByRole('tabpanel', { name: 'Join' })
     await joinPanel.waitFor({ state: 'visible' })
 
-    // Select left table (first combobox)
-    const comboboxes = joinPanel.getByRole('combobox')
-    await comboboxes.nth(0).click()
+    // Select left table (first combobox in tabpanel)
+    const tableComboboxes = joinPanel.getByRole('combobox')
+    await tableComboboxes.nth(0).click()
     await page.getByRole('option', { name: /join_left/ }).click()
 
-    // Select right table (second combobox)
-    await comboboxes.nth(1).click()
+    // Select right table (second combobox in tabpanel)
+    await tableComboboxes.nth(1).click()
     await page.getByRole('option', { name: /join_right/ }).click()
 
-    // Select key column (third combobox, appears after tables are selected)
-    await comboboxes.nth(2).click()
+    // Select key column (combobox in the right column, outside tabpanel)
+    // Wait for the key column selector to become available
+    const keyColumnCombobox = combineDialog.locator('text=Key Column').locator('..').getByRole('combobox')
+    await keyColumnCombobox.waitFor({ state: 'visible', timeout: 5000 })
+    await keyColumnCombobox.click()
     await page.getByRole('option', { name: 'id' }).click()
 
     // 7. Wait for Result Table Name input to appear
-    // Note: The input's accessible name is its placeholder, not the label
-    const resultNameInput = joinPanel.getByPlaceholder('e.g., orders_with_customers')
+    // Note: Result name input may be in right column, outside the tabpanel
+    const resultNameInput = combineDialog.getByPlaceholder('e.g., orders_with_customers')
     await resultNameInput.waitFor({ state: 'visible', timeout: 10000 })
 
     // 8. Enter result table name and join
@@ -210,19 +211,16 @@ test.describe('Combiner _cs_id column', () => {
 
     const stackPanel = combineDialog.getByRole('tabpanel', { name: 'Stack' })
 
-    // Select first table
+    // Select first table (selecting auto-adds)
     await stackPanel.getByRole('combobox').click()
     await page.getByRole('option', { name: /stack_table_1/ }).click()
-    await stackPanel.getByRole('button', { name: 'Add' }).click()
 
     // Select second table
     await stackPanel.getByRole('combobox').click()
     await page.getByRole('option', { name: /stack_table_2/ }).click()
-    await stackPanel.getByRole('button', { name: 'Add' }).click()
 
-    // Enter result table name
-    // Note: The input's accessible name is its placeholder, not the label
-    const resultNameInput = stackPanel.getByPlaceholder('e.g., combined_sales')
+    // Enter result table name (input is in right column, outside tabpanel)
+    const resultNameInput = combineDialog.getByPlaceholder('e.g., combined_sales')
     await resultNameInput.waitFor({ state: 'visible', timeout: 10000 })
     await resultNameInput.fill('edit_test')
     await combineDialog.getByRole('button', { name: 'Stack Tables' }).click()

@@ -164,8 +164,14 @@ export class TransformationPickerPage {
     // (needed for Custom SQL which has a dynamic placeholder)
     const count = await input.count()
     if (count === 0) {
-      // Fallback: look for any visible textarea or input in the transformation form
-      input = this.page.locator('textarea:visible, input[type="text"]:visible').first()
+      // Fallback: look for textarea in the form (excludes search input)
+      // Custom SQL has a textarea with dynamic placeholder
+      input = this.page.locator('textarea:visible').first()
+      const textareaCount = await input.count()
+      if (textareaCount === 0) {
+        // Last resort: find input but exclude the search box
+        input = this.page.locator('input[type="text"]:visible:not([placeholder*="Search"])').first()
+      }
     }
 
     // Wait for input to be visible before filling (prevents timeout in long test sequences)
@@ -180,13 +186,55 @@ export class TransformationPickerPage {
     // Find the label and then the adjacent combobox
     const labelElement = this.page.locator('label').filter({ hasText: paramLabel })
     const selectTrigger = labelElement.locator('..').locator('[role="combobox"]')
+
+    // Wait for trigger to be enabled and stable
+    await selectTrigger.waitFor({ state: 'visible', timeout: 5000 })
+
+    // Click the trigger to open the dropdown
     await selectTrigger.click()
 
+    // Verify the trigger is now open (data-state="open")
+    await this.page.waitForFunction(
+      (label: string) => {
+        const labels = document.querySelectorAll('label')
+        for (const l of labels) {
+          if (l.textContent?.includes(label)) {
+            const parent = l.parentElement
+            const trigger = parent?.querySelector('[role="combobox"]')
+            return trigger?.getAttribute('data-state') === 'open'
+          }
+        }
+        return false
+      },
+      paramLabel,
+      { timeout: 5000 }
+    )
+
     // Wait for dropdown content to be visible before clicking option
-    // Radix Select uses animations that can make elements unstable
-    const option = this.page.getByRole('option', { name: optionLabel })
+    // Use exact match to avoid ambiguity (e.g., "Date" vs "Datetime")
+    const option = this.page.getByRole('option', { name: optionLabel, exact: true })
     await option.waitFor({ state: 'visible', timeout: 5000 })
     await option.click({ force: true })
+
+    // Wait for dropdown to close after selection
+    await this.page.waitForFunction(
+      (label: string) => {
+        const labels = document.querySelectorAll('label')
+        for (const l of labels) {
+          if (l.textContent?.includes(label)) {
+            const parent = l.parentElement
+            const trigger = parent?.querySelector('[role="combobox"]')
+            return trigger?.getAttribute('data-state') === 'closed'
+          }
+        }
+        return false
+      },
+      paramLabel,
+      { timeout: 3000 }
+    ).catch(async () => {
+      // If dropdown doesn't close automatically, press Escape
+      await this.page.keyboard.press('Escape')
+    })
   }
 
   /**

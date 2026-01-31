@@ -45,7 +45,8 @@ export class LaundromatPage {
   }
 
   async getRowCount(): Promise<string | null> {
-    const rowCountText = this.page.locator('text=/\\d+,?\\d* rows/')
+    // Target the heading row count specifically to avoid ambiguity with filter bar
+    const rowCountText = this.page.getByRole('heading').locator('text=/\\d+,?\\d* rows/')
     const text = await rowCountText.textContent()
     return text
   }

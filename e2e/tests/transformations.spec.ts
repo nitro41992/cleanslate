@@ -603,11 +603,12 @@ test.describe('Transformations: Case Sensitive Data', () => {
     await picker.addTransformation('Find & Replace', {
       column: 'name',
       params: { Find: 'hello', 'Replace with': 'hi' },
-      selectParams: { 'Match Type': 'Exact Match' },
+      // Must explicitly set Case Sensitive to Yes (default is No)
+      selectParams: { 'Case Sensitive': 'Yes', 'Match Type': 'Exact Match' },
     })
 
     const data = await inspector.getTableData('case_sensitive_data')
-    // Only exact match "hello" should be replaced
+    // Only exact match "hello" (case-sensitive) should be replaced
     expect(data[0].name).toBe('Hello') // Not replaced (different case)
     expect(data[1].name).toBe('hi') // Replaced (exact match)
     expect(data[2].name).toBe('HELLO') // Not replaced (different case)

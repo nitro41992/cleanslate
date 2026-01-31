@@ -1089,18 +1089,28 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await laundromat.openScrubPanel()
     await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
-    // Select the table (use first() to avoid strict mode issues with duplicates)
+    // Select the table (first combobox is table selector)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await expect(page.getByTestId('method-select-ssn')).toBeVisible()
 
-    // Select hash method for SSN column using data-testid
-    await page.getByTestId('method-select-ssn').click()
-    await page.getByRole('option', { name: /Hash/i }).first().click()
-    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
+    // Wait for "Add Column to Scrub" combobox to appear
+    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
 
-    // Enter project secret
-    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+    // Add ssn column using the "Add Column to Scrub" combobox (second combobox)
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: 'ssn' }).click()
+
+    // Column is auto-selected and shows configuration panel
+    // Wait for the column to appear in "Columns to Scrub" list
+    await expect(page.getByText('Columns to Scrub')).toBeVisible()
+
+    // Select Hash method by clicking on the method card text
+    // Methods are displayed as clickable cards - use force:true since parent div handles click
+    await page.getByText('Hash (SHA-256)').click({ force: true })
+
+    // Wait for and fill in the project secret (appears when Hash is selected)
+    await expect(page.getByPlaceholder(/Min 5 characters/i)).toBeVisible()
+    await page.getByPlaceholder(/Min 5 characters/i).fill('test-secret-123')
 
     // Apply scrubbing (now modifies in-place via command pattern)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
@@ -1135,20 +1145,23 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await laundromat.openScrubPanel()
     await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
-    // Select the table (use first() to avoid strict mode issues with duplicates)
+    // Select the table (first combobox is table selector)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await expect(page.getByTestId('method-select-email')).toBeVisible()
 
-    // Select redact method for email column
-    await page.getByTestId('method-select-email').click()
-    await page.getByRole('option', { name: /Redact/i }).first().click()
-    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
+    // Wait for "Add Column to Scrub" combobox to appear
+    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
 
-    // Enter project secret (needed for the panel to enable Apply button)
-    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+    // Add email column using the "Add Column to Scrub" combobox (second combobox)
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: 'email' }).click()
+
+    // Column is auto-selected with 'redact' as default method
+    // Redact is already selected by default, so no need to click the radio
+    await expect(page.getByText('Columns to Scrub')).toBeVisible()
 
     // Apply scrubbing (now modifies in-place via command pattern)
+    // Redact doesn't require a secret
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for scrubbing to complete by polling for redacted data
@@ -1173,20 +1186,23 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await laundromat.openScrubPanel()
     await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
-    // Select the table (use first() to avoid strict mode issues with duplicates)
+    // Select the table (first combobox is table selector)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await expect(page.getByTestId('method-select-full_name')).toBeVisible()
 
-    // Select mask method for full_name column
-    await page.getByTestId('method-select-full_name').click()
-    await page.getByRole('option', { name: /Mask/i }).first().click()
-    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
+    // Wait for "Add Column to Scrub" combobox to appear
+    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
 
-    // Enter project secret (needed for the panel to enable Apply button)
-    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+    // Add full_name column using the "Add Column to Scrub" combobox (second combobox)
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: 'full_name' }).click()
 
-    // Apply scrubbing (now modifies in-place via command pattern)
+    // Column is auto-selected, now select Mask method by clicking on the method card text
+    await expect(page.getByText('Columns to Scrub')).toBeVisible()
+    // Use force:true since parent div handles click
+    await page.getByText('Mask', { exact: true }).click({ force: true })
+
+    // Apply scrubbing (Mask doesn't require a secret)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for scrubbing to complete by polling for masked data
@@ -1211,20 +1227,23 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await laundromat.openScrubPanel()
     await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
 
-    // Select the table (use first() to avoid strict mode issues with duplicates)
+    // Select the table (first combobox is table selector)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-    await expect(page.getByTestId('method-select-birth_date')).toBeVisible()
 
-    // Select year_only method for birth_date column
-    await page.getByTestId('method-select-birth_date').click()
-    await page.getByRole('option', { name: /Year Only/i }).first().click()
-    await expect(page.getByPlaceholder(/secret/i)).toBeVisible()
+    // Wait for "Add Column to Scrub" combobox to appear
+    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
 
-    // Enter project secret (needed for the panel to enable Apply button)
-    await page.getByPlaceholder(/secret/i).fill('test-secret-123')
+    // Add birth_date column using the "Add Column to Scrub" combobox (second combobox)
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: 'birth_date' }).click()
 
-    // Apply scrubbing (now modifies in-place via command pattern)
+    // Column is auto-selected, now select Year Only method by clicking on the method card text
+    await expect(page.getByText('Columns to Scrub')).toBeVisible()
+    // Use force:true since parent div handles click
+    await page.getByText('Year Only', { exact: true }).click({ force: true })
+
+    // Apply scrubbing (Year Only doesn't require a secret)
     await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
 
     // Wait for scrubbing to complete by polling for year_only data
@@ -1305,15 +1324,13 @@ test.describe('FR-E1: Combiner - Stack Files', () => {
     // Select Stack tab (should be default)
     await expect(page.getByTestId('combiner-stack-tab')).toBeVisible()
 
-    // Add first table
+    // Add first table (selecting auto-adds)
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_e1_jan_sales/i }).click()
-    await page.getByRole('button', { name: 'Add' }).click()
 
     // Add second table
     await page.getByRole('combobox').first().click()
     await page.getByRole('option', { name: /fr_e1_feb_sales/i }).click()
-    await page.getByRole('button', { name: 'Add' }).click()
 
     // Enter result table name
     await page.getByPlaceholder('e.g., combined_sales').fill('stacked_result')

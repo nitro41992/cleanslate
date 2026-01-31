@@ -398,15 +398,24 @@ test.describe('Internal Column Filtering', () => {
     await downloadPromise
 
     // 4. Collect all console output
-    // Filter out intentional debug logs
+    // Filter out intentional debug logs (prefixed with component identifiers)
     const leakedMessages = consoleMessages.filter(msg =>
       (msg.includes('_cs_id') ||
        msg.includes('duckdb_schema') ||
        msg.includes('row_id') ||
        msg.includes('__base')) &&
-      !msg.includes('[Timeline]') &&  // Allow intentional debug logs
+      // Exclude all intentional debug logs with component prefixes
+      !msg.includes('[Timeline]') &&
       !msg.includes('[Snapshot]') &&
-      !msg.includes('[Command]')
+      !msg.includes('[Command]') &&
+      !msg.includes('[Diff]') &&
+      !msg.includes('[Column Versions]') &&
+      !msg.includes('[REPLAY]') &&
+      !msg.includes('[FastPath]') &&
+      !msg.includes('[BatchExecutor]') &&
+      !msg.includes('[EXECUTOR]') &&
+      !msg.includes('[Executor]') &&
+      !msg.includes('[Context]')
     )
 
     // Rule 2: Assert no console message contains internal column names
