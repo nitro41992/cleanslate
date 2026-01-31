@@ -759,6 +759,16 @@ export function usePersistence() {
   // 2. SAVING: Call this to save a specific table to Parquet
   // Uses queue with coalescing to prevent concurrent exports
   const saveTable = useCallback(async (tableName: string): Promise<void> => {
+    // CRITICAL: Skip save if a timeline replay is in progress
+    // During replay, tables are dropped and recreated. Attempting to export
+    // during this transient state causes "table does not exist" errors.
+    // The save will be triggered again after replay completes.
+    const { useTimelineStore } = await import('@/stores/timelineStore')
+    if (useTimelineStore.getState().isReplaying) {
+      console.log(`[Persistence] Skipping save for ${tableName} - replay in progress`)
+      return
+    }
+
     // If already saving this table, mark for re-save after completion
     if (saveInProgress.has(tableName)) {
       console.log(`[Persistence] ${tableName} save in progress, queuing...`)
