@@ -47,6 +47,10 @@ import {
   ensureAuditDetailsTable,
   captureTier23RowDetails,
 } from './audit-capture'
+import {
+  capturePreSnapshot,
+  capturePostDiff,
+} from './audit-snapshot'
 import { getBaseColumnName } from './column-versions'
 import type { TimelineCommandType } from '@/types'
 import {
@@ -231,6 +235,19 @@ export class CommandExecutor implements ICommandExecutor {
       const tier = getUndoTier(command.type)
       const needsSnapshot = requiresSnapshot(command.type)
 
+      // Step 2.1: Detect if this is a chained Tier 1 transform (existing expression stack)
+      // For chained Tier 1 transforms, we need to capture pre-execution state differently
+      // because __base always holds the ORIGINAL value, not the previous transform's result
+      const column = (command.params as { column?: string }).column
+      let isChainedTier1 = false
+      if (tier === 1 && column) {
+        const versionInfo = ctx.columnVersions.get(column)
+        isChainedTier1 = !!(versionInfo && versionInfo.expressionStack.length > 0)
+        if (isChainedTier1) {
+          console.log(`[EXECUTOR] Detected chained Tier 1 transform for column "${column}" (stack length: ${versionInfo!.expressionStack.length})`)
+        }
+      }
+
       // Step 2.5: Batching decision for large operations (>500k rows)
       // MOVED FROM Step 3.75 - needed for snapshot decision
       // CRITICAL: Skip batch mode for LOCAL_ONLY_COMMANDS (cell edits)
@@ -332,6 +349,23 @@ export class CommandExecutor implements ICommandExecutor {
           await this.capturePreExecutionDetails(ctx, command, preGeneratedAuditEntryId)
         } catch (err) {
           console.warn('[EXECUTOR] Failed to capture pre-execution row details:', err)
+        }
+      }
+
+      // Step 3.6: Chained Tier 1 pre-capture using audit-snapshot
+      // For chained Tier 1 transforms, we can't use __base (it holds original, not previous state)
+      // Instead, capture the current column value before transformation using capturePreSnapshot
+      if (!skipAudit && isChainedTier1 && column) {
+        try {
+          await capturePreSnapshot(
+            ctx.db,
+            ctx.table.name,
+            column,
+            preGeneratedAuditEntryId
+          )
+          console.log(`[EXECUTOR] Captured pre-snapshot for chained Tier 1 transform on "${column}"`)
+        } catch (err) {
+          console.warn('[EXECUTOR] Failed to capture pre-snapshot for chained Tier 1:', err)
         }
       }
 
@@ -457,11 +491,13 @@ export class CommandExecutor implements ICommandExecutor {
       if (!skipAudit) {
         progress('auditing', 60, 'Recording audit log...')
         auditInfo = command.getAuditInfo(updatedCtx, executionResult)
-        // Use pre-generated auditEntryId for Tier 2/3 (captured before execution)
+        // Use pre-generated auditEntryId for:
+        // - Tier 2/3 (captured before execution)
+        // - Chained Tier 1 (captured via pre-snapshot before execution)
         // EXCEPT for commands that store their own audit details (standardize, merge)
         // These commands use their own ID in execute() and we must keep it consistent
         const commandStoresOwnAuditDetails = command.type === 'standardize:apply' || command.type === 'match:merge'
-        if (tier !== 1 && !commandStoresOwnAuditDetails) {
+        if ((tier !== 1 || isChainedTier1) && !commandStoresOwnAuditDetails) {
           auditInfo.auditEntryId = preGeneratedAuditEntryId
         }
         this.recordAudit(ctx.table.id, ctx.table.name, auditInfo)
@@ -615,10 +651,29 @@ export class CommandExecutor implements ICommandExecutor {
         this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo, affectedRowIds, currentColumnOrder, newColumnOrder)
       }
 
+      // Chained Tier 1: Compute diff from pre-snapshot (captures previous → new, not original → new)
+      // This is done BEFORE captureTier1RowDetails to ensure we don't double-capture
+      if (!skipAudit && isChainedTier1 && column && auditInfo?.auditEntryId) {
+        try {
+          const captured = await capturePostDiff(
+            updatedCtx.db,
+            updatedCtx.table.name,
+            column,
+            auditInfo.auditEntryId
+          )
+          if (captured) {
+            console.log(`[EXECUTOR] Captured chained Tier 1 audit details via pre-snapshot for "${column}"`)
+          }
+        } catch (err) {
+          console.warn('[EXECUTOR] Failed to capture post-diff for chained Tier 1:', err)
+        }
+      }
+
       // Capture row-level details for Tier 1 only (uses __base columns, must be AFTER execution)
       // Tier 2/3 already captured BEFORE execution in Step 3.5
-      const shouldCaptureTier1 = !skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1
-      console.log(`[EXECUTOR] Tier 1 audit capture check: skipAudit=${skipAudit}, hasRowDetails=${auditInfo?.hasRowDetails}, auditEntryId=${!!auditInfo?.auditEntryId}, tier=${tier}, shouldCapture=${shouldCaptureTier1}`)
+      // Skip for chained Tier 1 - we already captured via pre-snapshot/post-diff above
+      const shouldCaptureTier1 = !skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1 && !isChainedTier1
+      console.log(`[EXECUTOR] Tier 1 audit capture check: skipAudit=${skipAudit}, hasRowDetails=${auditInfo?.hasRowDetails}, auditEntryId=${!!auditInfo?.auditEntryId}, tier=${tier}, isChainedTier1=${isChainedTier1}, shouldCapture=${shouldCaptureTier1}`)
 
       if (shouldCaptureTier1) {
         try {
