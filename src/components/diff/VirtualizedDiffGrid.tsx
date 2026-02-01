@@ -850,7 +850,7 @@ export function VirtualizedDiffGrid({
           getCellContent={getCellContent}
           onVisibleRegionChanged={hasActiveFilter ? undefined : onVisibleRegionChanged}
           getRowThemeOverride={getRowThemeOverride}
-          drawCell={drawCell}
+          drawCell={wordWrapEnabled ? undefined : drawCell}
           // Column resize support
           onColumnResize={handleColumnResize}
           minColumnWidth={GLOBAL_MIN_COLUMN_WIDTH}
@@ -881,6 +881,7 @@ export function VirtualizedDiffGrid({
             headerFontStyle: '600 13px',
             editorFontSize: '13px',
           }}
+          experimental={{ hyperWrapping: true }}
         />
       )}
     </div>
