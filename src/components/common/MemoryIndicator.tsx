@@ -63,7 +63,6 @@ function BreakdownBar({
 export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
   const {
     memoryUsage,
-    memoryLimit,
     memoryLevel,
     memoryBreakdown,
     jsHeapBytes,
@@ -86,7 +85,6 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
     return () => clearInterval(interval)
   }, [isReady, refreshMemory])
 
-  const percentage = memoryLimit > 0 ? (memoryUsage / memoryLimit) * 100 : 0
   const isWarning = memoryLevel === 'warning'
   const isCritical = memoryLevel === 'critical'
 
@@ -246,33 +244,40 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
     </div>
   )
 
+  // Health dot color based on memory level
+  const healthDotColor = isCritical
+    ? 'bg-destructive'
+    : isWarning
+    ? 'bg-amber-500'
+    : 'bg-emerald-500'
+
   // Compact view for status bar
   if (compact) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <div
-            className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+            className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
           >
-            <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-              <div
-                className={cn(
-                  'h-full rounded-full transition-all',
-                  isCritical ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-primary',
-                  isBusy && 'animate-pulse opacity-50',
-                  isCompacting && 'animate-pulse'
-                )}
-                style={{ width: `${Math.min(percentage, 100)}%` }}
-              />
-            </div>
-            <span>{isCompacting ? '...' : `${Math.round(percentage)}%`}</span>
+            <div
+              className={cn(
+                'w-2 h-2 rounded-full',
+                healthDotColor,
+                isBusy && 'animate-pulse opacity-50',
+                isCompacting && 'animate-pulse'
+              )}
+            />
+            <span>{isCompacting ? '...' : formatBytes(memoryUsage)}</span>
           </div>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-72">
           <DropdownMenuLabel className="flex justify-between">
-            <span>DuckDB Memory</span>
-            <span className="font-normal text-muted-foreground">
-              {formatBytes(memoryUsage)} / {formatBytes(memoryLimit)}
+            <span>Memory Usage</span>
+            <span className={cn(
+              'font-medium',
+              isCritical ? 'text-destructive' : isWarning ? 'text-amber-500' : 'text-emerald-500'
+            )}>
+              {isCritical ? 'High' : isWarning ? 'Elevated' : 'Healthy'}
             </span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
@@ -286,30 +291,29 @@ export function MemoryIndicator({ compact = false }: MemoryIndicatorProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <div className="space-y-1.5 cursor-pointer group">
-          <div className="flex items-center justify-between text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-            <span>Memory</span>
-            <span>{isCompacting ? '...' : `${Math.round(percentage)}%`}</span>
-          </div>
-          <div className="memory-bar">
+        <div className="cursor-pointer group">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
             <div
               className={cn(
-                'memory-bar-fill',
-                isWarning && !isCritical && 'warning',
-                isCritical && 'critical',
+                'w-2 h-2 rounded-full',
+                healthDotColor,
                 isBusy && 'animate-pulse opacity-50',
                 isCompacting && 'animate-pulse'
               )}
-              style={{ width: `${Math.min(percentage, 100)}%` }}
             />
+            <span>Memory</span>
+            <span className="ml-auto">{isCompacting ? '...' : formatBytes(memoryUsage)}</span>
           </div>
         </div>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="right" align="start" className="w-72">
         <DropdownMenuLabel className="flex justify-between">
-          <span>DuckDB Memory</span>
-          <span className="font-normal text-muted-foreground">
-            {formatBytes(memoryUsage)} / {formatBytes(memoryLimit)}
+          <span>Memory Usage</span>
+          <span className={cn(
+            'font-medium',
+            isCritical ? 'text-destructive' : isWarning ? 'text-amber-500' : 'text-emerald-500'
+          )}>
+            {isCritical ? 'High' : isWarning ? 'Elevated' : 'Healthy'}
           </span>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
