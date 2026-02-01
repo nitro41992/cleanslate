@@ -111,11 +111,12 @@ async function runFullInitialization(): Promise<void> {
 
       // Expose full table metadata for lazy hydration (Phase 4)
       // This allows frozen tables to be added to the store with metadata only (no DuckDB import)
-      ;(window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__ = savedState.tables.map(t => ({
+      ;(window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }> }).__CLEANSLATE_SAVED_TABLES__ = savedState.tables.map(t => ({
         id: t.id,
         name: t.name,
         columns: t.columns.map(c => ({ name: c.name, type: c.type, nullable: c.nullable })),
         rowCount: t.rowCount,
+        columnOrder: t.columnOrder,
       }))
 
       console.log('[Persistence] Timelines and UI restored from app-state.json', {

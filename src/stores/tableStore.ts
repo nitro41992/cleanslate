@@ -72,6 +72,8 @@ interface TableActions {
   isTableFrozen: (tableId: string) => boolean
   /** Set context switching state */
   setContextSwitching: (isSwitching: boolean) => void
+  /** Set column order for a table (for drag-drop reordering) */
+  setColumnOrder: (tableId: string, columnOrder: string[]) => void
 }
 
 export const useTableStore = create<TableState & TableActions>((set, get) => ({
@@ -498,6 +500,29 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
 
   setContextSwitching: (isSwitching) => {
     set({ isContextSwitching: isSwitching })
+  },
+
+  setColumnOrder: (tableId, columnOrder) => {
+    set((state) => ({
+      tables: state.tables.map((t) => {
+        if (t.id !== tableId) return t
+        return {
+          ...t,
+          columnOrder,
+          updatedAt: new Date(),
+        }
+      }),
+    }))
+    console.log(`[TableStore] Column order updated for ${tableId}:`, columnOrder)
+
+    // Immediately trigger save for column reorder (critical user operation)
+    if (typeof window !== 'undefined' && !isRestoringState) {
+      import('@/lib/persistence/state-persistence').then(({ saveAppStateNow }) => {
+        saveAppStateNow().catch(err => {
+          console.error('[TableStore] Failed to save after setColumnOrder:', err)
+        })
+      })
+    }
   },
 }))
 

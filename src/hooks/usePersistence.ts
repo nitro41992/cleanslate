@@ -255,8 +255,8 @@ export async function performHydration(isRehydration = false): Promise<void> {
 
   // Build normalized lookup for savedTables: lowercase name → original savedTable entry
   // This allows matching Parquet filenames (lowercase) to app-state entries (original casing)
-  const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
-  const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }>()
+  const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }> }).__CLEANSLATE_SAVED_TABLES__
+  const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }>()
   if (savedTables) {
     for (const t of savedTables) {
       const normalizedName = t.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
@@ -298,12 +298,20 @@ export async function performHydration(isRehydration = false): Promise<void> {
         tableIdToName.set(tableId, tableName)
 
         addTable(tableName, cols, rowCount, tableId)
+        // Restore column order if saved
+        if (savedTable?.columnOrder) {
+          useTableStore.getState().setColumnOrder(tableId, savedTable.columnOrder)
+        }
         console.log(`[Persistence] Thawed ${tableName} (${rowCount.toLocaleString()} rows)`)
       } else {
         // FREEZE: Add metadata only, don't import into DuckDB
         if (savedTable) {
           // Use saved metadata with original table name
           addTable(tableName, savedTable.columns, savedTable.rowCount, tableId)
+          // Restore column order if saved
+          if (savedTable.columnOrder) {
+            useTableStore.getState().setColumnOrder(tableId, savedTable.columnOrder)
+          }
           markTableFrozen(tableId)
           console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
         } else {
@@ -846,8 +854,8 @@ export function usePersistence() {
 
         // Build normalized lookup for savedTables: lowercase name → original savedTable entry
         // This allows matching Parquet filenames (lowercase) to app-state entries (original casing)
-        const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
-        const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }>()
+        const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }> }).__CLEANSLATE_SAVED_TABLES__
+        const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }>()
         if (savedTables) {
           for (const t of savedTables) {
             const normalizedName = t.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
@@ -889,12 +897,20 @@ export function usePersistence() {
               tableIdToName.set(tableId, tableName)
 
               addTable(tableName, cols, rowCount, tableId)
+              // Restore column order if saved
+              if (savedTable?.columnOrder) {
+                useTableStore.getState().setColumnOrder(tableId, savedTable.columnOrder)
+              }
               console.log(`[Persistence] Thawed ${tableName} (${rowCount.toLocaleString()} rows)`)
             } else {
               // FREEZE: Add metadata only, don't import into DuckDB
               if (savedTable) {
                 // Use saved metadata with original table name
                 addTable(tableName, savedTable.columns, savedTable.rowCount, tableId)
+                // Restore column order if saved
+                if (savedTable.columnOrder) {
+                  useTableStore.getState().setColumnOrder(tableId, savedTable.columnOrder)
+                }
                 markTableFrozen(tableId)
                 console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
               } else {
@@ -1152,7 +1168,11 @@ export function usePersistence() {
         // Skip tables that were just saved (e.g., during import)
         // This prevents redundant saves - the table is already persisted
         // Uses time-window check to handle multiple subscription calls
-        if (wasRecentlySaved(table.id)) {
+        // EXCEPTION: Don't skip if this table has a priority save requested
+        // (e.g., row insert/transform completed - data changed and needs saving)
+        const { useUIStore } = await import('@/stores/uiStore')
+        const hasPriorityRequest = useUIStore.getState().hasPrioritySave(table.id)
+        if (wasRecentlySaved(table.id) && !hasPriorityRequest) {
           console.log(`[Persistence] Skipping ${table.name} - was just saved during import`)
           knownTableIds.add(table.id)           // Track it as known
           lastDataVersions.set(table.id, currentVersion)

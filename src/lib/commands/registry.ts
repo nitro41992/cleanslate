@@ -160,6 +160,12 @@ export const TIER_3_COMMANDS: Set<CommandType> = new Set([
   'match:merge',
   'scrub:redact',
   'scrub:year_only',
+  // Schema commands (column operations)
+  'schema:add_column',
+  'schema:delete_column',
+  // Data commands (row operations)
+  'data:insert_row',
+  'data:delete_row',
 ])
 
 /**
@@ -253,6 +259,10 @@ export function getCommandLabel(type: CommandType): string {
     'scrub:year_only': 'Year Only',
     'edit:cell': 'Edit Cell',
     'edit:batch': 'Batch Edit',
+    'schema:add_column': 'Add Column',
+    'schema:delete_column': 'Delete Column',
+    'data:insert_row': 'Insert Row',
+    'data:delete_row': 'Delete Row',
   }
 
   return labels[type] || type

@@ -174,6 +174,12 @@ export * from './scrub'
 // Edit Commands
 export * from './edit'
 
+// Schema Commands
+export * from './schema'
+
+// Data Commands
+export * from './data'
+
 // ===== COMMAND REGISTRATION =====
 
 import { registerCommand } from './registry'
@@ -208,6 +214,8 @@ import { MatchMergeCommand } from './match'
 import { CombineStackCommand, CombineJoinCommand } from './combine'
 import { ScrubHashCommand, ScrubMaskCommand, ScrubRedactCommand, ScrubYearOnlyCommand } from './scrub'
 import { EditCellCommand, BatchEditCommand } from './edit'
+import { AddColumnCommand, DeleteColumnCommand } from './schema'
+import { InsertRowCommand, DeleteRowCommand } from './data'
 
 // Register all commands
 registerCommand('transform:trim', TrimCommand)
@@ -252,3 +260,11 @@ registerCommand('scrub:year_only', ScrubYearOnlyCommand)
 // Edit commands
 registerCommand('edit:cell', EditCellCommand)
 registerCommand('edit:batch', BatchEditCommand)
+
+// Schema commands
+registerCommand('schema:add_column', AddColumnCommand)
+registerCommand('schema:delete_column', DeleteColumnCommand)
+
+// Data commands
+registerCommand('data:insert_row', InsertRowCommand)
+registerCommand('data:delete_row', DeleteRowCommand)

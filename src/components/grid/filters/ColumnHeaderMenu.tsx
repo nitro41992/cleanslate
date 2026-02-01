@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowUp, ArrowDown, Filter, X } from 'lucide-react'
+import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Filter, X, Trash2, Columns } from 'lucide-react'
 import {
   Popover,
   PopoverContent,
@@ -7,6 +7,16 @@ import {
 } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { FilterFactory } from './FilterFactory'
 import type { ColumnFilter, FilterOperator } from '@/types'
 import { getFilterCategory, getOperatorsForCategory, type FilterCategory } from '@/lib/duckdb/filter-builder'
@@ -14,6 +24,10 @@ import { getFilterCategory, getOperatorsForCategory, type FilterCategory } from 
 interface ColumnHeaderMenuProps {
   columnName: string
   columnType: string
+  /** Human-readable type name for display */
+  columnTypeDisplay?: string
+  /** Description of what this column type means */
+  columnTypeDescription?: string
   currentFilter?: ColumnFilter
   currentSortColumn: string | null
   currentSortDirection: 'asc' | 'desc'
@@ -21,12 +35,25 @@ interface ColumnHeaderMenuProps {
   onRemoveFilter: () => void
   onSetSort: (direction: 'asc' | 'desc') => void
   onClearSort: () => void
-  children: React.ReactNode
+  /** Column operations - if provided, shows column management section */
+  onInsertColumnLeft?: () => void
+  onInsertColumnRight?: () => void
+  onDeleteColumn?: () => void
+  /** Whether column operations are enabled (requires editable table) */
+  columnOperationsEnabled?: boolean
+  /** Controlled open state */
+  open?: boolean
+  /** Controlled open change handler */
+  onOpenChange?: (open: boolean) => void
+  /** Position for the popover */
+  anchorPosition?: { x: number; y: number }
 }
 
 export function ColumnHeaderMenu({
   columnName,
   columnType,
+  columnTypeDisplay,
+  columnTypeDescription,
   currentFilter,
   currentSortColumn,
   currentSortDirection,
@@ -34,9 +61,19 @@ export function ColumnHeaderMenu({
   onRemoveFilter,
   onSetSort,
   onClearSort,
-  children,
+  onInsertColumnLeft,
+  onInsertColumnRight,
+  onDeleteColumn,
+  columnOperationsEnabled = false,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+  anchorPosition,
 }: ColumnHeaderMenuProps) {
-  const [open, setOpen] = React.useState(false)
+  // Use controlled state if provided, otherwise manage internally
+  const [internalOpen, setInternalOpen] = React.useState(false)
+  const open = controlledOpen ?? internalOpen
+  const setOpen = controlledOnOpenChange ?? setInternalOpen
+  const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false)
   const [filterValue, setFilterValue] = React.useState<string | number | boolean | null>(
     currentFilter?.value ?? ''
   )
@@ -100,16 +137,61 @@ export function ColumnHeaderMenu({
     setOpen(false)
   }
 
+  const handleInsertLeft = () => {
+    onInsertColumnLeft?.()
+    setOpen(false)
+  }
+
+  const handleInsertRight = () => {
+    onInsertColumnRight?.()
+    setOpen(false)
+  }
+
+  const handleDeleteClick = () => {
+    setShowDeleteConfirm(true)
+  }
+
+  const handleDeleteConfirm = () => {
+    onDeleteColumn?.()
+    setShowDeleteConfirm(false)
+    setOpen(false)
+  }
+
   return (
+    <>
+
     <Popover open={open} onOpenChange={setOpen}>
+      {/* Virtual trigger at anchor position - use 1x1 size for Radix positioning */}
       <PopoverTrigger asChild>
-        {children}
+        <div
+          className="fixed pointer-events-none"
+          style={anchorPosition ? {
+            left: anchorPosition.x,
+            top: anchorPosition.y,
+            width: '1px',
+            height: '1px',
+          } : { display: 'none' }}
+          aria-hidden="true"
+        />
       </PopoverTrigger>
       <PopoverContent
-        className="w-64 p-0"
+        className="w-64 p-0 z-50"
         align="start"
         sideOffset={4}
       >
+        {/* Column Info Header */}
+        <div className="px-3 py-2 border-b border-border bg-muted/30">
+          <div className="font-medium text-sm text-foreground">{columnName}</div>
+          {columnTypeDisplay && (
+            <div className="text-xs text-muted-foreground mt-0.5">
+              Type: <span className="text-amber-500">{columnTypeDisplay}</span>
+            </div>
+          )}
+          {columnTypeDescription && (
+            <div className="text-[10px] text-muted-foreground/70 mt-0.5">{columnTypeDescription}</div>
+          )}
+        </div>
+
         {/* Sort Section */}
         <div className="p-2">
           <div className="text-xs font-medium text-muted-foreground mb-2 px-2">Sort</div>
@@ -186,8 +268,70 @@ export function ColumnHeaderMenu({
             )}
           </div>
         </div>
+
+        {/* Column Operations Section */}
+        {columnOperationsEnabled && (
+          <>
+            <Separator />
+            <div className="p-2">
+              <div className="text-xs font-medium text-muted-foreground mb-2 px-2 flex items-center gap-1">
+                <Columns className="h-3 w-3" />
+                Column
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start gap-2 h-8"
+                onClick={handleInsertLeft}
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Insert Left
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start gap-2 h-8"
+                onClick={handleInsertRight}
+              >
+                <ArrowRight className="h-3.5 w-3.5" />
+                Insert Right
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start gap-2 h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={handleDeleteClick}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete Column
+              </Button>
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
+
+    {/* Delete Confirmation Dialog */}
+    <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete Column</AlertDialogTitle>
+          <AlertDialogDescription>
+            Are you sure you want to delete the column "{columnName}"? This will remove all data in this column. This action can be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={handleDeleteConfirm}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
 

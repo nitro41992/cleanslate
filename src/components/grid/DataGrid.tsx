@@ -32,6 +32,18 @@ import {
   MAX_COLUMN_AUTO_WIDTH,
 } from '@/components/grid/column-sizing'
 import { ColumnHeaderMenu, FilterBar } from '@/components/grid/filters'
+import { RowMenu } from '@/components/grid/RowMenu'
+import { AddColumnDialog } from '@/components/grid/AddColumnDialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { buildWhereClause, buildOrderByClause } from '@/lib/duckdb/filter-builder'
 import type { TimelineHighlight, ManualEditParams, ColumnInfo, ColumnFilter } from '@/types'
 
@@ -661,14 +673,47 @@ export function DataGrid({
   // Track filtered row count (null = no filter active, use total rowCount)
   const [filteredRowCount, setFilteredRowCount] = useState<number | null>(null)
 
-  // Header tooltip state - shows column type on click (persistent until dismissed)
-  const [headerTooltip, setHeaderTooltip] = useState<{
+  // Column menu state - shows column options on header click (includes type info)
+  const [columnMenu, setColumnMenu] = useState<{
     column: string
     type: string
+    typeDisplay: string
     description: string
     x: number
     y: number
   } | null>(null)
+
+  // Row menu state - shows row operations on row marker click
+  const [rowMenu, setRowMenu] = useState<{
+    rowNumber: number
+    csId: string
+    x: number
+    y: number
+  } | null>(null)
+
+  // Pending delete row confirmation - lifted from RowMenu to persist after menu closes
+  const [pendingDeleteRow, setPendingDeleteRow] = useState<{
+    rowNumber: number
+    csId: string
+  } | null>(null)
+
+  // Track mouse position for row marker clicks
+  const mousePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+
+  // Track hovered item to detect row marker clicks
+  // glide-data-grid adjusts location by rowMarkerOffset, so row markers report as col 0
+  // but we need to detect when the actual column is -1 (before first data column)
+  const hoveredItemRef = useRef<{ col: number; row: number } | null>(null)
+  // Track if mouse is in the row marker area (leftmost ~50px of grid)
+  const inRowMarkerAreaRef = useRef(false)
+
+
+  // Add column dialog state
+  const [addColumnDialog, setAddColumnDialog] = useState<{
+    open: boolean
+    position: 'left' | 'right'
+    referenceColumn: string
+  }>({ open: false, position: 'right', referenceColumn: '' })
 
   // Check if a column has an active filter
   const getColumnFilter = useCallback((colName: string): ColumnFilter | undefined => {
@@ -705,6 +750,193 @@ export function DataGrid({
       setSort(tableId, null, 'asc')
     }
   }, [tableId, setSort])
+
+  // Column operation handlers
+  const handleInsertColumnLeft = useCallback((columnName: string) => {
+    setAddColumnDialog({ open: true, position: 'left', referenceColumn: columnName })
+    setColumnMenu(null)
+  }, [])
+
+  const handleInsertColumnRight = useCallback((columnName: string) => {
+    setAddColumnDialog({ open: true, position: 'right', referenceColumn: columnName })
+    setColumnMenu(null)
+  }, [])
+
+  const handleDeleteColumn = useCallback(async (columnName: string) => {
+    if (!tableId || !tableName) return
+
+    try {
+      const command = createCommand('schema:delete_column', {
+        tableId,
+        tableName,
+        columnName,
+      })
+
+      const result = await executeWithConfirmation(command, tableId)
+      if (result?.success) {
+        toast({ title: 'Column deleted', description: `Column "${columnName}" has been deleted.` })
+      } else if (result?.error) {
+        toast({ title: 'Error', description: result.error, variant: 'destructive' })
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to delete column',
+        variant: 'destructive',
+      })
+    }
+    setColumnMenu(null)
+  }, [tableId, tableName, executeWithConfirmation])
+
+  const handleAddColumnConfirm = useCallback(async (newColumnName: string) => {
+    if (!tableId || !tableName) return
+
+    const { position, referenceColumn } = addColumnDialog
+
+    try {
+      // Calculate insertAfter based on position
+      const colIndex = columns.indexOf(referenceColumn)
+      let insertAfter: string | null = null
+
+      if (position === 'left') {
+        // Insert before referenceColumn = insert after the previous column
+        insertAfter = colIndex > 0 ? columns[colIndex - 1] : null
+      } else {
+        // Insert after referenceColumn
+        insertAfter = referenceColumn
+      }
+
+      const command = createCommand('schema:add_column', {
+        tableId,
+        tableName,
+        columnName: newColumnName,
+        columnType: 'VARCHAR',
+        insertAfter,
+      })
+
+      const result = await executeWithConfirmation(command, tableId)
+      if (result?.success) {
+        toast({ title: 'Column added', description: `Column "${newColumnName}" has been added.` })
+      } else if (result?.error) {
+        toast({ title: 'Error', description: result.error, variant: 'destructive' })
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to add column',
+        variant: 'destructive',
+      })
+    }
+  }, [tableId, tableName, columns, addColumnDialog, executeWithConfirmation])
+
+  // Row operation handlers
+  const handleInsertRowAbove = useCallback(async (csId: string) => {
+    if (!tableId || !tableName) return
+
+    try {
+      // insertAfterCsId should be the row BEFORE the clicked row
+      // We need to find the previous row's csId
+      const rowIndex = csIdToRowIndex.get(csId)
+      let insertAfterCsId: string | null = null
+
+      if (rowIndex !== undefined && rowIndex > 0) {
+        // Find the csId of the previous row by reversing the map
+        for (const [id, idx] of csIdToRowIndex.entries()) {
+          if (idx === rowIndex - 1) {
+            insertAfterCsId = id
+            break
+          }
+        }
+      }
+
+      const command = createCommand('data:insert_row', {
+        tableId,
+        tableName,
+        insertAfterCsId,
+      })
+
+      const result = await executeWithConfirmation(command, tableId)
+      if (result?.success) {
+        toast({ title: 'Row inserted', description: 'A new row has been inserted.' })
+      } else if (result?.error) {
+        toast({ title: 'Error', description: result.error, variant: 'destructive' })
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to insert row',
+        variant: 'destructive',
+      })
+    }
+    setRowMenu(null)
+  }, [tableId, tableName, csIdToRowIndex, executeWithConfirmation])
+
+  const handleInsertRowBelow = useCallback(async (csId: string) => {
+    if (!tableId || !tableName) return
+
+    try {
+      const command = createCommand('data:insert_row', {
+        tableId,
+        tableName,
+        insertAfterCsId: csId,
+      })
+
+      const result = await executeWithConfirmation(command, tableId)
+      if (result?.success) {
+        toast({ title: 'Row inserted', description: 'A new row has been inserted.' })
+      } else if (result?.error) {
+        toast({ title: 'Error', description: result.error, variant: 'destructive' })
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to insert row',
+        variant: 'destructive',
+      })
+    }
+    setRowMenu(null)
+  }, [tableId, tableName, executeWithConfirmation])
+
+  const handleDeleteRow = useCallback(async (csId: string) => {
+    if (!tableId || !tableName) return
+
+    try {
+      const command = createCommand('data:delete_row', {
+        tableId,
+        tableName,
+        csIds: [csId],
+      })
+
+      const result = await executeWithConfirmation(command, tableId)
+      if (result?.success) {
+        toast({ title: 'Row deleted', description: 'The row has been deleted.' })
+      } else if (result?.error) {
+        toast({ title: 'Error', description: result.error, variant: 'destructive' })
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to delete row',
+        variant: 'destructive',
+      })
+    }
+    setRowMenu(null)
+  }, [tableId, tableName, executeWithConfirmation])
+
+  // Handle column reorder via drag-drop
+  const handleColumnMoved = useCallback((startIndex: number, endIndex: number) => {
+    if (!tableId || startIndex === endIndex) return
+
+    // Get the current column order
+    const newColumnOrder = [...columns]
+    const [movedColumn] = newColumnOrder.splice(startIndex, 1)
+    newColumnOrder.splice(endIndex, 0, movedColumn)
+
+    // Update column order in tableStore
+    useTableStore.getState().setColumnOrder(tableId, newColumnOrder)
+
+    console.log(`[DataGrid] Column moved: ${movedColumn} from ${startIndex} to ${endIndex}`)
+  }, [tableId, columns])
 
   const gridColumns: GridColumn[] = useMemo(
     () =>
@@ -1270,6 +1502,73 @@ export function DataGrid({
     return map
   }, [csIdToRowIndex])
 
+  // Handle cell clicks (regular cells only - row markers use selection)
+  const handleCellClicked = useCallback(
+    (
+      cell: Item,
+      _event: { bounds: { x: number; y: number; width: number; height: number } }
+    ) => {
+      const [col, row] = cell
+      // Regular cell click - delegate to prop if provided
+      if (onCellClick) {
+        onCellClick(col, row)
+      }
+    },
+    [onCellClick]
+  )
+
+  // Handle item hover - track when mouse is over cells (including row markers)
+  const handleItemHovered = useCallback(
+    (args: { kind: string; location: readonly [number, number] }) => {
+      hoveredItemRef.current = { col: args.location[0], row: args.location[1] }
+    },
+    []
+  )
+
+  // Track mouse position on the grid container
+  const handleMouseMove = useCallback((event: React.MouseEvent) => {
+    mousePositionRef.current = { x: event.clientX, y: event.clientY }
+
+    // Track if mouse is in the row marker area (leftmost ~50px of the grid container)
+    const target = event.currentTarget as HTMLElement
+    const rect = target.getBoundingClientRect()
+    const relativeX = event.clientX - rect.left
+    // Row markers are typically in the first 40-50 pixels
+    inRowMarkerAreaRef.current = relativeX < 50
+  }, [])
+
+  // Handle click on the grid container to detect row marker clicks
+  const handleGridClick = useCallback(
+    (event: React.MouseEvent) => {
+      // Only handle clicks in the row marker area
+      if (!inRowMarkerAreaRef.current || !editable) return
+
+      const hovered = hoveredItemRef.current
+      if (!hovered) return
+
+      // The hovered location is adjusted by glide-data-grid (row marker offset removed)
+      // So col 0 when in row marker area is actually the row marker
+      // We need to check if we're in the row marker area AND have a valid row
+      const row = hovered.row
+      if (row < 0) return // Header area
+
+      const csId = rowIndexToCsId.get(row)
+      if (!csId) return
+
+      // Show row menu at the click position
+      setRowMenu({
+        rowNumber: row + 1, // 1-based for display
+        csId,
+        x: event.clientX,
+        y: event.clientY,
+      })
+
+      // Prevent event from propagating to grid (avoids selection)
+      event.stopPropagation()
+    },
+    [rowIndexToCsId, editable]
+  )
+
   const getCellContent = useCallback(
     ([col, row]: Item) => {
       const adjustedRow = row - loadedRange.start
@@ -1689,41 +1988,39 @@ export function DataGrid({
     [tableId, updateColumnWidth]
   )
 
-  // Handle header click - show persistent type tooltip (or open filter menu)
-  // Currently we show the tooltip on click, but the ColumnHeaderMenu is attached via
-  // a custom header renderer which Glide Data Grid doesn't directly support.
-  // Instead, we'll track the click and show the tooltip for type info.
+  // Handle header click - show column menu with type info and options
   const handleHeaderClicked = useCallback(
     (col: number, event: { bounds: { x: number; y: number; width: number; height: number } }) => {
       const colName = columns[col]
-      const colType = columnTypeMap.get(colName)
-      if (colType) {
-        const typeDisplay = getTypeDisplayName(colType)
-        const typeDescription = getTypeDescription(colType)
-        setHeaderTooltip({
-          column: colName,
-          type: typeDisplay,
-          description: typeDescription,
-          x: event.bounds.x + event.bounds.width / 2,
-          y: event.bounds.y + event.bounds.height,
-        })
-        // No auto-hide - tooltip stays until click outside or Escape
-      }
+      const colType = columnTypeMap.get(colName) ?? 'VARCHAR'
+      const typeDisplay = getTypeDisplayName(colType)
+      const typeDescription = getTypeDescription(colType)
+
+      setColumnMenu({
+        column: colName,
+        type: colType,
+        typeDisplay,
+        description: typeDescription,
+        x: event.bounds.x + event.bounds.width / 2,
+        y: event.bounds.y + event.bounds.height,
+      })
     },
     [columns, columnTypeMap]
   )
 
-  // Dismiss tooltip on click outside or Escape key
+  // Column menu dismissal is handled by the Popover component via onOpenChange
+
+  // Dismiss row menu on click outside or Escape key
   useEffect(() => {
-    if (!headerTooltip) return
+    if (!rowMenu) return
 
     const handleClickOutside = () => {
-      setHeaderTooltip(null)
+      setRowMenu(null)
     }
 
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setHeaderTooltip(null)
+        setRowMenu(null)
       }
     }
 
@@ -1738,7 +2035,7 @@ export function DataGrid({
       document.removeEventListener('click', handleClickOutside)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [headerTooltip])
+  }, [rowMenu])
 
   // Row height constants for word wrap
   // Using fixed heights for performance with large datasets (400k+ rows)
@@ -1806,7 +2103,13 @@ export function DataGrid({
         />
       )}
 
-      <div ref={containerRef} className="flex-1 min-h-0 w-full gdg-container" data-testid="data-grid">
+      <div
+        ref={containerRef}
+        className="flex-1 min-h-0 w-full gdg-container"
+        data-testid="data-grid"
+        onMouseMove={handleMouseMove}
+        onClickCapture={handleGridClick}
+      >
         {data.length > 0 && (
           <DataGridLib
             key={gridKey}
@@ -1816,11 +2119,7 @@ export function DataGrid({
             getCellContent={getCellContent}
             onVisibleRegionChanged={onVisibleRegionChanged}
             getRowThemeOverride={getRowThemeOverride}
-            onCellClicked={
-              onCellClick
-                ? ([col, row]) => onCellClick(col, row)
-                : undefined
-            }
+            onCellClicked={handleCellClicked}
             onCellEdited={editable ? onCellEdited : undefined}
             // drawCell provides edit indicators (orange/green gutter bars, yellow highlights)
             // but conflicts with word wrap - glide-data-grid's draw() doesn't forward allowWrapping.
@@ -1835,8 +2134,19 @@ export function DataGrid({
             maxColumnAutoWidth={MAX_COLUMN_AUTO_WIDTH}
             // Header click shows type tooltip
             onHeaderClicked={handleHeaderClicked}
+            // Track hover state to detect row marker clicks
+            onItemHovered={handleItemHovered}
             // Custom subtle header icons for column types
             headerIcons={customHeaderIcons}
+            // Row markers - show row numbers (1-based)
+            // Row marker clicks are detected via onItemHovered + container onClick
+            rowMarkers={{ kind: 'number', startIndex: 1 }}
+            // Disable row selection (we show menu instead of selecting)
+            rowSelect="none"
+            // Disable column selection (we show menu instead of selecting)
+            columnSelect="none"
+            // Column reorder via drag-drop
+            onColumnMoved={editable ? handleColumnMoved : undefined}
             width={gridWidth}
             height={gridHeight}
             smoothScrollX
@@ -1848,64 +2158,109 @@ export function DataGrid({
         )}
       </div>
 
-      {/* Column header popover - shown on header click, with filter/sort options */}
-      {headerTooltip && tableId && (
+      {/* Column header menu - shown on header click with type info and options */}
+      {columnMenu && tableId && (
         <ColumnHeaderMenu
-          columnName={headerTooltip.column}
-          columnType={columnTypeMap.get(headerTooltip.column) ?? 'VARCHAR'}
-          currentFilter={getColumnFilter(headerTooltip.column)}
+          columnName={columnMenu.column}
+          columnType={columnMenu.type}
+          columnTypeDisplay={columnMenu.typeDisplay}
+          columnTypeDescription={columnMenu.description}
+          currentFilter={getColumnFilter(columnMenu.column)}
           currentSortColumn={viewState?.sortColumn ?? null}
           currentSortDirection={viewState?.sortDirection ?? 'asc'}
           onSetFilter={handleSetFilter}
-          onRemoveFilter={() => handleRemoveFilter(headerTooltip.column)}
-          onSetSort={(direction) => handleSetSort(headerTooltip.column, direction)}
+          onRemoveFilter={() => handleRemoveFilter(columnMenu.column)}
+          onSetSort={(direction) => handleSetSort(columnMenu.column, direction)}
           onClearSort={handleClearSort}
-        >
-          <div
-            className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600 cursor-pointer hover:bg-zinc-700 transition-colors"
-            style={{
-              left: headerTooltip.x,
-              top: headerTooltip.y + 6,
-              transform: 'translateX(-50%)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="font-medium text-zinc-100">
-              {headerTooltip.column}
-            </div>
-            <div className="text-zinc-400 mt-0.5">
-              Type: <span className="text-amber-400">{headerTooltip.type}</span>
-            </div>
-            <div className="text-zinc-500 mt-1 text-[10px]">
-              {headerTooltip.description}
-            </div>
-          </div>
-        </ColumnHeaderMenu>
+          columnOperationsEnabled={editable}
+          onInsertColumnLeft={() => handleInsertColumnLeft(columnMenu.column)}
+          onInsertColumnRight={() => handleInsertColumnRight(columnMenu.column)}
+          onDeleteColumn={() => handleDeleteColumn(columnMenu.column)}
+          open={true}
+          onOpenChange={(open) => { if (!open) setColumnMenu(null) }}
+          anchorPosition={{ x: columnMenu.x, y: columnMenu.y }}
+        />
       )}
 
-      {/* Fallback tooltip for non-editable grids */}
-      {headerTooltip && !tableId && (
+      {/* Fallback type tooltip for non-editable grids (no menu, just info) */}
+      {columnMenu && !tableId && (
         <div
           className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600"
           style={{
-            left: headerTooltip.x,
-            top: headerTooltip.y + 6,
+            left: columnMenu.x,
+            top: columnMenu.y + 6,
             transform: 'translateX(-50%)',
           }}
-          onClick={(e) => e.stopPropagation()}
+          onClick={() => setColumnMenu(null)}
         >
-          <div className="font-medium text-zinc-100">{headerTooltip.column}</div>
+          <div className="font-medium text-zinc-100">{columnMenu.column}</div>
           <div className="text-zinc-400 mt-0.5">
-            Type: <span className="text-amber-400">{headerTooltip.type}</span>
+            Type: <span className="text-amber-400">{columnMenu.typeDisplay}</span>
           </div>
           <div className="text-zinc-500 mt-1 text-[10px]">
-            {headerTooltip.description}
+            {columnMenu.description}
           </div>
         </div>
       )}
 
       {/* Confirm Discard Undone Operations Dialog */}
       {editable && <ConfirmDiscardDialog {...confirmDialogProps} />}
+
+      {/* Row Menu - shown on row marker click */}
+      {rowMenu && editable && (
+        <RowMenu
+          rowNumber={rowMenu.rowNumber}
+          csId={rowMenu.csId}
+          onInsertAbove={() => handleInsertRowAbove(rowMenu.csId)}
+          onInsertBelow={() => handleInsertRowBelow(rowMenu.csId)}
+          onDelete={() => {
+            // Set pending delete to show confirmation dialog (lifted to DataGrid)
+            setPendingDeleteRow({ rowNumber: rowMenu.rowNumber, csId: rowMenu.csId })
+            setRowMenu(null)
+          }}
+          open={true}
+          onOpenChange={(open) => { if (!open) setRowMenu(null) }}
+          anchorPosition={{ x: rowMenu.x, y: rowMenu.y }}
+        />
+      )}
+
+      {/* Add Column Dialog */}
+      <AddColumnDialog
+        open={addColumnDialog.open}
+        onOpenChange={(open) => setAddColumnDialog(prev => ({ ...prev, open }))}
+        position={addColumnDialog.position}
+        referenceColumn={addColumnDialog.referenceColumn}
+        onConfirm={handleAddColumnConfirm}
+      />
+
+      {/* Delete Row Confirmation Dialog - lifted from RowMenu to persist after menu closes */}
+      <AlertDialog
+        open={pendingDeleteRow !== null}
+        onOpenChange={(open) => { if (!open) setPendingDeleteRow(null) }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Row</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete row {pendingDeleteRow?.rowNumber}? This action can be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingDeleteRow) {
+                  handleDeleteRow(pendingDeleteRow.csId)
+                }
+                setPendingDeleteRow(null)
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

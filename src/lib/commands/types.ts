@@ -53,6 +53,12 @@ export type CommandType =
   // Edit (Tier 2)
   | 'edit:cell'
   | 'edit:batch'
+  // Schema (Tier 3 - Column operations)
+  | 'schema:add_column'
+  | 'schema:delete_column'
+  // Data (Tier 3 - Row operations)
+  | 'data:insert_row'
+  | 'data:delete_row'
 
 // ===== CONTEXT =====
 
