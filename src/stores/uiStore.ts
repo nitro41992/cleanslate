@@ -46,6 +46,13 @@ export interface UsageMetrics {
   transformCount: number
 }
 
+/** Info about a row that was just inserted - for local state injection without reload */
+export interface PendingRowInsertion {
+  tableId: string
+  csId: string
+  rowIndex: number
+}
+
 interface UIState {
   sidebarCollapsed: boolean
   persistenceStatus: PersistenceStatus
@@ -59,6 +66,8 @@ interface UIState {
   loadingMessage: string | null  // Dynamic loading message for file imports
   skipNextGridReload: boolean  // Flag to skip next DataGrid reload (e.g., after diff close)
   transformingTables: Set<string>  // Tables currently undergoing transforms (prevents edit flushes)
+  /** Row that was just inserted - DataGrid will inject this locally without reload */
+  pendingRowInsertion: PendingRowInsertion | null
   // Snapshot queue state (for persistence indicator)
   savingTables: string[]           // Tables currently being saved (Parquet export in progress)
   pendingTables: string[]          // Tables queued for next save (coalescing)
@@ -133,6 +142,8 @@ interface UIActions {
   // Usage metrics actions
   /** Update usage metrics (merges partial update into existing) */
   updateUsageMetrics: (metrics: Partial<UsageMetrics>) => void
+  /** Set pending row insertion for local state injection */
+  setPendingRowInsertion: (insertion: PendingRowInsertion | null) => void
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -148,6 +159,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   loadingMessage: null,
   skipNextGridReload: false,
   transformingTables: new Set<string>(),
+  pendingRowInsertion: null,
   // Snapshot queue initial state
   savingTables: [],
   pendingTables: [],
@@ -413,6 +425,11 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
         ),
       },
     }))
+  },
+
+  // Row insertion action (for local state injection without reload)
+  setPendingRowInsertion: (insertion) => {
+    set({ pendingRowInsertion: insertion })
   },
 }))
 

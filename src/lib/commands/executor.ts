@@ -52,7 +52,7 @@ import {
   capturePostDiff,
 } from './audit-snapshot'
 import { getBaseColumnName } from './column-versions'
-import type { TimelineCommandType } from '@/types'
+import type { TimelineCommandType, ColumnInfo } from '@/types'
 import {
   getMemoryStatus,
   getDuckDBMemoryUsage,
@@ -139,9 +139,15 @@ export function clearCommandTimeline(tableId: string): void {
   }
 }
 
-// Commands that modify cell values but don't change structure
-// These update local state and don't require a full grid reload
-const LOCAL_ONLY_COMMANDS = new Set(['edit:cell', 'edit:batch'])
+// Commands that don't require a full grid reload
+// - Cell edits: just modify individual cells
+// - Row/column insertions: grid can handle incrementally without full reload
+const LOCAL_ONLY_COMMANDS = new Set([
+  'edit:cell',
+  'edit:batch',
+  'data:insert_row',
+  'schema:add_column',
+])
 
 // ===== COMMAND EXECUTOR CLASS =====
 
@@ -701,17 +707,37 @@ export class CommandExecutor implements ICommandExecutor {
       // Note: isLocalOnlyCommand already defined above in Step 2.5
 
       if (isLocalOnlyCommand) {
-        // For cell edits, only update metadata that changed (rowCount, columns if applicable)
-        // but DON'T increment dataVersion to avoid triggering full grid reload
+        // For local-only commands (cell edits, row/column insertions):
+        // Update metadata silently WITHOUT incrementing dataVersion to avoid full grid reload
         const tableStore = useTableStore.getState()
         const currentTable = tableStore.tables.find(t => t.id === ctx.table.id)
-        if (currentTable && executionResult.rowCount !== undefined && executionResult.rowCount !== currentTable.rowCount) {
-          // Only update if row count actually changed (shouldn't happen for cell edits)
-          tableStore.updateTable(ctx.table.id, {
-            rowCount: executionResult.rowCount,
-          })
+
+        // Build silent update object with any changed metadata
+        const silentUpdates: Partial<{ rowCount: number; columns: ColumnInfo[] }> = {}
+
+        if (executionResult.rowCount !== undefined && executionResult.rowCount !== currentTable?.rowCount) {
+          silentUpdates.rowCount = executionResult.rowCount
         }
-        console.log('[Executor] Skipped dataVersion bump for local-only command:', command.type)
+        if (executionResult.columns !== undefined) {
+          silentUpdates.columns = executionResult.columns
+        }
+
+        // Apply silent update if anything changed
+        if (Object.keys(silentUpdates).length > 0) {
+          tableStore.updateTableSilent(ctx.table.id, silentUpdates)
+        }
+
+        // For row insertions: set pendingRowInsertion so DataGrid can inject locally
+        if (executionResult.insertedRow) {
+          uiStoreModule.useUIStore.getState().setPendingRowInsertion({
+            tableId: ctx.table.id,
+            csId: executionResult.insertedRow.csId,
+            rowIndex: executionResult.insertedRow.rowIndex,
+          })
+          console.log('[Executor] Set pendingRowInsertion:', executionResult.insertedRow)
+        }
+
+        console.log('[Executor] Skipped dataVersion bump for local-only command:', command.type, silentUpdates)
       } else {
         // For structural changes (transforms, column operations), trigger full grid reload
         // EXCEPTION: Skip for combine commands that create NEW tables - they don't modify the source table

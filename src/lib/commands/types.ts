@@ -180,6 +180,12 @@ export interface ExecutionResult {
   }
   /** Sample before/after values for audit drill-down (batched operations only, max 1000 rows) */
   sampleChanges?: { before: string; after: string }[]
+  /** For row insertion: info about the inserted row for local state injection */
+  insertedRow?: {
+    csId: string
+    /** 0-based row index where the row was inserted */
+    rowIndex: number
+  }
 }
 
 // ===== AUDIT =====

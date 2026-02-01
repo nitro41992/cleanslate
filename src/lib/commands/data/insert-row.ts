@@ -144,6 +144,11 @@ export class InsertRowCommand implements Command<InsertRowParams> {
         affected: 1,
         newColumnNames: [],
         droppedColumnNames: [],
+        // Return inserted row info for local state injection (no reload needed)
+        insertedRow: {
+          csId: this.newCsId!,
+          rowIndex: newCsIdNum - 1, // 0-based index
+        },
       }
     } catch (error) {
       return {

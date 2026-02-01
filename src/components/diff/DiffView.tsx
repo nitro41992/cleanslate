@@ -264,11 +264,26 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           // Check for timeline-based snapshot
           const timeline = getTimeline(activeTableInfo.id)
           if (timeline?.originalSnapshotName) {
-            const originalSnapshotName = timeline.originalSnapshotName
+            let originalSnapshotName = timeline.originalSnapshotName
 
             // Use the Parquet path directly (don't create temp table)
             // fetchDiffPage will handle reading from Parquet on-demand
             if (originalSnapshotName.startsWith('parquet:')) {
+              // MIGRATION CHECK: Ensure the snapshot has _cs_origin_id
+              // Old snapshots created before this feature will cause diff to fail
+              const { createTimelineOriginalSnapshot } = await import('@/lib/timeline-engine')
+              const migratedSnapshot = await createTimelineOriginalSnapshot(
+                activeTableInfo.name,
+                timeline.id,
+                activeTableInfo.id
+              )
+              // Update if migration occurred (returns same or new snapshot name)
+              if (migratedSnapshot !== originalSnapshotName) {
+                console.log('[Diff] Snapshot migrated:', { old: originalSnapshotName, new: migratedSnapshot })
+                originalSnapshotName = migratedSnapshot
+                // Update the store with the new snapshot reference
+                useTimelineStore.getState().updateTimelineOriginalSnapshot(activeTableInfo.id, migratedSnapshot)
+              }
               sourceTableName = originalSnapshotName
             } else {
               // Use in-memory snapshot directly

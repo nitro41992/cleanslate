@@ -15,6 +15,7 @@ import {
   dropTable,
   updateCellByRowId,
   CS_ID_COLUMN,
+  CS_ORIGIN_ID_COLUMN,
   getTableColumns,
   initDuckDB,
   getConnection,
@@ -103,6 +104,77 @@ export async function listSnapshotTables(): Promise<string[]> {
 }
 
 /**
+ * Check if a Parquet snapshot has the _cs_origin_id column.
+ * Old snapshots created before this feature was added won't have it.
+ */
+async function snapshotHasOriginId(snapshotId: string): Promise<boolean> {
+  try {
+    // Get the file path for the snapshot
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+    // Check for single file or chunked files
+    let filePattern: string
+    try {
+      await snapshotsDir.getFileHandle(`${snapshotId}.parquet`)
+      filePattern = `${snapshotId}.parquet`
+    } catch {
+      // Try chunked pattern
+      const { listFiles } = await import('@/lib/opfs/opfs-helpers')
+      const chunks = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
+      if (chunks.length === 0) {
+        console.log(`[Timeline] No Parquet files found for snapshot: ${snapshotId}`)
+        return false
+      }
+      filePattern = `${snapshotId}_part_*.parquet`
+    }
+
+    // Query Parquet schema to check for _cs_origin_id column
+    const columns = await query<{ name: string }>(
+      `SELECT DISTINCT name FROM parquet_schema('opfs://cleanslate/snapshots/${filePattern}')`
+    )
+    const columnNames = columns.map(c => c.name)
+    const hasOriginId = columnNames.includes(CS_ORIGIN_ID_COLUMN)
+
+    console.log(`[Timeline] Snapshot ${snapshotId} has _cs_origin_id: ${hasOriginId}`)
+    return hasOriginId
+  } catch (error) {
+    console.warn(`[Timeline] Error checking snapshot schema:`, error)
+    return false
+  }
+}
+
+/**
+ * Delete old Parquet snapshot files (including chunked files)
+ */
+async function deleteSnapshotFiles(snapshotId: string): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    const { listFiles, deleteFileIfExists } = await import('@/lib/opfs/opfs-helpers')
+
+    // Try to delete single file
+    await deleteFileIfExists(snapshotsDir, `${snapshotId}.parquet`)
+
+    // Delete any chunked files
+    const chunks = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
+    for (const chunk of chunks) {
+      await deleteFileIfExists(snapshotsDir, chunk)
+    }
+    if (chunks.length > 0) {
+      console.log(`[Timeline] Deleted ${chunks.length} chunked snapshot files for: ${snapshotId}`)
+    }
+    if (chunks.length > 0) {
+      console.log(`[Timeline] Deleted ${chunks.length} chunked snapshot files for: ${snapshotId}`)
+    }
+  } catch (error) {
+    console.warn(`[Timeline] Error deleting snapshot files:`, error)
+  }
+}
+
+/**
  * Create the original snapshot for a table's timeline
  * This is called when a timeline is first created for a table
  *
@@ -123,12 +195,23 @@ export async function createTimelineOriginalSnapshot(
   const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
   const snapshotId = `original_${sanitizedTableName}`
 
-  // IDEMPOTENCY CHECK: If Parquet files already exist, reuse them
+  // IDEMPOTENCY CHECK: If Parquet files already exist, check if they need migration
   // This prevents HMR/Strict Mode/page reloads from overwriting snapshots with modified data
   const existingSnapshot = await checkSnapshotFileExists(snapshotId)
   if (existingSnapshot) {
-    console.log(`[Timeline] Original snapshot already exists, reusing: parquet:${snapshotId}`)
-    return `parquet:${snapshotId}`
+    // Check if the existing snapshot has _cs_origin_id column
+    // Old snapshots created before this feature won't have it, causing diff failures
+    const hasOriginId = await snapshotHasOriginId(snapshotId)
+    if (hasOriginId) {
+      console.log(`[Timeline] Original snapshot already exists with _cs_origin_id, reusing: parquet:${snapshotId}`)
+      return `parquet:${snapshotId}`
+    } else {
+      // MIGRATION: Old snapshot without _cs_origin_id needs to be recreated
+      // This ensures diff comparisons work correctly after row insertions
+      console.log(`[Timeline] MIGRATION: Old snapshot missing _cs_origin_id, recreating: ${snapshotId}`)
+      await deleteSnapshotFiles(snapshotId)
+      // Continue to create new snapshot below
+    }
   }
 
   // Check row count to decide storage strategy

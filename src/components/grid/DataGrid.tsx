@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useEffect, useState, useRef } from 'react'
+import { useCallback, useMemo, useEffect, useLayoutEffect, useState, useRef } from 'react'
 import DataGridLib, {
   GridColumn,
   GridCellKind,
@@ -435,6 +435,8 @@ export function DataGrid({
   // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
+  // Track recently inserted row csIds for green gutter indicator
+  const [insertedRowCsIds, setInsertedRowCsIds] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
@@ -443,6 +445,17 @@ export function DataGrid({
   // Track scroll position for restore after data reload (transforms, not cell edits)
   // This preserves the user's view position across structural changes (column adds, transforms)
   const scrollPositionRef = useRef<{ col: number; row: number } | null>(null)
+  // "Stable" scroll position - only updated for meaningful scroll events, not grid resets
+  // This survives the grid reset to {0,0} that happens during re-render
+  const stableScrollRef = useRef<{ col: number; row: number } | null>(null)
+  // Lock to prevent onVisibleRegionChanged from overwriting scroll position during reload
+  const isReloadingRef = useRef(false)
+  // Track previous dataVersion to detect reload triggers
+  const prevDataVersionRef = useRef(dataVersion)
+  // Track previous rowCount to detect row-only changes (no reload needed)
+  const prevRowCountRef = useRef(rowCount)
+  // Flag to skip next reload after local row injection
+  const skipNextReloadRef = useRef(false)
 
   // Legacy LRU page cache for fallback (JSON-based)
   const pageCacheRef = useRef<Map<number, CachedPage>>(new Map())
@@ -459,6 +472,8 @@ export function DataGrid({
   const isReplaying = useTimelineStore((s) => s.isReplaying)
   // UI store for busy state (prevents concurrent DuckDB operations)
   const isBusy = useUIStore((s) => s.busyCount > 0)
+  // Pending row insertion from insert_row command - for local state injection
+  const pendingRowInsertion = useUIStore((s) => s.pendingRowInsertion)
   // Use prop if provided, otherwise fall back to store
   const activeHighlight = timelineHighlight ?? (storeHighlight.commandId ? storeHighlight : null)
 
@@ -1000,6 +1015,107 @@ export function DataGrid({
     editorFontSize: '13px',
   }), [])
 
+  // Capture scroll position BEFORE main effect runs when dataVersion changes
+  // useLayoutEffect runs synchronously before paint, catching the position before grid resets
+  useLayoutEffect(() => {
+    if (dataVersion !== prevDataVersionRef.current) {
+      // dataVersion changed - a reload is coming, capture scroll position NOW
+      // Use stableScrollRef which has the last meaningful (non-reset) position
+      console.log('[DATAGRID] dataVersion changed, locking scroll:', stableScrollRef.current)
+      isReloadingRef.current = true
+      prevDataVersionRef.current = dataVersion
+    }
+  }, [dataVersion])
+
+  // Handle pending row insertion - inject row into local state without reload
+  // This preserves scroll position perfectly (industry best practice: optimistic local update)
+  useEffect(() => {
+    if (!pendingRowInsertion || pendingRowInsertion.tableId !== tableId) {
+      return
+    }
+
+    const { csId, rowIndex } = pendingRowInsertion
+    console.log('[DATAGRID] Injecting row locally:', { csId, rowIndex, loadedRange })
+
+    // Clear the pending insertion immediately to prevent re-runs
+    useUIStore.getState().setPendingRowInsertion(null)
+
+    // Track this csId for green gutter indicator
+    setInsertedRowCsIds(prev => new Set(prev).add(csId))
+
+    // Check if the inserted row is within our currently loaded range
+    // If not, no need to update local state - grid will fetch when scrolled
+    if (rowIndex < loadedRange.start || rowIndex > loadedRange.end) {
+      console.log('[DATAGRID] Inserted row outside loaded range, will be fetched on scroll')
+      // Just invalidate cache so next scroll fetches fresh data
+      pageCacheRef.current.clear()
+      arrowPageCacheRef.current.clear()
+      loadedArrowPagesRef.current = []
+      return
+    }
+
+    // Create empty row data for the new row (all columns are NULL)
+    const newRowData: Record<string, unknown> = {}
+    for (const col of columns) {
+      newRowData[col] = null
+    }
+
+    // Calculate local index within our data array
+    const localIndex = rowIndex - loadedRange.start
+
+    // Insert the new row into local data at the correct position
+    setData(prevData => {
+      const newData = [...prevData]
+      newData.splice(localIndex, 0, newRowData)
+      return newData
+    })
+
+    // Update csId to row index mapping
+    // CRITICAL: The database shifts _cs_id values for rows >= newCsId.
+    // e.g., if inserting csId "5" at index 4, old row with csId "5" becomes csId "6".
+    // We must update BOTH the csId keys AND the indices.
+    setCsIdToRowIndex(prevMap => {
+      const newMap = new Map<string, number>()
+      const newCsIdNum = parseInt(csId, 10)
+
+      prevMap.forEach((idx, existingCsId) => {
+        const existingCsIdNum = parseInt(existingCsId, 10)
+
+        // Rows with csId >= newCsId had their csId shifted up in the database
+        const updatedCsIdNum = existingCsIdNum >= newCsIdNum
+          ? existingCsIdNum + 1
+          : existingCsIdNum
+
+        // Rows at or after rowIndex had their index shifted up
+        const updatedIdx = idx >= rowIndex ? idx + 1 : idx
+
+        newMap.set(String(updatedCsIdNum), updatedIdx)
+      })
+
+      // Add the new row
+      newMap.set(csId, rowIndex)
+      return newMap
+    })
+
+    // Update loaded range
+    setLoadedRange(prev => ({ ...prev, end: prev.end + 1 }))
+
+    // Invalidate cache so future fetches get fresh data
+    pageCacheRef.current.clear()
+    arrowPageCacheRef.current.clear()
+    loadedArrowPagesRef.current = []
+
+    // Force grid to re-render the affected area
+    if (gridRef.current) {
+      gridRef.current.updateCells([{ cell: [0, localIndex] }])
+    }
+
+    // Set flag to skip the next reload triggered by rowCount change
+    skipNextReloadRef.current = true
+
+    console.log('[DATAGRID] Row injected successfully at index', rowIndex)
+  }, [pendingRowInsertion, tableId, columns, loadedRange])
+
   // Load initial data (re-runs when rowCount changes, e.g., after merge operations)
   // Also re-runs when view state (filters/sort) changes
   useEffect(() => {
@@ -1012,6 +1128,17 @@ export function DataGrid({
       console.log('[DATAGRID] Skipping fetch - skipNextGridReload flag was set')
       return
     }
+
+    // Skip reload after local row injection (industry best practice: no full refresh)
+    if (skipNextReloadRef.current) {
+      skipNextReloadRef.current = false
+      prevRowCountRef.current = rowCount
+      console.log('[DATAGRID] Skipping fetch - row was injected locally')
+      return
+    }
+
+    // Track rowCount changes
+    prevRowCountRef.current = rowCount
 
     if (!tableName || columns.length === 0) {
       console.log('[DATAGRID] Early return - no tableName or columns')
@@ -1032,13 +1159,19 @@ export function DataGrid({
 
     console.log('[DATAGRID] Starting data reload...')
 
-    // Capture scroll position BEFORE clearing data (for restore after structural changes)
-    const savedScrollPosition = scrollPositionRef.current
+    // Lock should already be set by useLayoutEffect, but ensure it's set
+    isReloadingRef.current = true
+
+    // Use stableScrollRef which was captured by useLayoutEffect before grid reset
+    const savedScrollPosition = stableScrollRef.current
+    console.log('[DATAGRID] Using saved scroll position:', savedScrollPosition)
 
     setIsLoading(true)
-    setData([]) // Clear stale JSON data immediately
-    setLoadedRange({ start: 0, end: 0 }) // Reset loaded range
-    setCsIdToRowIndex(new Map()) // Reset row ID mapping
+    // DON'T clear data immediately - keep old data visible until new data arrives
+    // This preserves scroll position and prevents the grid from resetting to top
+    // setData([]) - REMOVED: clearing data causes scroll reset
+    // setLoadedRange({ start: 0, end: 0 }) - REMOVED: will be set with new data
+    // setCsIdToRowIndex(new Map()) - REMOVED: will be set with new data
     pageCacheRef.current.clear() // Clear legacy JSON cache
     arrowPageCacheRef.current.clear() // Clear Arrow cache
     loadedArrowPagesRef.current = [] // Clear loaded Arrow pages
@@ -1129,14 +1262,30 @@ export function DataGrid({
         console.log('[DATAGRID] Arrow + JSON data ready for rendering')
 
         // Restore scroll position after data loads
-        if (savedScrollPosition && gridRef.current) {
-          requestAnimationFrame(() => {
+        // Use setTimeout to ensure React has fully re-rendered the grid with new data
+        console.log('[DATAGRID] Scroll restore check:', { savedScrollPosition, hasGridRef: !!gridRef.current })
+        if (savedScrollPosition) {
+          // Wait for React to render AND for grid to stabilize, then scroll
+          // RAF alone isn't enough - grid needs time to process new row count
+          setTimeout(() => {
             if (gridRef.current) {
               const { col, row } = savedScrollPosition
               const clampedRow = Math.min(row, Math.max(0, rowCount - 1))
+              console.log('[DATAGRID] Attempting scroll restore:', { col, clampedRow, rowCount })
               gridRef.current.scrollTo(col, clampedRow)
               console.log('[DATAGRID] Restored scroll position:', { col, row: clampedRow })
+            } else {
+              console.log('[DATAGRID] gridRef.current still null after timeout')
             }
+            // Release scroll lock after grid settles
+            setTimeout(() => {
+              isReloadingRef.current = false
+            }, 50)
+          }, 100) // 100ms delay for grid to fully stabilize
+        } else {
+          // Release scroll lock even when no position to restore
+          requestAnimationFrame(() => {
+            isReloadingRef.current = false
           })
         }
       })
@@ -1165,10 +1314,33 @@ export function DataGrid({
             setCsIdToRowIndex(idMap)
             setLoadedRange({ start: 0, end: rows.length })
             setIsLoading(false)
+
+            // Restore scroll position after fallback data loads
+            if (savedScrollPosition) {
+              setTimeout(() => {
+                if (gridRef.current) {
+                  const { col, row } = savedScrollPosition
+                  const clampedRow = Math.min(row, Math.max(0, rowCount - 1))
+                  gridRef.current.scrollTo(col, clampedRow)
+                  console.log('[DATAGRID] Restored scroll position (fallback):', { col, row: clampedRow })
+                }
+                setTimeout(() => {
+                  isReloadingRef.current = false
+                }, 50)
+              }, 100)
+            } else {
+              requestAnimationFrame(() => {
+                isReloadingRef.current = false
+              })
+            }
           })
           .catch((fallbackErr) => {
             console.error('Error loading fallback data:', fallbackErr)
             setIsLoading(false)
+            // Release scroll lock even on error
+            requestAnimationFrame(() => {
+              isReloadingRef.current = false
+            })
           })
       })
   }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, getDataArrowWithKeyset, getFilteredCount, rowCount, dataVersion, isReplaying, isBusy, viewState])
@@ -1249,7 +1421,14 @@ export function DataGrid({
   const onVisibleRegionChanged = useCallback(
     (range: { x: number; y: number; width: number; height: number }) => {
       // Save current scroll position for restore after data reload (transforms)
-      scrollPositionRef.current = { col: range.x, row: range.y }
+      // But NOT during reload - otherwise we overwrite the saved position with {0, 0}
+      if (!isReloadingRef.current) {
+        scrollPositionRef.current = { col: range.x, row: range.y }
+        // Also update stable scroll ref - this persists across reload cycles
+        // Only update if this is a meaningful position (not a grid reset to {0,0})
+        // A position of {0,0} is valid if user intentionally scrolled to top
+        stableScrollRef.current = { col: range.x, row: range.y }
+      }
 
       // Skip if DuckDB is busy with heavy operations
       if (useUIStore.getState().busyCount > 0) return
@@ -1893,6 +2072,7 @@ export function DataGrid({
       // Otherwise we never enter the block if column 0 itself isn't dirty
       let rowHasPendingEdit = false
       let rowIsDirty = false
+      let rowIsInserted = false
 
       if (col === 0 && csId && tableId) {
         // Check if ANY cell in this row has a pending edit
@@ -1906,14 +2086,17 @@ export function DataGrid({
             break
           }
         }
+
+        // Check if this row was recently inserted
+        rowIsInserted = insertedRowCsIds.has(csId)
       }
 
-      // Draw gutter bar if ANY cell in the row has edits
-      if (editable && col === 0 && (rowHasPendingEdit || rowIsDirty)) {
+      // Draw gutter bar if ANY cell in the row has edits OR row was inserted
+      if (editable && col === 0 && (rowHasPendingEdit || rowIsDirty || rowIsInserted)) {
         ctx.save()
         // Draw full-height bar on left edge of row (VS Code git diff style)
         const barWidth = 3
-        // Orange (#f97316) = pending edit, Green (#22c55e) = committed
+        // Orange (#f97316) = pending edit, Green (#22c55e) = committed/inserted
         ctx.fillStyle = rowHasPendingEdit ? '#f97316' : '#22c55e'
         ctx.fillRect(rect.x, rect.y, barWidth, rect.height)
         ctx.restore()
@@ -1947,7 +2130,7 @@ export function DataGrid({
         ctx.restore()
       }
     },
-    [editable, columns, dirtyCells, rowIndexToCsId, activeHighlight, tableId]
+    [editable, columns, dirtyCells, rowIndexToCsId, activeHighlight, tableId, insertedRowCsIds]
   )
 
   const getRowThemeOverride: GetRowThemeCallback = useCallback(

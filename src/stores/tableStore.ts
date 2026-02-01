@@ -26,6 +26,8 @@ interface TableActions {
   removeTable: (id: string) => void
   setActiveTable: (id: string | null) => void
   updateTable: (id: string, updates: Partial<TableInfo>) => void
+  /** Update table metadata without triggering grid reload (no dataVersion bump) */
+  updateTableSilent: (id: string, updates: Partial<TableInfo>) => void
   incrementDataVersion: (id: string) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -151,6 +153,24 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
                 updatedAt: new Date(),
                 // Auto-increment: any update triggers grid refresh
                 dataVersion: newDataVersion,
+              }
+            : t
+        ),
+      }
+    })
+  },
+
+  updateTableSilent: (id, updates) => {
+    set((state) => {
+      console.log('[TABLESTORE] updateTableSilent called (no dataVersion bump)', { id, updates })
+      return {
+        tables: state.tables.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                ...updates,
+                updatedAt: new Date(),
+                // NO dataVersion increment - grid won't reload
               }
             : t
         ),
