@@ -184,6 +184,10 @@ export class CommandExecutor implements ICommandExecutor {
       const uiStoreModule = await import('@/stores/uiStore')
       uiStoreModule.useUIStore.getState().markTableDirty(tableId)
 
+      // Clear any pending skip flag (e.g., from diff close) to ensure grid reloads after transform
+      // Without this, a transform after diff close would skip the grid reload incorrectly
+      uiStoreModule.useUIStore.getState().setSkipNextGridReload(false)
+
       // CRITICAL: Flush pending batch edits before executing non-cell-edit commands
       // This prevents data loss when transforms run while edits are batched:
       // 1. User edits cell → edit added to editBatchStore (not yet in DuckDB)
