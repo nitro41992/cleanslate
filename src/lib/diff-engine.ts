@@ -1,4 +1,4 @@
-import { query, execute, tableExists, isInternalColumn, getConnection, initDuckDB } from '@/lib/duckdb'
+import { query, execute, tableExists, isInternalColumn, getConnection, initDuckDB, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { formatBytes } from './duckdb/storage-info'
@@ -405,6 +405,11 @@ export async function runDiff(
       `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tableB}' ORDER BY ordinal_position`
     )
 
+    // Extract column name lists for quick lookup
+    // These are used for origin ID check and column list building
+    const colsAAllNames = colsAAll.map(c => c.column_name)
+    const colsBAllNames = colsBAll.map(c => c.column_name)
+
     // Filter internal columns early to reduce memory overhead
     const colsA = colsAAll.filter(c => !isInternalColumn(c.column_name))
     const colsB = colsBAll.filter(c => !isInternalColumn(c.column_name))
@@ -637,19 +642,46 @@ export async function runDiff(
     // sourceTableExpr already defined and cached at line 285 (files registered early)
 
     // Determine JOIN condition and CASE logic based on diff mode
+    // For preview mode:
+    // - Use _cs_origin_id if both tables have it (stable identity survives row insertion)
+    // - Fall back to _cs_id if either table lacks _cs_origin_id (backwards compatibility)
+    const hasOriginIdA = colsAAllNames.includes(CS_ORIGIN_ID_COLUMN)
+    const hasOriginIdB = colsBAllNames.includes(CS_ORIGIN_ID_COLUMN)
+    const useOriginId = hasOriginIdA && hasOriginIdB
+
+    if (diffMode === 'preview') {
+      console.log('[Diff] Preview mode origin ID check:', {
+        hasOriginIdA,
+        hasOriginIdB,
+        useOriginId,
+        matchColumn: useOriginId ? CS_ORIGIN_ID_COLUMN : '_cs_id'
+      })
+    }
+
     const diffJoinCondition = diffMode === 'preview'
-      ? `a."_cs_id" = b."_cs_id"`  // Row-based for preview (detects removed duplicates)
+      ? useOriginId
+        ? `a."${CS_ORIGIN_ID_COLUMN}" = b."${CS_ORIGIN_ID_COLUMN}"`  // Stable identity (survives row insertion)
+        : `a."_cs_id" = b."_cs_id"`  // Fallback for old tables without origin ID
       : joinCondition  // Key-based for two-tables (uses user-selected keys)
 
     const diffCaseLogic = diffMode === 'preview'
-      ? `
-        CASE
-          WHEN a."_cs_id" IS NULL THEN 'added'
-          WHEN b."_cs_id" IS NULL THEN 'removed'
-          WHEN ${fullModificationExpr} THEN 'modified'
-          ELSE 'unchanged'
-        END as diff_status
-      `
+      ? useOriginId
+        ? `
+          CASE
+            WHEN a."${CS_ORIGIN_ID_COLUMN}" IS NULL THEN 'added'
+            WHEN b."${CS_ORIGIN_ID_COLUMN}" IS NULL THEN 'removed'
+            WHEN ${fullModificationExpr} THEN 'modified'
+            ELSE 'unchanged'
+          END as diff_status
+        `
+        : `
+          CASE
+            WHEN a."_cs_id" IS NULL THEN 'added'
+            WHEN b."_cs_id" IS NULL THEN 'removed'
+            WHEN ${fullModificationExpr} THEN 'modified'
+            ELSE 'unchanged'
+          END as diff_status
+        `
       : `
         CASE
           WHEN ${keyColumns.map((c) => `a."${c}" IS NULL`).join(' AND ')} THEN 'added'
@@ -665,9 +697,14 @@ export async function runDiff(
     // MEMORY OPTIMIZATION: Build explicit column list instead of SELECT *
     // The CTEs with ROW_NUMBER() OVER () require full table scan and materialization.
     // By selecting only needed columns, we reduce memory from ~1.5GB to ~200MB for 1M rows.
-    // Needed columns: _cs_id (row ID), key columns (join), value columns (modification check),
+    // Needed columns: _cs_id (row ID), _cs_origin_id (if using for matching),
+    // key columns (join), value columns (modification check),
     // plus new/removed columns (for column-level change detection)
     const neededColumns = new Set<string>(['_cs_id'])
+    // Add _cs_origin_id if using it for matching in preview mode
+    if (diffMode === 'preview' && useOriginId) {
+      neededColumns.add(CS_ORIGIN_ID_COLUMN)
+    }
     keyColumns.forEach(c => neededColumns.add(c))
     valueColumns.forEach(c => neededColumns.add(c))
     // Add columns only in A (user's removed columns) - needed for removedColumnModificationExpr
@@ -677,8 +714,7 @@ export async function runDiff(
 
     // Build column list for table A (source/original)
     // Note: colsA excludes internal columns, but we need _cs_id for row identification
-    // Use colsAAll to get all columns including internal ones
-    const colsAAllNames = colsAAll.map(c => c.column_name)
+    // Use colsAAllNames (defined earlier) to check all columns including internal ones
     const colsAFiltered = [...neededColumns].filter(c => colsAAllNames.includes(c))
     // Fallback to SELECT * if no columns match (shouldn't happen, but safety net)
     const columnListA = colsAFiltered.length > 0
@@ -687,8 +723,7 @@ export async function runDiff(
 
     // Build column list for table B (target/current)
     // Note: colsB excludes internal columns, but we need _cs_id for row identification
-    // Use colsBAll to get all columns including internal ones
-    const colsBAllNames = colsBAll.map(c => c.column_name)
+    // Use colsBAllNames (defined earlier) to check all columns including internal ones
     const colsBFiltered = [...neededColumns].filter(c => colsBAllNames.includes(c))
     // Fallback to SELECT * if no columns match (shouldn't happen, but safety net)
     const columnListB = colsBFiltered.length > 0

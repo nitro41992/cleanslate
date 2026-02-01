@@ -17,7 +17,7 @@ import type {
 } from '../types'
 import { generateId } from '@/lib/utils'
 import { quoteColumn, quoteTable } from '../utils/sql'
-import { getConnection } from '@/lib/duckdb'
+import { getConnection, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 
 export interface InsertRowParams {
   tableId: string
@@ -105,15 +105,28 @@ export class InsertRowCommand implements Command<InsertRowParams> {
 
       this.newCsId = String(newCsIdNum)
 
-      // Get all user columns (excluding _cs_id) for the INSERT
-      const userColumns = ctx.table.columns.filter((c) => c.name !== '_cs_id')
-      const columnNames = ['_cs_id', ...userColumns.map((c) => c.name)]
-      const columnValues = [
-        `'${this.newCsId}'`,
-        ...userColumns.map(() => 'NULL'),
-      ]
+      // Generate a new UUID for the origin ID (stable identity for diff tracking)
+      const newOriginId = crypto.randomUUID()
 
-      // Insert the new row
+      // Get all user columns (excluding internal columns) for the INSERT
+      // NOTE: We do NOT modify existing rows' _cs_origin_id - only set it for the new row
+      const userColumns = ctx.table.columns.filter((c) =>
+        c.name !== '_cs_id' && c.name !== CS_ORIGIN_ID_COLUMN
+      )
+
+      // Check if table has _cs_origin_id column (older tables may not have it)
+      const hasOriginId = ctx.table.columns.some((c) => c.name === CS_ORIGIN_ID_COLUMN)
+
+      const columnNames = hasOriginId
+        ? ['_cs_id', CS_ORIGIN_ID_COLUMN, ...userColumns.map((c) => c.name)]
+        : ['_cs_id', ...userColumns.map((c) => c.name)]
+
+      const columnValues = hasOriginId
+        ? [`'${this.newCsId}'`, `'${newOriginId}'`, ...userColumns.map(() => 'NULL')]
+        : [`'${this.newCsId}'`, ...userColumns.map(() => 'NULL')]
+
+      // Insert the new row with its own _cs_origin_id
+      // CRITICAL: Existing rows' _cs_origin_id are NOT modified (they keep their original UUIDs)
       await ctx.db.execute(
         `INSERT INTO ${quoteTable(tableName)} (${columnNames.map(quoteColumn).join(', ')}) VALUES (${columnValues.join(', ')})`
       )

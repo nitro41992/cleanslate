@@ -19,11 +19,26 @@ import { getStorageInfo, formatBytes } from './storage-info'
 import { toast as sonnerToast } from 'sonner'
 
 /**
- * Internal row ID column name for stable row identity across mutations.
+ * Internal row ID column name for ordering and positional identity.
  * This column is injected on table creation and used for UPDATE/DELETE operations.
  * It should be hidden from the UI.
+ *
+ * NOTE: _cs_id can change when rows are inserted (subsequent rows shift).
+ * For stable identity across mutations, use _cs_origin_id instead.
  */
 export const CS_ID_COLUMN = '_cs_id'
+
+/**
+ * Stable origin ID column name for row identity that survives mutations.
+ * This UUID is assigned at import time and NEVER changes, even when:
+ * - Rows are inserted before/after this row
+ * - Rows are deleted
+ * - The table is transformed
+ *
+ * Used by the diff engine to correctly identify the same row across snapshots,
+ * preventing false "modified" status when rows are inserted mid-table.
+ */
+export const CS_ORIGIN_ID_COLUMN = '_cs_origin_id'
 
 /**
  * Normalize a _cs_id value to a consistent string format.
@@ -43,23 +58,27 @@ export function normalizeCsId(value: unknown): string {
 }
 
 /**
- * Filter out internal columns (like _cs_id, __base backup columns) from column lists for UI display
+ * Filter out internal columns (like _cs_id, _cs_origin_id, __base backup columns) from column lists for UI display
  */
 export function filterInternalColumns(columns: string[]): string[] {
   return columns.filter(col =>
-    col !== CS_ID_COLUMN && !col.endsWith('__base')
+    col !== CS_ID_COLUMN &&
+    col !== CS_ORIGIN_ID_COLUMN &&
+    !col.endsWith('__base')
   )
 }
 
 /**
  * Check if a column is an internal system column
  * Includes:
- * - _cs_id (CleanSlate row ID)
+ * - _cs_id (CleanSlate row ID for ordering)
+ * - _cs_origin_id (CleanSlate stable row identity)
  * - __base backup columns (Tier 1 transforms)
  * - duckdb_* metadata columns (DuckDB internals)
  */
 export function isInternalColumn(columnName: string): boolean {
   return columnName === CS_ID_COLUMN ||
+         columnName === CS_ORIGIN_ID_COLUMN ||
          columnName.endsWith('__base') ||
          columnName.startsWith('duckdb_')
 }
@@ -561,13 +580,18 @@ export async function loadCSV(
       ? `read_csv('${file.name}'${optionsStr})`
       : `read_csv_auto('${file.name}')`
 
-    // Create table from CSV with _cs_id for stable row identity
-    // CRITICAL: Use ROW_NUMBER() to preserve insertion order, not gen_random_uuid()
-    // Random UUIDs don't preserve order, causing rows to shuffle on CTAS operations
-    // Use BIGINT for proper numeric ordering
+    // Create table from CSV with:
+    // - _cs_id: Sequential ID for ordering (BIGINT, can change on row insert)
+    // - _cs_origin_id: Stable UUID for row identity (never changes after import)
+    // CRITICAL: Use ROW_NUMBER() for _cs_id to preserve insertion order
+    // Use gen_random_uuid() for _cs_origin_id for stable identity across mutations
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
-      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", * FROM ${readCsvQuery}
+      SELECT
+        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
+        *
+      FROM ${readCsvQuery}
     `)
 
     // Get column info (excluding internal _cs_id column)
@@ -598,11 +622,16 @@ export async function loadJSON(
 
     await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
-    // Create table from JSON with _cs_id for stable row identity
-    // CRITICAL: Use ROW_NUMBER() to preserve insertion order, not gen_random_uuid()
+    // Create table from JSON with:
+    // - _cs_id: Sequential ID for ordering (BIGINT, can change on row insert)
+    // - _cs_origin_id: Stable UUID for row identity (never changes after import)
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
-      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", * FROM read_json_auto('${file.name}')
+      SELECT
+        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
+        *
+      FROM read_json_auto('${file.name}')
     `)
 
     const columnsResult = await connection.query(`
@@ -631,11 +660,16 @@ export async function loadParquet(
 
     await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
-    // Create table from Parquet with _cs_id for stable row identity
-    // CRITICAL: Use ROW_NUMBER() to preserve insertion order, not gen_random_uuid()
+    // Create table from Parquet with:
+    // - _cs_id: Sequential ID for ordering (BIGINT, can change on row insert)
+    // - _cs_origin_id: Stable UUID for row identity (never changes after import)
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
-      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", * FROM read_parquet('${file.name}')
+      SELECT
+        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
+        *
+      FROM read_parquet('${file.name}')
     `)
 
     const columnsResult = await connection.query(`
@@ -682,12 +716,17 @@ export async function loadXLSX(
   return withMutex(async () => {
     const connection = await getConnection()
 
-    // Create table with _cs_id column for stable row identity + user columns
-    // Use BIGINT for _cs_id for proper numeric ordering
-    const columnDefs = [`"${CS_ID_COLUMN}" BIGINT`, ...columns.map((col) => `"${col}" VARCHAR`)].join(', ')
+    // Create table with internal columns + user columns
+    // - _cs_id: Sequential ID for ordering (BIGINT)
+    // - _cs_origin_id: Stable UUID for row identity (VARCHAR)
+    const columnDefs = [
+      `"${CS_ID_COLUMN}" BIGINT`,
+      `"${CS_ORIGIN_ID_COLUMN}" VARCHAR`,
+      ...columns.map((col) => `"${col}" VARCHAR`)
+    ].join(', ')
     await connection.query(`CREATE OR REPLACE TABLE "${tableName}" (${columnDefs})`)
 
-    // Insert data in batches with sequential IDs to preserve insertion order
+    // Insert data in batches with sequential IDs and UUIDs
     const batchSize = 500
     for (let i = 0; i < jsonData.length; i += batchSize) {
       const batch = jsonData.slice(i, i + batchSize)
@@ -695,8 +734,11 @@ export async function loadXLSX(
         .map((row, idx) => {
           // Use sequential ID based on position in jsonData array
           const rowId = i + idx + 1 // 1-indexed to match ROW_NUMBER()
+          // Generate a UUID for origin ID
+          const originId = crypto.randomUUID()
           const vals = [
             `${rowId}`, // _cs_id as numeric BIGINT
+            `'${originId}'`, // _cs_origin_id as VARCHAR UUID
             ...columns.map((col) => {
               const val = row[col]
               if (val === null || val === undefined || val === '') return 'NULL'
@@ -1244,6 +1286,20 @@ export async function tableHasCsId(tableName: string): Promise<boolean> {
 }
 
 /**
+ * Check if a table has the _cs_origin_id column
+ * Returns false for tables created before this feature was added.
+ */
+export async function tableHasOriginId(tableName: string): Promise<boolean> {
+  const connection = await getConnection()
+  const result = await connection.query(`
+    SELECT COUNT(*) as count
+    FROM information_schema.columns
+    WHERE table_name = '${tableName}' AND column_name = '${CS_ORIGIN_ID_COLUMN}'
+  `)
+  return Number(result.toArray()[0].toJSON().count) > 0
+}
+
+/**
  * Add _cs_id column to an existing table (migration for legacy tables)
  * CRITICAL: Use ROW_NUMBER() to preserve insertion order
  */
@@ -1288,8 +1344,8 @@ export async function getCellValue(
 /**
  * Duplicate a table with a new name
  * Uses CREATE TABLE AS SELECT for efficient copying
- * @param preserveRowIds - If true, keeps the same _cs_id values (for timeline snapshots)
- *                        If false, generates new _cs_id values (for user-facing duplicates)
+ * @param preserveRowIds - If true, keeps the same _cs_id and _cs_origin_id values (for timeline snapshots)
+ *                        If false, generates new _cs_id and _cs_origin_id values (for user-facing duplicates)
  */
 export async function duplicateTable(
   sourceName: string,
@@ -1298,24 +1354,32 @@ export async function duplicateTable(
 ): Promise<{ columns: { name: string; type: string }[]; rowCount: number }> {
   const connection = await getConnection()
 
-  // Check if source has _cs_id
+  // Check if source has internal ID columns
   const hasCsId = await tableHasCsId(sourceName)
+  const hasOriginId = await tableHasOriginId(sourceName)
 
-  if (hasCsId && !preserveRowIds) {
-    // Generate new _cs_id values for user-facing duplicates
-    // Get all columns except _cs_id
+  if ((hasCsId || hasOriginId) && !preserveRowIds) {
+    // Generate new internal IDs for user-facing duplicates
+    // Get all columns except internal ones
     const cols = await getTableColumns(sourceName, true)
-    const userCols = cols.filter(c => c.name !== CS_ID_COLUMN).map(c => `"${c.name}"`)
+    const userCols = cols
+      .filter(c => c.name !== CS_ID_COLUMN && c.name !== CS_ORIGIN_ID_COLUMN)
+      .map(c => `"${c.name}"`)
 
-    // CRITICAL: Use ROW_NUMBER() to preserve row order, not gen_random_uuid()
-    // Order by source _cs_id to maintain original ordering
+    // CRITICAL: Use ROW_NUMBER() for _cs_id to preserve row order
+    // Use gen_random_uuid() for _cs_origin_id for new stable identities
+    // Order by source _cs_id (if exists) to maintain original ordering
+    const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
     await connection.query(`
       CREATE TABLE "${targetName}" AS
-      SELECT ROW_NUMBER() OVER (ORDER BY "${CS_ID_COLUMN}") as "${CS_ID_COLUMN}", ${userCols.join(', ')}
+      SELECT
+        ROW_NUMBER() OVER (${orderClause}) as "${CS_ID_COLUMN}",
+        gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
+        ${userCols.join(', ')}
       FROM "${sourceName}"
     `)
   } else {
-    // Preserve _cs_id values (for timeline snapshots) or source has no _cs_id
+    // Preserve all ID values (for timeline snapshots) or source has no internal IDs
     // ORDER BY ensures deterministic row ordering for snapshot consistency
     const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
     await connection.query(`

@@ -1,4 +1,4 @@
-import { query, execute, getTableColumns, CS_ID_COLUMN } from '@/lib/duckdb'
+import { query, execute, getTableColumns, CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { JoinType, StackValidation, JoinValidation } from '@/types'
 
@@ -50,6 +50,10 @@ export async function validateStack(
 /**
  * Stack two tables using UNION ALL
  * Missing columns are filled with NULL
+ *
+ * NOTE: Both _cs_id and _cs_origin_id are regenerated for the combined table.
+ * _cs_origin_id gets new UUIDs since rows from different source tables
+ * should not share identity (they came from different original data sources).
  */
 export async function stackTables(
   tableA: string,
@@ -60,10 +64,10 @@ export async function stackTables(
     const colsA = await getTableColumns(tableA)
     const colsB = await getTableColumns(tableB)
 
-    // Get all unique column names, excluding _cs_id (will be regenerated)
+    // Get all unique column names, excluding internal columns (will be regenerated)
     const allColNames = [
       ...new Set([...colsA.map((c) => c.name), ...colsB.map((c) => c.name)]),
-    ].filter((col) => col !== CS_ID_COLUMN)
+    ].filter((col) => col !== CS_ID_COLUMN && col !== CS_ORIGIN_ID_COLUMN)
 
     const namesA = new Set(colsA.map((c) => c.name))
     const namesB = new Set(colsB.map((c) => c.name))
@@ -78,10 +82,14 @@ export async function stackTables(
       .map((col) => (namesB.has(col) ? `"${col}"` : `NULL as "${col}"`))
       .join(', ')
 
-    // Execute UNION ALL with regenerated _cs_id
+    // Execute UNION ALL with regenerated _cs_id and _cs_origin_id
+    // New UUIDs are generated for all rows since they now form a new combined entity
     await execute(`
       CREATE OR REPLACE TABLE "${resultName}" AS
-      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", ${allColNames.map((c) => `"${c}"`).join(', ')}
+      SELECT
+        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
+        ${allColNames.map((c) => `"${c}"`).join(', ')}
       FROM (
         SELECT ${selectA} FROM "${tableA}"
         UNION ALL
@@ -202,6 +210,10 @@ export async function autoCleanKeys(
 
 /**
  * Join two tables on a key column
+ *
+ * NOTE: Both _cs_id and _cs_origin_id are regenerated for the joined table.
+ * _cs_origin_id gets new UUIDs since join results create new row combinations
+ * that didn't exist in either source table.
  */
 export async function joinTables(
   leftTable: string,
@@ -220,12 +232,13 @@ export async function joinTables(
       (c) =>
         c.name !== keyColumn &&
         !leftColNames.has(c.name) &&
-        c.name !== CS_ID_COLUMN
+        c.name !== CS_ID_COLUMN &&
+        c.name !== CS_ORIGIN_ID_COLUMN
     )
 
-    // Build SELECT clause (exclude _cs_id from source tables)
+    // Build SELECT clause (exclude internal columns from source tables)
     const leftSelect = colsL
-      .filter((c) => c.name !== CS_ID_COLUMN)
+      .filter((c) => c.name !== CS_ID_COLUMN && c.name !== CS_ORIGIN_ID_COLUMN)
       .map((c) => `l."${c.name}"`)
       .join(', ')
     const rightSelect = rightOnlyCols.map((c) => `r."${c.name}"`).join(', ')
@@ -240,10 +253,14 @@ export async function joinTables(
     }
     const sqlJoinType = joinTypeMap[joinType]
 
-    // Execute join with regenerated _cs_id
+    // Execute join with regenerated _cs_id and _cs_origin_id
+    // New UUIDs are generated since join creates new row combinations
     await execute(`
       CREATE OR REPLACE TABLE "${resultName}" AS
-      SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", *
+      SELECT
+        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
+        *
       FROM (
         SELECT ${selectClause}
         FROM "${leftTable}" l
