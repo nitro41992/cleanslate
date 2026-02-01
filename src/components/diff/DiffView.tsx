@@ -316,6 +316,40 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         mode === 'compare-preview' ? 'preview' : 'two-tables'  // Row-based for preview, key-based for two-tables
       )
 
+      // Reorder allColumns to match the target table's user-defined column order
+      // This ensures diff view shows columns in the same order as the data preview
+      const targetTable = mode === 'compare-preview'
+        ? activeTableInfo
+        : tableBInfo
+
+      let orderedColumns = config.allColumns
+      if (targetTable?.columnOrder && targetTable.columnOrder.length > 0) {
+        const columnOrderSet = new Set(targetTable.columnOrder)
+        const orderedFromTarget: string[] = []
+        const notInOrder: string[] = []
+
+        // First, add columns in the user's defined order
+        for (const col of targetTable.columnOrder) {
+          if (config.allColumns.includes(col)) {
+            orderedFromTarget.push(col)
+          }
+        }
+
+        // Then, append any columns not in the order (e.g., columns only in the original/source)
+        for (const col of config.allColumns) {
+          if (!columnOrderSet.has(col)) {
+            notInOrder.push(col)
+          }
+        }
+
+        orderedColumns = [...orderedFromTarget, ...notInOrder]
+        console.log('[Diff] Reordered columns to match user column order:', {
+          original: config.allColumns.length,
+          reordered: orderedColumns.length,
+          targetTable: targetTable.name
+        })
+      }
+
       // For Parquet-backed diffs, materialize into temp table for fast keyset pagination
       // This converts O(n) OFFSET queries to O(1) keyset queries on scroll
       if (config.storageType === 'parquet' && config.totalDiffRows > 0) {
@@ -324,7 +358,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           config.diffTableName,
           config.sourceTableName,
           config.targetTableName,
-          config.allColumns,
+          orderedColumns,
           config.newColumns,
           config.removedColumns
         )
@@ -335,7 +369,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         sourceTableName: config.sourceTableName,
         targetTableName: config.targetTableName,
         totalDiffRows: config.totalDiffRows,
-        allColumns: config.allColumns,
+        allColumns: orderedColumns,
         keyOrderBy: config.keyOrderBy,
         summary: config.summary,
         newColumns: config.newColumns,
