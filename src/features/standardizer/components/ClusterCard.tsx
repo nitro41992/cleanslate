@@ -200,7 +200,8 @@ function UniqueValueCard({
   onSetReplacement?: (valueId: string, replacement: string | null) => void
 }) {
   const value = cluster.values[0]
-  const hasReplacement = value?.customReplacement && value.customReplacement !== value.value
+  // Check if customReplacement is defined (not undefined) to allow empty string replacements
+  const hasReplacement = value?.customReplacement !== undefined && value.customReplacement !== value.value
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(value?.customReplacement || '')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -215,7 +216,8 @@ function UniqueValueCard({
 
   const handleOpenChange = (open: boolean) => {
     if (open) {
-      setEditValue(value?.customReplacement || value?.value || '')
+      // Use customReplacement if defined (including empty string), otherwise fall back to original value
+      setEditValue(value?.customReplacement !== undefined ? value.customReplacement : (value?.value || ''))
     }
     setIsEditing(open)
   }
@@ -223,8 +225,9 @@ function UniqueValueCard({
   const handleConfirm = () => {
     if (onSetReplacement && value) {
       const trimmed = editValue.trim()
-      // Set null if empty or same as original
-      if (!trimmed || trimmed === value.value) {
+      // Set null only if same as original (no change)
+      // Allow empty string as a valid replacement to blank out values
+      if (trimmed === value.value) {
         onSetReplacement(value.id, null)
       } else {
         onSetReplacement(value.id, trimmed)
@@ -295,9 +298,9 @@ function UniqueValueCard({
                   <ArrowRight className="h-3 w-3 text-primary shrink-0" />
                   <span
                     className="text-sm text-primary font-medium truncate"
-                    title={value?.customReplacement}
+                    title={value?.customReplacement || '(empty)'}
                   >
-                    {value?.customReplacement}
+                    {value?.customReplacement || '(empty)'}
                   </span>
                 </>
               ) : (

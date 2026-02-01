@@ -139,7 +139,8 @@ function calculateStats(clusters: ValueCluster[]) {
         selectedValues++
       }
       // Count unique values with custom replacements (single-value clusters)
-      if (cluster.values.length === 1 && value.customReplacement && value.customReplacement !== value.value) {
+      // Check !== undefined to allow empty string replacements
+      if (cluster.values.length === 1 && value.customReplacement !== undefined && value.customReplacement !== value.value) {
         selectedValues++
       }
     }
@@ -326,8 +327,9 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
       const updatedValues = cluster.values.map((value) => {
         if (value.id !== valueId) return value
 
-        // Clear replacement if null/empty or same as original
-        if (!replacement || replacement.trim() === '' || replacement === value.value) {
+        // Clear replacement if null (explicit clear) or same as original (no change)
+        // Allow empty string as a valid replacement to blank out values
+        if (replacement === null || replacement === value.value) {
           return {
             ...value,
             customReplacement: undefined,
@@ -335,7 +337,7 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
           }
         }
 
-        // Set replacement and auto-select
+        // Set replacement and auto-select (including empty string)
         return {
           ...value,
           customReplacement: replacement,
@@ -466,7 +468,8 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
       // Handle single-value clusters (unique values) with custom replacements
       if (cluster.values.length === 1) {
         const value = cluster.values[0]
-        if (value.customReplacement && value.customReplacement !== value.value) {
+        // Check !== undefined to allow empty string replacements
+        if (value.customReplacement !== undefined && value.customReplacement !== value.value) {
           mappings.push({
             fromValue: value.value,
             toValue: value.customReplacement,

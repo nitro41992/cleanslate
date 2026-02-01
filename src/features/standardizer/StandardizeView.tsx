@@ -91,7 +91,10 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       }
 
       // Keyboard shortcuts for filtering (use letters to avoid conflict with global nav)
-      if (clusters.length > 0 && !e.ctrlKey && !e.metaKey) {
+      // Skip shortcuts when user is typing in an input field
+      const target = e.target as HTMLElement
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      if (clusters.length > 0 && !e.ctrlKey && !e.metaKey && !isTyping) {
         switch (e.key) {
           case 'a':
           case 'A':
