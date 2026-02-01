@@ -28,6 +28,7 @@ import {
   deleteParquetSnapshot,
   cleanupCorruptSnapshots,
   cleanupOrphanedDiffFiles,
+  cleanupDuplicateCaseSnapshots,
 } from '@/lib/opfs/snapshot-storage'
 import {
   getChangelogStorage,
@@ -177,6 +178,8 @@ export async function performHydration(isRehydration = false): Promise<void> {
   // Clean up corrupt and orphaned files
   await cleanupCorruptSnapshots()
   await cleanupOrphanedDiffFiles()
+  // Clean up duplicate case-mismatched files (migration from pre-fix state)
+  await cleanupDuplicateCaseSnapshots()
 
   // List all saved Parquet files
   const snapshots = await listParquetSnapshots()
@@ -206,10 +209,20 @@ export async function performHydration(isRehydration = false): Promise<void> {
   // Get saved table IDs for consistency
   const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
 
-  // Build tableName → tableId mapping
+  // Build normalized lookup map: lowercase table name → original tableId
+  // This handles case mismatch between Parquet filenames (lowercase) and app-state.json (original casing)
+  const normalizedSavedTableIds = new Map<string, string>()
+  if (savedTableIds) {
+    for (const [name, id] of Object.entries(savedTableIds)) {
+      const normalizedName = name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      normalizedSavedTableIds.set(normalizedName, id)
+    }
+  }
+
+  // Build tableName → tableId mapping using normalized lookup
   const tableNameToId = new Map<string, string>()
   for (const tableName of uniqueTables) {
-    const tableId = savedTableIds?.[tableName] ?? tableName
+    const tableId = normalizedSavedTableIds.get(tableName) ?? tableName
     tableNameToId.set(tableName, tableId)
   }
 
@@ -240,21 +253,41 @@ export async function performHydration(isRehydration = false): Promise<void> {
   let restoredCount = 0
   const tableIdToName = new Map<string, string>()
 
-  for (const tableName of uniqueTables) {
+  // Build normalized lookup for savedTables: lowercase name → original savedTable entry
+  // This allows matching Parquet filenames (lowercase) to app-state entries (original casing)
+  const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
+  const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }>()
+  if (savedTables) {
+    for (const t of savedTables) {
+      const normalizedName = t.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      normalizedSavedTables.set(normalizedName, t)
+    }
+  }
+
+  for (const snapshotName of uniqueTables) {
     try {
+      const tableId = tableNameToId.get(snapshotName) ?? snapshotName
+      const savedTable = normalizedSavedTables.get(snapshotName)
+      // Use original name from app-state.json if available, otherwise use snapshot name
+      const tableName = savedTable?.name ?? snapshotName
+
       // Skip if already exists (prevents duplicates)
       const existingTables = useTableStore.getState().tables
-      if (existingTables.some(t => t.name === tableName || t.id === tableName)) {
+      const normalizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      if (existingTables.some(t => {
+        const normalizedExisting = t.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+        return normalizedExisting === normalizedTableName || t.id === tableId
+      })) {
         console.log(`[Persistence] Skipping ${tableName} - already in store`)
         continue
       }
 
-      const tableId = tableNameToId.get(tableName) ?? tableName
-      const shouldThaw = tableName === tableToThaw
+      const shouldThaw = snapshotName === tableToThaw
 
       if (shouldThaw) {
         // THAW: Import from Parquet into DuckDB (full hydration)
-        await importTableFromParquet(db, conn, tableName, tableName)
+        // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
+        await importTableFromParquet(db, conn, snapshotName, tableName)
 
         // Get metadata from DuckDB
         const cols = await getTableColumns(tableName)
@@ -268,20 +301,16 @@ export async function performHydration(isRehydration = false): Promise<void> {
         console.log(`[Persistence] Thawed ${tableName} (${rowCount.toLocaleString()} rows)`)
       } else {
         // FREEZE: Add metadata only, don't import into DuckDB
-        // Get metadata from saved app-state (already restored) or from Parquet header
-        const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
-        const savedTable = savedTables?.find(t => t.id === tableId || t.name === tableName)
-
         if (savedTable) {
-          // Use saved metadata
+          // Use saved metadata with original table name
           addTable(tableName, savedTable.columns, savedTable.rowCount, tableId)
           markTableFrozen(tableId)
           console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
         } else {
           // Fallback: Read Parquet metadata directly
           // We need to briefly import to get accurate metadata, then drop
-          console.log(`[Persistence] No saved metadata for ${tableName}, reading from Parquet header...`)
-          await importTableFromParquet(db, conn, tableName, tableName)
+          console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from Parquet header...`)
+          await importTableFromParquet(db, conn, snapshotName, tableName)
           const cols = await getTableColumns(tableName)
           const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
           const rowCount = Number(countResult.toArray()[0].toJSON().count)
@@ -297,7 +326,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
 
       restoredCount++
     } catch (err) {
-      console.error(`[Persistence] Failed to restore ${tableName}:`, err)
+      console.error(`[Persistence] Failed to restore ${snapshotName}:`, err)
     }
   }
 
@@ -483,7 +512,10 @@ export async function compactChangelog(force = false): Promise<number> {
           // Track in UI store for status bar indicator
           useUIStore.getState().addSavingTable(table.name)
 
-          await exportTableToParquet(db, conn, table.name, table.name, {
+          // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
+          const normalizedSnapshotId = table.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
+          await exportTableToParquet(db, conn, table.name, normalizedSnapshotId, {
             onChunkProgress: (current, total, tableName) => {
               useUIStore.getState().setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
             },
@@ -590,8 +622,11 @@ export async function forceSaveAll(): Promise<void> {
       // Track in UI store
       uiState.addSavingTable(table.name)
 
+      // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
+      const normalizedSnapshotId = table.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
       // Export to Parquet
-      await exportTableToParquet(db, conn, table.name, table.name, {
+      await exportTableToParquet(db, conn, table.name, normalizedSnapshotId, {
         onChunkProgress: (current, total, tableName) => {
           uiState.setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
         },
@@ -726,6 +761,9 @@ export function usePersistence() {
         // Clean up any orphaned diff files that survived browser refresh
         await cleanupOrphanedDiffFiles()
 
+        // Clean up duplicate case-mismatched files (migration from pre-fix state)
+        await cleanupDuplicateCaseSnapshots()
+
         // List all saved Parquet files
         const snapshots = await listParquetSnapshots()
 
@@ -763,10 +801,20 @@ export function usePersistence() {
         // Get saved table IDs for consistency
         const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
 
-        // Build tableName → tableId mapping
+        // Build normalized lookup map: lowercase table name → original tableId
+        // This handles case mismatch between Parquet filenames (lowercase) and app-state.json (original casing)
+        const normalizedSavedTableIds = new Map<string, string>()
+        if (savedTableIds) {
+          for (const [name, id] of Object.entries(savedTableIds)) {
+            const normalizedName = name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+            normalizedSavedTableIds.set(normalizedName, id)
+          }
+        }
+
+        // Build tableName → tableId mapping using normalized lookup
         const tableNameToId = new Map<string, string>()
         for (const tableName of uniqueTables) {
-          const tableId = savedTableIds?.[tableName] ?? tableName
+          const tableId = normalizedSavedTableIds.get(tableName) ?? tableName
           tableNameToId.set(tableName, tableId)
         }
 
@@ -796,21 +844,41 @@ export function usePersistence() {
         let restoredCount = 0
         const tableIdToName = new Map<string, string>()
 
-        for (const tableName of uniqueTables) {
+        // Build normalized lookup for savedTables: lowercase name → original savedTable entry
+        // This allows matching Parquet filenames (lowercase) to app-state entries (original casing)
+        const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
+        const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }>()
+        if (savedTables) {
+          for (const t of savedTables) {
+            const normalizedName = t.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+            normalizedSavedTables.set(normalizedName, t)
+          }
+        }
+
+        for (const snapshotName of uniqueTables) {
           try {
+            const tableId = tableNameToId.get(snapshotName) ?? snapshotName
+            const savedTable = normalizedSavedTables.get(snapshotName)
+            // Use original name from app-state.json if available, otherwise use snapshot name
+            const tableName = savedTable?.name ?? snapshotName
+
             // Skip if table already exists in store (prevents duplicates on hot reload)
             const existingTables = useTableStore.getState().tables
-            if (existingTables.some(t => t.name === tableName || t.id === tableName)) {
+            const normalizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+            if (existingTables.some(t => {
+              const normalizedExisting = t.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+              return normalizedExisting === normalizedTableName || t.id === tableId
+            })) {
               console.log(`[Persistence] Skipping ${tableName} - already in store`)
               continue
             }
 
-            const tableId = tableNameToId.get(tableName) ?? tableName
-            const shouldThaw = tableName === tableToThaw
+            const shouldThaw = snapshotName === tableToThaw
 
             if (shouldThaw) {
               // THAW: Import from Parquet into DuckDB (full hydration)
-              await importTableFromParquet(db, conn, tableName, tableName)
+              // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
+              await importTableFromParquet(db, conn, snapshotName, tableName)
 
               // Get metadata from DuckDB
               const cols = await getTableColumns(tableName)
@@ -824,19 +892,15 @@ export function usePersistence() {
               console.log(`[Persistence] Thawed ${tableName} (${rowCount.toLocaleString()} rows)`)
             } else {
               // FREEZE: Add metadata only, don't import into DuckDB
-              // Get metadata from saved app-state (already restored) or from Parquet header
-              const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number }> }).__CLEANSLATE_SAVED_TABLES__
-              const savedTable = savedTables?.find(t => t.id === tableId || t.name === tableName)
-
               if (savedTable) {
-                // Use saved metadata
+                // Use saved metadata with original table name
                 addTable(tableName, savedTable.columns, savedTable.rowCount, tableId)
                 markTableFrozen(tableId)
                 console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
               } else {
                 // Fallback: Read Parquet metadata directly (requires brief import)
-                console.log(`[Persistence] No saved metadata for ${tableName}, reading from Parquet header...`)
-                await importTableFromParquet(db, conn, tableName, tableName)
+                console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from Parquet header...`)
+                await importTableFromParquet(db, conn, snapshotName, tableName)
                 const cols = await getTableColumns(tableName)
                 const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
                 const rowCount = Number(countResult.toArray()[0].toJSON().count)
@@ -852,7 +916,7 @@ export function usePersistence() {
 
             restoredCount++
           } catch (err) {
-            console.error(`[Persistence] Failed to restore ${tableName}:`, err)
+            console.error(`[Persistence] Failed to restore ${snapshotName}:`, err)
           }
         }
 
@@ -946,9 +1010,13 @@ export function usePersistence() {
 
         console.log(`[Persistence] Saving ${tableName}...`)
 
+        // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
+        // This prevents duplicate Parquet files in OPFS which is case-sensitive.
+        const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
         // Export table to Parquet (overwrites existing snapshot)
         // Pass chunk progress callback for large table UI feedback
-        await exportTableToParquet(db, conn, tableName, tableName, {
+        await exportTableToParquet(db, conn, tableName, normalizedSnapshotId, {
           onChunkProgress: (current, total, table) => {
             useUIStore.getState().setChunkProgress({ tableName: table, currentChunk: current, totalChunks: total })
           },

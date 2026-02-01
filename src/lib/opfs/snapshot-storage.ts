@@ -659,6 +659,11 @@ export async function freezeTable(
 ): Promise<boolean> {
   console.log(`[Freeze] Freezing table: ${tableName}`)
 
+  // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
+  // This prevents duplicate Parquet files (e.g., "Foo.parquet" vs "foo.parquet") in OPFS
+  // which is case-sensitive and would cause both to be imported as separate tables on reload.
+  const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
   try {
     // Step 1: Check if table exists in DuckDB
     const tableCheckResult = await conn.query(`
@@ -682,16 +687,16 @@ export async function freezeTable(
 
       // Export to Parquet using Safe Save pattern
       // This writes to temp file → renames → confirms success
-      await exportTableToParquet(db, conn, tableName, tableName)
+      await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
 
       // Mark table as clean after successful export
       useUIStore.getState().markTableClean(tableId)
     } else {
       // Table is clean, but verify Parquet exists before dropping
-      const snapshotExists = await checkSnapshotFileExists(tableName)
+      const snapshotExists = await checkSnapshotFileExists(normalizedSnapshotId)
       if (!snapshotExists) {
         console.log(`[Freeze] No Parquet snapshot for clean table ${tableName}, creating one`)
-        await exportTableToParquet(db, conn, tableName, tableName)
+        await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
       }
     }
 
@@ -731,6 +736,9 @@ export async function thawTable(
 ): Promise<boolean> {
   console.log(`[Thaw] Thawing table: ${tableName}`)
 
+  // CRITICAL: Use normalized (lowercase) snapshotId to match freezeTable and timeline-engine
+  const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
   try {
     // Step 1: Check if table already exists in DuckDB
     const tableCheckResult = await conn.query(`
@@ -745,14 +753,14 @@ export async function thawTable(
     }
 
     // Step 2: Check if Parquet snapshot exists
-    const snapshotExists = await checkSnapshotFileExists(tableName)
+    const snapshotExists = await checkSnapshotFileExists(normalizedSnapshotId)
     if (!snapshotExists) {
       console.error(`[Thaw] No Parquet snapshot found for ${tableName}`)
       return false
     }
 
     // Step 3: Import from Parquet
-    await importTableFromParquet(db, conn, tableName, tableName)
+    await importTableFromParquet(db, conn, normalizedSnapshotId, tableName)
     console.log(`[Thaw] Imported ${tableName} into DuckDB from Parquet`)
 
     return true
@@ -937,5 +945,92 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
     }
   } catch (error) {
     console.warn('[Snapshot] Failed to run corrupt file cleanup:', error)
+  }
+}
+
+/**
+ * Clean up duplicate Parquet files caused by case mismatch.
+ *
+ * Prior to this fix, the timeline-engine created lowercase Parquet filenames
+ * while the persistence system used original casing. This resulted in both
+ * "foo.parquet" and "Foo.parquet" existing in OPFS (which is case-sensitive).
+ *
+ * This cleanup step removes non-normalized (mixed-case) files when a normalized
+ * (lowercase) version exists, preventing duplicate table imports on reload.
+ *
+ * Call this once at application startup, after cleanupCorruptSnapshots().
+ */
+export async function cleanupDuplicateCaseSnapshots(): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory()
+
+    let appDir: FileSystemDirectoryHandle
+    try {
+      appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    } catch {
+      return // Directory doesn't exist, nothing to clean
+    }
+
+    let snapshotsDir: FileSystemDirectoryHandle
+    try {
+      snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    } catch {
+      return // Snapshots directory doesn't exist, nothing to clean
+    }
+
+    // Collect all Parquet filenames
+    const allFiles: string[] = []
+    // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
+    for await (const [name, handle] of snapshotsDir.entries()) {
+      if (handle.kind === 'file' && name.endsWith('.parquet')) {
+        allFiles.push(name)
+      }
+    }
+
+    // Group files by normalized (lowercase) name
+    const normalizedGroups = new Map<string, string[]>()
+    for (const fileName of allFiles) {
+      // Normalize: remove extension, lowercase, re-add extension
+      const baseName = fileName.replace('.parquet', '').replace(/_part_\d+$/, '')
+      const normalizedBase = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      const group = normalizedGroups.get(normalizedBase) || []
+      group.push(fileName)
+      normalizedGroups.set(normalizedBase, group)
+    }
+
+    let duplicatesRemoved = 0
+
+    // For each group with multiple files, keep the lowercase one, delete others
+    for (const [, files] of normalizedGroups) {
+      if (files.length <= 1) continue
+
+      // Find which files are fully lowercase (normalized)
+      const normalizedFiles = files.filter(f => {
+        const base = f.replace('.parquet', '').replace(/_part_\d+$/, '')
+        return base === base.toLowerCase()
+      })
+
+      // If there's at least one normalized file, delete non-normalized duplicates
+      if (normalizedFiles.length > 0) {
+        for (const file of files) {
+          const base = file.replace('.parquet', '').replace(/_part_\d+$/, '')
+          if (base !== base.toLowerCase()) {
+            console.log(`[Snapshot] Removing duplicate non-normalized file: ${file} (keeping lowercase version)`)
+            try {
+              await snapshotsDir.removeEntry(file)
+              duplicatesRemoved++
+            } catch (err) {
+              console.warn(`[Snapshot] Failed to remove duplicate ${file}:`, err)
+            }
+          }
+        }
+      }
+    }
+
+    if (duplicatesRemoved > 0) {
+      console.log(`[Snapshot] Removed ${duplicatesRemoved} duplicate case-mismatched file(s)`)
+    }
+  } catch (error) {
+    console.warn('[Snapshot] Failed to clean up duplicate case snapshots:', error)
   }
 }
