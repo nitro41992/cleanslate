@@ -301,18 +301,40 @@ LEFT JOIN target ON page.b_row_id = target._cs_id
 
 ---
 
-### ⏸️ NOT IMPLEMENTED: Transform Performance Optimizations
+### ✅ COMPLETED: Transform Performance - Option C (Reuse Snapshot as Persistence)
 
-These remain as **future work** - transforms are slow by design for data safety:
+**Problem:** Each Tier 3 transform was doing double I/O:
+1. Step snapshot export: ~35MB to OPFS
+2. Persistence auto-save: ~35MB to OPFS (same data!)
+
+**Solution:** Copy snapshot files to persistence location instead of re-exporting.
+
+**Files Modified:**
+- `src/lib/timeline-engine.ts` - `createStepSnapshot()` now copies snapshot → persistence
+
+**Pattern (same as original snapshots):**
+```typescript
+// After exporting snapshot
+await exportTableToParquet(db, conn, tableName, snapshotId)
+
+// Copy to persistence location (instant, no re-export!)
+await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+
+// Suppress auto-save for 10s
+markTableAsRecentlySaved(tableId, 10_000)
+```
+
+**Benefit:** ~35MB I/O saved per Tier 3 transform (~50% reduction)
+
+---
+
+### ⏸️ REMAINING: Future Transform Optimizations
 
 | Option | Description | Benefit | Status |
 |--------|-------------|---------|--------|
 | A | Skip step snapshots for Tier 1 transforms | ~35MB I/O saved per transform | Not started |
 | B | Defer persistence during transform chains | Batch multiple transforms | Not started |
-| C | Reuse snapshot as persistence file | Cut I/O in half | Not started |
 | D | Streaming/incremental snapshots | Eliminate full-table exports | Not started |
-
-**Recommendation:** Option C (reuse snapshot as persistence) would provide the best ROI. Requires coordination between `timeline-engine.ts` and `usePersistence.ts`.
 
 ---
 

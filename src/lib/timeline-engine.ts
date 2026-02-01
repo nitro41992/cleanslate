@@ -378,6 +378,40 @@ export async function createStepSnapshot(
     // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
+    // OPTIMIZATION: Copy snapshot files to persistence location (instant, no re-export!)
+    // This eliminates the "double tax" where transform exports + auto-save re-exports
+    // Pattern: snapshot_<id>_<step>.parquet → <tableName>.parquet
+    try {
+      const root = await navigator.storage.getDirectory()
+      const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+      const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+      const { copyFile, listFiles } = await import('@/lib/opfs/opfs-helpers')
+
+      // Use sanitized table name for persistence (matches persistence system naming)
+      const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
+      // Check if this is a chunked export (multiple _part_N files)
+      const chunkFiles = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
+
+      if (chunkFiles.length > 0) {
+        // Copy chunked files: snapshot_xxx_0_part_0.parquet → tablename_part_0.parquet
+        for (const chunkFile of chunkFiles) {
+          const partMatch = chunkFile.match(/_part_(\d+)\.parquet$/)
+          if (partMatch) {
+            const destFile = `${sanitizedTableName}_part_${partMatch[1]}.parquet`
+            await copyFile(snapshotsDir, chunkFile, destFile)
+          }
+        }
+        console.log(`[Snapshot] Created persistence copy via file copy (${chunkFiles.length} chunks) - saved ~35MB I/O`)
+      } else {
+        // Copy single file: snapshot_xxx_0.parquet → tablename.parquet
+        await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+        console.log(`[Snapshot] Created persistence copy via file copy - saved ~35MB I/O`)
+      }
+    } catch (copyError) {
+      console.warn('[Snapshot] Failed to create persistence copy (will rely on auto-save):', copyError)
+    }
+
     // Suppress auto-save - the snapshot IS the save for this step
     // This prevents the "save storm" where one transform triggers 3 saves
     if (tableId) {
@@ -418,6 +452,24 @@ export async function createStepSnapshot(
     await exportTableToParquet(db, conn, tableName, snapshotId)
 
     console.log(`[Timeline] Exported step ${stepIndex} snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
+
+    // OPTIMIZATION: Copy snapshot file to persistence location (instant, no re-export!)
+    // This eliminates the "double tax" where transform exports + auto-save re-exports
+    try {
+      const root = await navigator.storage.getDirectory()
+      const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+      const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+      const { copyFile } = await import('@/lib/opfs/opfs-helpers')
+
+      // Use sanitized table name for persistence (matches persistence system naming)
+      const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
+      // Copy single file: snapshot_xxx_0.parquet → tablename.parquet
+      await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+      console.log(`[Snapshot] Created persistence copy via file copy - saved I/O`)
+    } catch (copyError) {
+      console.warn('[Snapshot] Failed to create persistence copy (will rely on auto-save):', copyError)
+    }
 
     // Suppress auto-save - the snapshot IS the save for this step
     if (tableId) {
