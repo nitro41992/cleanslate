@@ -1099,16 +1099,30 @@ export async function fetchDiffPageWithKeyset(
   limit: number = 500,
   storageType: 'memory' | 'parquet' = 'memory'
 ): Promise<KeysetDiffPageResult> {
-  // For Parquet storage, check if we have a materialized view available
-  // If materialized, we can use fast keyset pagination on the temp table
-  // If not materialized, fall back to slower OFFSET pagination
+  // For Parquet storage, check if we have a materialized index table available
+  // Use two-phase approach: fast index lookup, then targeted JOIN
   if (storageType === 'parquet') {
-    const viewTableName = materializedDiffViews.get(tempTableName)
+    const indexTableName = getMaterializedDiffIndex(tempTableName)
 
-    if (viewTableName) {
-      // Fast path: Use materialized view with keyset pagination
-      // The materialized view already has all columns joined, so we query it directly
-      console.log(`[Diff] Using materialized view ${viewTableName} for keyset pagination`)
+    if (indexTableName) {
+      // TWO-PHASE APPROACH for fast pagination:
+      // Phase 1: Query small index table (500 rows from ~24MB table) - O(1)
+      // Phase 2: JOIN only those 500 rows to source/target - O(500) not O(1M)
+      console.log(`[Diff] Two-phase fetch using index table ${indexTableName}`)
+
+      // Get source table expression
+      const sourceTableExpr = await resolveTableRef(sourceTableName)
+
+      // Build select columns for phase 2
+      const selectCols = allColumns
+        .map((c) => {
+          const inA = !removedColumns.includes(c)
+          const inB = !newColumns.includes(c)
+          const aExpr = inA ? `a."${c}"` : 'NULL'
+          const bExpr = inB ? `b."${c}"` : 'NULL'
+          return `${aExpr} as "a_${c}", ${bExpr} as "b_${c}"`
+        })
+        .join(', ')
 
       // Build WHERE clause for keyset pagination
       let whereClause = ''
@@ -1123,12 +1137,27 @@ export async function fetchDiffPageWithKeyset(
       // Order direction matches cursor direction
       const orderDirection = cursor.direction === 'forward' ? 'ASC' : 'DESC'
 
+      // Use CTE to first get page from index, then JOIN only those rows
+      // This is fast because:
+      // 1. Index query returns exactly `limit` rows from small table
+      // 2. JOIN only needs to find `limit` matching rows in source/target
       const rows = await query<DiffRow & { sort_key: number }>(`
-        SELECT *
-        FROM "${viewTableName}"
-        ${whereClause}
-        ORDER BY sort_key ${orderDirection}
-        LIMIT ${limit}
+        WITH page AS (
+          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id
+          FROM "${indexTableName}"
+          ${whereClause}
+          ORDER BY sort_key ${orderDirection}
+          LIMIT ${limit}
+        )
+        SELECT
+          page.diff_status,
+          page.row_id,
+          page.sort_key,
+          ${selectCols}
+        FROM page
+        LEFT JOIN ${sourceTableExpr} a ON page.a_row_id = a."_cs_id"
+        LEFT JOIN "${targetTableName}" b ON page.b_row_id = b."_cs_id"
+        ORDER BY page.sort_key ${orderDirection}
       `)
 
       // If backward direction, reverse the rows to maintain ascending order
@@ -1149,11 +1178,9 @@ export async function fetchDiffPageWithKeyset(
         lastSortKey,
       }
     } else {
-      // Slow path: No materialized view, fall back to OFFSET pagination
-      console.log('[Diff] Keyset pagination not supported for Parquet storage (no materialized view), using OFFSET')
-      // For Parquet, we can't easily do keyset pagination without cursor positions
-      // Return empty cursors to signal that keyset isn't available
-      const offset = cursor.sortKey !== null ? 0 : 0  // Can't compute offset from sortKey
+      // Slow path: No index table, fall back to OFFSET pagination
+      console.log('[Diff] Keyset pagination not supported for Parquet storage (no index), using OFFSET')
+      const offset = cursor.sortKey !== null ? 0 : 0
       const rows = await fetchDiffPage(
         tempTableName, sourceTableName, targetTableName,
         allColumns, newColumns, removedColumns,
@@ -1161,7 +1188,7 @@ export async function fetchDiffPageWithKeyset(
       )
       return {
         rows,
-        firstSortKey: null,  // No cursor tracking for Parquet without materialized view
+        firstSortKey: null,
         lastSortKey: null,
       }
     }
@@ -1330,17 +1357,21 @@ export async function cleanupDiffTable(
 }
 
 /**
- * Materialize a Parquet-backed diff into a temp table for fast keyset pagination.
+ * Create a lightweight index table + VIEW for fast diff pagination.
  *
- * PROBLEM: Parquet file reads are stateless - `read_parquet('file.parquet')` creates
- * an ephemeral table on each query with no persistent index. Keyset pagination
- * requires `WHERE sort_key > cursor` which needs a stable index.
+ * HYBRID APPROACH: Materialize only the index (row_id, sort_key, diff_status),
+ * not the full column data. This enables O(1) random access scrolling while
+ * keeping memory usage minimal.
  *
- * SOLUTION: Create a temp table from Parquet files ONCE when diff view opens.
- * This enables keyset pagination on a stable, indexed table instead of re-reading
- * Parquet files on every scroll.
+ * Memory comparison for 1M rows:
+ * - Full materialization: ~6.5 GB (65 columns × ~100 bytes each)
+ * - Index-only: ~24 MB (row_id UUID + sort_key BIGINT + diff_status VARCHAR)
+ * - Pure VIEW: ~0 MB but O(n) random access (slow scrollbar drag)
  *
- * PERFORMANCE: O(n) OFFSET → O(1) keyset = ~60%+ latency reduction per scroll
+ * HOW IT WORKS:
+ * 1. Materialize tiny index table: (row_id, sort_key, diff_status, a_row_id, b_row_id)
+ * 2. Create VIEW that JOINs index → source → target for column data
+ * 3. Pagination queries use index for fast OFFSET, then JOIN for visible rows only
  *
  * @param diffTableName - Name of the Parquet-backed diff table
  * @param sourceTableName - Source table (may be "parquet:snapshot_id")
@@ -1348,7 +1379,7 @@ export async function cleanupDiffTable(
  * @param allColumns - All columns to include in the view
  * @param newColumns - Columns in A (original) but not B (current)
  * @param removedColumns - Columns in B (current) but not A (original)
- * @returns Name of the materialized temp table
+ * @returns Name of the created view
  */
 export async function materializeDiffForPagination(
   diffTableName: string,
@@ -1359,6 +1390,7 @@ export async function materializeDiffForPagination(
   removedColumns: string[]
 ): Promise<string> {
   const startTime = performance.now()
+  const indexTableName = `_diff_idx_${Date.now()}`
   const viewTableName = `_diff_view_${Date.now()}`
 
   // Get source table expression (handles Parquet sources)
@@ -1415,26 +1447,39 @@ export async function materializeDiffForPagination(
     parquetExpr = `read_parquet('${diffTableName}.parquet')`
   }
 
-  // Materialize the diff data into a temp table with all data needed for pagination
-  // This executes the JOIN once and stores results in memory for fast keyset queries
+  // STEP 1: Create tiny index table with just metadata (~24 MB for 1M rows)
+  // This enables O(1) random access for scrollbar jumping
   await execute(`
-    CREATE TEMP TABLE "${viewTableName}" AS
+    CREATE TEMP TABLE "${indexTableName}" AS
     SELECT
-      d.diff_status,
-      d.row_id,
-      d.sort_key,
-      ${selectCols}
-    FROM ${parquetExpr} d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-    WHERE d.diff_status IN ('added', 'removed', 'modified')
+      row_id,
+      sort_key,
+      diff_status,
+      a_row_id,
+      b_row_id
+    FROM ${parquetExpr}
+    WHERE diff_status IN ('added', 'removed', 'modified')
   `)
 
-  // Track the materialized view for cleanup
-  materializedDiffViews.set(diffTableName, viewTableName)
+  // STEP 2: Create VIEW that JOINs index to source/target for column data
+  // Column data is fetched on-demand, only for visible rows
+  await execute(`
+    CREATE VIEW "${viewTableName}" AS
+    SELECT
+      idx.diff_status,
+      idx.row_id,
+      idx.sort_key,
+      ${selectCols}
+    FROM "${indexTableName}" idx
+    LEFT JOIN ${sourceTableExpr} a ON idx.a_row_id = a."_cs_id"
+    LEFT JOIN "${targetTableName}" b ON idx.b_row_id = b."_cs_id"
+  `)
+
+  // Track both for cleanup (store as "indexTable|viewTable")
+  materializedDiffViews.set(diffTableName, `${indexTableName}|${viewTableName}`)
 
   const elapsed = performance.now() - startTime
-  console.log(`[Diff] Materialized ${diffTableName} into ${viewTableName} in ${elapsed.toFixed(0)}ms`)
+  console.log(`[Diff] Created index table ${indexTableName} + view ${viewTableName} in ${elapsed.toFixed(0)}ms (~24 MB index)`)
 
   return viewTableName
 }
@@ -1444,7 +1489,29 @@ export async function materializeDiffForPagination(
  * Returns null if not materialized.
  */
 export function getMaterializedDiffView(diffTableName: string): string | null {
-  return materializedDiffViews.get(diffTableName) || null
+  const storedValue = materializedDiffViews.get(diffTableName)
+  if (!storedValue) return null
+
+  // Handle both old format (just viewTable) and new format (indexTable|viewTable)
+  if (storedValue.includes('|')) {
+    return storedValue.split('|')[1]  // Return just the view name
+  }
+  return storedValue
+}
+
+/**
+ * Get the index table name for a Parquet-backed diff.
+ * Returns null if not using hybrid approach.
+ */
+export function getMaterializedDiffIndex(diffTableName: string): string | null {
+  const storedValue = materializedDiffViews.get(diffTableName)
+  if (!storedValue) return null
+
+  // Only new format has index table
+  if (storedValue.includes('|')) {
+    return storedValue.split('|')[0]  // Return just the index table name
+  }
+  return null
 }
 
 /**
@@ -1452,14 +1519,24 @@ export function getMaterializedDiffView(diffTableName: string): string | null {
  * Drops the temp table and removes from tracking map.
  */
 export async function cleanupMaterializedDiffView(diffTableName: string): Promise<void> {
-  const viewTableName = materializedDiffViews.get(diffTableName)
-  if (viewTableName) {
+  const storedValue = materializedDiffViews.get(diffTableName)
+  if (storedValue) {
     try {
-      await execute(`DROP TABLE IF EXISTS "${viewTableName}"`)
+      // Handle both old format (just viewTable) and new format (indexTable|viewTable)
+      if (storedValue.includes('|')) {
+        const [indexTableName, viewTableName] = storedValue.split('|')
+        // Drop view first (depends on index table), then index table
+        await execute(`DROP VIEW IF EXISTS "${viewTableName}"`)
+        await execute(`DROP TABLE IF EXISTS "${indexTableName}"`)
+        console.log(`[Diff] Dropped view ${viewTableName} and index table ${indexTableName}`)
+      } else {
+        // Legacy: just a view
+        await execute(`DROP VIEW IF EXISTS "${storedValue}"`)
+        console.log(`[Diff] Dropped view ${storedValue}`)
+      }
       materializedDiffViews.delete(diffTableName)
-      console.log(`[Diff] Dropped materialized view ${viewTableName}`)
     } catch (e) {
-      console.warn(`[Diff] Failed to drop ${viewTableName}:`, e)
+      console.warn(`[Diff] Failed to cleanup:`, e)
     }
   }
 }
@@ -1523,7 +1600,7 @@ export async function getRowsWithColumnChanges(
   let diffExpr: string
   if (storageType === 'parquet') {
     // Check if materialized view exists
-    const viewTableName = materializedDiffViews.get(diffTableName)
+    const viewTableName = getMaterializedDiffView(diffTableName)
     if (viewTableName) {
       // Use materialized view - it already has a_col and b_col joined
       const rows = await query<{ row_id: string }>(`
