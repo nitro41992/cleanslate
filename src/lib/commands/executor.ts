@@ -453,7 +453,8 @@ export class CommandExecutor implements ICommandExecutor {
         currentColumnOrder,
         executionResult.newColumnNames || [],
         executionResult.droppedColumnNames || [],
-        executionResult.renameMappings
+        executionResult.renameMappings,
+        executionResult.insertAfter
       )
 
       // Refresh context with new schema and pre-calculated column order
@@ -717,6 +718,12 @@ export class CommandExecutor implements ICommandExecutor {
         // The UI handler (CombinePanel) adds the new table separately via addTable()
         const createsNewTable = command.type === 'combine:stack' || command.type === 'combine:join'
         if (!createsNewTable) {
+          // CRITICAL: Request priority save BEFORE updateTableStore to avoid race condition.
+          // The persistence subscription fires immediately when dataVersion changes.
+          // If we set the priority flag after, the subscription won't see it and will use
+          // debounced save instead of immediate save, causing data loss on quick refresh.
+          uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
+
           this.updateTableStore(ctx.table.id, {
             ...executionResult,
             columnOrder: newColumnOrder,
@@ -752,9 +759,8 @@ export class CommandExecutor implements ICommandExecutor {
           await useEditBatchStore.getState().flushIfSafe(tableId)
         }
 
-        // Request IMMEDIATE save for transforms (bypass debounce)
-        // This prevents data loss if user refreshes before debounce completes
-        uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
+        // NOTE: Priority save is now requested BEFORE updateTableStore (see below)
+        // to avoid race condition where subscription fires before priority flag is set
       }
 
       return {

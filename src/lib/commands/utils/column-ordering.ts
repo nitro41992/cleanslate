@@ -98,13 +98,15 @@ export function reorderColumns(
  * @param newColumnNames - New columns added by this operation
  * @param droppedColumnNames - Columns removed by this operation
  * @param renameMappings - Mapping of old column names to new names
+ * @param insertAfter - Column to insert new columns after (null = beginning, undefined = end)
  * @returns Updated column order
  */
 export function updateColumnOrder(
   currentOrder: string[] | undefined,
   newColumnNames: string[],
   droppedColumnNames: string[],
-  renameMappings?: Record<string, string>
+  renameMappings?: Record<string, string>,
+  insertAfter?: string | null
 ): string[] {
   // If no current order, initialize with new columns
   if (!currentOrder) {
@@ -125,9 +127,29 @@ export function updateColumnOrder(
     result = result.filter(colName => !droppedSet.has(colName))
   }
 
-  // 3. Append new columns at end (excluding internal columns)
+  // 3. Insert new columns at specified position
   const newUserColumns = newColumnNames.filter(name => !isInternalColumn(name))
-  result.push(...newUserColumns)
+
+  if (newUserColumns.length === 0) {
+    return result
+  }
+
+  if (insertAfter === null) {
+    // Insert at beginning
+    result = [...newUserColumns, ...result]
+  } else if (insertAfter !== undefined) {
+    // Insert after specified column
+    const insertIndex = result.indexOf(insertAfter)
+    if (insertIndex !== -1) {
+      result.splice(insertIndex + 1, 0, ...newUserColumns)
+    } else {
+      // Column not found, append at end (fallback)
+      result.push(...newUserColumns)
+    }
+  } else {
+    // undefined = append at end (default behavior)
+    result.push(...newUserColumns)
+  }
 
   return result
 }

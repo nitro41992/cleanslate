@@ -1472,8 +1472,8 @@ export function usePersistence() {
   }, [isRestoring, deleteTableSnapshot])
 
   // 8. BEFOREUNLOAD: Best-effort compaction and save warning
+  // - Warn user if there are unsaved changes (dirty tables or saves in progress)
   // - Attempt to compact changelog before unload (if entries exist)
-  // - Warn user if saves are in progress
   useEffect(() => {
     const handleBeforeUnload = async (e: BeforeUnloadEvent) => {
       // Check if any saves are in progress
@@ -1486,6 +1486,18 @@ export function usePersistence() {
         // Legacy browsers need returnValue set
         e.returnValue = 'Changes are being saved. Leave anyway?'
         return 'Changes are being saved. Leave anyway?'
+      }
+
+      // Check if there are dirty tables (unsaved changes waiting for debounce)
+      const { useUIStore } = await import('@/stores/uiStore')
+      const dirtyTableIds = useUIStore.getState().dirtyTableIds
+      if (dirtyTableIds.size > 0) {
+        console.warn(`[Persistence] Blocking navigation - ${dirtyTableIds.size} table(s) have unsaved changes`)
+
+        // Standard way to trigger browser's "Leave site?" dialog
+        e.preventDefault()
+        e.returnValue = 'You have unsaved changes. Leave anyway?'
+        return 'You have unsaved changes. Leave anyway?'
       }
 
       // Best-effort compaction (async, may not complete before unload)

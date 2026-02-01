@@ -170,6 +170,8 @@ export interface ExecutionResult {
   droppedColumnNames: string[]
   /** Mapping of old column names to new names (for rename_column) */
   renameMappings?: Record<string, string>
+  /** Column to insert new columns after (null = beginning, undefined = end) */
+  insertAfter?: string | null
   /** For Tier 1 commands: the versioned column created */
   versionedColumn?: {
     original: string

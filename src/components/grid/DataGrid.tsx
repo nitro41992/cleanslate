@@ -697,6 +697,11 @@ export function DataGrid({
     csId: string
   } | null>(null)
 
+  // Pending delete column confirmation - lifted from ColumnHeaderMenu to persist after menu closes
+  const [pendingDeleteColumn, setPendingDeleteColumn] = useState<{
+    columnName: string
+  } | null>(null)
+
   // Track mouse position for row marker clicks
   const mousePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
 
@@ -714,11 +719,6 @@ export function DataGrid({
     position: 'left' | 'right'
     referenceColumn: string
   }>({ open: false, position: 'right', referenceColumn: '' })
-
-  // Check if a column has an active filter
-  const getColumnFilter = useCallback((colName: string): ColumnFilter | undefined => {
-    return viewState?.filters.find(f => f.column === colName)
-  }, [viewState])
 
   // Filter/sort action handlers
   const handleSetFilter = useCallback((filter: ColumnFilter) => {
@@ -763,7 +763,10 @@ export function DataGrid({
   }, [])
 
   const handleDeleteColumn = useCallback(async (columnName: string) => {
-    if (!tableId || !tableName) return
+    if (!tableId || !tableName) {
+      console.log('[DataGrid] Delete column skipped: missing tableId or tableName')
+      return
+    }
 
     try {
       const command = createCommand('schema:delete_column', {
@@ -777,8 +780,12 @@ export function DataGrid({
         toast({ title: 'Column deleted', description: `Column "${columnName}" has been deleted.` })
       } else if (result?.error) {
         toast({ title: 'Error', description: result.error, variant: 'destructive' })
+      } else if (result === undefined) {
+        // User cancelled the operation (e.g., dismissed ConfirmDiscardDialog)
+        console.log('[DataGrid] Delete column cancelled by user')
       }
     } catch (error) {
+      console.error('[DataGrid] Delete column error:', error)
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to delete column',
@@ -2165,17 +2172,18 @@ export function DataGrid({
           columnType={columnMenu.type}
           columnTypeDisplay={columnMenu.typeDisplay}
           columnTypeDescription={columnMenu.description}
-          currentFilter={getColumnFilter(columnMenu.column)}
           currentSortColumn={viewState?.sortColumn ?? null}
           currentSortDirection={viewState?.sortDirection ?? 'asc'}
-          onSetFilter={handleSetFilter}
-          onRemoveFilter={() => handleRemoveFilter(columnMenu.column)}
           onSetSort={(direction) => handleSetSort(columnMenu.column, direction)}
           onClearSort={handleClearSort}
           columnOperationsEnabled={editable}
           onInsertColumnLeft={() => handleInsertColumnLeft(columnMenu.column)}
           onInsertColumnRight={() => handleInsertColumnRight(columnMenu.column)}
-          onDeleteColumn={() => handleDeleteColumn(columnMenu.column)}
+          onDeleteColumn={() => {
+            // Set pending delete to show confirmation dialog (lifted to DataGrid)
+            setPendingDeleteColumn({ columnName: columnMenu.column })
+            setColumnMenu(null)
+          }}
           open={true}
           onOpenChange={(open) => { if (!open) setColumnMenu(null) }}
           anchorPosition={{ x: columnMenu.x, y: columnMenu.y }}
@@ -2253,6 +2261,35 @@ export function DataGrid({
                   handleDeleteRow(pendingDeleteRow.csId)
                 }
                 setPendingDeleteRow(null)
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Column Confirmation Dialog - lifted from ColumnHeaderMenu to persist after menu closes */}
+      <AlertDialog
+        open={pendingDeleteColumn !== null}
+        onOpenChange={(open) => { if (!open) setPendingDeleteColumn(null) }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Column</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete the column "{pendingDeleteColumn?.columnName}"? This will remove all data in this column. This action can be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingDeleteColumn) {
+                  handleDeleteColumn(pendingDeleteColumn.columnName)
+                }
+                setPendingDeleteColumn(null)
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

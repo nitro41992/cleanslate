@@ -108,7 +108,13 @@ export class AddColumnCommand implements Command<AddColumnParams> {
       // DuckDB doesn't support ALTER TABLE ADD COLUMN with position,
       // so we need to recreate the table with the new column in the right position
 
-      if (this.params.insertAfter) {
+      // Check if we need to position the column specifically:
+      // - insertAfter === null: insert at beginning
+      // - insertAfter === "columnName": insert after that column
+      // - insertAfter === undefined: append at end (use simple ALTER TABLE)
+      const needsPositioning = this.params.insertAfter !== undefined
+
+      if (needsPositioning) {
         // Need to recreate table with column in specific position
         const tempTable = `${tableName}_temp_${Date.now()}`
 
@@ -119,11 +125,18 @@ export class AddColumnCommand implements Command<AddColumnParams> {
         )
         const existingColumns = allColumnsResult.map((r) => r.column_name)
 
-        // Build column list with new column inserted after specified column
+        // Build column list with new column in the correct position
         const newColumnOrder: string[] = []
+
+        // If insertAfter is null, add new column at the beginning
+        if (this.params.insertAfter === null) {
+          newColumnOrder.push(columnName)
+        }
+
         for (const col of existingColumns) {
           newColumnOrder.push(col)
-          if (col === this.params.insertAfter) {
+          // If insertAfter matches this column, add new column after it
+          if (this.params.insertAfter && col === this.params.insertAfter) {
             newColumnOrder.push(columnName)
           }
         }
@@ -145,7 +158,7 @@ export class AddColumnCommand implements Command<AddColumnParams> {
         await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
         await ctx.db.execute(`ALTER TABLE ${quoteTable(tempTable)} RENAME TO ${quoteTable(tableName)}`)
       } else {
-        // Add column at end - simple ALTER TABLE
+        // Add column at end - simple ALTER TABLE (insertAfter is undefined)
         await ctx.db.execute(
           `ALTER TABLE ${quoteTable(tableName)} ADD COLUMN ${quoteColumn(columnName)} ${columnType}`
         )
@@ -165,6 +178,7 @@ export class AddColumnCommand implements Command<AddColumnParams> {
         affected: 0, // No rows modified, just schema
         newColumnNames: [columnName],
         droppedColumnNames: [],
+        insertAfter: this.params.insertAfter,
       }
     } catch (error) {
       return {

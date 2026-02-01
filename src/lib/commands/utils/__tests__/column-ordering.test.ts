@@ -203,5 +203,97 @@ describe('column-ordering utilities', () => {
 
       expect(result).toEqual(['id', 'email', 'first_name', 'last_name'])
     })
+
+    describe('insertAfter parameter', () => {
+      it('inserts new column after specified column', () => {
+        const currentOrder = ['id', 'name', 'email']
+        const newColumnNames = ['new_col']
+
+        const result = updateColumnOrder(
+          currentOrder,
+          newColumnNames,
+          [],
+          undefined,
+          'name' // insertAfter
+        )
+
+        expect(result).toEqual(['id', 'name', 'new_col', 'email'])
+      })
+
+      it('inserts new column at beginning when insertAfter is null', () => {
+        const currentOrder = ['id', 'name', 'email']
+        const newColumnNames = ['new_col']
+
+        const result = updateColumnOrder(
+          currentOrder,
+          newColumnNames,
+          [],
+          undefined,
+          null // insertAfter = null means beginning
+        )
+
+        expect(result).toEqual(['new_col', 'id', 'name', 'email'])
+      })
+
+      it('appends at end when insertAfter is undefined (default behavior)', () => {
+        const currentOrder = ['id', 'name', 'email']
+        const newColumnNames = ['new_col']
+
+        const result = updateColumnOrder(
+          currentOrder,
+          newColumnNames,
+          [],
+          undefined,
+          undefined // no insertAfter = append at end
+        )
+
+        expect(result).toEqual(['id', 'name', 'email', 'new_col'])
+      })
+
+      it('inserts after last column correctly', () => {
+        const currentOrder = ['id', 'name', 'email']
+        const newColumnNames = ['new_col']
+
+        const result = updateColumnOrder(
+          currentOrder,
+          newColumnNames,
+          [],
+          undefined,
+          'email' // insert after last
+        )
+
+        expect(result).toEqual(['id', 'name', 'email', 'new_col'])
+      })
+
+      it('inserts after first column correctly', () => {
+        const currentOrder = ['id', 'name', 'email']
+        const newColumnNames = ['new_col']
+
+        const result = updateColumnOrder(
+          currentOrder,
+          newColumnNames,
+          [],
+          undefined,
+          'id' // insert after first
+        )
+
+        expect(result).toEqual(['id', 'new_col', 'name', 'email'])
+      })
+
+      it('falls back to append when insertAfter column not found', () => {
+        const currentOrder = ['id', 'name', 'email']
+        const newColumnNames = ['new_col']
+
+        const result = updateColumnOrder(
+          currentOrder,
+          newColumnNames,
+          [],
+          undefined,
+          'nonexistent' // column doesn't exist
+        )
+
+        expect(result).toEqual(['id', 'name', 'email', 'new_col'])
+      })
+    })
   })
 })
