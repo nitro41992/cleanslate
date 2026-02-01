@@ -95,6 +95,20 @@ export class LaundromatPage {
   }
 
   /**
+   * Alias for clickUndo() - triggers undo and waits for undo button state to stabilize
+   */
+  async undo(): Promise<void> {
+    await this.clickUndo()
+  }
+
+  /**
+   * Alias for clickRedo() - triggers redo and waits for redo button state to stabilize
+   */
+  async redo(): Promise<void> {
+    await this.clickRedo()
+  }
+
+  /**
    * Open the audit sidebar (replaces old tab-based approach)
    */
   async openAuditSidebar(): Promise<void> {
@@ -143,6 +157,13 @@ export class LaundromatPage {
    * @deprecated Use openAuditSidebar() instead - tabs no longer exist in the UI
    */
   async switchToAuditLogTab(): Promise<void> {
+    await this.openAuditSidebar()
+  }
+
+  /**
+   * Alias for openAuditSidebar() for test compatibility
+   */
+  async openAuditLogPanel(): Promise<void> {
     await this.openAuditSidebar()
   }
 

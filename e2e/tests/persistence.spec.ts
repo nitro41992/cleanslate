@@ -445,6 +445,16 @@ test.describe('Application State Persistence', () => {
     await inspector.waitForGridReady()
     await laundromat.editCell(0, 3, 'Edited City')  // Edit city column (col 3)
 
+    // Handle the "Discard Undone Changes?" dialog that appears when editing after undo
+    const discardDialog = page.getByRole('alertdialog', { name: 'Discard Undone Changes?' })
+    try {
+      await discardDialog.waitFor({ state: 'visible', timeout: 2000 })
+      await page.getByRole('button', { name: 'Discard & Continue' }).click()
+      await discardDialog.waitFor({ state: 'hidden', timeout: 5000 })
+    } catch {
+      // Dialog may not appear if the test completed quickly
+    }
+
     // Verify the edit was applied
     await expect.poll(async () => {
       const rows = await inspector.runQuery('SELECT city FROM basic_data WHERE id = 1')
