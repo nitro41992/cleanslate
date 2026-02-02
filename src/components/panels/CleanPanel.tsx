@@ -15,6 +15,7 @@ import { ColumnCombobox } from '@/components/ui/combobox'
 import { MultiColumnCombobox } from '@/components/ui/multi-column-combobox'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { TransformPreview } from '@/components/clean/TransformPreview'
+import { ValidationMessage } from '@/components/clean/ValidationMessage'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -44,6 +45,7 @@ import {
 } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
+import { useSemanticValidation } from '@/hooks/useSemanticValidation'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -73,6 +75,14 @@ export function CleanPanel() {
   const activeTable = tables.find((t) => t.id === activeTableId)
 
   const columns = activeTable?.columns.map((c) => c.name) || []
+
+  // Live semantic validation for transform operations
+  const validationResult = useSemanticValidation(
+    activeTable?.name,
+    selectedTransform?.id,
+    selectedColumn,
+    params
+  )
 
   const handleSelectTransform = useCallback((transform: TransformationDefinition) => {
     setSelectedTransform(transform)
@@ -154,6 +164,12 @@ export function CleanPanel() {
         if (param.required !== false && !params[param.name]) return false
       }
     }
+
+    // Semantic validation: block no-op and invalid transforms
+    if (validationResult.status === 'no_op' || validationResult.status === 'invalid') {
+      return false
+    }
+
     return true
   }
 
@@ -600,6 +616,13 @@ export function CleanPanel() {
                     </div>
                     )
                   })}
+
+                  {/* Validation Message */}
+                  {validationResult.status !== 'valid' &&
+                   validationResult.status !== 'skipped' &&
+                   validationResult.status !== 'pending' && (
+                    <ValidationMessage result={validationResult} />
+                  )}
 
                   {/* Apply Button */}
                   <Button
