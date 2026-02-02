@@ -190,6 +190,21 @@ test.describe('Row and Column Persistence', () => {
       return !uiState.saving
     }, { timeout: 15000 }).toBe(true)
 
+    // Get the original Parquet file size BEFORE row insert
+    const originalSize = await page.evaluate(async () => {
+      try {
+        const root = await navigator.storage.getDirectory()
+        const cleanslateDir = await root.getDirectoryHandle('cleanslate')
+        const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const file = await fileHandle.getFile()
+        return file.size
+      } catch {
+        return 0
+      }
+    })
+    console.log('[Test FR-ROW-PERSIST-1] Original Parquet size:', originalSize)
+
     // Verify initial row count
     let rowsBefore = await inspector.runQuery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM basic_data')
     expect(Number(rowsBefore[0].cnt)).toBe(5)
@@ -243,16 +258,17 @@ test.describe('Row and Column Persistence', () => {
     await inspector.flushToOPFS()
 
     // Wait for persistence to complete including atomic rename
-    // Must wait until: no saves in progress AND no .tmp files (atomic rename complete)
+    // Must wait until: no saves in progress AND no .tmp files AND file size increased
     await expect.poll(async () => {
-      const state = await page.evaluate(async () => {
+      const state = await page.evaluate(async ({ origSize }) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true }
+        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true, sizeIncreased: false }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const uiState = (stores.uiStore as any).getState()
 
-        // Check for .tmp files in OPFS (indicates incomplete atomic rename)
+        // Check for .tmp files in OPFS and current file size
         let hasTmpFiles = false
+        let currentSize = 0
         try {
           const root = await navigator.storage.getDirectory()
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
@@ -260,7 +276,10 @@ test.describe('Row and Column Persistence', () => {
           for await (const entry of snapshotsDir.values()) {
             if (entry.name === 'basic_data.parquet.tmp') {
               hasTmpFiles = true
-              break
+            }
+            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+              const file = await entry.getFile()
+              currentSize = file.size
             }
           }
         } catch {
@@ -269,12 +288,13 @@ test.describe('Row and Column Persistence', () => {
 
         return {
           saving: uiState?.savingTables?.size > 0,
-          hasTmpFiles
+          hasTmpFiles,
+          sizeIncreased: currentSize > origSize
         }
-      })
-      console.log('[Test] Polling persistence state:', state)
-      // Only return true when no saves in progress AND no .tmp files
-      return !state.saving && !state.hasTmpFiles
+      }, { origSize: originalSize })
+      console.log('[Test FR-ROW-PERSIST-1] Polling persistence state:', state)
+      // Only return true when no saves in progress AND no .tmp files AND file size increased
+      return !state.saving && !state.hasTmpFiles && state.sizeIncreased
     }, { timeout: 20000 }).toBe(true)
 
     // Save app state (timelines, UI prefs)
@@ -640,6 +660,21 @@ test.describe('Row and Column Persistence', () => {
       return !uiState.saving
     }, { timeout: 15000 }).toBe(true)
 
+    // Get the original Parquet file size BEFORE row delete
+    const originalSize = await page.evaluate(async () => {
+      try {
+        const root = await navigator.storage.getDirectory()
+        const cleanslateDir = await root.getDirectoryHandle('cleanslate')
+        const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const file = await fileHandle.getFile()
+        return file.size
+      } catch {
+        return 0
+      }
+    })
+    console.log('[Test FR-ROW-PERSIST-4] Original Parquet size:', originalSize)
+
     // Get the _cs_id of the first row to verify it's deleted
     const initialRows = await inspector.runQuery<{ _cs_id: string; id: number }>('SELECT "_cs_id", id FROM basic_data ORDER BY "_cs_id" LIMIT 1')
     const deletedCsId = initialRows[0]._cs_id
@@ -663,9 +698,49 @@ test.describe('Row and Column Persistence', () => {
       return Number(rows[0].cnt)
     }, { timeout: 10000 }).toBe(4)
 
-    // Flush to OPFS and save
+    // Flush to OPFS
     await inspector.flushToOPFS()
-    await inspector.waitForPersistenceComplete()
+
+    // Wait for persistence to complete including atomic rename
+    // Must wait until: no saves in progress AND no .tmp files AND file size decreased
+    await expect.poll(async () => {
+      const state = await page.evaluate(async ({ origSize }) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true, sizeDecreased: false }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const uiState = (stores.uiStore as any).getState()
+
+        // Check for .tmp files in OPFS and current file size
+        let hasTmpFiles = false
+        let currentSize = 0
+        try {
+          const root = await navigator.storage.getDirectory()
+          const cleanslateDir = await root.getDirectoryHandle('cleanslate')
+          const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
+          for await (const entry of snapshotsDir.values()) {
+            if (entry.name === 'basic_data.parquet.tmp') {
+              hasTmpFiles = true
+            }
+            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+              const file = await entry.getFile()
+              currentSize = file.size
+            }
+          }
+        } catch {
+          // Directory may not exist
+        }
+
+        return {
+          saving: uiState?.savingTables?.size > 0,
+          hasTmpFiles,
+          sizeDecreased: currentSize < origSize
+        }
+      }, { origSize: originalSize })
+      console.log('[Test FR-ROW-PERSIST-4] Polling persistence state:', state)
+      // Only return true when no saves in progress AND no .tmp files AND file size decreased
+      return !state.saving && !state.hasTmpFiles && state.sizeDecreased
+    }, { timeout: 20000 }).toBe(true)
+
     await inspector.saveAppState()
 
     // Refresh page
