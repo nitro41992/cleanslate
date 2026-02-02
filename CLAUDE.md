@@ -8,7 +8,7 @@ CleanSlate Pro is a browser-based, local-first data operations suite for regulat
 
 - **MUST** push the plan file with your commits
 - **MUST NOT** create `.md` files in root folder unless explicitly asked
-- **MUST NOT** use tools like `sed` — use Edit tool or TypeScript LSP
+- **MUST NOT** use tools like `sed`, `cat` or `awk` — use Edit, Write or Find tools or TypeScript LSP
 - **MUST** ensure E2E tests pass; if failing, work with me to determine if issue is implementation or test intent
 - **MUST NOT** add new logic to `transformations.ts` [DEPRECATED] — use `src/lib/commands/` instead
 - **MUST** use shadcn components when applicable before falling back to custom components
@@ -34,7 +34,7 @@ npm run test:headed   # Run tests in headed browser mode
 - **React 18 + TypeScript + Vite** — Frontend framework
 - **DuckDB-WASM** — In-browser SQL engine (Web Worker)
 - **Glide Data Grid** — Canvas-based grid for 100k+ rows
-- **Zustand** — State management (8 stores)
+- **Zustand** — State management (12 stores)
 - **Radix UI + Tailwind CSS** — UI components with dark mode
 - **OPFS** — Origin Private File System for local persistence
 
@@ -46,21 +46,26 @@ npm run test:headed   # Run tests in headed browser mode
 | Match (Fuzzy Matcher) | `/` (panel) | `matcherStore` | Duplicate detection with blocking |
 | Combine | `/` (panel) | `combinerStore` | Stack (UNION ALL) and join tables |
 | Scrub (Smart Scrubber) | `/` (panel) | `scrubberStore` | Obfuscation (hash, mask, redact, faker) |
+| Standardize | `/` (panel) | `standardizerStore` | Format standardization (dates, phones, addresses) |
 | Diff | `/` (overlay) | `diffStore` | Compare tables side-by-side |
 | Audit Log | sidebar | `auditStore` | Timeline of all operations |
 
 ### Directory Structure
 ```
 src/
-├── components/       # Reusable UI (common/, grid/, layout/, ui/)
-├── features/         # Feature modules (laundromat/, matcher/, combiner/, scrubber/, diff/)
+├── components/       # Reusable UI (common/, grid/, layout/, ui/, panels/, clean/, diff/, scrub/)
+├── features/         # Feature modules (combiner/, matcher/, scrubber/, standardizer/, diff/)
 ├── lib/
-│   ├── commands/     # Command Pattern implementation
+│   ├── commands/     # Command Pattern (transform/, edit/, data/, schema/, combine/, match/, scrub/, standardize/)
 │   ├── duckdb/       # DuckDB initialization & queries
 │   ├── opfs/         # OPFS storage utilities
+│   ├── persistence/  # State persistence
+│   ├── validation/   # Semantic validation rules
+│   ├── memory-manager.ts  # Browser memory monitoring
+│   ├── idle-detector.ts   # User idle detection
 │   └── transformations.ts  # [DEPRECATED] — being migrated to commands/
-├── hooks/            # useDuckDB, usePersistence, useToast
-├── stores/           # Zustand stores
+├── hooks/            # useDuckDB, usePersistence, useSemanticValidation, useUnifiedUndo
+├── stores/           # Zustand stores (12 total)
 └── types/            # TypeScript interfaces
 ```
 
@@ -81,7 +86,7 @@ All data mutations go through the Command Pattern for automatic undo/redo and au
 | Tier | Mechanism | Speed | Examples |
 |------|-----------|-------|----------|
 | 1 | Expression chaining | Instant | trim, lowercase, uppercase, replace, hash, mask |
-| 2 | Inverse SQL | Fast | rename_column, edit:cell, combine:stack/join |
+| 2 | Inverse SQL | Fast | rename_column, edit:cell, combine:stack/join, data:insert_row, data:delete_row, schema:add_column, schema:delete_column |
 | 3 | Snapshot restore | Slower | remove_duplicates, cast_type, split_column, match:merge |
 
 **Usage:**
@@ -234,6 +239,96 @@ When adding a new command with custom parameters:
 - [ ] Regression test included?
 - [ ] **Custom params preserved?** (If command has non-base params, verify they're in `COMMANDS_WITH_CUSTOM_PARAMS` and tested)
 
+### 5.8 Memory Management
+
+Browser memory is finite. Use `src/lib/memory-manager.ts` patterns:
+
+**Memory Health Levels:**
+| Level | Threshold | Action |
+|-------|-----------|--------|
+| HEALTHY | <1GB | Normal operation |
+| SOFT | 1GB | Log warning, prepare for cleanup |
+| WARNING | 1.5GB | Trigger cache cleanup callbacks |
+| CRITICAL | 2.5GB | Aggressive cleanup, warn user |
+| DANGER | 3.5GB | Emergency cleanup, block new operations |
+
+**Cleanup Pattern:**
+```typescript
+import { registerCleanupCallback } from '@/lib/memory-manager'
+
+// Register cache cleanup during memory pressure
+registerCleanupCallback(() => {
+  myCache.clear()
+  return Promise.resolve()
+})
+```
+
+**Memory Leak Detection:** Sustained growth >50MB/min over 5+ minutes indicates a leak.
+
+### 5.9 Batch Processing Pattern
+
+For large datasets, use OFFSET-based batching with deterministic ordering:
+
+```typescript
+// ✅ Good: Deterministic batching with staging table
+const BATCH_SIZE = 10000
+let offset = 0
+
+// Create staging table for atomic operation
+await conn.query(`CREATE TABLE staging_${tableId} AS SELECT * FROM ${tableName} WHERE false`)
+
+while (offset < totalRows) {
+  await conn.query(`
+    INSERT INTO staging_${tableId}
+    SELECT * FROM ${tableName}
+    ORDER BY _cs_row_id  -- Deterministic order
+    LIMIT ${BATCH_SIZE} OFFSET ${offset}
+  `)
+  offset += BATCH_SIZE
+
+  // WAL checkpoint every 5 batches
+  if (offset % (BATCH_SIZE * 5) === 0) {
+    await conn.query('CHECKPOINT')
+  }
+
+  // Yield to UI
+  await scheduler.yield()
+}
+
+// Atomic swap
+await conn.query(`DROP TABLE ${tableName}`)
+await conn.query(`ALTER TABLE staging_${tableId} RENAME TO ${tableName}`)
+```
+
+**Key Rules:**
+- Always use `ORDER BY` with OFFSET for determinism
+- WAL checkpoint every 5 batches to prevent unbounded log growth
+- Use `scheduler.yield()` between batches for UI responsiveness
+- Staging table pattern ensures atomic operations
+
+### 5.10 Semantic Validation
+
+Transform operations validate inputs before execution using `src/lib/validation/`:
+
+**Validator Pattern:**
+```typescript
+// Type-specific validators
+const validator = getValidator('email')
+const result = await validator.validate(value)
+// { isValid: boolean, confidence: number, suggestion?: string }
+```
+
+**ROW_DETAIL_THRESHOLD:** For tables >10k rows, audit entries capture only summary statistics, not per-row details.
+
+**Pre-Transform Validation:** Commands with `preview: true` run validation without mutation:
+```typescript
+const command = createCommand('transform:email_normalize', {
+  tableId,
+  column: 'email',
+  preview: true  // Validate only, don't mutate
+})
+```
+
 ## 6. E2E Testing Guidelines
 
 See @e2e/CLAUDE.md for detailed patterns, helpers, and fixtures.
@@ -252,3 +347,5 @@ See @e2e/CLAUDE.md for detailed patterns, helpers, and fixtures.
 - **Route Navigation:** All modules are on `/` with panel-based navigation (no separate routes)
 - **Dark Mode:** Enabled by default (`<html class="dark">`)
 - **TypeScript:** Strict mode, path alias `@/*` → `./src/*`, target ES2020
+- **Row Identity:** `_cs_origin_id` column tracks stable row identity for diff operations across transforms
+- **Panel Architecture:** Main feature UIs are in `components/panels/`, not `features/` — the `features/` directory contains business logic
