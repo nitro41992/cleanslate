@@ -38,6 +38,14 @@ export class InsertRowCommand implements Command<InsertRowParams> {
     this.params = params
   }
 
+  /**
+   * Get the generated _cs_id for the inserted row.
+   * Only available after execute() has been called.
+   */
+  getNewCsId(): string | null {
+    return this.newCsId
+  }
+
   async validate(ctx: CommandContext): Promise<ValidationResult> {
     // Check table exists
     const exists = await ctx.db.tableExists(ctx.table.name)

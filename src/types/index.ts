@@ -299,6 +299,7 @@ export type TimelineCommandType =
   | 'join'
   | 'scrub'
   | 'batch_edit'
+  | 'data'  // for insert_row, delete_row
 
 /**
  * A single command in the timeline history
@@ -346,6 +347,7 @@ export type TimelineParams =
   | JoinParams
   | ScrubParams
   | BatchEditParams
+  | DataParams
 
 export interface TransformParams {
   type: 'transform'
@@ -395,6 +397,14 @@ export interface ScrubParams {
 export interface BatchEditParams {
   type: 'batch_edit'
   changes: CellChange[]
+}
+
+export interface DataParams {
+  type: 'data'
+  dataOperation: 'insert_row' | 'delete_row'
+  insertAfterCsId?: string | null  // for insert_row
+  newCsId?: string                  // for insert_row (captured after execution)
+  csIds?: string[]                  // for delete_row
 }
 
 /**

@@ -1409,6 +1409,7 @@ export class CommandExecutor implements ICommandExecutor {
     if (commandType === 'match:merge') return 'merge'
     if (commandType === 'standardize:apply') return 'standardize'
     if (commandType.startsWith('scrub:')) return 'scrub'
+    if (commandType.startsWith('data:')) return 'data'
     return 'transform'
   }
 
@@ -1657,6 +1658,24 @@ export class CommandExecutor implements ICommandExecutor {
         matchColumn: mergeParams.matchColumn,
         mergedPairs,
       } as import('@/types').MergeParams
+    } else if (command.type === 'data:insert_row') {
+      // Insert row needs insertAfterCsId and the generated newCsId for replay
+      const insertParams = command.params as import('@/lib/commands/data/insert-row').InsertRowParams
+      const insertCommand = command as import('@/lib/commands/data/insert-row').InsertRowCommand
+      timelineParams = {
+        type: 'data',
+        dataOperation: 'insert_row',
+        insertAfterCsId: insertParams.insertAfterCsId,
+        newCsId: insertCommand.getNewCsId?.() ?? undefined,
+      } as import('@/types').DataParams
+    } else if (command.type === 'data:delete_row') {
+      // Delete row needs the csIds of deleted rows for replay
+      const deleteParams = command.params as import('@/lib/commands/data/delete-row').DeleteRowParams
+      timelineParams = {
+        type: 'data',
+        dataOperation: 'delete_row',
+        csIds: deleteParams.csIds,
+      } as import('@/types').DataParams
     } else {
       // Extract custom params (excluding tableId, column, tableName) for nested params property
       // Uses extractCustomParams for type-safe extraction and consistent handling

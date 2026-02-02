@@ -35,6 +35,7 @@ import type {
   ManualEditParams,
   StandardizeParams,
   BatchEditParams,
+  DataParams,
   ColumnInfo,
   TableTimeline,
 } from '@/types'
@@ -142,35 +143,6 @@ async function snapshotHasOriginId(snapshotId: string): Promise<boolean> {
   } catch (error) {
     console.warn(`[Timeline] Error checking snapshot schema:`, error)
     return false
-  }
-}
-
-/**
- * Delete old Parquet snapshot files (including chunked files)
- */
-async function deleteSnapshotFiles(snapshotId: string): Promise<void> {
-  try {
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    const { listFiles, deleteFileIfExists } = await import('@/lib/opfs/opfs-helpers')
-
-    // Try to delete single file
-    await deleteFileIfExists(snapshotsDir, `${snapshotId}.parquet`)
-
-    // Delete any chunked files
-    const chunks = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
-    for (const chunk of chunks) {
-      await deleteFileIfExists(snapshotsDir, chunk)
-    }
-    if (chunks.length > 0) {
-      console.log(`[Timeline] Deleted ${chunks.length} chunked snapshot files for: ${snapshotId}`)
-    }
-    if (chunks.length > 0) {
-      console.log(`[Timeline] Deleted ${chunks.length} chunked snapshot files for: ${snapshotId}`)
-    }
-  } catch (error) {
-    console.warn(`[Timeline] Error deleting snapshot files:`, error)
   }
 }
 
@@ -645,6 +617,10 @@ export async function applyCommand(
       await applyMergeCommand(tableName, params)
       break
 
+    case 'data':
+      await applyDataCommand(tableName, params as DataParams)
+      break
+
     case 'stack':
     case 'join':
     case 'scrub':
@@ -781,6 +757,64 @@ async function applyMergeCommand(
     DELETE FROM "${tableName}"
     WHERE "${CS_ID_COLUMN}" IN (${whereClause})
   `)
+}
+
+/**
+ * Apply a data command (insert_row or delete_row)
+ */
+async function applyDataCommand(
+  tableName: string,
+  params: DataParams
+): Promise<void> {
+  const conn = await getConnection()
+
+  if (params.dataOperation === 'insert_row') {
+    const { insertAfterCsId, newCsId } = params
+
+    if (!newCsId) {
+      console.error('[REPLAY] insert_row missing newCsId, cannot replay')
+      return
+    }
+
+    if (insertAfterCsId === null || insertAfterCsId === undefined) {
+      // Insert at beginning: shift all rows
+      await conn.query(`UPDATE "${tableName}" SET "_cs_id" = CAST(CAST("_cs_id" AS INTEGER) + 1 AS VARCHAR)`)
+    } else {
+      // Insert after specified row
+      const afterIdNum = parseInt(insertAfterCsId, 10)
+      await conn.query(`UPDATE "${tableName}" SET "_cs_id" = CAST(CAST("_cs_id" AS INTEGER) + 1 AS VARCHAR) WHERE CAST("_cs_id" AS INTEGER) > ${afterIdNum}`)
+    }
+
+    // Get columns from table schema
+    const cols = await query<{ column_name: string }>(`SELECT column_name FROM (DESCRIBE "${tableName}")`)
+    const userColumns = cols
+      .map(c => c.column_name)
+      .filter(name => name !== '_cs_id' && name !== CS_ORIGIN_ID_COLUMN)
+    const hasOriginId = cols.some(c => c.column_name === CS_ORIGIN_ID_COLUMN)
+
+    // Generate a new UUID for origin ID
+    const newOriginId = crypto.randomUUID()
+
+    const columnNames = hasOriginId
+      ? ['_cs_id', CS_ORIGIN_ID_COLUMN, ...userColumns]
+      : ['_cs_id', ...userColumns]
+
+    const columnValues = hasOriginId
+      ? [`'${newCsId}'`, `'${newOriginId}'`, ...userColumns.map(() => 'NULL')]
+      : [`'${newCsId}'`, ...userColumns.map(() => 'NULL')]
+
+    await execute(`INSERT INTO "${tableName}" (${columnNames.map(c => `"${c}"`).join(', ')}) VALUES (${columnValues.join(', ')})`)
+
+    console.log('[REPLAY] insert_row applied:', { tableName, newCsId, insertAfterCsId })
+
+  } else if (params.dataOperation === 'delete_row') {
+    const { csIds } = params
+    if (csIds && csIds.length > 0) {
+      const idList = csIds.map(id => `'${id}'`).join(', ')
+      await execute(`DELETE FROM "${tableName}" WHERE "_cs_id" IN (${idList})`)
+      console.log('[REPLAY] delete_row applied:', { tableName, deletedCount: csIds.length })
+    }
+  }
 }
 
 /**
