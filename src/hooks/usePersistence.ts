@@ -1087,8 +1087,11 @@ export function usePersistence() {
   // 3. DELETE: Call this when a table is deleted to remove its Parquet file
   const deleteTableSnapshot = useCallback(async (tableName: string) => {
     try {
-      await deleteParquetSnapshot(tableName)
-      console.log(`[Persistence] Deleted snapshot for ${tableName}`)
+      // CRITICAL: Normalize table name to match how snapshots are saved (lowercase, underscores)
+      // Without this, deletion of "My_Table" would look for "My_Table.parquet" but file is "my_table.parquet"
+      const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      await deleteParquetSnapshot(normalizedSnapshotId)
+      console.log(`[Persistence] Deleted snapshot for ${tableName} (normalized: ${normalizedSnapshotId})`)
     } catch (err) {
       console.error(`[Persistence] Failed to delete snapshot for ${tableName}:`, err)
     }

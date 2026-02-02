@@ -443,10 +443,13 @@ export function useDuckDB() {
       await dropTable(tableName)
 
       // 2. Delete OPFS Parquet file (releases disk storage)
+      // CRITICAL: Normalize table name to match how snapshots are saved (lowercase, underscores)
+      // Without this, deletion of "My_Table" would look for "My_Table.parquet" but file is "my_table.parquet"
       try {
         const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
-        await deleteParquetSnapshot(tableName)
-        console.log(`[DuckDB] Deleted OPFS Parquet for: ${tableName}`)
+        const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+        await deleteParquetSnapshot(normalizedSnapshotId)
+        console.log(`[DuckDB] Deleted OPFS Parquet for: ${tableName} (normalized: ${normalizedSnapshotId})`)
       } catch {
         // Expected if table was never persisted to OPFS
         console.log(`[DuckDB] No OPFS Parquet to delete for: ${tableName}`)

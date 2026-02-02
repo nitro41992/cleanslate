@@ -133,6 +133,17 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
       tables: state.tables.filter((t) => t.id !== id),
       activeTableId: state.activeTableId === id ? null : state.activeTableId,
     }))
+
+    // Immediately trigger save for table deletions (critical operation)
+    // Matches addTable pattern - ensures app-state.json is updated before potential refresh
+    // Without this, debounced save (500ms) may not complete if user refreshes quickly
+    if (typeof window !== 'undefined' && !isRestoringState) {
+      import('@/lib/persistence/state-persistence').then(({ saveAppStateNow }) => {
+        saveAppStateNow().catch(err => {
+          console.error('[TableStore] Failed to save after removeTable:', err)
+        })
+      })
+    }
   },
 
   setActiveTable: (id) => {
