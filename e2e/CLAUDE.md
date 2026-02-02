@@ -133,6 +133,71 @@ await expect.poll(async () => {
 }, { timeout: 10000 }).toHaveLength(5)
 ```
 
+**OPFS Persistence Race Condition:**
+
+When testing row/column operations that persist to Parquet files, polling for `savingTables.size === 0` is **NOT sufficient**. The async priority save may not have started yet when this check passes.
+
+**The Problem:**
+```typescript
+// ❌ Bad: Race condition - poll can pass before save even starts
+await expect.poll(async () => {
+  const state = await page.evaluate(() => {
+    const stores = window.__CLEANSLATE_STORES__
+    return stores.uiStore.getState().savingTables.size === 0
+  })
+  return state
+}, { timeout: 20000 }).toBe(true)
+
+await page.reload()  // Data may not be persisted yet!
+```
+
+**The Solution:** Also verify the Parquet file size has changed (proves the save actually completed):
+
+```typescript
+// ✅ Good: Wait for file size change as proof of persistence
+// 1. Capture original file size BEFORE the operation
+const originalSize = await page.evaluate(async () => {
+  const root = await navigator.storage.getDirectory()
+  const dir = await root.getDirectoryHandle('cleanslate')
+  const snapshots = await dir.getDirectoryHandle('snapshots')
+  const file = await (await snapshots.getFileHandle('table.parquet')).getFile()
+  return file.size
+})
+
+// 2. Perform the row insert/delete operation
+await performRowOperation()
+
+// 3. Poll until: no saves AND no .tmp files AND file size changed
+await expect.poll(async () => {
+  const state = await page.evaluate(async ({ origSize }) => {
+    const stores = window.__CLEANSLATE_STORES__
+    const saving = stores.uiStore.getState().savingTables.size > 0
+
+    let hasTmpFiles = false, currentSize = 0
+    const root = await navigator.storage.getDirectory()
+    const snapshots = await root.getDirectoryHandle('cleanslate')
+      .then(d => d.getDirectoryHandle('snapshots'))
+    for await (const entry of snapshots.values()) {
+      if (entry.name.endsWith('.tmp')) hasTmpFiles = true
+      if (entry.name === 'table.parquet') {
+        currentSize = (await entry.getFile()).size
+      }
+    }
+
+    return { saving, hasTmpFiles, sizeChanged: currentSize !== origSize }
+  }, { origSize: originalSize })
+
+  return !state.saving && !state.hasTmpFiles && state.sizeChanged
+}, { timeout: 20000 }).toBe(true)
+
+await page.reload()  // Now safe - data is persisted
+```
+
+**File Size Direction:**
+- **Row insert:** File size should **increase** (`currentSize > origSize`)
+- **Row delete:** File size should **decrease** (`currentSize < origSize`)
+- **Cell edit:** File size may change in either direction (use `!==`)
+
 ## 3. Selector Strategy
 
 **Rule:** Select by user intent or explicit contract, never by DOM structure.
