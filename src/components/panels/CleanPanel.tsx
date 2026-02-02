@@ -14,7 +14,7 @@ import {
 import { ColumnCombobox } from '@/components/ui/combobox'
 import { MultiColumnCombobox } from '@/components/ui/multi-column-combobox'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { TransformPreview } from '@/components/clean/TransformPreview'
+import { TransformPreview, type PreviewState } from '@/components/clean/TransformPreview'
 import { ValidationMessage } from '@/components/clean/ValidationMessage'
 import {
   AlertDialog,
@@ -58,6 +58,8 @@ export function CleanPanel() {
   const [castValidation, setCastValidation] = useState<CastTypeValidation | null>(null)
   // Execution progress state for batched operations
   const [executionProgress, setExecutionProgress] = useState<ExecutorProgress | null>(null)
+  // Live preview state for validation (disable Apply if no matching rows)
+  const [previewState, setPreviewState] = useState<PreviewState | null>(null)
 
   // Keyboard navigation state
   const [columnComboboxOpen, setColumnComboboxOpen] = useState(false)
@@ -88,6 +90,7 @@ export function CleanPanel() {
     setSelectedTransform(transform)
     setSelectedColumn('')
     setLastApplied(null)
+    setPreviewState(null)
     // Pre-populate params with defaults
     const defaultParams: Record<string, string> = {}
     transform.params?.forEach((param) => {
@@ -153,6 +156,7 @@ export function CleanPanel() {
     setSelectedColumn('')
     setParams({})
     setLastApplied(null)
+    setPreviewState(null)
   }
 
   const isValid = () => {
@@ -168,6 +172,14 @@ export function CleanPanel() {
     // Semantic validation: block no-op and invalid transforms
     if (validationResult.status === 'no_op' || validationResult.status === 'invalid') {
       return false
+    }
+
+    // Live preview validation: block if preview shows no matching rows
+    // Only check when preview is ready and not loading (to avoid blocking during debounce)
+    if (previewState?.isReady && !previewState.isLoading && !previewState.hasError) {
+      if (previewState.totalMatching === 0) {
+        return false
+      }
     }
 
     return true
@@ -511,6 +523,7 @@ export function CleanPanel() {
                       transformType={selectedTransform.id}
                       params={params}
                       sampleCount={10}
+                      onPreviewStateChange={setPreviewState}
                     />
                   )}
 

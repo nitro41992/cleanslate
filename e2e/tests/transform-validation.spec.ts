@@ -271,3 +271,94 @@ test.describe('Transform Validation: No-Op Detection', () => {
     await expect(applyButton).toBeEnabled()
   })
 })
+
+test.describe('Transform Validation: Live Preview No-Match Detection', () => {
+  let browser: Browser
+  let context: BrowserContext
+  let page: Page
+  let laundromat: LaundromatPage
+  let wizard: IngestionWizardPage
+  let picker: TransformationPickerPage
+  let inspector: StoreInspector
+
+  test.setTimeout(90000)
+
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
+    laundromat = new LaundromatPage(page)
+    wizard = new IngestionWizardPage(page)
+    picker = new TransformationPickerPage(page)
+    await laundromat.goto()
+    inspector = createStoreInspector(page)
+    await inspector.waitForDuckDBReady()
+  })
+
+  test.afterEach(async () => {
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed
+    }
+  })
+
+  test('Trim Whitespace: disables apply when no matching rows (no whitespace)', async () => {
+    // Load data with no whitespace to trim
+    await inspector.runQuery('DROP TABLE IF EXISTS validation_unique_rows')
+    await laundromat.uploadFile(getFixturePath('validation-unique-rows.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('validation_unique_rows', 4)
+
+    // Open clean panel and select Trim Whitespace
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Trim Whitespace')
+
+    // Select a column with no whitespace
+    await picker.selectColumn('name')
+
+    // Wait for preview to complete (debounced)
+    // Check that the preview shows "0 of 0 matching" (no rows to transform)
+    await expect(page.getByText('No matching rows found')).toBeVisible({ timeout: 5000 })
+
+    // Apply button should be disabled since no rows match
+    const applyButton = page.getByTestId('apply-transformation-btn')
+    await expect(applyButton).toBeDisabled()
+  })
+
+  test('Trim Whitespace: allows apply when matching rows exist (has whitespace)', async () => {
+    // Load data with whitespace to trim
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('whitespace_data', 3)  // 3 rows in fixture
+
+    // Open clean panel and select Trim Whitespace
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Trim Whitespace')
+
+    // Select a column with whitespace
+    await picker.selectColumn('name')
+
+    // Wait for preview to complete and button to be enabled
+    await expect.poll(async () => {
+      const btn = page.getByTestId('apply-transformation-btn')
+      return await btn.isEnabled()
+    }, { timeout: 5000 }).toBe(true)
+
+    // Preview should show matching rows (not "No matching rows found")
+    await expect(page.getByText('No matching rows found')).not.toBeVisible()
+
+    // Apply button should be enabled
+    const applyButton = page.getByTestId('apply-transformation-btn')
+    await expect(applyButton).toBeEnabled()
+  })
+
+})

@@ -17,6 +17,18 @@ import {
   type PreviewResult,
 } from '@/lib/preview/transform-preview'
 
+/** Preview state reported to parent components */
+export interface PreviewState {
+  /** Whether preview is currently loading */
+  isLoading: boolean
+  /** Total rows that match the transform criteria */
+  totalMatching: number
+  /** Whether preview encountered an error */
+  hasError: boolean
+  /** Whether preview is ready (requirements met) */
+  isReady: boolean
+}
+
 interface TransformPreviewProps {
   /** Table name to preview from */
   tableName: string
@@ -28,6 +40,8 @@ interface TransformPreviewProps {
   params: Record<string, string>
   /** Number of sample rows to show */
   sampleCount?: number
+  /** Callback when preview state changes (for validation) */
+  onPreviewStateChange?: (state: PreviewState) => void
 }
 
 export function TransformPreview({
@@ -36,6 +50,7 @@ export function TransformPreview({
   transformType,
   params,
   sampleCount = 10,
+  onPreviewStateChange,
 }: TransformPreviewProps) {
   const [preview, setPreview] = useState<PreviewResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -95,6 +110,18 @@ export function TransformPreview({
       }
     }
   }, [tableName, column, transformType, paramsKey, sampleCount, ready, params])
+
+  // Report preview state changes to parent
+  useEffect(() => {
+    if (onPreviewStateChange) {
+      onPreviewStateChange({
+        isLoading,
+        totalMatching: preview?.totalMatching ?? 0,
+        hasError: !!preview?.error,
+        isReady: ready,
+      })
+    }
+  }, [onPreviewStateChange, isLoading, preview?.totalMatching, preview?.error, ready])
 
   // Don't render if transform doesn't support preview
   if (!supportsPreview) {
