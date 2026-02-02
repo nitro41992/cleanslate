@@ -48,11 +48,11 @@ test.describe('Bug: Split Column Undo', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('split_undo_test', 3)
 
-    // Verify initial: only id, sentence, category
+    // Verify initial: only id, sentence, category (plus internal _cs_id, _cs_origin_id)
     const before = await inspector.runQuery(
       "SELECT column_name FROM information_schema.columns WHERE table_name = 'split_undo_test' ORDER BY column_name"
     )
-    expect(before.map(c => c.column_name)).toEqual(['_cs_id', 'category', 'id', 'sentence'])
+    expect(before.map(c => c.column_name)).toEqual(['_cs_id', '_cs_origin_id', 'category', 'id', 'sentence'])
 
     // Split sentence by space -> creates sentence_1 through sentence_5
     await laundromat.openCleanPanel()

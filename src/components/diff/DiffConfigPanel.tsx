@@ -60,6 +60,14 @@ export function DiffConfigPanel({
   // Get timeline for active table (if exists)
   const getTimeline = useTimelineStore((s) => s.getTimeline)
 
+  // Subscribe to timeline command count to re-check when manual edits are made
+  // This is needed because local-only commands (cell edits) don't increment dataVersion
+  const timelineCommandCount = useTimelineStore((s) => {
+    if (!activeTableId) return 0
+    const timeline = s.timelines.get(activeTableId)
+    return timeline?.commands.length ?? 0
+  })
+
   // Check if active table has an original snapshot AND at least one transformation
   // Just having a snapshot (from file upload) isn't enough - we need actual changes to compare
   useEffect(() => {
@@ -100,7 +108,7 @@ export function DiffConfigPanel({
         .then(setHasSnapshot)
         .finally(() => setCheckingSnapshot(false))
     }
-  }, [mode, activeTableId, activeTableName, activeTableDataVersion, getTimeline])
+  }, [mode, activeTableId, activeTableName, activeTableDataVersion, getTimeline, timelineCommandCount])
 
   // Get table info for selected tables
   const tableAInfo = tables.find((t) => t.id === tableA)

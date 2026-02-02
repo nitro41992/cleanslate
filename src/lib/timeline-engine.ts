@@ -206,11 +206,15 @@ export async function createTimelineOriginalSnapshot(
       console.log(`[Timeline] Original snapshot already exists with _cs_origin_id, reusing: parquet:${snapshotId}`)
       return `parquet:${snapshotId}`
     } else {
-      // MIGRATION: Old snapshot without _cs_origin_id needs to be recreated
-      // This ensures diff comparisons work correctly after row insertions
-      console.log(`[Timeline] MIGRATION: Old snapshot missing _cs_origin_id, recreating: ${snapshotId}`)
-      await deleteSnapshotFiles(snapshotId)
-      // Continue to create new snapshot below
+      // OLD SNAPSHOT: Lacks _cs_origin_id but still has original data
+      // DO NOT recreate - that would destroy the original data with current (edited) values!
+      // The diff engine will fall back to _cs_id matching for old snapshots (see diff-engine.ts)
+      //
+      // Note: _cs_id matching works correctly for edit operations, but may show false
+      // positives after row insertions (because _cs_id values shift). This is a known
+      // limitation for snapshots created before the _cs_origin_id feature was added.
+      console.log(`[Timeline] OLD SNAPSHOT: Missing _cs_origin_id, keeping original data. Diff will use _cs_id fallback: ${snapshotId}`)
+      return `parquet:${snapshotId}`
     }
   }
 
