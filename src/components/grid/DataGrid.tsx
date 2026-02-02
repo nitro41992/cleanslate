@@ -448,6 +448,11 @@ export function DataGrid({
   // "Stable" scroll position - only updated for meaningful scroll events, not grid resets
   // This survives the grid reset to {0,0} that happens during re-render
   const stableScrollRef = useRef<{ col: number; row: number } | null>(null)
+  // Track the actual visible region from the grid's onVisibleRegionChanged callback.
+  // CRITICAL: This is used by invalidateVisibleCells to know which rows to refresh.
+  // Unlike loadedRange (which can be the entire table), this reflects what's on screen.
+  // Without this, edit indicators (orange→green) won't update after scrolling.
+  const visibleRegionRef = useRef<{ y: number; height: number }>({ y: 0, height: 50 })
   // Lock to prevent onVisibleRegionChanged from overwriting scroll position during reload
   const isReloadingRef = useRef(false)
   // Track previous dataVersion to detect reload triggers
@@ -1351,12 +1356,21 @@ export function DataGrid({
 
   // Helper to invalidate visible cells in the grid
   // For full grid refresh (e.g., word wrap), set allColumns=true
+  //
+  // IMPORTANT: Uses visibleRegionRef to get the actual visible rows from the grid's
+  // onVisibleRegionChanged callback, NOT loadedRange which represents all loaded data
+  // (could be the entire table). This ensures we invalidate the correct rows after
+  // scrolling - critical for edit indicator updates (orange→green) to work correctly.
+  const columnsLengthRef = useRef(columns.length)
+  columnsLengthRef.current = columns.length
+
   const invalidateVisibleCells = useCallback((allColumns = false) => {
     if (!gridRef.current) return
+    const visible = visibleRegionRef.current
     const cellsToUpdate: { cell: [number, number] }[] = []
-    const visibleStart = loadedRange.start
-    const visibleEnd = Math.min(loadedRange.end, loadedRange.start + 50) // Limit to 50 rows for performance
-    const colCount = allColumns ? columns.length : 1
+    const visibleStart = visible.y
+    const visibleEnd = visible.y + visible.height + 5 // Add small buffer for partial rows
+    const colCount = allColumns ? columnsLengthRef.current : 1
     for (let row = visibleStart; row < visibleEnd; row++) {
       for (let col = 0; col < colCount; col++) {
         cellsToUpdate.push({ cell: [col, row] })
@@ -1365,7 +1379,7 @@ export function DataGrid({
     if (cellsToUpdate.length > 0) {
       gridRef.current.updateCells(cellsToUpdate)
     }
-  }, [loadedRange, columns.length])
+  }, []) // No dependencies - always reads from refs
 
   // Force grid re-render when highlight changes (set or cleared)
   // Canvas-based grids need explicit invalidation to redraw cells with new highlight state
@@ -1400,6 +1414,45 @@ export function DataGrid({
     prevExecutorVersionRef.current = executorTimelineVersion
   }, [executorTimelineVersion, invalidateVisibleCells])
 
+  // Subscribe to edit batch store to invalidate cells when pending edits are cleared.
+  //
+  // WHY THIS IS NEEDED:
+  // The batch flush flow has a timing issue: setExecutorTimelineVersion is called INSIDE
+  // the flushCallback (before it returns), but clearBatch is called AFTER flushCallback
+  // returns. Since flushCallback has async operations (changelog save), the effect that
+  // listens to executorTimelineVersion can fire and invalidate cells BEFORE clearBatch
+  // clears the pending edits. Result: drawCell still sees pending edits and draws orange.
+  //
+  // SOLUTION: Subscribe directly to the edit batch store. When pendingEdits transitions
+  // from non-empty to empty (clearBatch was called), invalidate the visible cells.
+  // This guarantees invalidation happens AFTER the batch is actually cleared.
+  const prevPendingEditsCountRef = useRef(0)
+  const invalidateVisibleCellsRef = useRef(invalidateVisibleCells)
+  invalidateVisibleCellsRef.current = invalidateVisibleCells
+  useEffect(() => {
+    if (!tableId) return
+
+    const unsubscribe = useEditBatchStore.subscribe((state) => {
+      const currentCount = state.pendingEdits.get(tableId)?.length ?? 0
+      const prevCount = prevPendingEditsCountRef.current
+
+      // When pending edits go from non-zero to zero, the batch was just cleared
+      if (prevCount > 0 && currentCount === 0) {
+        // Use rAF to ensure the grid has processed any pending React updates
+        requestAnimationFrame(() => {
+          invalidateVisibleCellsRef.current(true)
+        })
+      }
+
+      prevPendingEditsCountRef.current = currentCount
+    })
+
+    // Initialize the ref with current count
+    prevPendingEditsCountRef.current = useEditBatchStore.getState().pendingEdits.get(tableId)?.length ?? 0
+
+    return unsubscribe
+  }, [tableId])
+
   // Force grid re-render when loaded range changes (scroll)
   // This ensures word wrap is applied correctly to cells that scroll back into view
   const prevLoadedRangeRef = useRef(loadedRange)
@@ -1428,6 +1481,8 @@ export function DataGrid({
         // Only update if this is a meaningful position (not a grid reset to {0,0})
         // A position of {0,0} is valid if user intentionally scrolled to top
         stableScrollRef.current = { col: range.x, row: range.y }
+        // Track visible region for cell invalidation (edit indicator updates)
+        visibleRegionRef.current = { y: range.y, height: range.height }
       }
 
       // Skip if DuckDB is busy with heavy operations

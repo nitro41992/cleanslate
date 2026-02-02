@@ -243,6 +243,12 @@ export interface StoreInspector {
    * @param timeout - Optional timeout in milliseconds (default 2000)
    */
   waitForEditBatchFlush: (timeout?: number) => Promise<void>
+  /**
+   * Get pending edits count for a specific table.
+   * @param tableId - The table ID to check
+   * @returns Number of pending (unbatched) edits
+   */
+  getPendingEditsCount: (tableId: string) => Promise<number>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -928,6 +934,17 @@ async getTableList(): Promise<TableInfo[]> {
         },
         { timeout }
       )
+    },
+
+    async getPendingEditsCount(tableId: string): Promise<number> {
+      return page.evaluate((tid) => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.editBatchStore) return 0
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.editBatchStore as any).getState()
+        const pendingEdits = state?.pendingEdits?.get(tid)
+        return pendingEdits?.length ?? 0
+      }, tableId)
     },
   }
 }
