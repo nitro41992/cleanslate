@@ -722,9 +722,41 @@ export class CommandExecutor implements ICommandExecutor {
           silentUpdates.columns = executionResult.columns
         }
 
+        // CRITICAL: Row insertions/deletions need priority save for Parquet export
+        // Must set priority flag BEFORE updateTableSilent because the persistence
+        // subscription fires immediately on store update. If we set it after,
+        // the subscription won't see it and the table won't be added to tablesToSave.
+        //
+        // ALSO: Add to savingTables IMMEDIATELY here (not just in saveTable())
+        // because the persistence subscription callback is async with awaits before
+        // saveTable() is called. If we only set savingTables in saveTable(), tests
+        // can poll and see savingTables.size === 0 during that async gap.
+        if (
+          command.type === 'data:insert_row' ||
+          command.type === 'data:delete_row' ||
+          command.type === 'schema:add_column'
+        ) {
+          const currentTable = useTableStore.getState().tables.find(t => t.id === tableId)
+          if (currentTable) {
+            uiStoreModule.useUIStore.getState().addSavingTable(currentTable.name)
+          }
+          uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
+          console.log('[Executor] Priority save requested for data mutation:', command.type)
+        }
+
         // Apply silent update if anything changed
         if (Object.keys(silentUpdates).length > 0) {
           tableStore.updateTableSilent(ctx.table.id, silentUpdates)
+        }
+
+        // CRITICAL FIX: Update columnOrder for schema:add_column
+        // The newColumnOrder was calculated at line 458-464 but never applied
+        // because LOCAL_ONLY commands skip updateTableStore() which includes columnOrder.
+        // This ensures new columns appear at the correct position (left/right of selected column)
+        // instead of being appended to the end.
+        if (command.type === 'schema:add_column' && newColumnOrder) {
+          tableStore.setColumnOrder(ctx.table.id, newColumnOrder)
+          console.log('[Executor] Updated columnOrder for add_column:', newColumnOrder)
         }
 
         // For row insertions: set pendingRowInsertion so DataGrid can inject locally

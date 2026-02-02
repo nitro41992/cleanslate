@@ -48,7 +48,12 @@ let isRehydratingFlag = false
 
 // Save queue to prevent concurrent exports and coalesce rapid changes
 const saveInProgress = new Map<string, Promise<void>>()
+// Track pending saves: false = normal (can skip if clean), true = priority (MUST save)
 const pendingSave = new Map<string, boolean>()
+// Track tables that are starting a save (between entering saveTable and setting saveInProgress)
+// This prevents race conditions where multiple concurrent calls pass the saveInProgress.has() check
+// before any of them set saveInProgress (which happens after the first await)
+const saveStarting = new Set<string>()
 
 // Compaction configuration
 const COMPACTION_THRESHOLD = 1000        // Compact when changelog exceeds this many entries
@@ -970,7 +975,34 @@ export function usePersistence() {
 
   // 2. SAVING: Call this to save a specific table to Parquet
   // Uses queue with coalescing to prevent concurrent exports
-  const saveTable = useCallback(async (tableName: string): Promise<void> => {
+  // priority: when true, MUST save even if previous save marked table clean (for row inserts/deletes)
+  const saveTable = useCallback(async (tableName: string, priority = false): Promise<void> => {
+    // If already saving OR starting to save this table, queue for re-save after completion
+    // Check BOTH saveInProgress AND saveStarting SYNCHRONOUSLY before any async work.
+    // saveStarting guards against the race condition where multiple concurrent calls
+    // pass this check before any of them set saveInProgress (which happens after the first await).
+    if (saveInProgress.has(tableName) || saveStarting.has(tableName)) {
+      console.log(`[Persistence] ${tableName} save in progress, queuing...${priority ? ' (PRIORITY)' : ''}`)
+      const existingPriority = pendingSave.get(tableName) || false
+      pendingSave.set(tableName, priority || existingPriority)
+      // Track pending in UI store for indicator
+      useUIStore.getState().addPendingTable(tableName)
+      // Return existing promise if available, otherwise return a promise that never resolves
+      // (the caller doesn't await this anyway, and the real save will complete eventually)
+      return saveInProgress.get(tableName) ?? new Promise(() => {})
+    }
+
+    // CRITICAL: Mark save as starting SYNCHRONOUSLY BEFORE any await.
+    // This prevents concurrent saves from both proceeding past the check above.
+    saveStarting.add(tableName)
+
+    // CRITICAL: Track in savingTables SYNCHRONOUSLY BEFORE any await.
+    // This prevents a race condition where tests poll savingTables.size === 0
+    // during the gap between saveTable being called and the first await yielding.
+    // useUIStore is imported at module level, so we can use it synchronously.
+    useUIStore.getState().addSavingTable(tableName)
+    useUIStore.getState().removePendingTable(tableName)
+
     // CRITICAL: Skip save if a timeline replay is in progress
     // During replay, tables are dropped and recreated. Attempting to export
     // during this transient state causes "table does not exist" errors.
@@ -978,17 +1010,9 @@ export function usePersistence() {
     const { useTimelineStore } = await import('@/stores/timelineStore')
     if (useTimelineStore.getState().isReplaying) {
       console.log(`[Persistence] Skipping save for ${tableName} - replay in progress`)
+      saveStarting.delete(tableName)  // Clean up early bailout
+      useUIStore.getState().removeSavingTable(tableName)  // Clean up early bailout
       return
-    }
-
-    // If already saving this table, mark for re-save after completion
-    if (saveInProgress.has(tableName)) {
-      console.log(`[Persistence] ${tableName} save in progress, queuing...`)
-      pendingSave.set(tableName, true)
-      // Track pending in UI store for indicator
-      const { useUIStore } = await import('@/stores/uiStore')
-      useUIStore.getState().addPendingTable(tableName)
-      return saveInProgress.get(tableName)!
     }
 
     // CRITICAL: Create and register promise SYNCHRONOUSLY before any await
@@ -998,9 +1022,8 @@ export function usePersistence() {
       const { useUIStore } = await import('@/stores/uiStore')
       const uiStore = useUIStore.getState()
 
-      // Track in UI store: add to saving, remove from pending
-      uiStore.addSavingTable(tableName)
-      uiStore.removePendingTable(tableName)
+      // Note: addSavingTable/removePendingTable already called above synchronously
+      // No need to call again here
 
       try {
         // CRITICAL: Flush any pending batch edits for this table before exporting
@@ -1054,29 +1077,57 @@ export function usePersistence() {
 
     // Register IMMEDIATELY (synchronous) - before the IIFE's first await yields
     saveInProgress.set(tableName, savePromise)
+    // Clear saveStarting now that saveInProgress is set
+    // Any new calls to saveTable will see saveInProgress.has() === true
+    saveStarting.delete(tableName)
 
     // Handle cleanup and re-save after promise settles
-    savePromise.finally(async () => {
+    // CRITICAL: This must be SYNCHRONOUS (not async) to prevent race conditions.
+    // If we use `await import()` here, there's a window during the await where:
+    // 1. saveInProgress is deleted (synchronous)
+    // 2. A new save starts (calls addSavingTable)
+    // 3. Old finally continues and removes the NEW save's savingTable entry
+    // Result: savingTables empty but saveInProgress has the new entry = test race condition
+    savePromise.finally(() => {
       saveInProgress.delete(tableName)
 
-      // Remove from saving tables in UI store
-      const { useUIStore } = await import('@/stores/uiStore')
-      useUIStore.getState().removeSavingTable(tableName)
+      // If another save was requested while we were saving, re-save only if:
+      // 1. Table is actually dirty, OR
+      // 2. The pending save was marked as priority (e.g., row insert/delete)
+      // Priority saves MUST run because they contain data changes that weren't
+      // captured in the previous save (due to race between saves).
+      //
+      // CRITICAL: Check pending save BEFORE calling removeSavingTable.
+      // This prevents a race condition where:
+      // 1. removeSavingTable sets savingTables.size to 0
+      // 2. Test polls and sees no saves in progress
+      // 3. We start the pending save, but test already moved on
+      const isPendingPriority = pendingSave.get(tableName)
+      const willResave = isPendingPriority !== undefined
+      console.log(`[Persistence] ${tableName} save finished - pendingPriority: ${isPendingPriority}, willResave: ${willResave}, pendingSave keys: ${Array.from(pendingSave.keys()).join(',')}`)
 
-      // If another save was requested while we were saving, re-save only if table is actually dirty
-      // This prevents the "spinning persistence loop" where pendingSave blindly re-saves
-      if (pendingSave.get(tableName)) {
+      // Remove from saving tables in UI store
+      // But if we're about to re-save, keep it in savingTables to prevent poll race
+      // NOTE: useUIStore is imported at module level (line 22), so no await needed
+      if (!willResave) {
+        useUIStore.getState().removeSavingTable(tableName)
+      }
+
+      if (willResave) {
         pendingSave.delete(tableName)
 
-        // CRITICAL: Only re-save if table is actually dirty
         const table = useTableStore.getState().tables.find(t => t.name === tableName)
         const tableIdForCheck = table?.id
+        const isDirty = tableIdForCheck && useUIStore.getState().dirtyTableIds.has(tableIdForCheck)
 
-        if (tableIdForCheck && useUIStore.getState().dirtyTableIds.has(tableIdForCheck)) {
-          console.log(`[Persistence] ${tableName} still dirty, re-saving...`)
-          saveTable(tableName).catch(console.error)
+        if (isPendingPriority || isDirty) {
+          console.log(`[Persistence] ${tableName} re-saving... (priority: ${isPendingPriority}, dirty: ${isDirty})`)
+          // Note: saveTable will call addSavingTable internally, keeping the table in savingTables
+          saveTable(tableName, isPendingPriority).catch(console.error)
         } else {
-          console.log(`[Persistence] ${tableName} is clean, dropping pending save`)
+          console.log(`[Persistence] ${tableName} is clean (not priority), dropping pending save`)
+          // Now safe to remove since we're not re-saving
+          useUIStore.getState().removeSavingTable(tableName)
         }
       }
     })
@@ -1147,10 +1198,11 @@ export function usePersistence() {
     })
 
     // Helper to execute save and clear firstDirtyAt tracking
-    const executeSave = (tables: { id: string; name: string }[], reason: string, rowCount: number) => {
-      console.log(`[Persistence] ${reason}: ${tables.map(t => t.name).join(', ')} (${rowCount.toLocaleString()} rows)`)
+    // isPriority: when true, ensures save runs even if a previous save marked table clean
+    const executeSave = (tables: { id: string; name: string }[], reason: string, rowCount: number, isPriority = false) => {
+      console.log(`[Persistence] ${reason}: ${tables.map(t => t.name).join(', ')} (${rowCount.toLocaleString()} rows)${isPriority ? ' [PRIORITY]' : ''}`)
       tables.forEach(t => {
-        saveTable(t.name)
+        saveTable(t.name, isPriority)
           .then(() => {
             // Clear firstDirtyAt after successful save
             firstDirtyAt.delete(t.id)
@@ -1184,19 +1236,33 @@ export function usePersistence() {
 
         // Skip tables currently being saved - prevents redundant saves when
         // subscription fires multiple times during a single save operation
+        // EXCEPTION: If this is a priority save request, we need to queue it
+        // so it runs after the current save completes
         if (saveInProgress.has(table.name)) {
+          // If there's a priority request while saving, we need to ensure it runs after
+          // by calling saveTable which will queue it as a pending save
+          if (hasPriorityRequest) {
+            console.log(`[Persistence] Priority save requested for ${table.name} while save in progress - queueing`)
+            saveTable(table.name, true).catch(console.error)
+          }
           knownTableIds.add(table.id)
           lastDataVersions.set(table.id, currentVersion)
           continue
         }
 
-        if (isNewTable || hasDataChanged) {
+        // CRITICAL: Include tables with priority save requests even if dataVersion didn't change
+        // This handles LOCAL_ONLY_COMMANDS (row insert/delete) that skip dataVersion bump
+        // to avoid grid scroll reset but still need their data persisted to Parquet
+        if (isNewTable || hasDataChanged || hasPriorityRequest) {
           tablesToSave.push({ id: table.id, name: table.name, rowCount: table.rowCount })
           knownTableIds.add(table.id)
           lastDataVersions.set(table.id, currentVersion)
 
           if (isNewTable) {
             console.log(`[Persistence] New table detected: ${table.name}`)
+          }
+          if (hasPriorityRequest && !hasDataChanged && !isNewTable) {
+            console.log(`[Persistence] Priority save for ${table.name} (no dataVersion change)`)
           }
         }
       }
@@ -1252,7 +1318,8 @@ export function usePersistence() {
         executeSave(
           priorityTables,
           'Priority save (transform completed)',
-          maxRowCount
+          maxRowCount,
+          true  // isPriority = true: MUST save even if previous save marked table clean
         )
 
         // Still schedule debounced save for remaining non-priority tables
