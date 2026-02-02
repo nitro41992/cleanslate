@@ -110,6 +110,14 @@ interface TimelineActions {
 
   // Dirty cell tracking (derived from timeline)
   getDirtyCellsAtPosition: (tableId: string) => Set<string>
+
+  // Inserted row tracking (derived from timeline)
+  getInsertedRowCsIdsAtPosition: (tableId: string) => Set<string>
+
+  // Adjust csId references when rows are inserted/deleted
+  // This keeps timeline references in sync with database _cs_id values
+  adjustCsIdsForRowInsertion: (tableId: string, insertedAtCsId: number) => void
+  adjustCsIdsForRowDeletion: (tableId: string, deletedCsId: number) => void
 }
 
 const initialHighlight: TimelineHighlight = {
@@ -712,6 +720,111 @@ export const useTimelineStore = create<TimelineState & TimelineActions>((set, ge
       }
     }
     return dirtyCells
+  },
+
+  getInsertedRowCsIdsAtPosition: (tableId) => {
+    const timeline = get().timelines.get(tableId)
+    if (!timeline) return new Set()
+
+    const insertedCsIds = new Set<string>()
+    // Only consider commands up to currentPosition (inclusive)
+    // Commands after currentPosition are "undone" and shouldn't show as inserted
+    for (let i = 0; i <= timeline.currentPosition && i < timeline.commands.length; i++) {
+      const cmd = timeline.commands[i]
+      // Track rows inserted by data:insert_row commands
+      if (cmd.params.type === 'data' && cmd.params.dataOperation === 'insert_row' && cmd.params.newCsId) {
+        insertedCsIds.add(cmd.params.newCsId)
+      }
+    }
+    return insertedCsIds
+  },
+
+  adjustCsIdsForRowInsertion: (tableId, insertedAtCsId) => {
+    set((state) => {
+      const timeline = state.timelines.get(tableId)
+      if (!timeline) return state
+
+      // Helper to adjust a csId string if it's >= the insertion point
+      const adjustCsId = (csId: string): string => {
+        const num = parseInt(csId, 10)
+        if (isNaN(num)) return csId
+        // All existing rows with csId >= insertedAtCsId have shifted down by 1
+        return num >= insertedAtCsId ? String(num + 1) : csId
+      }
+
+      // Create updated commands with adjusted csId references
+      const updatedCommands = timeline.commands.map((cmd) => {
+        let updated = { ...cmd }
+        let needsUpdate = false
+
+        // Adjust cellChanges
+        if (cmd.cellChanges && cmd.cellChanges.length > 0) {
+          const newCellChanges = cmd.cellChanges.map((change) => {
+            const newCsId = adjustCsId(change.csId)
+            if (newCsId !== change.csId) needsUpdate = true
+            return newCsId !== change.csId ? { ...change, csId: newCsId } : change
+          })
+          if (needsUpdate) updated = { ...updated, cellChanges: newCellChanges }
+        }
+
+        // Adjust affectedRowIds
+        if (cmd.affectedRowIds && cmd.affectedRowIds.length > 0) {
+          const newAffectedRowIds = cmd.affectedRowIds.map(adjustCsId)
+          if (newAffectedRowIds.some((id, i) => id !== cmd.affectedRowIds![i])) {
+            needsUpdate = true
+            updated = { ...updated, affectedRowIds: newAffectedRowIds }
+          }
+        }
+
+        // Adjust params based on type
+        if (cmd.params.type === 'manual_edit') {
+          const newCsId = adjustCsId(cmd.params.csId)
+          if (newCsId !== cmd.params.csId) {
+            needsUpdate = true
+            updated = { ...updated, params: { ...cmd.params, csId: newCsId } }
+          }
+        } else if (cmd.params.type === 'batch_edit') {
+          const batchParams = cmd.params as import('@/types').BatchEditParams
+          if (batchParams.changes && batchParams.changes.length > 0) {
+            const newChanges = batchParams.changes.map((change) => {
+              const newCsId = adjustCsId(change.csId)
+              return newCsId !== change.csId ? { ...change, csId: newCsId } : change
+            })
+            if (newChanges.some((c, i) => c !== batchParams.changes[i])) {
+              needsUpdate = true
+              updated = { ...updated, params: { ...batchParams, changes: newChanges } }
+            }
+          }
+        } else if (cmd.params.type === 'data' && cmd.params.dataOperation === 'insert_row' && cmd.params.newCsId) {
+          // Adjust previously inserted rows' csIds (they shifted too)
+          const newCsId = adjustCsId(cmd.params.newCsId)
+          if (newCsId !== cmd.params.newCsId) {
+            needsUpdate = true
+            updated = { ...updated, params: { ...cmd.params, newCsId } }
+          }
+        }
+
+        return needsUpdate ? updated : cmd
+      })
+
+      const updatedTimeline: TableTimeline = {
+        ...timeline,
+        commands: updatedCommands,
+        updatedAt: new Date(),
+      }
+
+      const newTimelines = new Map(state.timelines)
+      newTimelines.set(tableId, updatedTimeline)
+
+      return { timelines: newTimelines }
+    })
+  },
+
+  adjustCsIdsForRowDeletion: (_tableId, _deletedCsId) => {
+    // No-op: delete_row doesn't renumber remaining rows.
+    // The _cs_id values stay the same, just with gaps.
+    // Timeline references to the deleted row will simply not match any existing row,
+    // which is correct behavior (dirty indicator disappears when row is deleted).
   },
 }))
 

@@ -10,10 +10,10 @@
 
 import { query, getTableColumns } from '@/lib/duckdb'
 import { generateId } from '@/lib/utils'
-import type { TableInfo, ColumnInfo, SerializedTableTimeline } from '@/types'
+import type { TableInfo, ColumnInfo, SerializedTableTimeline, LastEditLocation } from '@/types'
 
 /**
- * Application state schema version 2
+ * Application state schema version 2 (legacy)
  */
 export interface AppStateV2 {
   version: 2
@@ -26,9 +26,25 @@ export interface AppStateV2 {
   }
 }
 
+/**
+ * Application state schema version 3
+ * - Added lastEdit to uiPreferences for gutter indicator persistence
+ */
+export interface AppStateV3 {
+  version: 3
+  lastUpdated: string
+  tables: TableInfo[]
+  activeTableId: string | null
+  timelines: SerializedTableTimeline[]
+  uiPreferences: {
+    sidebarCollapsed: boolean
+    lastEdit: LastEditLocation | null
+  }
+}
+
 const STORAGE_DIR = 'cleanslate'
 const APP_STATE_FILE = 'app-state.json'
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 /**
  * Get the OPFS root directory handle
@@ -94,7 +110,8 @@ export async function saveAppState(
   tables: TableInfo[],
   activeTableId: string | null,
   timelines: SerializedTableTimeline[],
-  sidebarCollapsed: boolean
+  sidebarCollapsed: boolean,
+  lastEdit: LastEditLocation | null = null
 ): Promise<void> {
   const root = await getOPFSRoot()
   if (!root) {
@@ -121,7 +138,7 @@ export async function saveAppState(
       } : undefined,
     }))
 
-    const state: AppStateV2 = {
+    const state: AppStateV3 = {
       version: SCHEMA_VERSION,
       lastUpdated: new Date().toISOString(),
       tables: serializedTables as unknown as TableInfo[],
@@ -129,6 +146,7 @@ export async function saveAppState(
       timelines: compactedTimelines,
       uiPreferences: {
         sidebarCollapsed,
+        lastEdit,
       },
     }
 
@@ -166,7 +184,7 @@ export async function saveAppState(
  * Called after DuckDB initialization completes
  * Returns null if no saved state exists (fresh start)
  */
-export async function restoreAppState(): Promise<AppStateV2 | null> {
+export async function restoreAppState(): Promise<AppStateV3 | null> {
   const root = await getOPFSRoot()
   if (!root) {
     console.log('[Persistence] OPFS unavailable - starting fresh')
@@ -177,12 +195,25 @@ export async function restoreAppState(): Promise<AppStateV2 | null> {
     const fileHandle = await root.getFileHandle(APP_STATE_FILE)
     const file = await fileHandle.getFile()
     const text = await file.text()
-    const state = JSON.parse(text) as AppStateV2
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let state = JSON.parse(text) as any
+
+    // Handle v2 → v3 migration
+    if (state.version === 2) {
+      console.log('[Persistence] Migrating from V2 to V3')
+      state = {
+        ...state,
+        version: 3,
+        uiPreferences: {
+          ...state.uiPreferences,
+          lastEdit: null,
+        },
+      } as AppStateV3
+    }
 
     // Validate schema version
     if (state.version !== SCHEMA_VERSION) {
       console.warn(`[Persistence] Schema version mismatch (got ${state.version}, expected ${SCHEMA_VERSION})`)
-      // Future: run migration here
       await clearAppState()
       return null
     }
@@ -378,7 +409,8 @@ export async function saveAppStateNow(): Promise<void> {
       tableState.tables,
       tableState.activeTableId,
       timelineState.getSerializedTimelines(),
-      uiState.sidebarCollapsed
+      uiState.sidebarCollapsed,
+      uiState.lastEdit
     )
   } catch (error) {
     console.error('[Persistence] Manual save failed:', error)

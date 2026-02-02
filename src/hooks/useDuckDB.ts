@@ -98,6 +98,11 @@ async function runFullInitialization(): Promise<void> {
       // Restore UI preferences
       useUIStore.getState().setSidebarCollapsed(savedState.uiPreferences.sidebarCollapsed)
 
+      // Restore last edit location for gutter indicator
+      if (savedState.uiPreferences.lastEdit) {
+        useUIStore.getState().setLastEdit(savedState.uiPreferences.lastEdit)
+      }
+
       // Expose saved table metadata for usePersistence to use
       // This ensures tableIds remain consistent across refreshes
       const tableIdMap: Record<string, string> = {}

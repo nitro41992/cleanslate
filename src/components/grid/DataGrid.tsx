@@ -7,6 +7,8 @@ import DataGridLib, {
   EditableGridCell,
   DrawCellCallback,
   DataEditorRef,
+  Highlight,
+  Rectangle,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Table as ArrowTable } from 'apache-arrow'
@@ -19,7 +21,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useEditBatchStore, type PendingEdit, isBatchingEnabled } from '@/stores/editBatchStore'
 import { updateCell, estimateCsIdForRow } from '@/lib/duckdb'
 import { recordCommand, initializeTimeline } from '@/lib/timeline-engine'
-import { createCommand, getCommandExecutor } from '@/lib/commands'
+import { createCommand } from '@/lib/commands'
 import { registerMemoryCleanup, unregisterMemoryCleanup } from '@/lib/memory-manager'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
@@ -435,8 +437,6 @@ export function DataGrid({
   // Map of _cs_id -> row index in current loaded data (for timeline highlighting)
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
-  // Track recently inserted row csIds for green gutter indicator
-  const [insertedRowCsIds, setInsertedRowCsIds] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
@@ -491,50 +491,52 @@ export function DataGrid({
   // Track CommandExecutor timeline version for triggering re-renders
   const [executorTimelineVersion, setExecutorTimelineVersion] = useState(0)
 
-  // Timeline-based dirty cell tracking (replaces editStore.isDirty)
-  // Subscribe directly to the timeline object so we re-render when loadTimelines() restores state
-  // This fixes the bug where dirty cell indicators don't persist after page refresh
+  // Subscribe to the timeline for undo/redo awareness (used by other parts of the component)
   const timeline = useTimelineStore((s) => tableId ? s.timelines.get(tableId) : undefined)
 
-  // Compute dirty cells set based on timeline position
-  // This re-computes when the timeline object changes (including after persistence restore)
-  // Combines cells from timeline AND CommandExecutor
-  const dirtyCells = useMemo(
-    () => {
-      if (!tableId) return new Set<string>()
+  // Last edit location for edit indicators
+  const lastEdit = useUIStore((s) => s.lastEdit)
 
-      const dirtyCells = new Set<string>()
+  // Compute highlight regions for last edited cell using native grid API
+  // This is more reliable than custom drawCell canvas drawing
+  const lastEditHighlightRegions = useMemo((): readonly Highlight[] => {
+    if (!lastEdit || lastEdit.tableId !== tableId || !editable) return []
 
-      // Get dirty cells from timeline if it exists
-      if (timeline) {
-        // Only consider commands up to currentPosition (inclusive)
-        // Commands after currentPosition are "undone" and shouldn't show as dirty
-        for (let i = 0; i <= timeline.currentPosition && i < timeline.commands.length; i++) {
-          const cmd = timeline.commands[i]
-          // Track cells modified by manual_edit or batch_edit commands
-          if (cmd.cellChanges) {
-            for (const change of cmd.cellChanges) {
-              dirtyCells.add(`${change.csId}:${change.columnName}`)
-            }
-          }
-          // Also handle single manual_edit without cellChanges array
-          if (cmd.commandType === 'manual_edit' && cmd.params.type === 'manual_edit') {
-            dirtyCells.add(`${cmd.params.csId}:${cmd.params.columnName}`)
-          }
-        }
+    // Find the row index for the last edit csId
+    const rowIndex = csIdToRowIndex.get(lastEdit.csId)
+    if (rowIndex === undefined) return []
+
+    // For row inserts/deletes, highlight the entire row
+    if (lastEdit.columnName === '*') {
+      const range: Rectangle = {
+        x: 0,
+        y: rowIndex,
+        width: columns.length,
+        height: 1,
       }
+      return [{
+        color: lastEdit.editType === 'row_delete' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.25)',
+        range,
+        style: 'solid-outline',
+      }]
+    }
 
-      // Merge with executor dirty cells (for current session edits not yet in timeline)
-      const executor = getCommandExecutor()
-      const executorDirtyCells = executor.getDirtyCells(tableId)
-      for (const cell of executorDirtyCells) {
-        dirtyCells.add(cell)
-      }
+    // For cell edits, highlight just that cell
+    const colIndex = columns.indexOf(lastEdit.columnName)
+    if (colIndex === -1) return []
 
-      return dirtyCells
-    },
-    [tableId, timeline, executorTimelineVersion]
-  )
+    const range: Rectangle = {
+      x: colIndex,
+      y: rowIndex,
+      width: 1,
+      height: 1,
+    }
+    return [{
+      color: 'rgba(34, 197, 94, 0.25)', // green for committed edit
+      range,
+      style: 'solid-outline',
+    }]
+  }, [lastEdit, tableId, editable, csIdToRowIndex, columns])
 
   /**
    * Invalidate Arrow pages containing the specified rows.
@@ -647,6 +649,16 @@ export function DataGrid({
           // (because pending edits existed at the time)
           const { useUIStore } = await import('@/stores/uiStore')
           useUIStore.getState().markTableClean(batchTableId)
+
+          // Set lastEdit to the most recent edit in the batch (for gutter indicator)
+          const lastEditInBatch = edits[edits.length - 1]
+          useUIStore.getState().setLastEdit({
+            tableId: batchTableId,
+            csId: lastEditInBatch.csId,
+            columnName: lastEditInBatch.columnName,
+            editType: 'cell',
+            timestamp: Date.now(),
+          })
 
           // Trigger re-render for dirty cell tracking
           setExecutorTimelineVersion((v) => v + 1)
@@ -885,6 +897,17 @@ export function DataGrid({
       const result = await executeWithConfirmation(command, tableId)
       if (result?.success) {
         toast({ title: 'Row inserted', description: 'A new row has been inserted.' })
+        // Set lastEdit to the inserted row for gutter indicator
+        const insertedRow = result.executionResult?.insertedRow
+        if (insertedRow) {
+          useUIStore.getState().setLastEdit({
+            tableId,
+            csId: insertedRow.csId,
+            columnName: '*', // Entire row
+            editType: 'row_insert',
+            timestamp: Date.now(),
+          })
+        }
       } else if (result?.error) {
         toast({ title: 'Error', description: result.error, variant: 'destructive' })
       }
@@ -911,6 +934,17 @@ export function DataGrid({
       const result = await executeWithConfirmation(command, tableId)
       if (result?.success) {
         toast({ title: 'Row inserted', description: 'A new row has been inserted.' })
+        // Set lastEdit to the inserted row for gutter indicator
+        const insertedRow = result.executionResult?.insertedRow
+        if (insertedRow) {
+          useUIStore.getState().setLastEdit({
+            tableId,
+            csId: insertedRow.csId,
+            columnName: '*', // Entire row
+            editType: 'row_insert',
+            timestamp: Date.now(),
+          })
+        }
       } else if (result?.error) {
         toast({ title: 'Error', description: result.error, variant: 'destructive' })
       }
@@ -928,6 +962,14 @@ export function DataGrid({
     if (!tableId || !tableName) return
 
     try {
+      // Capture row data BEFORE deletion for phantom display
+      const { query } = await import('@/lib/duckdb')
+      const deletedRows = await query<Record<string, unknown>>(
+        `SELECT * FROM "${tableName}" WHERE "_cs_id" = '${csId}'`
+      )
+      const deletedRowData = deletedRows[0] ?? null
+      const deletedRowIndex = csIdToRowIndex.get(csId) ?? 0
+
       const command = createCommand('data:delete_row', {
         tableId,
         tableName,
@@ -937,6 +979,18 @@ export function DataGrid({
       const result = await executeWithConfirmation(command, tableId)
       if (result?.success) {
         toast({ title: 'Row deleted', description: 'The row has been deleted.' })
+        // Set lastEdit to show phantom row for the deleted row
+        if (deletedRowData) {
+          useUIStore.getState().setLastEdit({
+            tableId,
+            csId,
+            columnName: '*', // Entire row
+            editType: 'row_delete',
+            timestamp: Date.now(),
+            deletedRowData,
+            deletedRowIndex,
+          })
+        }
       } else if (result?.error) {
         toast({ title: 'Error', description: result.error, variant: 'destructive' })
       }
@@ -948,7 +1002,7 @@ export function DataGrid({
       })
     }
     setRowMenu(null)
-  }, [tableId, tableName, executeWithConfirmation])
+  }, [tableId, tableName, executeWithConfirmation, csIdToRowIndex])
 
   // Handle column reorder via drag-drop
   const handleColumnMoved = useCallback((startIndex: number, endIndex: number) => {
@@ -1045,8 +1099,8 @@ export function DataGrid({
     // Clear the pending insertion immediately to prevent re-runs
     useUIStore.getState().setPendingRowInsertion(null)
 
-    // Track this csId for green gutter indicator
-    setInsertedRowCsIds(prev => new Set(prev).add(csId))
+    // Note: Green gutter indicator is now derived from timeline via insertedRowCsIds useMemo
+    // The timeline already records the newCsId in the data:insert_row command
 
     // Check if the inserted row is within our currently loaded range
     // If not, no need to update local state - grid will fetch when scrolled
@@ -2117,80 +2171,44 @@ export function DataGrid({
         )
       }
 
-      // Check for committed edit (in DuckDB timeline, shown as dirty)
-      const isCellDirty = cellKey && dirtyCells.has(cellKey)
+      // Pending edit indicators (orange) - drawn in drawCell
+      // Committed edit indicators (green) are now handled natively via:
+      // - highlightRegions: cell-level green outline
+      // - getRowThemeOverride: row-level subtle background tint
 
-      // VS Code-style left gutter bar indicator
-      // Draw on first column (col === 0) to create a row-level indicator
-      // This makes edit state highly visible during scroll
-      // CRITICAL: Check row-level status BEFORE the condition, not inside it
-      // Otherwise we never enter the block if column 0 itself isn't dirty
+      // Check if ANY cell in this row has a pending edit (for orange gutter bar)
       let rowHasPendingEdit = false
-      let rowIsDirty = false
-      let rowIsInserted = false
-
       if (col === 0 && csId && tableId) {
-        // Check if ANY cell in this row has a pending edit
         const pendingEdits = useEditBatchStore.getState().getPendingEdits(tableId)
         rowHasPendingEdit = pendingEdits.some(e => e.csId === csId)
-
-        // Check if ANY cell in this row is dirty (committed edit)
-        for (const c of columns) {
-          if (dirtyCells.has(`${csId}:${c}`)) {
-            rowIsDirty = true
-            break
-          }
-        }
-
-        // Check if this row was recently inserted
-        rowIsInserted = insertedRowCsIds.has(csId)
       }
 
-      // Draw gutter bar if ANY cell in the row has edits OR row was inserted
-      if (editable && col === 0 && (rowHasPendingEdit || rowIsDirty || rowIsInserted)) {
+      // Draw orange gutter bar for pending edits only
+      // Committed edits use native getRowThemeOverride for background tint
+      if (editable && col === 0 && rowHasPendingEdit) {
         ctx.save()
-        // Draw full-height bar on left edge of row (VS Code git diff style)
         const barWidth = 3
-        // Orange (#f97316) = pending edit, Green (#22c55e) = committed/inserted
-        ctx.fillStyle = rowHasPendingEdit ? '#f97316' : '#22c55e'
+        ctx.fillStyle = '#f97316' // orange for pending
         ctx.fillRect(rect.x, rect.y, barWidth, rect.height)
         ctx.restore()
       }
 
-      // Also draw cell-level indicator for specific edited cells (beyond first column)
-      // This provides per-cell granularity while keeping the row-level bar visible
+      // Draw orange dot for pending cell edits (col > 0)
       if (editable && col > 0 && hasPendingEdit) {
         ctx.save()
-        // Small dot in top-left corner for edited cells
         ctx.beginPath()
         ctx.arc(rect.x + 6, rect.y + 6, 3, 0, Math.PI * 2)
         ctx.fillStyle = '#f97316' // orange for pending
         ctx.fill()
         ctx.restore()
       }
-
-      // Keep the existing red triangle for committed dirty cells (col > 0)
-      // This maintains visual consistency with the existing dirty cell indicator
-      if (editable && col > 0 && isCellDirty && !hasPendingEdit) {
-        ctx.save()
-        // Draw a small green triangle in the top-right corner (committed)
-        const triangleSize = 8
-        ctx.beginPath()
-        ctx.moveTo(rect.x + rect.width - triangleSize, rect.y)
-        ctx.lineTo(rect.x + rect.width, rect.y)
-        ctx.lineTo(rect.x + rect.width, rect.y + triangleSize)
-        ctx.closePath()
-        ctx.fillStyle = '#22c55e' // green-500 for committed
-        ctx.fill()
-        ctx.restore()
-      }
     },
-    [editable, columns, dirtyCells, rowIndexToCsId, activeHighlight, tableId, insertedRowCsIds]
+    [editable, columns, rowIndexToCsId, activeHighlight, tableId]
   )
 
   const getRowThemeOverride: GetRowThemeCallback = useCallback(
     (row: number) => {
-      // Check for traditional highlightedRows (diff view)
+      // Check for traditional highlightedRows (diff view) - highest priority
       if (highlightedRows) {
         const status = highlightedRows.get(row)
         if (status === 'added') {
@@ -2216,9 +2234,21 @@ export function DataGrid({
         }
       }
 
+      // Check for last edit row (subtle background for row-level indicator)
+      if (editable && lastEdit && lastEdit.tableId === tableId) {
+        const csId = rowIndexToCsId.get(row)
+        if (csId && csId === lastEdit.csId) {
+          // Use subtle green tint for last edit row
+          if (lastEdit.editType === 'row_delete') {
+            return { bgCell: 'rgba(239, 68, 68, 0.08)' } // subtle red for deleted
+          }
+          return { bgCell: 'rgba(34, 197, 94, 0.08)' } // subtle green for edit/insert
+        }
+      }
+
       return undefined
     },
-    [highlightedRows, activeHighlight, rowIndexToCsId]
+    [highlightedRows, activeHighlight, rowIndexToCsId, editable, lastEdit, tableId]
   )
 
   // Handle column resize end - persist the new width to store
@@ -2399,6 +2429,8 @@ export function DataGrid({
             // Enable experimental hyperWrapping for proper text wrapping support
             experimental={{ hyperWrapping: true }}
             theme={gridTheme}
+            // Native highlight regions for last edit cell (more reliable than drawCell)
+            highlightRegions={lastEditHighlightRegions}
           />
         )}
       </div>

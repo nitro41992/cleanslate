@@ -23,6 +23,7 @@ import {
 import { applyTransformation, EXPENSIVE_TRANSFORMS } from '@/lib/transformations'
 import { applyStandardization } from '@/lib/standardizer-engine'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { useUIStore } from '@/stores/uiStore'
 import {
   exportTableToParquet,
   importTableFromParquet,
@@ -1166,6 +1167,10 @@ export async function undoTimeline(
   onProgress?: (progress: number, message: string) => void
 ): Promise<{ rowCount: number; columns: ColumnInfo[]; columnOrder?: string[] } | undefined> {
   console.log('[TIMELINE] undoTimeline called for tableId:', tableId)
+
+  // Clear lastEdit when undoing - the indicator represents "where I left off" not full history
+  useUIStore.getState().clearLastEditForTable(tableId)
+
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
@@ -1255,6 +1260,10 @@ export async function redoTimeline(
   onProgress?: (progress: number, message: string) => void
 ): Promise<{ rowCount: number; columns: ColumnInfo[]; columnOrder?: string[] } | undefined> {
   console.log('[TIMELINE] redoTimeline called for tableId:', tableId)
+
+  // Clear lastEdit when redoing - the indicator represents "where I left off" not full history
+  useUIStore.getState().clearLastEditForTable(tableId)
+
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 

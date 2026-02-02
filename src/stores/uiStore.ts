@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PersistenceStatus } from '@/types'
+import type { PersistenceStatus, LastEditLocation } from '@/types'
 import { getMemoryStatus, getMemoryBreakdown, MEMORY_LIMIT_BYTES } from '@/lib/duckdb/memory'
 import {
   takeMemorySnapshot,
@@ -86,6 +86,8 @@ interface UIState {
   isMemoryLeaking: boolean
   // Usage metrics (for future analytics)
   usageMetrics: UsageMetrics
+  // Last edit location for gutter indicator (single location, not full history)
+  lastEdit: LastEditLocation | null
 }
 
 interface UIActions {
@@ -144,6 +146,10 @@ interface UIActions {
   updateUsageMetrics: (metrics: Partial<UsageMetrics>) => void
   /** Set pending row insertion for local state injection */
   setPendingRowInsertion: (insertion: PendingRowInsertion | null) => void
+  /** Set the most recent edit location (overwrites previous) */
+  setLastEdit: (edit: LastEditLocation | null) => void
+  /** Clear last edit for a specific table (call on table delete) */
+  clearLastEditForTable: (tableId: string) => void
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -187,6 +193,8 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
     peakMemoryBytes: 0,
     transformCount: 0,
   },
+  // Last edit location initial state
+  lastEdit: null,
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
@@ -431,6 +439,18 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   setPendingRowInsertion: (insertion) => {
     set({ pendingRowInsertion: insertion })
   },
+
+  // Last edit location actions
+  setLastEdit: (edit) => {
+    set({ lastEdit: edit })
+  },
+
+  clearLastEditForTable: (tableId) => {
+    const current = get().lastEdit
+    if (current?.tableId === tableId) {
+      set({ lastEdit: null })
+    }
+  },
 }))
 
 // Persistence: Auto-save state on UI preference changes
@@ -449,8 +469,12 @@ if (typeof window !== 'undefined') {
       // Skip save during state restoration to avoid write cycles
       if (isRestoringState) return
 
-      // Only save if sidebarCollapsed changed
-      if (state.sidebarCollapsed !== prevState.sidebarCollapsed) {
+      // Save if sidebarCollapsed or lastEdit changed
+      const needsSave =
+        state.sidebarCollapsed !== prevState.sidebarCollapsed ||
+        state.lastEdit !== prevState.lastEdit
+
+      if (needsSave) {
         // Trigger debounced save
         debouncedSave.trigger(async () => {
           const { saveAppState } = await import('@/lib/persistence/state-persistence')
@@ -464,7 +488,8 @@ if (typeof window !== 'undefined') {
             tableState.tables,
             tableState.activeTableId,
             timelineState.getSerializedTimelines(),
-            state.sidebarCollapsed
+            state.sidebarCollapsed,
+            state.lastEdit
           )
         })
       }

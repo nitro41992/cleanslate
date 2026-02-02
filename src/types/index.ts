@@ -191,6 +191,18 @@ export type ObfuscationMethod =
 
 export type PersistenceStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 
+/** Tracks the most recent manual edit location for gutter indicators */
+export interface LastEditLocation {
+  tableId: string
+  csId: string              // Row identifier (stable across transforms)
+  columnName: string        // Column name ('*' for row insert/delete = entire row)
+  editType: 'cell' | 'row_insert' | 'row_delete'
+  timestamp: number         // For debugging/display
+  // For row_delete only: preserve deleted row for phantom display
+  deletedRowData?: Record<string, unknown>  // The row's values before deletion
+  deletedRowIndex?: number                  // Original row index for phantom placement
+}
+
 // Filter & Sort types (View Operations)
 
 /**

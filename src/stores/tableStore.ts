@@ -129,6 +129,11 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
       console.warn(`Failed to cleanup timeline snapshots for table ${id}:`, err)
     })
 
+    // Clear lastEdit if it references this table
+    import('@/stores/uiStore').then(({ useUIStore }) => {
+      useUIStore.getState().clearLastEditForTable(id)
+    })
+
     set((state) => ({
       tables: state.tables.filter((t) => t.id !== id),
       activeTableId: state.activeTableId === id ? null : state.activeTableId,
