@@ -1026,15 +1026,22 @@ export async function fetchDiffPage(
         }
 
         // Query all chunks with glob pattern
+        // DYNAMIC ROW NUMBERS: Compute current row positions at query time
+        // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
         const result = await query<DiffRow>(`
+          WITH b_current_rows AS (
+            SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+            FROM "${targetTableName}"
+          )
           SELECT
             d.diff_status,
             d.row_id,
-            d.b_row_num,
+            b_nums.current_row_num as b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}_part_*.parquet') d
           LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
           LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+          LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
@@ -1065,15 +1072,22 @@ export async function fetchDiffPage(
         }
 
         // Query Parquet file directly with pagination
+        // DYNAMIC ROW NUMBERS: Compute current row positions at query time
+        // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
         const result = await query<DiffRow>(`
+          WITH b_current_rows AS (
+            SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+            FROM "${targetTableName}"
+          )
           SELECT
             d.diff_status,
             d.row_id,
-            d.b_row_num,
+            b_nums.current_row_num as b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}.parquet') d
           LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
           LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+          LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
@@ -1088,16 +1102,24 @@ export async function fetchDiffPage(
     }
   }
 
-  // Original in-memory path (unchanged)
+  // Original in-memory path
+  // DYNAMIC ROW NUMBERS: Compute current row positions at query time
+  // This ensures row numbers update when the target table is modified after diff creation
+  // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
   return query<DiffRow>(`
+    WITH b_current_rows AS (
+      SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+      FROM "${targetTableName}"
+    )
     SELECT
       d.diff_status,
       d.row_id,
-      d.b_row_num,
+      b_nums.current_row_num as b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
     LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
     LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+    LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
     WHERE d.diff_status IN ('added', 'removed', 'modified')
     ORDER BY d.sort_key
     LIMIT ${limit} OFFSET ${offset}
@@ -1182,23 +1204,30 @@ export async function fetchDiffPageWithKeyset(
       // This is fast because:
       // 1. Index query returns exactly `limit` rows from small table
       // 2. JOIN only needs to find `limit` matching rows in source/target
+      // DYNAMIC ROW NUMBERS: Compute current row positions at query time
+      // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
       const rows = await query<DiffRow & { sort_key: number }>(`
         WITH page AS (
-          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id, b_row_num
+          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id
           FROM "${indexTableName}"
           ${whereClause}
           ORDER BY sort_key ${orderDirection}
           LIMIT ${limit}
+        ),
+        b_current_rows AS (
+          SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+          FROM "${targetTableName}"
         )
         SELECT
           page.diff_status,
           page.row_id,
           page.sort_key,
-          page.b_row_num,
+          b_nums.current_row_num as b_row_num,
           ${selectCols}
         FROM page
         LEFT JOIN ${sourceTableExpr} a ON page.a_row_id = a."_cs_id"
         LEFT JOIN "${targetTableName}" b ON page.b_row_id = b."_cs_id"
+        LEFT JOIN b_current_rows b_nums ON page.b_row_id = b_nums."_cs_id"
         ORDER BY page.sort_key ${orderDirection}
       `)
 
@@ -1263,16 +1292,23 @@ export async function fetchDiffPageWithKeyset(
   // Order direction matches cursor direction
   const orderDirection = cursor.direction === 'forward' ? 'ASC' : 'DESC'
 
+  // DYNAMIC ROW NUMBERS: Compute current row positions at query time
+  // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
   const rows = await query<DiffRow & { sort_key: number }>(`
+    WITH b_current_rows AS (
+      SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+      FROM "${targetTableName}"
+    )
     SELECT
       d.diff_status,
       d.row_id,
       d.sort_key,
-      d.b_row_num,
+      b_nums.current_row_num as b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
     LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
     LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+    LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
     WHERE ${whereClause}
     ORDER BY d.sort_key ${orderDirection}
     LIMIT ${limit}
