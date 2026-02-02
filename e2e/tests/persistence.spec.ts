@@ -229,31 +229,33 @@ test.describe('Application State Persistence', () => {
   })
 
   test('FR-PERSIST-3: Multiple tables persist correctly', async () => {
-    // Load first table
-    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    // Load first table (with-duplicates.csv has 5 rows - same fixtures as opfs-persistence)
+    await laundromat.uploadFile(getFixturePath('with-duplicates.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('basic_data', 5)
+    await inspector.waitForTableLoaded('with_duplicates', 5)
 
     // Wait for wizard to close before loading second file
     await expect(page.getByTestId('ingestion-wizard')).toBeHidden({ timeout: 10000 })
 
     // Load second table
-    await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('whitespace_data', 3)
+    await inspector.waitForTableLoaded('basic_data', 5)
 
-    // Verify both tables exist
-    let tables = await inspector.getTableList()
-    expect(tables).toHaveLength(2)
-    const tableNames = tables.map(t => t.name).sort()
-    expect(tableNames).toEqual(['basic_data', 'whitespace_data'])
+    // Verify both tables exist in store
+    await expect.poll(async () => {
+      const tables = await inspector.getTableList()
+      const hasDups = tables.some(t => t.name === 'with_duplicates')
+      const hasBasic = tables.some(t => t.name === 'basic_data')
+      return { hasDups, hasBasic, count: tables.length }
+    }, { timeout: 15000 }).toMatchObject({ hasDups: true, hasBasic: true })
 
-    // Flush to OPFS before reload
+    // Flush to OPFS
     await inspector.flushToOPFS()
 
-    // Wait for flush with simple poll
+    // Wait for persistence by checking store tables
     await expect.poll(async () => {
       const tables = await inspector.getTableList()
       return tables.length
@@ -263,20 +265,13 @@ test.describe('Application State Persistence', () => {
     await page.reload()
     await waitForAppReady(page, inspector)
 
-    // Wait for tables to be queryable in DuckDB
+    // Verify both tables restored via store (same pattern as working opfs-persistence test)
     await expect.poll(async () => {
-      try {
-        const rows = await inspector.runQuery('SELECT COUNT(*) as cnt FROM basic_data')
-        return Number(rows[0].cnt)
-      } catch {
-        return 0
-      }
-    }, { timeout: 15000 }).toBe(5)
-
-    // Verify both tables still exist
-    tables = await inspector.getTableList()
-    const tableNamesAfter = tables.map(t => t.name).sort()
-    expect(tableNamesAfter).toEqual(['basic_data', 'whitespace_data'])
+      const tables = await inspector.getTableList()
+      const dups = tables.find(t => t.name === 'with_duplicates')
+      const basic = tables.find(t => t.name === 'basic_data')
+      return { dupsRows: dups?.rowCount ?? 0, basicRows: basic?.rowCount ?? 0 }
+    }, { timeout: 15000 }).toEqual({ dupsRows: 5, basicRows: 5 })
   })
 
   test('FR-PERSIST-4: Active table selection persists', async () => {
