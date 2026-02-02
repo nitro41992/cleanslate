@@ -503,8 +503,16 @@ export function DataGrid({
     if (!lastEdit || lastEdit.tableId !== tableId || !editable) return []
 
     // Find the row index for the last edit csId
-    const rowIndex = csIdToRowIndex.get(lastEdit.csId)
-    if (rowIndex === undefined) return []
+    // For deleted rows, highlight the "successor" row (the row now at that position)
+    // Clamp to valid range in case deleted row was the last row
+    let rowIndex: number | undefined
+    if (lastEdit.editType === 'row_delete' && lastEdit.deletedRowIndex !== undefined) {
+      // Clamp to valid range: if deleted last row, highlight new last row
+      rowIndex = Math.min(lastEdit.deletedRowIndex, Math.max(0, rowCount - 1))
+    } else {
+      rowIndex = csIdToRowIndex.get(lastEdit.csId)
+    }
+    if (rowIndex === undefined || rowCount === 0) return []
 
     // For row inserts/deletes, highlight the entire row
     if (lastEdit.columnName === '*') {
@@ -536,7 +544,7 @@ export function DataGrid({
       range,
       style: 'solid-outline',
     }]
-  }, [lastEdit, tableId, editable, csIdToRowIndex, columns])
+  }, [lastEdit, tableId, editable, csIdToRowIndex, columns, rowCount])
 
   /**
    * Invalidate Arrow pages containing the specified rows.
@@ -2236,19 +2244,24 @@ export function DataGrid({
 
       // Check for last edit row (subtle background for row-level indicator)
       if (editable && lastEdit && lastEdit.tableId === tableId) {
-        const csId = rowIndexToCsId.get(row)
-        if (csId && csId === lastEdit.csId) {
-          // Use subtle green tint for last edit row
-          if (lastEdit.editType === 'row_delete') {
-            return { bgCell: 'rgba(239, 68, 68, 0.08)' } // subtle red for deleted
+        // For deleted rows, match by position (successor row) since csId no longer exists
+        if (lastEdit.editType === 'row_delete' && lastEdit.deletedRowIndex !== undefined) {
+          const targetRow = Math.min(lastEdit.deletedRowIndex, Math.max(0, rowCount - 1))
+          if (row === targetRow && rowCount > 0) {
+            return { bgCell: 'rgba(239, 68, 68, 0.08)' } // subtle red for deleted position
           }
-          return { bgCell: 'rgba(34, 197, 94, 0.08)' } // subtle green for edit/insert
+        } else {
+          // For other edits, match by csId
+          const csId = rowIndexToCsId.get(row)
+          if (csId && csId === lastEdit.csId) {
+            return { bgCell: 'rgba(34, 197, 94, 0.08)' } // subtle green for edit/insert
+          }
         }
       }
 
       return undefined
     },
-    [highlightedRows, activeHighlight, rowIndexToCsId, editable, lastEdit, tableId]
+    [highlightedRows, activeHighlight, rowIndexToCsId, editable, lastEdit, tableId, rowCount]
   )
 
   // Handle column resize end - persist the new width to store
