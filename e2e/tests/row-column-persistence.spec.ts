@@ -365,16 +365,35 @@ test.describe('Row and Column Persistence', () => {
       return Number(rows[0].cnt)
     }, { timeout: 10000 }).toBe(6)
 
-    // Wait for persistence to complete including atomic rename
+    // Get the original Parquet file size before the priority save completes
+    const originalSize = await page.evaluate(async () => {
+      try {
+        const root = await navigator.storage.getDirectory()
+        const cleanslateDir = await root.getDirectoryHandle('cleanslate')
+        const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const file = await fileHandle.getFile()
+        return file.size
+      } catch {
+        return 0
+      }
+    })
+    console.log('[Test FR-ROW-PERSIST-2] Original Parquet size:', originalSize)
+
+    // Wait for the priority save to complete by checking that:
+    // 1. No saves in progress
+    // 2. No .tmp files (atomic rename complete)
+    // 3. Parquet file size has INCREASED (new row was actually saved)
     await expect.poll(async () => {
-      const state = await page.evaluate(async () => {
+      const state = await page.evaluate(async ({ origSize }) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true }
+        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true, sizeIncreased: false }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const uiState = (stores.uiStore as any).getState()
 
         // Check for .tmp files in OPFS (indicates incomplete atomic rename)
         let hasTmpFiles = false
+        let currentSize = 0
         try {
           const root = await navigator.storage.getDirectory()
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
@@ -382,17 +401,25 @@ test.describe('Row and Column Persistence', () => {
           for await (const entry of snapshotsDir.values()) {
             if (entry.name === 'basic_data.parquet.tmp') {
               hasTmpFiles = true
-              break
+            }
+            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+              const file = await entry.getFile()
+              currentSize = file.size
             }
           }
         } catch { }
 
-        return { saving: uiState?.savingTables?.size > 0, hasTmpFiles }
-      })
-      return !state.saving && !state.hasTmpFiles
+        return {
+          saving: uiState?.savingTables?.size > 0,
+          hasTmpFiles,
+          sizeIncreased: currentSize > origSize
+        }
+      }, { origSize: originalSize })
+      console.log('[Test FR-ROW-PERSIST-2] Persistence state:', state)
+      return !state.saving && !state.hasTmpFiles && state.sizeIncreased
     }, { timeout: 20000 }).toBe(true)
 
-    // Flush to OPFS and save app state
+    // Flush any pending data and save app state
     await inspector.flushToOPFS()
     await inspector.saveAppState()
 
@@ -463,15 +490,31 @@ test.describe('Row and Column Persistence', () => {
       return Number(rows[0].cnt)
     }, { timeout: 10000 }).toBe(6)
 
-    // Wait for first insert save to complete before second insert
+    // Get file size after first insert (before save completes)
+    const sizeAfterFirstInsert = await page.evaluate(async () => {
+      try {
+        const root = await navigator.storage.getDirectory()
+        const cleanslateDir = await root.getDirectoryHandle('cleanslate')
+        const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const file = await fileHandle.getFile()
+        return file.size
+      } catch {
+        return 0
+      }
+    })
+    console.log('[Test FR-ROW-PERSIST-3] File size before first save:', sizeAfterFirstInsert)
+
+    // Wait for first insert save to complete (file size must increase)
     await expect.poll(async () => {
-      const uiState = await page.evaluate(async () => {
+      const state = await page.evaluate(async ({ origSize }) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true }
+        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true, sizeIncreased: false }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const state = (stores.uiStore as any).getState()
-        // Also check for tmp files
+        const uiState = (stores.uiStore as any).getState()
+
         let hasTmpFiles = false
+        let currentSize = 0
         try {
           const root = await navigator.storage.getDirectory()
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
@@ -479,17 +522,40 @@ test.describe('Row and Column Persistence', () => {
           for await (const entry of snapshotsDir.values()) {
             if (entry.name === 'basic_data.parquet.tmp') {
               hasTmpFiles = true
-              break
+            }
+            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+              const file = await entry.getFile()
+              currentSize = file.size
             }
           }
         } catch { }
-        return { saving: state?.savingTables?.size > 0, hasTmpFiles }
-      })
-      return !uiState.saving && !uiState.hasTmpFiles
-    }, { timeout: 15000 }).toBe(true)
+
+        return {
+          saving: uiState?.savingTables?.size > 0,
+          hasTmpFiles,
+          sizeIncreased: currentSize > origSize
+        }
+      }, { origSize: sizeAfterFirstInsert })
+      return !state.saving && !state.hasTmpFiles && state.sizeIncreased
+    }, { timeout: 20000 }).toBe(true)
 
     // Dismiss any overlay
     await page.keyboard.press('Escape')
+
+    // Get file size before second insert
+    const sizeBeforeSecondInsert = await page.evaluate(async () => {
+      try {
+        const root = await navigator.storage.getDirectory()
+        const cleanslateDir = await root.getDirectoryHandle('cleanslate')
+        const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const file = await fileHandle.getFile()
+        return file.size
+      } catch {
+        return 0
+      }
+    })
+    console.log('[Test FR-ROW-PERSIST-3] File size before second insert:', sizeBeforeSecondInsert)
 
     // Insert second row below row 2
     await clickRowMarker(page, 2)
@@ -502,14 +568,16 @@ test.describe('Row and Column Persistence', () => {
       return Number(rows[0].cnt)
     }, { timeout: 10000 }).toBe(7)
 
-    // Wait for second insert save to complete
+    // Wait for second insert save to complete (file size must increase again)
     await expect.poll(async () => {
-      const uiState = await page.evaluate(async () => {
+      const state = await page.evaluate(async ({ origSize }) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true }
+        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true, sizeIncreased: false }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const state = (stores.uiStore as any).getState()
+        const uiState = (stores.uiStore as any).getState()
+
         let hasTmpFiles = false
+        let currentSize = 0
         try {
           const root = await navigator.storage.getDirectory()
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
@@ -517,18 +585,25 @@ test.describe('Row and Column Persistence', () => {
           for await (const entry of snapshotsDir.values()) {
             if (entry.name === 'basic_data.parquet.tmp') {
               hasTmpFiles = true
-              break
+            }
+            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+              const file = await entry.getFile()
+              currentSize = file.size
             }
           }
         } catch { }
-        return { saving: state?.savingTables?.size > 0, hasTmpFiles }
-      })
-      return !uiState.saving && !uiState.hasTmpFiles
-    }, { timeout: 15000 }).toBe(true)
 
-    // Flush to OPFS and save
+        return {
+          saving: uiState?.savingTables?.size > 0,
+          hasTmpFiles,
+          sizeIncreased: currentSize > origSize
+        }
+      }, { origSize: sizeBeforeSecondInsert })
+      return !state.saving && !state.hasTmpFiles && state.sizeIncreased
+    }, { timeout: 20000 }).toBe(true)
+
+    // Flush any pending data and save app state
     await inspector.flushToOPFS()
-    await inspector.waitForPersistenceComplete()
     await inspector.saveAppState()
 
     // Refresh page
