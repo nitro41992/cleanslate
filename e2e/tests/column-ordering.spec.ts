@@ -478,4 +478,106 @@ test.describe('Column Order Preservation', () => {
     // is in place. Skipping for now.
     expect(true).toBe(true)
   })
+
+  test('diff view respects user column order (regression: commit 2a3a62a)', async () => {
+    /**
+     * Regression test for commit 2a3a62a: Column order in diff view
+     *
+     * Problem: Diff view was showing columns in DuckDB schema order instead of
+     * the user-arranged order from the main grid.
+     *
+     * Solution: Diff view now reads columnOrder from tableStore and uses it.
+     *
+     * Scenario:
+     * 1. Load table with columns [id, name, email, status]
+     * 2. Rearrange columns via tableStore to [status, name, email, id]
+     * 3. Apply a transformation (to have something to diff)
+     * 4. Open diff (Compare with Preview)
+     * 5. Assert: Diff grid shows columns in [status, name, email, id] order
+     */
+
+    // Load test data
+    await laundromat.uploadFile(getFixturePath('column-order-test.csv'))
+    await wizard.import()
+    await inspector.waitForTableLoaded('column_order_test', 4)
+
+    // Get tableId
+    const tableId = await inspector.getActiveTableId()
+    expect(tableId).not.toBeNull()
+
+    // Verify initial column order
+    const initialColumns = await inspector.getTableColumns('column_order_test')
+    expect(initialColumns.map(c => c.name)).toEqual(['id', 'name', 'email', 'status'])
+
+    // Rearrange columns via tableStore.setColumnOrder: [status, name, email, id]
+    await page.evaluate(({ tableId }) => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      if (!stores?.tableStore) return
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const store = stores.tableStore as any
+      // Use the proper setColumnOrder action
+      store.getState().setColumnOrder(tableId, ['status', 'name', 'email', 'id'])
+    }, { tableId })
+
+    // Verify columnOrder was updated in store (not table.columns which is schema order)
+    const tableInfo = await page.evaluate(({ tableId }) => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      if (!stores?.tableStore) return null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const store = stores.tableStore as any
+      const state = store.getState()
+      const table = state.tables.find((t: { id: string }) => t.id === tableId)
+      return table ? { columnOrder: table.columnOrder } : null
+    }, { tableId })
+    expect(tableInfo?.columnOrder).toEqual(['status', 'name', 'email', 'id'])
+
+    // Apply a transformation (to have something to diff)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.addTransformation('Uppercase', { column: 'name' })
+    await laundromat.closePanel()
+
+    // Wait for transform to complete
+    await inspector.waitForTransformComplete(tableId!)
+
+    // Open Diff View
+    await laundromat.openDiffView()
+
+    // Wait for diff overlay to be visible
+    const diffView = page.getByTestId('diff-view')
+    await diffView.waitFor({ state: 'visible', timeout: 10000 })
+
+    // Run comparison (Compare with Preview mode is default)
+    await page.getByTestId('diff-compare-btn').click()
+
+    // Wait for diff to complete
+    await expect.poll(async () => {
+      const state = await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        const diffStore = stores?.diffStore as {
+          getState: () => { isComparing: boolean; summary: object | null }
+        } | undefined
+        const s = diffStore?.getState()
+        return s?.isComparing === false && s?.summary !== null
+      })
+      return state
+    }, { timeout: 30000 }).toBe(true)
+
+    // Get the column order from diffStore's allColumns (not diffColumns)
+    // The commit 2a3a62a modifies allColumns to match user's columnOrder
+    const diffColumnOrder = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      if (!stores?.diffStore) return { allColumns: [], hasStore: false }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const state = (stores.diffStore as any).getState()
+      return { allColumns: state?.allColumns || [], hasStore: true }
+    })
+
+    // Assert: allColumns should be in user's column order [status, name, email, id]
+    // The commit 2a3a62a reorders allColumns to match targetTable.columnOrder
+    expect(diffColumnOrder.allColumns).toEqual(['status', 'name', 'email', 'id'])
+
+    // Close diff view
+    await page.keyboard.press('Escape')
+  })
 })

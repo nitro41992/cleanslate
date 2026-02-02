@@ -307,4 +307,141 @@ test.describe('Data Manipulation Operations', () => {
       // Covered in column-ordering.spec.ts
     })
   })
+
+  test.describe('Row Menu on Inserted Rows', () => {
+    test('row menu appears on newly inserted rows (regression: commit 3037ddf)', async () => {
+      /**
+       * Regression test for commit 3037ddf: csIdToRowIndex mapping fix
+       *
+       * Problem: After inserting a row, clicking the NEW row's marker didn't show
+       * the context menu due to mapping collision in csIdToRowIndex.
+       *
+       * Solution: Proper mapping of new row _cs_id to visual row index.
+       */
+
+      // Load CSV
+      await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+      await wizard.import()
+      await inspector.waitForTableLoaded('basic_data', 5)
+
+      // Insert a row above row 1 (John Doe)
+      const grid = page.getByTestId('data-grid')
+      const gridBounds = await grid.boundingBox()
+      if (!gridBounds) throw new Error('Grid not found')
+
+      await page.mouse.click(gridBounds.x + 20, gridBounds.y + 50)
+      await expect(page.getByText('Insert Above')).toBeVisible({ timeout: 5000 })
+      await page.getByRole('button', { name: 'Insert Above' }).click()
+
+      // Wait for row to be inserted
+      await expect.poll(async () => {
+        const tables = await inspector.getTables()
+        const table = tables.find(t => t.name === 'basic_data')
+        return table?.rowCount
+      }, { timeout: 10000 }).toBe(6)
+
+      // Dismiss any overlays
+      await laundromat.dismissOverlays()
+
+      // Click on the NEW row's marker (it should now be at position 1 / y ~50)
+      // The inserted row is at position 1, so its row marker is at y + 50
+      await page.mouse.click(gridBounds.x + 20, gridBounds.y + 50)
+
+      // Assert: Row menu should appear for the newly inserted row
+      await expect(page.getByText('Insert Above')).toBeVisible({ timeout: 5000 })
+      await expect(page.getByText('Insert Below')).toBeVisible()
+      await expect(page.getByText('Delete Row')).toBeVisible()
+    })
+
+    test('inserted row has unique _cs_id for tracking (regression: commit 3037ddf)', async () => {
+      /**
+       * Regression test for commit 3037ddf: Row insertion tracking
+       *
+       * When a row is inserted, it gets a unique _cs_id that is used for:
+       * 1. Green gutter indicator (visual feedback, stored in DataGrid local state)
+       * 2. Accurate diff after row insertion (_cs_origin_id feature)
+       * 3. Row menu functionality (csIdToRowIndex mapping)
+       *
+       * Note: The green gutter indicator state (insertedRowCsIds) is kept in
+       * DataGrid component local state, not in a global store, so we can't
+       * assert on it directly. We verify the row gets a valid _cs_id instead.
+       */
+
+      // Load CSV
+      await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+      await wizard.import()
+      await inspector.waitForTableLoaded('basic_data', 5)
+
+      // Get initial _cs_id values
+      const beforeInsert = await inspector.runQuery<{ _cs_id: bigint }>(
+        'SELECT "_cs_id" FROM basic_data ORDER BY "_cs_id"'
+      )
+      expect(beforeInsert.length).toBe(5)
+      const initialCsIds = beforeInsert.map(r => String(r._cs_id))
+
+      // Insert a row
+      const grid = page.getByTestId('data-grid')
+      const gridBounds = await grid.boundingBox()
+      if (!gridBounds) throw new Error('Grid not found')
+
+      await page.mouse.click(gridBounds.x + 20, gridBounds.y + 50)
+      await expect(page.getByText('Insert Above')).toBeVisible({ timeout: 5000 })
+      await page.getByRole('button', { name: 'Insert Above' }).click()
+
+      // Wait for insert to complete
+      await expect.poll(async () => {
+        const tables = await inspector.getTables()
+        const table = tables.find(t => t.name === 'basic_data')
+        return table?.rowCount
+      }, { timeout: 10000 }).toBe(6)
+
+      // Get _cs_id values after insert
+      const afterInsert = await inspector.runQuery<{ _cs_id: bigint }>(
+        'SELECT "_cs_id" FROM basic_data ORDER BY "_cs_id"'
+      )
+      expect(afterInsert.length).toBe(6)
+      const finalCsIds = afterInsert.map(r => String(r._cs_id))
+
+      // Find the new _cs_id (the one not in the original list)
+      const newCsId = finalCsIds.find(id => !initialCsIds.includes(id))
+
+      // Assert: The inserted row has a unique _cs_id
+      expect(newCsId).toBeDefined()
+      expect(newCsId).not.toBe('')
+    })
+  })
+
+  test.describe('Scroll Position Preservation', () => {
+    test.skip('scroll position preserved after row insertion', async () => {
+      /**
+       * Regression test for DataGrid.tsx scroll preservation
+       *
+       * Scenario:
+       * 1. Load table with 100+ rows
+       * 2. Scroll down to row 50
+       * 3. Insert a row at current position
+       * 4. Assert: Scroll position is still around row 50 (not reset to top)
+       *
+       * Note: This test requires a large fixture (100+ rows) which doesn't exist.
+       * Skipped until large-dataset.csv fixture is created.
+       */
+      expect(true).toBe(true)
+    })
+
+    test.skip('scroll position preserved after column addition', async () => {
+      /**
+       * Regression test for DataGrid.tsx scroll preservation
+       *
+       * Scenario:
+       * 1. Load table with many columns
+       * 2. Scroll right to see last columns
+       * 3. Add a new column (via split_column or other transform)
+       * 4. Assert: Horizontal scroll position maintained
+       *
+       * Note: This test requires a wide table fixture and reliable horizontal
+       * scroll detection. Skipped until fixture is created.
+       */
+      expect(true).toBe(true)
+    })
+  })
 })
