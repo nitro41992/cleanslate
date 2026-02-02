@@ -106,17 +106,17 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('Tier 3 (remove_duplicates) preserves column order', async () => {
-    // Arrange: Use column-order-test.csv instead of with-duplicates.csv
-    // (simpler, fewer rows, less likely to timeout)
-    await laundromat.uploadFile(getFixturePath('column-order-test.csv'))
+    // Arrange: Use fixture with duplicates so the transform can be applied
+    await laundromat.uploadFile(getFixturePath('column-order-duplicates.csv'))
     await wizard.import()
-    await inspector.waitForTableLoaded('column_order_test', 4)
+    await inspector.waitForTableLoaded('column_order_duplicates', 4)
 
-    const initialColumns = await inspector.getTableColumns('column_order_test')
+    const initialColumns = await inspector.getTableColumns('column_order_duplicates')
     const initialOrder = initialColumns.map(c => c.name)
+    expect(initialOrder).toEqual(['id', 'name', 'email', 'status'])
 
     // Get tableId BEFORE transform (ensures we have valid ID)
-    const tableId = (await inspector.getTables()).find(t => t.name === 'column_order_test')?.id
+    const tableId = (await inspector.getTables()).find(t => t.name === 'column_order_duplicates')?.id
     expect(tableId).toBeDefined()
 
     // Act: Remove duplicates (Tier 3 - uses snapshot)
@@ -124,17 +124,17 @@ test.describe('Column Order Preservation', () => {
     await picker.waitForOpen()
     await picker.addTransformation('Remove Duplicates') // No column param - operates on all columns
 
-    // Wait for transformation to fully propagate - poll for columns to be stable
+    // Wait for transformation to fully propagate - poll for row count to decrease
     // (Tier 3 operations involve snapshots which can take longer than UI indicator)
     await expect.poll(async () => {
-      const cols = await inspector.getTableColumns('column_order_test')
-      return cols.length
-    }, { timeout: 10000 }).toBeGreaterThan(0)
+      const rows = await inspector.runQuery('SELECT COUNT(*) as cnt FROM column_order_duplicates')
+      return Number(rows[0]?.cnt)
+    }, { timeout: 10000 }).toBe(3) // 4 rows - 1 duplicate = 3 unique rows
 
     await inspector.waitForTransformComplete(tableId!)
 
     // Assert: Column order unchanged (only rows affected)
-    const finalColumns = await inspector.getTableColumns('column_order_test')
+    const finalColumns = await inspector.getTableColumns('column_order_duplicates')
     expect(finalColumns.map(c => c.name)).toEqual(initialOrder)
   })
 
