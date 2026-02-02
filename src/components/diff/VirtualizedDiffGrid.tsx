@@ -219,9 +219,16 @@ export function VirtualizedDiffGrid({
   // Check if any filter is active
   const hasActiveFilter = statusFilter !== null || columnFilter !== null
 
-  // Build grid columns: Status (if not blind mode) + all data columns
+  // Build grid columns: Row # + Status (if not blind mode) + all data columns
   const gridColumns: GridColumn[] = useMemo(() => {
     const cols: GridColumn[] = []
+
+    // Row number column (always first)
+    cols.push({
+      id: '_row_num',
+      title: 'Row #',
+      width: columnWidths['_row_num'] ?? 70,
+    })
 
     if (!blindMode) {
       cols.push({
@@ -526,9 +533,25 @@ export function VirtualizedDiffGrid({
         }
       }
 
-      // Handle status column (first column if not in blind mode)
-      const colIndex = blindMode ? col : col - 1
-      if (!blindMode && col === 0) {
+      // Handle row number column (always first column, col === 0)
+      if (col === 0) {
+        const bRowNum = rowData.b_row_num
+        // Show visual row number for added/modified rows, "-" for removed rows
+        const displayValue = bRowNum != null ? String(bRowNum) : '-'
+        return {
+          kind: GridCellKind.Text as const,
+          data: displayValue,
+          displayData: displayValue,
+          allowOverlay: false,
+          readonly: true,
+        }
+      }
+
+      // Handle status column (second column if not in blind mode)
+      // Column index offset: col 0 = Row #, col 1 = Status (if not blind), then data columns
+      const statusColOffset = blindMode ? 1 : 2
+      const colIndex = col - statusColOffset
+      if (!blindMode && col === 1) {
         const status = rowData.diff_status
         const statusText = status === 'added' ? '+ ADDED' :
                           status === 'removed' ? '- REMOVED' :
@@ -542,7 +565,7 @@ export function VirtualizedDiffGrid({
         }
       }
 
-      // Get the column name (accounting for status column offset)
+      // Get the column name (accounting for Row # and Status column offsets)
       const colName = allColumns[colIndex]
       if (!colName) {
         return {
@@ -612,8 +635,26 @@ export function VirtualizedDiffGrid({
         return
       }
 
-      // Handle status column styling
+      // Handle row number column (col === 0)
       if (col === 0) {
+        const bRowNum = rowData.b_row_num
+        const displayValue = bRowNum != null ? String(bRowNum) : '-'
+
+        // Subtle muted styling for row number column
+        ctx.save()
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.03)'
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+
+        ctx.font = '13px ui-sans-serif, system-ui, sans-serif'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = '#6b7280'  // Muted gray
+        ctx.fillText(displayValue, rect.x + 8, rect.y + rect.height / 2)
+        ctx.restore()
+        return
+      }
+
+      // Handle status column styling (col === 1 when not in blind mode)
+      if (col === 1) {
         draw()
 
         // Add color indicator to status cell
@@ -627,7 +668,8 @@ export function VirtualizedDiffGrid({
         return
       }
 
-      const colIndex = col - 1
+      // Column index offset: col 0 = Row #, col 1 = Status, then data columns
+      const colIndex = col - 2
       const colName = allColumns[colIndex]
       const status = rowData.diff_status
 

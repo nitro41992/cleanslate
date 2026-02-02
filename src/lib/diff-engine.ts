@@ -234,6 +234,8 @@ export interface DiffConfig {
  */
 export interface DiffRow {
   diff_status: 'added' | 'removed' | 'modified' | 'unchanged'
+  /** Visual row number in the current table (B). NULL for removed rows. */
+  b_row_num?: number | null
   [key: string]: unknown
 }
 
@@ -753,6 +755,7 @@ export async function runDiff(
         COALESCE(a."_cs_id", b."_cs_id") as row_id,
         a."_cs_id" as a_row_id,
         b."_cs_id" as b_row_id,
+        b._row_num as b_row_num,
         COALESCE(b._row_num, a._row_num + 1000000000) as sort_key,
         ${diffCaseLogic}
       FROM a_numbered a
@@ -1027,6 +1030,7 @@ export async function fetchDiffPage(
           SELECT
             d.diff_status,
             d.row_id,
+            d.b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}_part_*.parquet') d
           LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
@@ -1065,6 +1069,7 @@ export async function fetchDiffPage(
           SELECT
             d.diff_status,
             d.row_id,
+            d.b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}.parquet') d
           LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
@@ -1088,6 +1093,7 @@ export async function fetchDiffPage(
     SELECT
       d.diff_status,
       d.row_id,
+      d.b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
     LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
@@ -1178,7 +1184,7 @@ export async function fetchDiffPageWithKeyset(
       // 2. JOIN only needs to find `limit` matching rows in source/target
       const rows = await query<DiffRow & { sort_key: number }>(`
         WITH page AS (
-          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id
+          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id, b_row_num
           FROM "${indexTableName}"
           ${whereClause}
           ORDER BY sort_key ${orderDirection}
@@ -1188,6 +1194,7 @@ export async function fetchDiffPageWithKeyset(
           page.diff_status,
           page.row_id,
           page.sort_key,
+          page.b_row_num,
           ${selectCols}
         FROM page
         LEFT JOIN ${sourceTableExpr} a ON page.a_row_id = a."_cs_id"
@@ -1261,6 +1268,7 @@ export async function fetchDiffPageWithKeyset(
       d.diff_status,
       d.row_id,
       d.sort_key,
+      d.b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
     LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
@@ -1491,7 +1499,8 @@ export async function materializeDiffForPagination(
       sort_key,
       diff_status,
       a_row_id,
-      b_row_id
+      b_row_id,
+      b_row_num
     FROM ${parquetExpr}
     WHERE diff_status IN ('added', 'removed', 'modified')
   `)
@@ -1504,6 +1513,7 @@ export async function materializeDiffForPagination(
       idx.diff_status,
       idx.row_id,
       idx.sort_key,
+      idx.b_row_num,
       ${selectCols}
     FROM "${indexTableName}" idx
     LEFT JOIN ${sourceTableExpr} a ON idx.a_row_id = a."_cs_id"
