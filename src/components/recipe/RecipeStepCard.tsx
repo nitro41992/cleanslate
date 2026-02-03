@@ -141,14 +141,15 @@ export function RecipeStepCard({
             <span className="text-base">{icon}</span>
           </div>
 
-          {/* Label */}
+          {/* Label with nested column */}
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-sm leading-tight truncate">
+            <div className="font-medium text-sm leading-tight">
               {label}
             </div>
             {step.column && (
-              <div className="text-xs text-muted-foreground truncate">
-                → {step.column}
+              <div className="text-xs text-muted-foreground pl-3 flex items-center gap-1">
+                <span className="text-muted-foreground/60">↳</span>
+                <span className="truncate">{step.column}</span>
               </div>
             )}
           </div>

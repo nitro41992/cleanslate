@@ -111,8 +111,7 @@ export function RecipePanel() {
   const [tempName, setTempName] = useState('')
   const [tempDescription, setTempDescription] = useState('')
 
-  // Expanded steps state
-  const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
+  // Note: Steps are always expanded in minimized panel (removed expandedSteps state)
 
   // Track newly added steps for highlight animation
   const [newlyAddedStepId, setNewlyAddedStepId] = useState<string | null>(null)
@@ -160,13 +159,25 @@ export function RecipePanel() {
     return transform?.label || transformId
   }
 
-  // Format step label for display
+  // Format step label for display (transform name only, column shown separately)
   const formatStepLabel = (step: RecipeStep) => {
-    const label = getTransformLabel(step)
-    if (step.column) {
-      return `${label} → ${step.column}`
-    }
-    return label
+    return getTransformLabel(step)
+  }
+
+  // Get category from step type (Transform, Scrub, Standardize)
+  const getCategory = (stepType: string): string => {
+    if (stepType.startsWith('scrub:')) return 'Scrub'
+    if (stepType.startsWith('standardize:')) return 'Standardize'
+    return 'Transform'
+  }
+
+  // Get user-friendly type display (Category: Label format)
+  const getReadableType = (step: RecipeStep): string => {
+    const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
+    const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
+    const category = getCategory(step.type)
+    const label = transform?.label || transformId
+    return `${category}: ${label}`
   }
 
   // Format value for display
@@ -238,19 +249,6 @@ export function RecipePanel() {
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
-    })
-  }
-
-  // Toggle step expansion
-  const toggleStepExpanded = (stepId: string) => {
-    setExpandedSteps((prev) => {
-      const next = new Set(prev)
-      if (next.has(stepId)) {
-        next.delete(stepId)
-      } else {
-        next.add(stepId)
-      }
-      return next
     })
   }
 
@@ -631,7 +629,6 @@ export function RecipePanel() {
               ) : (
                 <div className="space-y-1.5 w-full max-w-full">
                   {selectedRecipe.steps.map((step, index) => {
-                    const isExpanded = expandedSteps.has(step.id)
                     const isNewlyAdded = step.id === newlyAddedStepId
 
                     return (
@@ -646,29 +643,25 @@ export function RecipePanel() {
                         )}
                       >
                         {/* Step Header */}
-                        <div className="flex items-center gap-1.5 p-2">
-                          {/* Expand Toggle */}
-                          <button
-                            className="shrink-0 p-0.5 hover:bg-muted/50 rounded transition-colors"
-                            onClick={() => toggleStepExpanded(step.id)}
-                          >
-                            {isExpanded ? (
-                              <ChevronDown className="w-3 h-3 text-muted-foreground" />
-                            ) : (
-                              <ChevronRight className="w-3 h-3 text-muted-foreground" />
-                            )}
-                          </button>
-
+                        <div className="flex items-start gap-1.5 p-2">
                           {/* Step Number & Icon */}
-                          <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                          <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums mt-0.5">
                             {index + 1}.
                           </span>
                           <span className="text-sm shrink-0">{getStepIcon(step)}</span>
 
-                          {/* Label */}
-                          <span className="flex-1 truncate text-xs font-medium min-w-0">
-                            {formatStepLabel(step)}
-                          </span>
+                          {/* Label with nested column */}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-xs leading-tight">
+                              {formatStepLabel(step)}
+                            </div>
+                            {step.column && (
+                              <div className="text-xs text-muted-foreground pl-3 flex items-center gap-1">
+                                <span className="text-muted-foreground/60">↳</span>
+                                <span className="truncate">{step.column}</span>
+                              </div>
+                            )}
+                          </div>
 
                           {/* Compact action buttons */}
                           <div className="flex items-center shrink-0">
@@ -700,45 +693,37 @@ export function RecipePanel() {
                           />
                         </div>
 
-                        {/* Expanded Details */}
-                        {isExpanded && (
-                          <div className="px-3 pb-2 pt-1.5 border-t border-border/40 space-y-2 overflow-hidden">
-                            <div className="flex items-start gap-2 text-xs min-w-0">
-                              <span className="text-muted-foreground shrink-0">Type:</span>
-                              <code className="text-foreground/80 bg-muted/30 px-1.5 py-0.5 rounded text-[10px] truncate">
-                                {step.type}
-                              </code>
-                            </div>
-                            {step.column && (
-                              <div className="flex items-start gap-2 text-xs min-w-0">
-                                <span className="text-muted-foreground shrink-0">Column:</span>
-                                <span className="text-foreground truncate">{step.column}</span>
-                              </div>
-                            )}
-                            {(() => {
-                              const paramsContent = formatStepParams(step)
-                              if (!paramsContent) return null
-                              return (
-                                <div className="pt-1.5 border-t border-border/30 overflow-hidden">
-                                  <p className="text-[10px] text-muted-foreground mb-1">Parameters:</p>
-                                  {paramsContent}
-                                </div>
-                              )
-                            })()}
-                            {/* Delete action */}
-                            <div className="pt-1.5 border-t border-border/30">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-6 text-xs text-muted-foreground hover:text-destructive"
-                                onClick={() => removeStep(selectedRecipe.id, step.id)}
-                              >
-                                <X className="w-3 h-3 mr-1" />
-                                Remove step
-                              </Button>
-                            </div>
+                        {/* Always Expanded Details */}
+                        <div className="px-3 pb-2 pt-1.5 border-t border-border/40 space-y-2 overflow-hidden">
+                          <div className="flex items-start gap-2 text-xs min-w-0">
+                            <span className="text-muted-foreground shrink-0">Type:</span>
+                            <span className="text-foreground/80">
+                              {getReadableType(step)}
+                            </span>
                           </div>
-                        )}
+                          {(() => {
+                            const paramsContent = formatStepParams(step)
+                            if (!paramsContent) return null
+                            return (
+                              <div className="pt-1.5 border-t border-border/30 overflow-hidden">
+                                <p className="text-[10px] text-muted-foreground mb-1">Parameters:</p>
+                                {paramsContent}
+                              </div>
+                            )
+                          })()}
+                          {/* Delete action */}
+                          <div className="pt-1.5 border-t border-border/30">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 text-xs text-muted-foreground hover:text-destructive"
+                              onClick={() => removeStep(selectedRecipe.id, step.id)}
+                            >
+                              <X className="w-3 h-3 mr-1" />
+                              Remove step
+                            </Button>
+                          </div>
+                        </div>
                       </div>
                     )
                   })}

@@ -447,7 +447,14 @@ export function CleanPanel() {
     if (!step) return
 
     const recipe = recipes.find((r) => r.id === recipeId)
-    addStep(recipeId, step)
+    const added = addStep(recipeId, step)
+
+    if (!added) {
+      toast.info('Step already exists in recipe', {
+        description: 'This exact step is already in the recipe',
+      })
+      return
+    }
 
     // Open Recipe panel if not already open and select the recipe
     if (secondaryPanel !== 'recipe') {

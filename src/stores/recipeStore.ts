@@ -55,7 +55,7 @@ interface RecipeActions {
   duplicateRecipe: (id: string) => string | null
 
   // Step management
-  addStep: (recipeId: string, step: Omit<RecipeStep, 'id'>) => void
+  addStep: (recipeId: string, step: Omit<RecipeStep, 'id'>) => boolean
   updateStep: (recipeId: string, stepId: string, updates: Partial<Omit<RecipeStep, 'id'>>) => void
   removeStep: (recipeId: string, stepId: string) => void
   reorderSteps: (recipeId: string, fromIndex: number, toIndex: number) => void
@@ -163,6 +163,19 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
 
   // Step management
   addStep: (recipeId, step) => {
+    const recipe = get().recipes.find((r) => r.id === recipeId)
+    if (!recipe) return false
+
+    // Check for exact duplicate (same type, column, and params)
+    const isDuplicate = recipe.steps.some(
+      (existing) =>
+        existing.type === step.type &&
+        existing.column === step.column &&
+        JSON.stringify(existing.params) === JSON.stringify(step.params)
+    )
+
+    if (isDuplicate) return false
+
     const id = generateId()
     const newStep: RecipeStep = { ...step, id }
     set((state) => ({
@@ -177,6 +190,7 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
           : r
       ),
     }))
+    return true
   },
 
   updateStep: (recipeId, stepId, updates) => {
