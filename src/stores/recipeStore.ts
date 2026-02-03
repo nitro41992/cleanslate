@@ -17,10 +17,21 @@ export interface RecipeExecutionProgress {
   currentStepLabel: string
 }
 
+/**
+ * Build mode for the Recipe panel layout
+ * - 'list': Show recipe list with CTAs (no recipe selected)
+ * - 'view': Show recipe list + recipe details (recipe selected)
+ * - 'build': Show transformation picker + step configuration (adding a step)
+ */
+export type RecipeBuildMode = 'list' | 'view' | 'build'
+
 interface RecipeState {
   // Recipe collection
   recipes: Recipe[]
   selectedRecipeId: string | null
+
+  // Build mode state
+  buildMode: RecipeBuildMode
 
   // Execution state
   isProcessing: boolean
@@ -50,6 +61,9 @@ interface RecipeActions {
   reorderSteps: (recipeId: string, fromIndex: number, toIndex: number) => void
   toggleStepEnabled: (recipeId: string, stepId: string) => void
 
+  // Build mode
+  setBuildMode: (mode: RecipeBuildMode) => void
+
   // Execution
   setIsProcessing: (processing: boolean) => void
   setExecutionProgress: (progress: RecipeExecutionProgress | null) => void
@@ -72,6 +86,7 @@ interface RecipeActions {
 const initialState: RecipeState = {
   recipes: [],
   selectedRecipeId: null,
+  buildMode: 'list',
   isProcessing: false,
   executionProgress: null,
   executionError: null,
@@ -118,7 +133,11 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
   },
 
   setSelectedRecipe: (id) => {
-    set({ selectedRecipeId: id })
+    set({
+      selectedRecipeId: id,
+      // Sync buildMode: if recipe selected → 'view', otherwise → 'list'
+      buildMode: id ? 'view' : 'list',
+    })
   },
 
   duplicateRecipe: (id) => {
@@ -222,6 +241,11 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
           : r
       ),
     }))
+  },
+
+  // Build mode
+  setBuildMode: (mode) => {
+    set({ buildMode: mode })
   },
 
   // Execution

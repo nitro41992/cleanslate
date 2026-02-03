@@ -8,7 +8,7 @@ CleanSlate Pro is a browser-based, local-first data operations suite for regulat
 
 - **MUST** push the plan file with your commits
 - **MUST NOT** create `.md` files in root folder unless explicitly asked
-- **MUST NOT** use tools like `sed`, `cat` or `awk` — use Edit, Write or Find tools or TypeScript LSP
+- **MUST NOT** use tools like `sed`, `cat` or `awk` — use Edit, Read, Update or Find tools or TypeScript LSP
 - **MUST** ensure E2E tests pass; if failing, work with me to determine if issue is implementation or test intent
 - **MUST NOT** add new logic to `transformations.ts` [DEPRECATED] — use `src/lib/commands/` instead
 - **MUST** use shadcn components when applicable before falling back to custom components
