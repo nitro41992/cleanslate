@@ -497,3 +497,48 @@ export interface TimelineHighlight {
   ghostRows: Record<string, unknown>[] // Deleted rows to show as "ghosts"
   diffMode: 'cell' | 'row' | 'full' | 'column'
 }
+
+// Recipe Types (FR-G)
+
+/**
+ * A single step in a recipe template.
+ * References columns by name (mapped at runtime).
+ */
+export interface RecipeStep {
+  id: string
+  type: string                       // CommandType e.g., 'transform:trim', 'scrub:hash'
+  label: string                      // Human-readable: "Trim whitespace on email"
+  column?: string                    // Target column (if applicable)
+  params?: Record<string, unknown>   // Command-specific parameters
+  enabled: boolean                   // Allow toggling steps on/off
+}
+
+/**
+ * A saved recipe template for repeatable transformations.
+ * Stored in OPFS as part of app-state.json.
+ */
+export interface Recipe {
+  id: string
+  name: string
+  description: string
+  version: string                    // Schema version for compatibility (e.g., "1.0")
+  requiredColumns: string[]          // Auto-extracted from steps
+  steps: RecipeStep[]
+  createdAt: Date
+  modifiedAt: Date
+}
+
+/**
+ * Serialized recipe for JSON persistence.
+ * Dates are stored as ISO strings.
+ */
+export interface SerializedRecipe {
+  id: string
+  name: string
+  description: string
+  version: string
+  requiredColumns: string[]
+  steps: RecipeStep[]
+  createdAt: string                  // ISO string
+  modifiedAt: string                 // ISO string
+}

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type PanelType = 'clean' | 'match' | 'combine' | 'scrub' | 'diff' | null
+export type PanelType = 'clean' | 'match' | 'combine' | 'scrub' | 'recipe' | 'diff' | null
 
 export interface PendingOperation {
   id: string

@@ -103,6 +103,25 @@ async function runFullInitialization(): Promise<void> {
         useUIStore.getState().setLastEdit(savedState.uiPreferences.lastEdit)
       }
 
+      // Restore recipes (FR-G)
+      if (savedState.recipes && savedState.recipes.length > 0) {
+        const { useRecipeStore, setRestoringRecipeState } = await import('@/stores/recipeStore')
+        // Prevent save during restoration
+        setRestoringRecipeState(true)
+        try {
+          // Deserialize dates from ISO strings
+          const deserializedRecipes = savedState.recipes.map(r => ({
+            ...r,
+            createdAt: new Date(r.createdAt),
+            modifiedAt: new Date(r.modifiedAt),
+          }))
+          useRecipeStore.getState().setRecipes(deserializedRecipes)
+          console.log(`[Persistence] Restored ${savedState.recipes.length} recipe(s)`)
+        } finally {
+          setRestoringRecipeState(false)
+        }
+      }
+
       // Expose saved table metadata for usePersistence to use
       // This ensures tableIds remain consistent across refreshes
       const tableIdMap: Record<string, string> = {}

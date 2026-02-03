@@ -28,6 +28,7 @@ import {
 import { CleanPanel } from '@/components/panels/CleanPanel'
 import { CombinePanel } from '@/components/panels/CombinePanel'
 import { ScrubPanel } from '@/components/panels/ScrubPanel'
+import { RecipePanel } from '@/components/panels/RecipePanel'
 
 // Full-screen overlay views
 import { DiffView } from '@/components/diff'
@@ -309,6 +310,8 @@ function App() {
         return <CombinePanel />
       case 'scrub':
         return <ScrubPanel />
+      case 'recipe':
+        return <RecipePanel />
       case 'match':
         // Match is handled as full-screen overlay via MatchView
         return null

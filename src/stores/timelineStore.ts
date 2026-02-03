@@ -881,15 +881,19 @@ if (typeof window !== 'undefined') {
         const { saveAppState } = await import('@/lib/persistence/state-persistence')
         const { useTableStore } = await import('@/stores/tableStore')
         const { useUIStore } = await import('@/stores/uiStore')
+        const { useRecipeStore } = await import('@/stores/recipeStore')
 
         const tableState = useTableStore.getState()
         const uiState = useUIStore.getState()
+        const recipeState = useRecipeStore.getState()
 
         await saveAppState(
           tableState.tables,
           tableState.activeTableId,
           state.getSerializedTimelines(),
-          uiState.sidebarCollapsed
+          uiState.sidebarCollapsed,
+          uiState.lastEdit,
+          recipeState.recipes
         )
       })
     })

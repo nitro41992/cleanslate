@@ -1,4 +1,4 @@
-import { Sparkles, Users, Merge, Shield, GitCompare, Link2 } from 'lucide-react'
+import { Sparkles, Users, Merge, Shield, GitCompare, Link2, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -55,6 +55,13 @@ const actions: { id: ActionId; label: string; icon: typeof Sparkles; description
     icon: GitCompare,
     description: 'Compare tables',
     shortcut: '6',
+  },
+  {
+    id: 'recipe',
+    label: 'Recipes',
+    icon: BookOpen,
+    description: 'Save and apply recipe templates',
+    shortcut: '7',
   },
 ]
 

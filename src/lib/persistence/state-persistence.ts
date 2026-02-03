@@ -10,7 +10,7 @@
 
 import { query, getTableColumns } from '@/lib/duckdb'
 import { generateId } from '@/lib/utils'
-import type { TableInfo, ColumnInfo, SerializedTableTimeline, LastEditLocation } from '@/types'
+import type { TableInfo, ColumnInfo, SerializedTableTimeline, LastEditLocation, SerializedRecipe, Recipe } from '@/types'
 
 /**
  * Application state schema version 2 (legacy)
@@ -27,7 +27,7 @@ export interface AppStateV2 {
 }
 
 /**
- * Application state schema version 3
+ * Application state schema version 3 (legacy)
  * - Added lastEdit to uiPreferences for gutter indicator persistence
  */
 export interface AppStateV3 {
@@ -42,9 +42,26 @@ export interface AppStateV3 {
   }
 }
 
+/**
+ * Application state schema version 4
+ * - Added recipes for recipe template persistence (FR-G)
+ */
+export interface AppStateV4 {
+  version: 4
+  lastUpdated: string
+  tables: TableInfo[]
+  activeTableId: string | null
+  timelines: SerializedTableTimeline[]
+  recipes: SerializedRecipe[]
+  uiPreferences: {
+    sidebarCollapsed: boolean
+    lastEdit: LastEditLocation | null
+  }
+}
+
 const STORAGE_DIR = 'cleanslate'
 const APP_STATE_FILE = 'app-state.json'
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 /**
  * Get the OPFS root directory handle
@@ -111,7 +128,8 @@ export async function saveAppState(
   activeTableId: string | null,
   timelines: SerializedTableTimeline[],
   sidebarCollapsed: boolean,
-  lastEdit: LastEditLocation | null = null
+  lastEdit: LastEditLocation | null = null,
+  recipes: Recipe[] = []
 ): Promise<void> {
   const root = await getOPFSRoot()
   if (!root) {
@@ -138,12 +156,20 @@ export async function saveAppState(
       } : undefined,
     }))
 
-    const state: AppStateV3 = {
+    // Serialize recipes (convert Dates to ISO strings)
+    const serializedRecipes: SerializedRecipe[] = recipes.map(recipe => ({
+      ...recipe,
+      createdAt: recipe.createdAt.toISOString(),
+      modifiedAt: recipe.modifiedAt.toISOString(),
+    }))
+
+    const state: AppStateV4 = {
       version: SCHEMA_VERSION,
       lastUpdated: new Date().toISOString(),
       tables: serializedTables as unknown as TableInfo[],
       activeTableId,
       timelines: compactedTimelines,
+      recipes: serializedRecipes,
       uiPreferences: {
         sidebarCollapsed,
         lastEdit,
@@ -166,6 +192,7 @@ export async function saveAppState(
     console.log('[Persistence] App state saved:', {
       tables: tables.length,
       timelines: timelines.length,
+      recipes: recipes.length,
       activeTableId,
     })
   } catch (error) {
@@ -184,7 +211,7 @@ export async function saveAppState(
  * Called after DuckDB initialization completes
  * Returns null if no saved state exists (fresh start)
  */
-export async function restoreAppState(): Promise<AppStateV3 | null> {
+export async function restoreAppState(): Promise<AppStateV4 | null> {
   const root = await getOPFSRoot()
   if (!root) {
     console.log('[Persistence] OPFS unavailable - starting fresh')
@@ -208,7 +235,17 @@ export async function restoreAppState(): Promise<AppStateV3 | null> {
           ...state.uiPreferences,
           lastEdit: null,
         },
-      } as AppStateV3
+      }
+    }
+
+    // Handle v3 → v4 migration (add recipes)
+    if (state.version === 3) {
+      console.log('[Persistence] Migrating from V3 to V4')
+      state = {
+        ...state,
+        version: 4,
+        recipes: [],
+      } as AppStateV4
     }
 
     // Validate schema version
@@ -221,6 +258,7 @@ export async function restoreAppState(): Promise<AppStateV3 | null> {
     console.log('[Persistence] App state loaded:', {
       tables: state.tables.length,
       timelines: state.timelines.length,
+      recipes: state.recipes?.length ?? 0,
       activeTableId: state.activeTableId,
     })
 
@@ -395,13 +433,16 @@ export async function saveAppStateNow(): Promise<void> {
     const { useTableStore } = await import('@/stores/tableStore')
     const { useTimelineStore } = await import('@/stores/timelineStore')
     const { useUIStore } = await import('@/stores/uiStore')
+    const { useRecipeStore } = await import('@/stores/recipeStore')
 
     const tableState = useTableStore.getState()
     const timelineState = useTimelineStore.getState()
     const uiState = useUIStore.getState()
+    const recipeState = useRecipeStore.getState()
 
     console.log('[Persistence] Manual save triggered:', {
       tables: tableState.tables.length,
+      recipes: recipeState.recipes.length,
       activeTableId: tableState.activeTableId,
     })
 
@@ -410,7 +451,8 @@ export async function saveAppStateNow(): Promise<void> {
       tableState.activeTableId,
       timelineState.getSerializedTimelines(),
       uiState.sidebarCollapsed,
-      uiState.lastEdit
+      uiState.lastEdit,
+      recipeState.recipes
     )
   } catch (error) {
     console.error('[Persistence] Manual save failed:', error)

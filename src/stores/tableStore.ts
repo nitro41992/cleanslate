@@ -594,15 +594,19 @@ if (typeof window !== 'undefined') {
           const { saveAppState } = await import('@/lib/persistence/state-persistence')
           const { useTimelineStore } = await import('@/stores/timelineStore')
           const { useUIStore } = await import('@/stores/uiStore')
+          const { useRecipeStore } = await import('@/stores/recipeStore')
 
           const timelineState = useTimelineStore.getState()
           const uiState = useUIStore.getState()
+          const recipeState = useRecipeStore.getState()
 
           await saveAppState(
             state.tables,
             state.activeTableId,
             timelineState.getSerializedTimelines(),
-            uiState.sidebarCollapsed
+            uiState.sidebarCollapsed,
+            uiState.lastEdit,
+            recipeState.recipes
           )
         } catch (error) {
           console.error('[TableStore] Failed to save state:', error)

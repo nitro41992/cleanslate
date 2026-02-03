@@ -7,7 +7,7 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet'
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
-import { Sparkles, Users, Merge, Shield, GitCompare } from 'lucide-react'
+import { Sparkles, Users, Merge, Shield, GitCompare, BookOpen } from 'lucide-react'
 
 const panelMeta: Record<NonNullable<PanelType>, { title: string; description: string; icon: typeof Sparkles }> = {
   clean: {
@@ -35,6 +35,11 @@ const panelMeta: Record<NonNullable<PanelType>, { title: string; description: st
     description: 'Find differences between two tables',
     icon: GitCompare,
   },
+  recipe: {
+    title: 'Recipe Templates',
+    description: 'Save, load, and apply multi-step transformation recipes',
+    icon: BookOpen,
+  },
 }
 
 interface FeaturePanelProps {
@@ -53,7 +58,7 @@ export function FeaturePanel({ children }: FeaturePanelProps) {
     <Sheet open={isOpen} onOpenChange={(open) => !open && setActivePanel(null)}>
       <SheetContent
         side="right"
-        className={`${['clean', 'combine', 'scrub'].includes(activePanel || '') ? 'w-[880px] sm:max-w-[880px]' : 'w-[400px] sm:max-w-[400px]'} p-0 flex flex-col`}
+        className={`${['clean', 'combine', 'scrub', 'recipe'].includes(activePanel || '') ? 'w-[880px] sm:max-w-[880px]' : 'w-[400px] sm:max-w-[400px]'} p-0 flex flex-col`}
         aria-describedby="feature-panel-description"
       >
         {meta && (

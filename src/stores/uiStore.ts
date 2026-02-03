@@ -480,16 +480,19 @@ if (typeof window !== 'undefined') {
           const { saveAppState } = await import('@/lib/persistence/state-persistence')
           const { useTableStore } = await import('@/stores/tableStore')
           const { useTimelineStore } = await import('@/stores/timelineStore')
+          const { useRecipeStore } = await import('@/stores/recipeStore')
 
           const tableState = useTableStore.getState()
           const timelineState = useTimelineStore.getState()
+          const recipeState = useRecipeStore.getState()
 
           await saveAppState(
             tableState.tables,
             tableState.activeTableId,
             timelineState.getSerializedTimelines(),
             state.sidebarCollapsed,
-            state.lastEdit
+            state.lastEdit,
+            recipeState.recipes
           )
         })
       }

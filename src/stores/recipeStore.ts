@@ -1,0 +1,392 @@
+import { create } from 'zustand'
+import type { Recipe, RecipeStep } from '@/types'
+import { generateId } from '@/lib/utils'
+
+/**
+ * Column mapping from recipe column names to actual table column names.
+ * Key = recipe column name, Value = actual table column name
+ */
+export type ColumnMapping = Record<string, string>
+
+/**
+ * Execution progress for recipe application
+ */
+export interface RecipeExecutionProgress {
+  currentStep: number
+  totalSteps: number
+  currentStepLabel: string
+}
+
+interface RecipeState {
+  // Recipe collection
+  recipes: Recipe[]
+  selectedRecipeId: string | null
+
+  // Execution state
+  isProcessing: boolean
+  executionProgress: RecipeExecutionProgress | null
+  executionError: string | null
+
+  // Column mapping state (shown when columns don't match)
+  pendingColumnMapping: ColumnMapping | null
+  unmappedColumns: string[]  // Recipe columns that need manual mapping
+
+  // For "Export as Recipe" flow
+  pendingExportSteps: RecipeStep[] | null
+}
+
+interface RecipeActions {
+  // Recipe CRUD
+  addRecipe: (recipe: Omit<Recipe, 'id' | 'createdAt' | 'modifiedAt'>) => string
+  updateRecipe: (id: string, updates: Partial<Omit<Recipe, 'id' | 'createdAt'>>) => void
+  deleteRecipe: (id: string) => void
+  setSelectedRecipe: (id: string | null) => void
+  duplicateRecipe: (id: string) => string | null
+
+  // Step management
+  addStep: (recipeId: string, step: Omit<RecipeStep, 'id'>) => void
+  updateStep: (recipeId: string, stepId: string, updates: Partial<Omit<RecipeStep, 'id'>>) => void
+  removeStep: (recipeId: string, stepId: string) => void
+  reorderSteps: (recipeId: string, fromIndex: number, toIndex: number) => void
+  toggleStepEnabled: (recipeId: string, stepId: string) => void
+
+  // Execution
+  setIsProcessing: (processing: boolean) => void
+  setExecutionProgress: (progress: RecipeExecutionProgress | null) => void
+  setExecutionError: (error: string | null) => void
+
+  // Column mapping
+  setColumnMapping: (mapping: ColumnMapping | null) => void
+  setUnmappedColumns: (columns: string[]) => void
+  updateColumnMapping: (recipeColumn: string, tableColumn: string) => void
+  clearColumnMapping: () => void
+
+  // Export flow
+  setPendingExportSteps: (steps: RecipeStep[] | null) => void
+
+  // Bulk operations
+  setRecipes: (recipes: Recipe[]) => void
+  reset: () => void
+}
+
+const initialState: RecipeState = {
+  recipes: [],
+  selectedRecipeId: null,
+  isProcessing: false,
+  executionProgress: null,
+  executionError: null,
+  pendingColumnMapping: null,
+  unmappedColumns: [],
+  pendingExportSteps: null,
+}
+
+export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => ({
+  ...initialState,
+
+  // Recipe CRUD
+  addRecipe: (recipe) => {
+    const id = generateId()
+    const now = new Date()
+    const newRecipe: Recipe = {
+      ...recipe,
+      id,
+      createdAt: now,
+      modifiedAt: now,
+    }
+    set((state) => ({
+      recipes: [...state.recipes, newRecipe],
+      selectedRecipeId: id,
+    }))
+    return id
+  },
+
+  updateRecipe: (id, updates) => {
+    set((state) => ({
+      recipes: state.recipes.map((r) =>
+        r.id === id
+          ? { ...r, ...updates, modifiedAt: new Date() }
+          : r
+      ),
+    }))
+  },
+
+  deleteRecipe: (id) => {
+    set((state) => ({
+      recipes: state.recipes.filter((r) => r.id !== id),
+      selectedRecipeId: state.selectedRecipeId === id ? null : state.selectedRecipeId,
+    }))
+  },
+
+  setSelectedRecipe: (id) => {
+    set({ selectedRecipeId: id })
+  },
+
+  duplicateRecipe: (id) => {
+    const recipe = get().recipes.find((r) => r.id === id)
+    if (!recipe) return null
+
+    const newId = generateId()
+    const now = new Date()
+    const duplicated: Recipe = {
+      ...recipe,
+      id: newId,
+      name: `${recipe.name} (Copy)`,
+      steps: recipe.steps.map((s) => ({ ...s, id: generateId() })),
+      createdAt: now,
+      modifiedAt: now,
+    }
+    set((state) => ({
+      recipes: [...state.recipes, duplicated],
+      selectedRecipeId: newId,
+    }))
+    return newId
+  },
+
+  // Step management
+  addStep: (recipeId, step) => {
+    const id = generateId()
+    const newStep: RecipeStep = { ...step, id }
+    set((state) => ({
+      recipes: state.recipes.map((r) =>
+        r.id === recipeId
+          ? {
+              ...r,
+              steps: [...r.steps, newStep],
+              requiredColumns: extractRequiredColumns([...r.steps, newStep]),
+              modifiedAt: new Date(),
+            }
+          : r
+      ),
+    }))
+  },
+
+  updateStep: (recipeId, stepId, updates) => {
+    set((state) => ({
+      recipes: state.recipes.map((r) =>
+        r.id === recipeId
+          ? {
+              ...r,
+              steps: r.steps.map((s) =>
+                s.id === stepId ? { ...s, ...updates } : s
+              ),
+              requiredColumns: extractRequiredColumns(
+                r.steps.map((s) => (s.id === stepId ? { ...s, ...updates } : s))
+              ),
+              modifiedAt: new Date(),
+            }
+          : r
+      ),
+    }))
+  },
+
+  removeStep: (recipeId, stepId) => {
+    set((state) => ({
+      recipes: state.recipes.map((r) =>
+        r.id === recipeId
+          ? {
+              ...r,
+              steps: r.steps.filter((s) => s.id !== stepId),
+              requiredColumns: extractRequiredColumns(
+                r.steps.filter((s) => s.id !== stepId)
+              ),
+              modifiedAt: new Date(),
+            }
+          : r
+      ),
+    }))
+  },
+
+  reorderSteps: (recipeId, fromIndex, toIndex) => {
+    set((state) => ({
+      recipes: state.recipes.map((r) => {
+        if (r.id !== recipeId) return r
+        const steps = [...r.steps]
+        const [removed] = steps.splice(fromIndex, 1)
+        steps.splice(toIndex, 0, removed)
+        return { ...r, steps, modifiedAt: new Date() }
+      }),
+    }))
+  },
+
+  toggleStepEnabled: (recipeId, stepId) => {
+    set((state) => ({
+      recipes: state.recipes.map((r) =>
+        r.id === recipeId
+          ? {
+              ...r,
+              steps: r.steps.map((s) =>
+                s.id === stepId ? { ...s, enabled: !s.enabled } : s
+              ),
+              modifiedAt: new Date(),
+            }
+          : r
+      ),
+    }))
+  },
+
+  // Execution
+  setIsProcessing: (processing) => {
+    set({ isProcessing: processing })
+  },
+
+  setExecutionProgress: (progress) => {
+    set({ executionProgress: progress })
+  },
+
+  setExecutionError: (error) => {
+    set({ executionError: error })
+  },
+
+  // Column mapping
+  setColumnMapping: (mapping) => {
+    set({ pendingColumnMapping: mapping })
+  },
+
+  setUnmappedColumns: (columns) => {
+    set({ unmappedColumns: columns })
+  },
+
+  updateColumnMapping: (recipeColumn, tableColumn) => {
+    set((state) => ({
+      pendingColumnMapping: {
+        ...(state.pendingColumnMapping ?? {}),
+        [recipeColumn]: tableColumn,
+      },
+      unmappedColumns: state.unmappedColumns.filter((c) => c !== recipeColumn),
+    }))
+  },
+
+  clearColumnMapping: () => {
+    set({
+      pendingColumnMapping: null,
+      unmappedColumns: [],
+    })
+  },
+
+  // Export flow
+  setPendingExportSteps: (steps) => {
+    set({ pendingExportSteps: steps })
+  },
+
+  // Bulk operations
+  setRecipes: (recipes) => {
+    set({ recipes })
+  },
+
+  reset: () => {
+    set(initialState)
+  },
+}))
+
+/**
+ * Extract unique column names from recipe steps.
+ * Used to auto-populate requiredColumns.
+ */
+function extractRequiredColumns(steps: RecipeStep[]): string[] {
+  const columns = new Set<string>()
+
+  for (const step of steps) {
+    // Add main column
+    if (step.column) {
+      columns.add(step.column)
+    }
+
+    // Check params for additional column references
+    if (step.params) {
+      // split_column, combine_columns, etc. may have columns in params
+      const sourceColumns = step.params.sourceColumns as string[] | undefined
+      if (sourceColumns) {
+        sourceColumns.forEach((c) => columns.add(c))
+      }
+
+      const column = step.params.column as string | undefined
+      if (column) {
+        columns.add(column)
+      }
+
+      // For combine_columns
+      const columns1 = step.params.columns as string[] | undefined
+      if (columns1) {
+        columns1.forEach((c) => columns.add(c))
+      }
+    }
+  }
+
+  return Array.from(columns).sort()
+}
+
+/**
+ * Selector: Get selected recipe
+ */
+export const selectSelectedRecipe = (state: RecipeState & RecipeActions): Recipe | null => {
+  return state.recipes.find((r) => r.id === state.selectedRecipeId) ?? null
+}
+
+// ===== PERSISTENCE SUBSCRIPTION =====
+// Trigger app state save when recipes change
+
+// Flag to prevent save during state restoration
+let isRestoringState = false
+
+/**
+ * Set flag to prevent persistence during state restoration.
+ * Called by useDuckDB when loading saved recipes.
+ */
+export function setRestoringRecipeState(restoring: boolean): void {
+  isRestoringState = restoring
+}
+
+// Initialize persistence subscription
+if (typeof window !== 'undefined') {
+  // Simple debounce helper
+  const createDebouncedSave = () => {
+    let timeoutId: NodeJS.Timeout | null = null
+    return {
+      trigger: (fn: () => Promise<void>) => {
+        if (timeoutId) clearTimeout(timeoutId)
+        timeoutId = setTimeout(() => fn().catch(console.error), 500)
+      },
+    }
+  }
+
+  const debouncedSave = createDebouncedSave()
+
+  // Track previous recipes to detect actual changes
+  let prevRecipesLength = 0
+  let prevRecipesJson = ''
+
+  useRecipeStore.subscribe((state) => {
+    // Skip save during state restoration
+    if (isRestoringState) return
+
+    // Only save if recipes actually changed (not just UI state like selectedRecipeId)
+    const currentJson = JSON.stringify(state.recipes)
+    if (currentJson === prevRecipesJson && state.recipes.length === prevRecipesLength) {
+      return
+    }
+    prevRecipesLength = state.recipes.length
+    prevRecipesJson = currentJson
+
+    console.log('[RecipeStore] Recipes changed, triggering save')
+
+    debouncedSave.trigger(async () => {
+      const { saveAppState } = await import('@/lib/persistence/state-persistence')
+      const { useTableStore } = await import('@/stores/tableStore')
+      const { useTimelineStore } = await import('@/stores/timelineStore')
+      const { useUIStore } = await import('@/stores/uiStore')
+
+      const tableState = useTableStore.getState()
+      const timelineState = useTimelineStore.getState()
+      const uiState = useUIStore.getState()
+
+      await saveAppState(
+        tableState.tables,
+        tableState.activeTableId,
+        timelineState.getSerializedTimelines(),
+        uiState.sidebarCollapsed,
+        uiState.lastEdit,
+        state.recipes
+      )
+    })
+  })
+}

@@ -1,8 +1,19 @@
 import { useState, useCallback, useMemo } from 'react'
-import { ChevronRight, History, FileText, Eye, Download, X, Crosshair } from 'lucide-react'
+import { ChevronRight, History, FileText, Eye, Download, X, Crosshair, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Tooltip,
   TooltipContent,
@@ -12,8 +23,11 @@ import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
 import { useTableStore } from '@/stores/tableStore'
 import { useTimelineStore } from '@/stores/timelineStore'
+import { useRecipeStore } from '@/stores/recipeStore'
 import { getAuditEntriesForTable, getAllAuditEntries } from '@/lib/audit-from-timeline'
 import { AuditDetailModal } from '@/components/common/AuditDetailModal'
+import { extractRecipeSteps, extractRequiredColumns, isRecipeCompatibleCommand } from '@/lib/recipe/recipe-exporter'
+import { toast } from 'sonner'
 import type { AuditLogEntry } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -55,6 +69,13 @@ export function AuditSidebar() {
   }, [timeline?.commands])
 
   const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null)
+
+  // Export as Recipe dialog state
+  const [showRecipeDialog, setShowRecipeDialog] = useState(false)
+  const [recipeName, setRecipeName] = useState('')
+  const [recipeDescription, setRecipeDescription] = useState('')
+  const addRecipe = useRecipeStore((s) => s.addRecipe)
+  const setActivePanel = usePreviewStore((s) => s.setActivePanel)
 
   // Find timeline command linked to an audit entry
   const findTimelineCommand = useCallback(
@@ -160,6 +181,78 @@ export function AuditSidebar() {
     URL.revokeObjectURL(url)
   }
 
+  // Count recipe-compatible commands for the Export as Recipe button
+  const recipeCompatibleCount = useMemo(() => {
+    if (!timeline) return 0
+    // Only count commands up to current position (not undone commands)
+    const activeCommands = timeline.commands.slice(0, currentPosition + 1)
+    return activeCommands.filter((cmd) => {
+      const params = cmd.params as unknown as Record<string, unknown> | undefined
+      // Reconstruct full command type from params (matches recipe-exporter.ts getCommandType)
+      const cmdType =
+        cmd.commandType === 'transform' && params?.transformationType
+          ? `transform:${params.transformationType}`
+          : cmd.commandType === 'scrub' && params?.method
+            ? `scrub:${params.method}`
+            : cmd.commandType === 'standardize'
+              ? 'standardize:apply'
+              : cmd.commandType
+      return isRecipeCompatibleCommand(cmdType)
+    }).length
+  }, [timeline, currentPosition])
+
+  // Handle Export as Recipe
+  const handleExportAsRecipe = () => {
+    if (!timeline || recipeCompatibleCount === 0) {
+      toast.error('No recipe-compatible transforms to export')
+      return
+    }
+    setRecipeName('')
+    setRecipeDescription('')
+    setShowRecipeDialog(true)
+  }
+
+  // Handle save recipe
+  const handleSaveRecipe = () => {
+    if (!recipeName.trim()) {
+      toast.error('Please enter a recipe name')
+      return
+    }
+
+    if (!timeline) return
+
+    // Extract only commands up to current position (not undone)
+    const activeCommands = timeline.commands.slice(0, currentPosition + 1)
+
+    // Convert timeline commands to recipe steps
+    const steps = extractRecipeSteps(activeCommands)
+
+    if (steps.length === 0) {
+      toast.error('No recipe-compatible transforms found')
+      return
+    }
+
+    // Extract required columns
+    const requiredColumns = extractRequiredColumns(steps)
+
+    // Create the recipe
+    addRecipe({
+      name: recipeName.trim(),
+      description: recipeDescription.trim(),
+      version: '1.0',
+      requiredColumns,
+      steps,
+    })
+
+    setShowRecipeDialog(false)
+    toast.success(`Recipe "${recipeName}" created with ${steps.length} steps`, {
+      action: {
+        label: 'View',
+        onClick: () => setActivePanel('recipe'),
+      },
+    })
+  }
+
   const formatTime = (date: Date) => {
     const now = new Date()
     const diff = now.getTime() - date.getTime()
@@ -212,6 +305,28 @@ export function AuditSidebar() {
                 <TooltipContent>Clear highlights</TooltipContent>
               </Tooltip>
             )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={handleExportAsRecipe}
+                  disabled={recipeCompatibleCount === 0}
+                  data-testid="export-as-recipe-btn"
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Export as Recipe
+                {recipeCompatibleCount > 0 && (
+                  <span className="text-muted-foreground ml-1">
+                    ({recipeCompatibleCount} transforms)
+                  </span>
+                )}
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -372,6 +487,46 @@ export function AuditSidebar() {
         open={selectedEntry !== null}
         onOpenChange={(open) => !open && setSelectedEntry(null)}
       />
+
+      {/* Export as Recipe Dialog */}
+      <Dialog open={showRecipeDialog} onOpenChange={setShowRecipeDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Export as Recipe</DialogTitle>
+            <DialogDescription>
+              Save {recipeCompatibleCount} transform{recipeCompatibleCount !== 1 ? 's' : ''} as a reusable recipe template.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label htmlFor="recipe-name">Recipe Name</Label>
+              <Input
+                id="recipe-name"
+                value={recipeName}
+                onChange={(e) => setRecipeName(e.target.value)}
+                placeholder="e.g., Email Cleanup"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="recipe-desc">Description (optional)</Label>
+              <Textarea
+                id="recipe-desc"
+                value={recipeDescription}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setRecipeDescription(e.target.value)}
+                placeholder="What does this recipe do?"
+                className="mt-1"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRecipeDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveRecipe}>Create Recipe</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
