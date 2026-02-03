@@ -1054,6 +1054,7 @@ export function DataGrid({
           title,
           width,
           icon,
+          grow: 1, // Columns expand proportionally to fill available width
         }
       }),
     [columns, columnTypeMap, columnPreferences, viewState]

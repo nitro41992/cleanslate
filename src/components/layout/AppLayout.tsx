@@ -88,7 +88,7 @@ export function AppLayout({
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex flex-col h-screen bg-background">
+      <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
         {/* Header */}
         <AppHeader onNewTable={onNewTable} onPersist={onPersist} isPersisting={isPersisting} />
 
