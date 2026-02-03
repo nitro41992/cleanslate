@@ -24,8 +24,8 @@ export class LowercaseCommand extends Tier1TransformCommand<LowercaseParams> {
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // Rows where lowercased value differs from original
-    return `${col} IS NOT NULL AND ${col} != LOWER(${col})`
+    // NULL-safe comparison: only rows where value would actually change
+    return `${col} IS DISTINCT FROM LOWER(${col})`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

@@ -9,6 +9,7 @@ import { usePreviewStore, type PanelType } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
+import { useRecipeStore } from '@/stores/recipeStore'
 import { cn } from '@/lib/utils'
 
 type ActionId = PanelType | 'standardize'
@@ -78,6 +79,7 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   const isMatchViewOpen = useMatcherStore((s) => s.isViewOpen)
   const openStandardizeView = useStandardizerStore((s) => s.openView)
   const isStandardizeViewOpen = useStandardizerStore((s) => s.isViewOpen)
+  const recipeCount = useRecipeStore((s) => s.recipes.length)
 
   const handleClick = (panelId: ActionId) => {
     // Diff, Match, and Standardize open as full-screen overlays instead of side panels
@@ -129,7 +131,7 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
                 onClick={() => handleClick(action.id)}
                 disabled={disabled}
                 className={cn(
-                  'gap-2 transition-all',
+                  'gap-2 transition-all relative',
                   isActive && 'shadow-md'
                 )}
                 aria-pressed={isActive}
@@ -137,6 +139,11 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
               >
                 <Icon className="w-4 h-4" />
                 <span className="hidden sm:inline">{action.label}</span>
+                {action.id === 'recipe' && recipeCount > 0 && (
+                  <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-primary text-[10px] text-primary-foreground flex items-center justify-center font-medium">
+                    {recipeCount}
+                  </span>
+                )}
               </Button>
             </TooltipTrigger>
             <TooltipContent>

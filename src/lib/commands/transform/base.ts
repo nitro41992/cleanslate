@@ -207,7 +207,30 @@ export abstract class Tier1TransformCommand<TParams extends BaseTransformParams 
     const column = this.params.column!
 
     try {
-      // Count affected rows before transformation
+      // PRE-CHECK: Use LIMIT 1 to quickly check if ANY row needs changing
+      // This is O(1) for clean tables vs O(n) for COUNT(*), avoiding double-scans
+      const predicate = await this.getAffectedRowsPredicate(ctx)
+      if (predicate && predicate !== 'TRUE') {
+        const checkResult = await ctx.db.query<{ exists: number }>(
+          `SELECT 1 as exists FROM ${this.getQuotedTable(ctx)} WHERE ${predicate} LIMIT 1`
+        )
+        const needsUpdate = checkResult.length > 0
+
+        if (!needsUpdate) {
+          // Idempotent: No changes needed - return success with affected=0
+          // This skips column versioning, audit logging, and timeline recording
+          return {
+            success: true,
+            rowCount: ctx.table.rowCount,
+            columns: ctx.table.columns,
+            affected: 0,
+            newColumnNames: [],
+            droppedColumnNames: [],
+          }
+        }
+      }
+
+      // Count affected rows before transformation (for affected count in result)
       const affectedCount = await this.countAffectedRows(ctx)
 
       // Get the transformation expression

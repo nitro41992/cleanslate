@@ -24,8 +24,8 @@ export class RemoveAccentsCommand extends Tier1TransformCommand<RemoveAccentsPar
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // Rows where stripped value differs from original
-    return `${col} IS NOT NULL AND ${col} != strip_accents(${col})`
+    // NULL-safe comparison: only rows where value would actually change
+    return `${col} IS DISTINCT FROM strip_accents(${col})`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

@@ -24,8 +24,8 @@ export class CollapseSpacesCommand extends Tier1TransformCommand<CollapseSpacesP
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // Rows where collapsed value differs from original
-    return `${col} IS NOT NULL AND ${col} != regexp_replace(${col}, '[ \\t\\n\\r]+', ' ', 'g')`
+    // NULL-safe comparison: only rows where value would actually change
+    return `${col} IS DISTINCT FROM regexp_replace(${col}, '[ \\t\\n\\r]+', ' ', 'g')`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

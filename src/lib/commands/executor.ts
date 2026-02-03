@@ -416,6 +416,24 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // IDEMPOTENCY: Clean up orphaned snapshot if no rows were affected
+      // Snapshot was created before execution, but if affected=0, we won't record to timeline
+      // so the snapshot would be orphaned. Delete it to prevent memory leaks.
+      if (snapshotMetadata && executionResult.affected === 0) {
+        try {
+          if (snapshotMetadata.storageType === 'table' && snapshotMetadata.tableName) {
+            await dropTable(snapshotMetadata.tableName)
+            console.log(`[Executor] Cleaned up orphaned snapshot (idempotent): ${snapshotMetadata.tableName}`)
+          } else if (snapshotMetadata.storageType === 'parquet') {
+            await deleteParquetSnapshot(snapshotMetadata.id)
+            console.log(`[Executor] Cleaned up orphaned Parquet snapshot (idempotent): ${snapshotMetadata.id}`)
+          }
+          snapshotMetadata = undefined
+        } catch (err) {
+          console.warn('[Executor] Failed to clean up orphaned snapshot:', err)
+        }
+      }
+
       // Step 4.3: Memory diagnostic logging (after execution)
       const memAfter = await getDuckDBMemoryUsage()
       const tablesAfter = await getEstimatedTableSizes()
@@ -498,8 +516,11 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // Step 5: Audit logging
+      // IDEMPOTENCY: Skip audit when affected=0 (no changes made)
+      // This keeps the audit log meaningful and noise-free
       let auditInfo
-      if (!skipAudit) {
+      const hasAffectedRows = executionResult.affected !== undefined && executionResult.affected > 0
+      if (!skipAudit && hasAffectedRows) {
         progress('auditing', 60, 'Recording audit log...')
         auditInfo = command.getAuditInfo(updatedCtx, executionResult)
         // Use pre-generated auditEntryId for:
@@ -512,6 +533,8 @@ export class CommandExecutor implements ICommandExecutor {
           auditInfo.auditEntryId = preGeneratedAuditEntryId
         }
         this.recordAudit(ctx.table.id, ctx.table.name, auditInfo)
+      } else if (!hasAffectedRows) {
+        console.log(`[EXECUTOR] Skipping audit log - no rows affected (idempotent operation)`)
       }
 
       // Step 6: Diff view
@@ -637,8 +660,10 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // Step 7: Record timeline for undo/redo
+      // IDEMPOTENCY: Skip timeline when affected=0 (no changes made)
+      // This prevents undo stack pollution from no-op operations
       let highlightInfo: HighlightInfo | undefined
-      if (!skipTimeline) {
+      if (!skipTimeline && hasAffectedRows) {
         progress('complete', 90, 'Recording timeline...')
         const rowPredicate = await command.getAffectedRowsPredicate(updatedCtx)
         highlightInfo = {
@@ -660,11 +685,14 @@ export class CommandExecutor implements ICommandExecutor {
 
         // Sync with legacy timelineStore for UI integration (highlight, drill-down)
         this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo, affectedRowIds, currentColumnOrder, newColumnOrder)
+      } else if (!hasAffectedRows) {
+        console.log(`[EXECUTOR] Skipping timeline recording - no rows affected (idempotent operation)`)
       }
 
       // Chained Tier 1: Compute diff from pre-snapshot (captures previous → new, not original → new)
       // This is done BEFORE captureTier1RowDetails to ensure we don't double-capture
-      if (!skipAudit && isChainedTier1 && column && auditInfo?.auditEntryId) {
+      // Skip if no rows affected (idempotent operation)
+      if (!skipAudit && hasAffectedRows && isChainedTier1 && column && auditInfo?.auditEntryId) {
         try {
           const captured = await capturePostDiff(
             updatedCtx.db,
@@ -683,8 +711,9 @@ export class CommandExecutor implements ICommandExecutor {
       // Capture row-level details for Tier 1 only (uses __base columns, must be AFTER execution)
       // Tier 2/3 already captured BEFORE execution in Step 3.5
       // Skip for chained Tier 1 - we already captured via pre-snapshot/post-diff above
-      const shouldCaptureTier1 = !skipAudit && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1 && !isChainedTier1
-      console.log(`[EXECUTOR] Tier 1 audit capture check: skipAudit=${skipAudit}, hasRowDetails=${auditInfo?.hasRowDetails}, auditEntryId=${!!auditInfo?.auditEntryId}, tier=${tier}, isChainedTier1=${isChainedTier1}, shouldCapture=${shouldCaptureTier1}`)
+      // Skip if no rows affected (idempotent operation)
+      const shouldCaptureTier1 = !skipAudit && hasAffectedRows && auditInfo?.hasRowDetails && auditInfo?.auditEntryId && tier === 1 && !isChainedTier1
+      console.log(`[EXECUTOR] Tier 1 audit capture check: skipAudit=${skipAudit}, hasAffectedRows=${hasAffectedRows}, hasRowDetails=${auditInfo?.hasRowDetails}, auditEntryId=${!!auditInfo?.auditEntryId}, tier=${tier}, isChainedTier1=${isChainedTier1}, shouldCapture=${shouldCaptureTier1}`)
 
       if (shouldCaptureTier1) {
         try {

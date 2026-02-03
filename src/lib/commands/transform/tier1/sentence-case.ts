@@ -28,8 +28,12 @@ export class SentenceCaseCommand extends Tier1TransformCommand<SentenceCaseParam
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // All non-empty values are potentially affected
-    return `${col} IS NOT NULL AND TRIM(${col}) != ''`
+    // NULL-safe comparison: only rows where value would actually change
+    const sentenceCaseExpr = `CASE
+      WHEN ${col} IS NULL OR TRIM(${col}) = '' THEN ${col}
+      ELSE concat(upper(substring(${col}, 1, 1)), lower(substring(${col}, 2)))
+    END`
+    return `${col} IS DISTINCT FROM ${sentenceCaseExpr}`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

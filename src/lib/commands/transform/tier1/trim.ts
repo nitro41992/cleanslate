@@ -24,8 +24,8 @@ export class TrimCommand extends Tier1TransformCommand<TrimParams> {
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // Rows where trimmed value differs from original
-    return `${col} IS NOT NULL AND ${col} != TRIM(${col})`
+    // NULL-safe comparison: only rows where value would actually change
+    return `${col} IS DISTINCT FROM TRIM(${col})`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

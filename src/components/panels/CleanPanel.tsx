@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Loader2, Sparkles, AlertTriangle } from 'lucide-react'
+import { Loader2, Sparkles, AlertTriangle, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -26,6 +26,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { useTableStore } from '@/stores/tableStore'
+import { useTimelineStore } from '@/stores/timelineStore'
+import { usePreviewStore } from '@/stores/previewStore'
 import { toast } from 'sonner'
 import {
   TransformationDefinition,
@@ -75,8 +77,14 @@ export function CleanPanel() {
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
   const activeTable = tables.find((t) => t.id === activeTableId)
+  const timeline = useTimelineStore((s) => activeTableId ? s.getTimeline(activeTableId) : undefined)
+  const setActivePanel = usePreviewStore((s) => s.setActivePanel)
 
   const columns = activeTable?.columns.map((c) => c.name) || []
+  // Count active timeline commands (not undone)
+  const activeCommandCount = timeline
+    ? timeline.commands.slice(0, timeline.currentPosition + 1).length
+    : 0
 
   // Live semantic validation for transform operations
   const validationResult = useSemanticValidation(
@@ -688,6 +696,19 @@ export function CleanPanel() {
                 <p className="text-sm text-muted-foreground">
                   Select a transformation from the left to configure it
                 </p>
+
+                {/* Save as Recipe shortcut - show when table has transform history */}
+                {activeCommandCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="mt-4 text-muted-foreground hover:text-foreground"
+                    onClick={() => setActivePanel('recipe')}
+                  >
+                    <BookOpen className="w-4 h-4 mr-2" />
+                    Save transforms as recipe
+                  </Button>
+                )}
               </div>
             )}
           </div>

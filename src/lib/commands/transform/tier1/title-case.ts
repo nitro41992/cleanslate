@@ -35,8 +35,18 @@ export class TitleCaseCommand extends Tier1TransformCommand<TitleCaseParams> {
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // All non-empty values are potentially affected
-    return `${col} IS NOT NULL AND TRIM(${col}) != ''`
+    // NULL-safe comparison: only rows where value would actually change
+    const titleCaseExpr = `CASE
+      WHEN ${col} IS NULL OR TRIM(${col}) = '' THEN ${col}
+      ELSE list_reduce(
+        list_transform(
+          string_split(lower(${col}), ' '),
+          w -> concat(upper(substring(w, 1, 1)), substring(w, 2))
+        ),
+        (x, y) -> concat(x, ' ', y)
+      )
+    END`
+    return `${col} IS DISTINCT FROM ${titleCaseExpr}`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

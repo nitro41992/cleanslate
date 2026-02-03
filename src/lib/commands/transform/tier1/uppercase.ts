@@ -24,8 +24,8 @@ export class UppercaseCommand extends Tier1TransformCommand<UppercaseParams> {
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // Rows where uppercased value differs from original
-    return `${col} IS NOT NULL AND ${col} != UPPER(${col})`
+    // NULL-safe comparison: only rows where value would actually change
+    return `${col} IS DISTINCT FROM UPPER(${col})`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

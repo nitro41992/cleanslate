@@ -24,8 +24,8 @@ export class RemoveNonPrintableCommand extends Tier1TransformCommand<RemoveNonPr
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
-    // Rows where cleaned value differs from original
-    return `${col} IS NOT NULL AND ${col} != regexp_replace(${col}, '[\\x00-\\x1F\\x7F]', '', 'g')`
+    // NULL-safe comparison: only rows where value would actually change
+    return `${col} IS DISTINCT FROM regexp_replace(${col}, '[\\x00-\\x1F\\x7F]', '', 'g')`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {

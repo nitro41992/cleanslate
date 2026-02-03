@@ -12,6 +12,9 @@ import {
   MoreHorizontal,
   Check,
   X,
+  Wand2,
+  History,
+  AlertCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -52,6 +55,8 @@ import { useTableStore } from '@/stores/tableStore'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import type { Recipe, RecipeStep } from '@/types'
+import { RecipeStepBuilder } from './RecipeStepBuilder'
+import { getStepApplicationStatus, type StepApplicationStatus } from '@/lib/recipe/step-status'
 
 export function RecipePanel() {
   const recipes = useRecipeStore((s) => s.recipes)
@@ -92,6 +97,9 @@ export function RecipePanel() {
 
   // Expanded step state
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
+
+  // Show step builder when building from scratch
+  const [showStepBuilder, setShowStepBuilder] = useState(false)
 
   // Get table columns for mapping
   const tableColumns = useMemo(() => {
@@ -337,9 +345,31 @@ export function RecipePanel() {
             </div>
 
             {recipes.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <p className="text-sm">No recipes yet</p>
-                <p className="text-xs mt-1">Create a recipe or export from Audit Log</p>
+              <div className="space-y-3 py-4">
+                {/* Primary CTA: Build from Scratch */}
+                <Button
+                  variant="default"
+                  size="lg"
+                  className="w-full h-12"
+                  onClick={handleCreateRecipe}
+                >
+                  <Wand2 className="w-4 h-4 mr-2" />
+                  Build New Recipe
+                </Button>
+
+                {/* Secondary CTA: Import from History */}
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleImportRecipe}
+                >
+                  <History className="w-4 h-4 mr-2" />
+                  Import from File
+                </Button>
+
+                <p className="text-xs text-center text-muted-foreground pt-2">
+                  Or export transforms from the Audit Log
+                </p>
               </div>
             ) : (
               <div className="space-y-1">
@@ -475,70 +505,127 @@ export function RecipePanel() {
 
                 {/* Steps */}
                 <div>
-                  <Label className="text-xs text-muted-foreground">
-                    STEPS ({selectedRecipe.steps.filter((s) => s.enabled).length} enabled)
-                  </Label>
-                  {selectedRecipe.steps.length === 0 ? (
-                    <p className="text-sm text-muted-foreground mt-1">
-                      No steps yet. Export transforms from Audit Log.
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs text-muted-foreground">
+                      STEPS ({selectedRecipe.steps.filter((s) => s.enabled).length} enabled)
+                    </Label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => setShowStepBuilder(!showStepBuilder)}
+                    >
+                      <Plus className="w-3 h-3 mr-1" />
+                      Add Step
+                    </Button>
+                  </div>
+
+                  {/* Step Builder */}
+                  {showStepBuilder && (
+                    <div className="mt-2">
+                      <RecipeStepBuilder
+                        recipeId={selectedRecipe.id}
+                        tableColumns={tableColumns}
+                        onStepAdded={() => setShowStepBuilder(false)}
+                      />
+                    </div>
+                  )}
+
+                  {selectedRecipe.steps.length === 0 && !showStepBuilder ? (
+                    <p className="text-sm text-muted-foreground mt-2">
+                      No steps yet. Click "Add Step" above to build your recipe.
                     </p>
                   ) : (
                     <div className="space-y-1 mt-2">
-                      {selectedRecipe.steps.map((step, index) => (
-                        <div
-                          key={step.id}
-                          className={cn(
-                            'border rounded-lg transition-colors',
-                            step.enabled ? 'border-border' : 'border-border/50 opacity-60'
-                          )}
-                        >
+                      {selectedRecipe.steps.map((step, index) => {
+                        // Get step application status if we have an active table
+                        const status: StepApplicationStatus = activeTableId
+                          ? getStepApplicationStatus(step, activeTableId, pendingColumnMapping || {})
+                          : 'not_applied'
+
+                        return (
                           <div
-                            className="flex items-center gap-2 p-2 cursor-pointer"
-                            onClick={() => toggleStepExpanded(step.id)}
-                          >
-                            <GripVertical className="w-4 h-4 text-muted-foreground cursor-grab" />
-                            <span className="text-xs text-muted-foreground w-5">{index + 1}.</span>
-                            {expandedSteps.has(step.id) ? (
-                              <ChevronDown className="w-4 h-4 text-muted-foreground" />
-                            ) : (
-                              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                            key={step.id}
+                            className={cn(
+                              'border rounded-lg transition-colors',
+                              step.enabled ? 'border-border' : 'border-border/50 opacity-60',
+                              status === 'already_applied' && 'border-emerald-500/40 bg-emerald-500/5',
+                              status === 'modified_since' && 'border-amber-500/40 bg-amber-500/5'
                             )}
-                            <span className="text-sm flex-1 truncate">{formatStepLabel(step)}</span>
-                            <Switch
-                              checked={step.enabled}
-                              onCheckedChange={() => toggleStepEnabled(selectedRecipe.id, step.id)}
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                removeStep(selectedRecipe.id, step.id)
-                              }}
+                          >
+                            <div
+                              className="flex items-center gap-2 p-2 cursor-pointer"
+                              onClick={() => toggleStepExpanded(step.id)}
                             >
-                              <X className="w-3.5 h-3.5" />
-                            </Button>
-                          </div>
-                          {expandedSteps.has(step.id) && (
-                            <div className="px-4 pb-2 pt-1 border-t border-border/50">
-                              <p className="text-xs text-muted-foreground">Type: {step.type}</p>
-                              {step.column && (
-                                <p className="text-xs text-muted-foreground">Column: {step.column}</p>
+                              <GripVertical className="w-4 h-4 text-muted-foreground cursor-grab" />
+                              <span className="text-xs text-muted-foreground w-5">{index + 1}.</span>
+                              {expandedSteps.has(step.id) ? (
+                                <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4 text-muted-foreground" />
                               )}
-                              {step.params && Object.keys(step.params).length > 0 && (
-                                <div className="mt-1">
-                                  <p className="text-xs text-muted-foreground">Parameters:</p>
-                                  <pre className="text-xs bg-muted/50 p-1 rounded mt-0.5 overflow-x-auto">
-                                    {JSON.stringify(step.params, null, 2)}
-                                  </pre>
-                                </div>
+                              <span className="text-sm flex-1 truncate">{formatStepLabel(step)}</span>
+
+                              {/* Status indicator */}
+                              {status === 'already_applied' && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge variant="outline" className="text-emerald-500 border-emerald-500/50 text-[10px] px-1.5">
+                                      <Check className="w-2.5 h-2.5 mr-0.5" />
+                                      Applied
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Already applied to current table</TooltipContent>
+                                </Tooltip>
                               )}
+                              {status === 'modified_since' && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge variant="outline" className="text-amber-500 border-amber-500/50 text-[10px] px-1.5">
+                                      <AlertCircle className="w-2.5 h-2.5 mr-0.5" />
+                                      Modified
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Applied, but column was modified since</TooltipContent>
+                                </Tooltip>
+                              )}
+
+                              <Switch
+                                checked={step.enabled}
+                                onCheckedChange={() => toggleStepEnabled(selectedRecipe.id, step.id)}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  removeStep(selectedRecipe.id, step.id)
+                                }}
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </Button>
                             </div>
-                          )}
-                        </div>
-                      ))}
+                            {expandedSteps.has(step.id) && (
+                              <div className="px-4 pb-2 pt-1 border-t border-border/50">
+                                <p className="text-xs text-muted-foreground">Type: {step.type}</p>
+                                {step.column && (
+                                  <p className="text-xs text-muted-foreground">Column: {step.column}</p>
+                                )}
+                                {step.params && Object.keys(step.params).length > 0 && (
+                                  <div className="mt-1">
+                                    <p className="text-xs text-muted-foreground">Parameters:</p>
+                                    <pre className="text-xs bg-muted/50 p-1 rounded mt-0.5 overflow-x-auto">
+                                      {JSON.stringify(step.params, null, 2)}
+                                    </pre>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                 </div>
