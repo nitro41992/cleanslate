@@ -461,6 +461,7 @@ export function CleanPanel() {
   }
 
   // Check if the current form state is valid for adding to a recipe
+  // Uses the same validation logic as isValid() for UX parity
   const canAddToRecipe = () => {
     if (!selectedTransform) return false
     if (selectedTransform.requiresColumn && !selectedColumn) return false
@@ -469,6 +470,20 @@ export function CleanPanel() {
         if (param.required !== false && !params[param.name]) return false
       }
     }
+
+    // Semantic validation: block no-op and invalid transforms
+    if (validationResult.status === 'no_op' || validationResult.status === 'invalid') {
+      return false
+    }
+
+    // Live preview validation: block if preview shows no matching rows
+    // Only check when preview is ready and not loading (to avoid blocking during debounce)
+    if (previewState?.isReady && !previewState.isLoading && !previewState.hasError) {
+      if (previewState.totalMatching === 0) {
+        return false
+      }
+    }
+
     return true
   }
 

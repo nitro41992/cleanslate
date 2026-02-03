@@ -22,7 +22,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import {
   Dialog,
   DialogContent,
@@ -191,16 +190,16 @@ export function RecipePanel() {
     if (!transform?.params) {
       if (!step.params || Object.keys(step.params).length === 0) return null
       return (
-        <div className="space-y-1 text-xs">
+        <div className="space-y-1 text-xs overflow-hidden">
           {Object.entries(step.params).map(([key, value]) => {
             const label = key
               .replace(/([A-Z])/g, ' $1')
               .replace(/^./, (s) => s.toUpperCase())
               .trim()
             return (
-              <div key={key} className="flex items-start gap-2">
+              <div key={key} className="flex items-start gap-2 min-w-0">
                 <span className="text-muted-foreground shrink-0">{label}:</span>
-                <span className="text-foreground break-all">{formatValue(value)}</span>
+                <span className="text-foreground break-all min-w-0">{formatValue(value)}</span>
               </div>
             )
           })}
@@ -210,15 +209,15 @@ export function RecipePanel() {
 
     // Show ALL defined params, using stored value or default
     return (
-      <div className="space-y-1 text-xs">
+      <div className="space-y-1 text-xs overflow-hidden">
         {transform.params.map((paramDef) => {
           const storedValue = step.params?.[paramDef.name]
           const value = storedValue !== undefined ? storedValue : paramDef.default ?? ''
 
           return (
-            <div key={paramDef.name} className="flex items-start gap-2">
+            <div key={paramDef.name} className="flex items-start gap-2 min-w-0">
               <span className="text-muted-foreground shrink-0">{paramDef.label}:</span>
-              <span className="text-foreground break-all">{formatValue(value)}</span>
+              <span className="text-foreground break-all min-w-0">{formatValue(value)}</span>
             </div>
           )
         })}
@@ -453,47 +452,16 @@ export function RecipePanel() {
     await executeRecipe(selectedRecipe, pendingColumnMapping)
   }
 
-  // Generate recipe preview summary
-  const getRecipePreview = (): string[] => {
-    if (!selectedRecipe) return []
-
-    const enabledSteps = selectedRecipe.steps.filter((s) => s.enabled)
-    if (enabledSteps.length === 0) return ['No enabled steps']
-
-    const summary: string[] = []
-
-    // Group by operation type
-    const transformCounts: Record<string, number> = {}
-    const columnsAffected = new Set<string>()
-
-    for (const step of enabledSteps) {
-      const label = getTransformLabel(step)
-      transformCounts[label] = (transformCounts[label] || 0) + 1
-      if (step.column) columnsAffected.add(step.column)
-    }
-
-    // Generate summary lines
-    for (const [transform, count] of Object.entries(transformCounts)) {
-      summary.push(`${count}× ${transform}`)
-    }
-
-    if (columnsAffected.size > 0) {
-      summary.push(`Affects ${columnsAffected.size} column${columnsAffected.size > 1 ? 's' : ''}`)
-    }
-
-    return summary
-  }
-
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full w-full overflow-hidden">
       {/* Header: Recipe selector */}
-      <div className="p-3 border-b border-border/30">
+      <div className="p-3 shrink-0">
         {recipes.length > 0 ? (
           <Select
             value={selectedRecipeId || ''}
             onValueChange={(id) => setSelectedRecipe(id || null)}
           >
-            <SelectTrigger className="h-8 text-sm">
+            <SelectTrigger className="h-8 text-sm bg-muted/30 border-border/50">
               <SelectValue placeholder="Select recipe..." />
             </SelectTrigger>
             <SelectContent>
@@ -515,8 +483,8 @@ export function RecipePanel() {
       </div>
 
       {/* Recipe Details & Steps */}
-      <ScrollArea className="flex-1">
-        <div className="p-3 space-y-3">
+      <ScrollArea className="flex-1 min-h-0 w-full [&>div>div]:!block">
+        <div className="p-3 space-y-3 w-full overflow-hidden">
           {selectedRecipe ? (
             <>
               {/* Recipe Name (editable) */}
@@ -578,7 +546,7 @@ export function RecipePanel() {
                     className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
                     onClick={startEditingDescription}
                   >
-                    {selectedRecipe.description || 'Click to add description...'}
+                    {selectedRecipe.description || 'Add a description...'}
                   </p>
                 )}
               </div>
@@ -622,30 +590,8 @@ export function RecipePanel() {
                 </CollapsibleContent>
               </Collapsible>
 
-              <Separator className="my-2" />
-
-              {/* Recipe Preview Summary */}
-              {selectedRecipe.steps.length > 0 && (
-                <div className="bg-muted/30 rounded-md p-2 space-y-1">
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Preview
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {getRecipePreview().map((item, i) => (
-                      <Badge
-                        key={i}
-                        variant="outline"
-                        className="text-[10px] px-1.5 py-0 font-normal"
-                      >
-                        {item}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Steps Header */}
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between pt-2 border-t border-border/30 mt-2">
                 <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
                   Steps ({selectedRecipe.steps.filter((s) => s.enabled).length}/{selectedRecipe.steps.length} enabled)
                 </p>
@@ -657,7 +603,7 @@ export function RecipePanel() {
                   Use &quot;Add to Recipe&quot; in the transform form to add steps
                 </p>
               ) : (
-                <div className="space-y-1">
+                <div className="space-y-1.5 w-full max-w-full">
                   {selectedRecipe.steps.map((step, index) => {
                     const isExpanded = expandedSteps.has(step.id)
                     const isNewlyAdded = step.id === newlyAddedStepId
@@ -666,18 +612,18 @@ export function RecipePanel() {
                       <div
                         key={step.id}
                         className={cn(
-                          'rounded-md border transition-all duration-300',
+                          'rounded-lg border transition-all duration-300 w-full max-w-full overflow-hidden',
                           step.enabled
-                            ? 'bg-muted/30 border-border/40'
-                            : 'bg-muted/10 border-border/20 opacity-50',
+                            ? 'bg-card/50 border-border/50'
+                            : 'bg-muted/20 border-border/20 opacity-60',
                           isNewlyAdded && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
                         )}
                       >
                         {/* Step Header */}
-                        <div className="flex items-center gap-1 p-1.5">
+                        <div className="flex items-center gap-1.5 p-2">
                           {/* Expand Toggle */}
                           <button
-                            className="shrink-0 p-0.5 hover:bg-muted rounded"
+                            className="shrink-0 p-0.5 hover:bg-muted/50 rounded transition-colors"
                             onClick={() => toggleStepExpanded(step.id)}
                           >
                             {isExpanded ? (
@@ -688,22 +634,22 @@ export function RecipePanel() {
                           </button>
 
                           {/* Step Number & Icon */}
-                          <span className="text-[10px] text-muted-foreground shrink-0">
+                          <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
                             {index + 1}.
                           </span>
                           <span className="text-sm shrink-0">{getStepIcon(step)}</span>
 
                           {/* Label */}
-                          <span className="flex-1 truncate text-xs min-w-0">
+                          <span className="flex-1 truncate text-xs font-medium min-w-0">
                             {formatStepLabel(step)}
                           </span>
 
                           {/* Compact action buttons */}
-                          <div className="flex items-center gap-0 shrink-0">
+                          <div className="flex items-center shrink-0">
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-5 w-5"
+                              className="h-5 w-5 hover:bg-muted/50"
                               onClick={() => moveStepUp(index)}
                               disabled={index === 0}
                             >
@@ -712,7 +658,7 @@ export function RecipePanel() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-5 w-5"
+                              className="h-5 w-5 hover:bg-muted/50"
                               onClick={() => moveStepDown(index)}
                               disabled={index === selectedRecipe.steps.length - 1}
                             >
@@ -730,31 +676,31 @@ export function RecipePanel() {
 
                         {/* Expanded Details */}
                         {isExpanded && (
-                          <div className="px-3 pb-2 pt-1 border-t border-border/30 space-y-2">
-                            <div className="flex items-start gap-2 text-xs">
+                          <div className="px-3 pb-2 pt-1.5 border-t border-border/40 space-y-2 overflow-hidden">
+                            <div className="flex items-start gap-2 text-xs min-w-0">
                               <span className="text-muted-foreground shrink-0">Type:</span>
-                              <code className="text-foreground bg-muted/50 px-1 rounded text-[10px]">
+                              <code className="text-foreground/80 bg-muted/30 px-1.5 py-0.5 rounded text-[10px] truncate">
                                 {step.type}
                               </code>
                             </div>
                             {step.column && (
-                              <div className="flex items-start gap-2 text-xs">
+                              <div className="flex items-start gap-2 text-xs min-w-0">
                                 <span className="text-muted-foreground shrink-0">Column:</span>
-                                <span className="text-foreground">{step.column}</span>
+                                <span className="text-foreground truncate">{step.column}</span>
                               </div>
                             )}
                             {(() => {
                               const paramsContent = formatStepParams(step)
                               if (!paramsContent) return null
                               return (
-                                <div className="pt-1 border-t border-border/20">
+                                <div className="pt-1.5 border-t border-border/30 overflow-hidden">
                                   <p className="text-[10px] text-muted-foreground mb-1">Parameters:</p>
                                   {paramsContent}
                                 </div>
                               )
                             })()}
                             {/* Delete action */}
-                            <div className="pt-1 border-t border-border/20">
+                            <div className="pt-1.5 border-t border-border/30">
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -827,77 +773,75 @@ export function RecipePanel() {
       )}
 
       {/* Footer actions */}
-      <div className="p-2 border-t border-border/30 flex items-center gap-1">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleImport}>
-              <Upload className="w-3.5 h-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Import recipe</TooltipContent>
-        </Tooltip>
+      <div className="p-3 border-t border-border/40 space-y-2 shrink-0">
+        {/* Action buttons row */}
+        <div className="flex items-center gap-2">
+          <Button
+            className="flex-1"
+            onClick={handleApplyRecipe}
+            disabled={
+              isProcessing ||
+              !selectedRecipe ||
+              !activeTableId ||
+              selectedRecipe.steps.filter((s) => s.enabled).length === 0
+            }
+          >
+            <Play className="w-4 h-4 mr-2" />
+            {isProcessing ? 'Applying...' : 'Apply'}
+          </Button>
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={handleExport}
-              disabled={!selectedRecipe || selectedRecipe.steps.length === 0}
-            >
-              <Download className="w-3.5 h-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Export recipe</TooltipContent>
-        </Tooltip>
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={() => setShowNewRecipeDialog(true)}
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            New Recipe
+          </Button>
+        </div>
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={() => setShowNewRecipeDialog(true)}
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>New recipe</TooltipContent>
-        </Tooltip>
+        {/* Secondary actions row */}
+        <div className="flex items-center justify-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleImport}>
+                <Upload className="w-3.5 h-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Import recipe</TooltipContent>
+          </Tooltip>
 
-        {selectedRecipe && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                onClick={() => setShowDeleteDialog(true)}
+                className="h-7 w-7"
+                onClick={handleExport}
+                disabled={!selectedRecipe || selectedRecipe.steps.length === 0}
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Download className="w-3.5 h-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Delete recipe</TooltipContent>
+            <TooltipContent>Export recipe</TooltipContent>
           </Tooltip>
-        )}
 
-        <div className="flex-1" />
-
-        <Button
-          size="sm"
-          className="h-7 text-xs"
-          onClick={handleApplyRecipe}
-          disabled={
-            isProcessing ||
-            !selectedRecipe ||
-            !activeTableId ||
-            selectedRecipe.steps.filter((s) => s.enabled).length === 0
-          }
-        >
-          <Play className="w-3 h-3 mr-1.5" />
-          {isProcessing ? 'Applying...' : 'Apply'}
-        </Button>
+          {selectedRecipe && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  onClick={() => setShowDeleteDialog(true)}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Delete recipe</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       </div>
 
       {/* New Recipe Dialog */}

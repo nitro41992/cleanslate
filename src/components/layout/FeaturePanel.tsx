@@ -80,7 +80,6 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
 
   // Secondary panel metadata
   const secondaryMeta = secondaryPanel ? panelMeta[secondaryPanel] : null
-  const SecondaryIcon = secondaryMeta?.icon || BookOpen
 
   // Determine total width based on dual vs single panel mode
   const hasDualPanels = secondaryPanel !== null && secondaryContent !== null
@@ -168,21 +167,11 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
                   className={cn(
                     'w-[340px] shrink-0 flex flex-col',
                     'border-r border-border/40',
-                    'bg-muted/20',
                     'animate-in slide-in-from-left-2 fade-in duration-200'
                   )}
                   data-testid={`panel-${secondaryPanel}`}
                 >
-                  {/* Secondary panel header indicator */}
-                  <div className="shrink-0 px-3 py-2 border-b border-border/30 bg-muted/40">
-                    <div className="flex items-center gap-2">
-                      <SecondaryIcon className={cn('w-3.5 h-3.5', secondaryMeta?.color)} />
-                      <span className="text-xs font-medium text-muted-foreground">
-                        {secondaryMeta?.shortTitle}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex-1 min-h-0 overflow-hidden">
+                  <div className="flex-1 min-h-0 w-full max-w-full overflow-hidden">
                     {secondaryContent}
                   </div>
                 </div>
