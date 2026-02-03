@@ -27,7 +27,6 @@ import {
 // Panels
 import { CleanPanel } from '@/components/panels/CleanPanel'
 import { CombinePanel } from '@/components/panels/CombinePanel'
-import { ScrubPanel } from '@/components/panels/ScrubPanel'
 import { RecipePanel } from '@/components/panels/RecipePanel'
 import { RecipePanelPrimary } from '@/components/panels/RecipePanelPrimary'
 
@@ -311,8 +310,6 @@ function App() {
         return <CleanPanel />
       case 'combine':
         return <CombinePanel />
-      case 'scrub':
-        return <ScrubPanel />
       case 'recipe':
         // Recipe as primary panel (independent recipe management view)
         return <RecipePanelPrimary />

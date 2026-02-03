@@ -66,6 +66,7 @@ import {
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { useSemanticValidation } from '@/hooks/useSemanticValidation'
+import { PrivacySubPanel } from '@/components/clean/PrivacySubPanel'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -137,6 +138,11 @@ export function CleanPanel() {
       }
     })
     setParams(defaultParams)
+
+    // Privacy batch uses its own sub-panel, no need for further focus management
+    if (transform.id === 'privacy_batch') {
+      return
+    }
 
     // Auto-open column combobox if transform requires column
     if (transform.requiresColumn) {
@@ -584,6 +590,16 @@ export function CleanPanel() {
         </DialogContent>
       </Dialog>
 
+      {/* Privacy Sub-Panel - takes over the entire panel when privacy_batch is selected */}
+      {selectedTransform?.id === 'privacy_batch' ? (
+        <PrivacySubPanel
+          onCancel={resetForm}
+          onApplySuccess={() => {
+            setLastApplied('privacy_batch')
+            setTimeout(resetForm, 1500)
+          }}
+        />
+      ) : (
       <div className="flex h-full">
         {/* Left Column: Picker (scrollable) */}
         <div className="w-[340px] border-r border-border/50 flex flex-col">
@@ -960,6 +976,7 @@ export function CleanPanel() {
           </div>
         </div>
       </div>
+      )}
     </>
   )
 }

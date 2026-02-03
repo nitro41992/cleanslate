@@ -132,6 +132,8 @@ export type TransformationType =
   | 'split_column'
   | 'combine_columns'
   | 'fill_down'
+  // Privacy (FR-D)
+  | 'privacy_batch'
 
 export interface DiffResult {
   status: 'added' | 'removed' | 'modified' | 'unchanged'
@@ -182,12 +184,15 @@ export type ObfuscationMethod =
   | 'redact'
   | 'mask'
   | 'hash'
-  | 'faker'
   | 'scramble'
   | 'last4'
   | 'zero'
   | 'year_only'
-  | 'jitter'
+
+/**
+ * Privacy/Scrub method type (subset of ObfuscationMethod that is recipe-compatible)
+ */
+export type ScrubMethod = 'redact' | 'mask' | 'hash' | 'last4' | 'zero' | 'scramble' | 'year_only'
 
 export type PersistenceStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 

@@ -59,9 +59,6 @@ export function AppLayout({
             setActivePanel('combine')
             break
           case '5':
-            setActivePanel('scrub')
-            break
-          case '6':
             openDiffView()
             break
           case 'Escape':

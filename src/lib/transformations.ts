@@ -460,6 +460,23 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     ],
     hints: ['Copies value from row above if null', 'Useful for grouped/hierarchical data'],
   },
+  // Privacy (FR-D)
+  {
+    id: 'privacy_batch',
+    label: 'Privacy / Scrub',
+    description: 'Apply privacy transforms to multiple columns at once',
+    icon: '🛡️',
+    requiresColumn: false, // Uses sub-panel for column selection
+    params: [], // Handled by sub-panel UI
+    examples: [
+      { before: 'john@email.com', after: 'a8f5e2b1c9d3...' },
+      { before: '555-123-4567', after: '5*****7' },
+    ],
+    hints: [
+      'Select multiple columns with different methods',
+      'Generate unified key map table',
+    ],
+  },
 ]
 
 /**
@@ -506,6 +523,13 @@ export const TRANSFORMATION_GROUPS = [
     icon: '◉',
     color: 'rose' as const,
     transforms: ['standardize_date', 'calculate_age', 'fill_down'],
+  },
+  {
+    id: 'privacy',
+    label: 'Privacy',
+    icon: '🛡️',
+    color: 'teal' as const,
+    transforms: ['privacy_batch'],
   },
   {
     id: 'advanced',

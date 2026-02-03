@@ -67,6 +67,13 @@ const colorClasses: Record<TransformationGroupColor, {
     selected: 'border-l-2 border-rose-500 bg-rose-500/5',
     iconBg: 'bg-rose-500/10',
   },
+  teal: {
+    badge: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
+    header: 'text-teal-400',
+    headerHover: 'hover:bg-teal-500/5',
+    selected: 'border-l-2 border-teal-500 bg-teal-500/5',
+    iconBg: 'bg-teal-500/10',
+  },
   slate: {
     badge: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
     header: 'text-slate-400',

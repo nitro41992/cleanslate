@@ -56,6 +56,10 @@ const INCLUDED_COMMANDS: Set<string> = new Set([
   'scrub:mask',
   'scrub:redact',
   'scrub:year_only',
+  'scrub:last4',
+  'scrub:zero',
+  'scrub:scramble',
+  'scrub:batch',
   // Schema commands
   'schema:add_column',
   'schema:delete_column',

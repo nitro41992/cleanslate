@@ -23,21 +23,15 @@ export const OBFUSCATION_METHODS: ObfuscationMethodDefinition[] = [
   },
   {
     id: 'hash',
-    label: 'Hash (SHA-256)',
+    label: 'Hash (MD5)',
     description: 'One-way hash with secret',
-    category: 'string',
-  },
-  {
-    id: 'faker',
-    label: 'Faker',
-    description: 'Replace with fake data',
     category: 'string',
   },
   // Number methods
   {
     id: 'scramble',
     label: 'Scramble',
-    description: 'Shuffle digits',
+    description: 'Reverse digit order',
     category: 'number',
   },
   {
@@ -49,7 +43,7 @@ export const OBFUSCATION_METHODS: ObfuscationMethodDefinition[] = [
   {
     id: 'zero',
     label: 'Zero Out',
-    description: 'Replace with zeros',
+    description: 'Replace digits with zeros',
     category: 'number',
   },
   // Date methods
@@ -57,12 +51,6 @@ export const OBFUSCATION_METHODS: ObfuscationMethodDefinition[] = [
     id: 'year_only',
     label: 'Year Only',
     description: 'Keep only the year',
-    category: 'date',
-  },
-  {
-    id: 'jitter',
-    label: 'Jitter',
-    description: 'Add random +/- days',
     category: 'date',
   },
 ]
@@ -83,12 +71,10 @@ function maskString(value: string): string {
 }
 
 function scrambleDigits(value: string): string {
-  const digits = value.replace(/\D/g, '').split('')
-  for (let i = digits.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[digits[i], digits[j]] = [digits[j], digits[i]]
-  }
-  return digits.join('')
+  // Deterministic scramble: reverse the digits
+  // Same input always produces same output (recipe-compatible)
+  const digits = value.replace(/\D/g, '')
+  return digits.split('').reverse().join('')
 }
 
 function last4Digits(value: string): string {
@@ -112,35 +98,6 @@ function yearOnly(value: string): string {
   return `${date.getFullYear()}-01-01`
 }
 
-function jitterDate(value: string, days: number = 30): string {
-  const date = new Date(value)
-  if (isNaN(date.getTime())) return value
-  const jitter = Math.floor(Math.random() * (days * 2 + 1)) - days
-  date.setDate(date.getDate() + jitter)
-  return date.toISOString().split('T')[0]
-}
-
-// Simple faker data
-const FAKE_NAMES = [
-  'John Smith', 'Jane Doe', 'Bob Johnson', 'Alice Williams',
-  'Charlie Brown', 'Diana Prince', 'Edward Norton', 'Fiona Green',
-]
-const FAKE_EMAILS = [
-  'user1@example.com', 'user2@example.com', 'contact@example.com',
-  'info@example.com', 'hello@example.com', 'test@example.com',
-]
-
-function fakerValue(value: string): string {
-  // Simple heuristic based on content
-  if (value.includes('@')) {
-    return FAKE_EMAILS[Math.floor(Math.random() * FAKE_EMAILS.length)]
-  }
-  if (/^[\d-]+$/.test(value)) {
-    return Math.random().toString().slice(2, 12)
-  }
-  return FAKE_NAMES[Math.floor(Math.random() * FAKE_NAMES.length)]
-}
-
 export async function obfuscateValue(
   value: unknown,
   method: ObfuscationMethod,
@@ -162,9 +119,6 @@ export async function obfuscateValue(
       return hash.substring(0, 16) // Return first 16 chars of hash
     }
 
-    case 'faker':
-      return fakerValue(strValue)
-
     case 'scramble':
       return scrambleDigits(strValue)
 
@@ -176,9 +130,6 @@ export async function obfuscateValue(
 
     case 'year_only':
       return yearOnly(strValue)
-
-    case 'jitter':
-      return jitterDate(strValue)
 
     default:
       return strValue

@@ -212,7 +212,16 @@ import {
 import { StandardizeApplyCommand } from './standardize'
 import { MatchMergeCommand } from './match'
 import { CombineStackCommand, CombineJoinCommand } from './combine'
-import { ScrubHashCommand, ScrubMaskCommand, ScrubRedactCommand, ScrubYearOnlyCommand } from './scrub'
+import {
+  ScrubHashCommand,
+  ScrubMaskCommand,
+  ScrubRedactCommand,
+  ScrubYearOnlyCommand,
+  ScrubLast4Command,
+  ScrubZeroCommand,
+  ScrubScrambleCommand,
+  ScrubBatchCommand,
+} from './scrub'
 import { EditCellCommand, BatchEditCommand } from './edit'
 import { AddColumnCommand, DeleteColumnCommand } from './schema'
 import { InsertRowCommand, DeleteRowCommand } from './data'
@@ -256,6 +265,10 @@ registerCommand('scrub:hash', ScrubHashCommand)
 registerCommand('scrub:mask', ScrubMaskCommand)
 registerCommand('scrub:redact', ScrubRedactCommand)
 registerCommand('scrub:year_only', ScrubYearOnlyCommand)
+registerCommand('scrub:last4', ScrubLast4Command)
+registerCommand('scrub:zero', ScrubZeroCommand)
+registerCommand('scrub:scramble', ScrubScrambleCommand)
+registerCommand('scrub:batch', ScrubBatchCommand)
 
 // Edit commands
 registerCommand('edit:cell', EditCellCommand)

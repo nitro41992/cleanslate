@@ -128,6 +128,9 @@ export const TIER_1_COMMANDS: Set<CommandType> = new Set([
   'transform:remove_non_printable',
   'scrub:hash',
   'scrub:mask',
+  'scrub:last4',
+  'scrub:zero',
+  'scrub:scramble',
 ])
 
 /**
@@ -160,6 +163,7 @@ export const TIER_3_COMMANDS: Set<CommandType> = new Set([
   'match:merge',
   'scrub:redact',
   'scrub:year_only',
+  'scrub:batch',
   // Schema commands (column operations)
   'schema:add_column',
   'schema:delete_column',
@@ -257,6 +261,10 @@ export function getCommandLabel(type: CommandType): string {
     'scrub:redact': 'Redact PII',
     'scrub:mask': 'Mask Values',
     'scrub:year_only': 'Year Only',
+    'scrub:last4': 'Show Last 4',
+    'scrub:zero': 'Zero Out',
+    'scrub:scramble': 'Scramble Digits',
+    'scrub:batch': 'Batch Privacy',
     'edit:cell': 'Edit Cell',
     'edit:batch': 'Batch Edit',
     'schema:add_column': 'Add Column',

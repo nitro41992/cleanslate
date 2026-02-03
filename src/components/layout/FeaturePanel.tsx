@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
-import { Sparkles, Users, Merge, Shield, GitCompare, BookOpen, X, PanelLeft } from 'lucide-react'
+import { Sparkles, Users, Merge, GitCompare, BookOpen, X, PanelLeft } from 'lucide-react'
 
 // Panel metadata (including recipe for secondary panel display)
 const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: string; description: string; icon: typeof Sparkles; color: string }> = {
@@ -39,13 +39,6 @@ const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: str
     description: 'Stack (UNION) or join tables together',
     icon: Merge,
     color: 'text-violet-500',
-  },
-  scrub: {
-    title: 'Scrub Data',
-    shortTitle: 'Scrub',
-    description: 'Obfuscate sensitive data with hashing, masking, or redaction',
-    icon: Shield,
-    color: 'text-rose-500',
   },
   diff: {
     title: 'Compare Tables',
@@ -90,7 +83,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
       return 'w-[1220px] max-w-none'
     }
     // Single panel: Recipe gets full 880px as primary panel for recipe management
-    if (['clean', 'combine', 'scrub', 'recipe'].includes(activePanel || '')) {
+    if (['clean', 'combine', 'recipe'].includes(activePanel || '')) {
       return 'w-[880px] max-w-none'
     }
     return 'w-[400px] max-w-none'

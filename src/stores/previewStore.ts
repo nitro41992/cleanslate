@@ -1,10 +1,10 @@
 import { create } from 'zustand'
 
-export type PanelType = 'clean' | 'match' | 'combine' | 'scrub' | 'recipe' | 'diff' | null
+export type PanelType = 'clean' | 'match' | 'combine' | 'recipe' | 'diff' | null
 
 export interface PendingOperation {
   id: string
-  type: 'transform' | 'merge' | 'combine' | 'scrub'
+  type: 'transform' | 'merge' | 'combine' | 'privacy'
   label: string  // Human readable: "Trim whitespace on Name"
   config: unknown
   timestamp: Date

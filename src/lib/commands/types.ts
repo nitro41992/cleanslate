@@ -45,11 +45,15 @@ export type CommandType =
   // Combine (Tier 3)
   | 'combine:stack'
   | 'combine:join'
-  // Scrub (Tier 1 for hash/mask, Tier 3 for redact)
+  // Scrub (Tier 1 for hash/mask/last4/zero/scramble, Tier 3 for redact/year_only/batch)
   | 'scrub:hash'
   | 'scrub:redact'
   | 'scrub:mask'
   | 'scrub:year_only'
+  | 'scrub:last4'
+  | 'scrub:zero'
+  | 'scrub:scramble'
+  | 'scrub:batch'
   // Edit (Tier 2)
   | 'edit:cell'
   | 'edit:batch'
