@@ -144,37 +144,19 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     try {
       const executor = getCommandExecutor()
 
-      // Check if we need to discard redo states (only for first command)
-      const firstCommand = createCommand('transform:replace', {
-        tableId,
-        column: columnName,
-        find: mappings[0].fromValue,
-        replace: mappings[0].toValue,
-        caseSensitive: true,
-        matchType: 'exact' as const,
-      })
+      // Partition mappings by type:
+      // - Unique (isUnique: true) → transform:replace (recipe-compatible)
+      // - Actionable (isUnique: false) → standardize:apply (NOT recipe-compatible, uses fuzzy matching)
+      const uniqueMappings = mappings.filter(m => m.isUnique)
+      const actionableMappings = mappings.filter(m => !m.isUnique)
 
-      // Execute first command with confirmation if discarding redo states
-      const firstResult = await executeWithConfirmation(firstCommand, tableId)
+      let totalRowsAffected = 0
+      let totalReplacements = 0
+      let confirmedFirst = false
 
-      // User cancelled the confirmation dialog
-      if (!firstResult) {
-        return
-      }
-
-      if (!firstResult.success) {
-        toast.error('Standardization Failed', {
-          description: firstResult.error || 'An error occurred',
-        })
-        return
-      }
-
-      let totalRowsAffected = firstResult.executionResult?.affected || 0
-
-      // Execute remaining mappings as individual Find & Replace commands
-      // (no confirmation needed - user already confirmed on first command)
-      for (let i = 1; i < mappings.length; i++) {
-        const mapping = mappings[i]
+      // Execute unique mappings as transform:replace (recipe-compatible)
+      for (let i = 0; i < uniqueMappings.length; i++) {
+        const mapping = uniqueMappings[i]
         const command = createCommand('transform:replace', {
           tableId,
           column: columnName,
@@ -184,13 +166,68 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
           matchType: 'exact' as const,
         })
 
-        const result = await executor.execute(command)
-
-        if (result.success) {
+        // First command needs confirmation if discarding redo states
+        if (!confirmedFirst) {
+          const result = await executeWithConfirmation(command, tableId)
+          if (!result) {
+            return // User cancelled
+          }
+          if (!result.success) {
+            toast.error('Standardization Failed', {
+              description: result.error || 'An error occurred',
+            })
+            return
+          }
           totalRowsAffected += result.executionResult?.affected || 0
+          totalReplacements++
+          confirmedFirst = true
         } else {
-          // Log error but continue with remaining mappings
-          console.warn(`Find & Replace failed for "${mapping.fromValue}":`, result.error)
+          const result = await executor.execute(command)
+          if (result.success) {
+            totalRowsAffected += result.executionResult?.affected || 0
+            totalReplacements++
+          } else {
+            console.warn(`Find & Replace failed for "${mapping.fromValue}":`, result.error)
+          }
+        }
+      }
+
+      // Execute actionable mappings as standardize:apply (NOT recipe-compatible)
+      // These use fuzzy matching logic and should not be part of recipes
+      if (actionableMappings.length > 0) {
+        const command = createCommand('standardize:apply', {
+          tableId,
+          column: columnName,
+          algorithm,  // From standardizerStore - tracks which fuzzy algorithm was used
+          mappings: actionableMappings.map(m => ({
+            fromValue: m.fromValue,
+            toValue: m.toValue,
+            rowCount: m.rowCount,
+          })),
+        })
+
+        // First command needs confirmation if discarding redo states
+        if (!confirmedFirst) {
+          const result = await executeWithConfirmation(command, tableId)
+          if (!result) {
+            return // User cancelled
+          }
+          if (!result.success) {
+            toast.error('Standardization Failed', {
+              description: result.error || 'An error occurred',
+            })
+            return
+          }
+          totalRowsAffected += result.executionResult?.affected || 0
+          totalReplacements += actionableMappings.length
+        } else {
+          const result = await executor.execute(command)
+          if (result.success) {
+            totalRowsAffected += result.executionResult?.affected || 0
+            totalReplacements += actionableMappings.length
+          } else {
+            console.warn('Standardize apply failed:', result.error)
+          }
         }
       }
 
@@ -198,7 +235,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       updateTable(tableId, {})
 
       toast.success('Values Standardized', {
-        description: `Applied ${mappings.length} replacements, updated ${totalRowsAffected.toLocaleString()} rows.`,
+        description: `Applied ${totalReplacements} replacements, updated ${totalRowsAffected.toLocaleString()} rows.`,
       })
 
       reset()
@@ -214,6 +251,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     tableId,
     tableName,
     columnName,
+    algorithm,  // Added dependency - needed for standardize:apply command
     executeWithConfirmation,
     updateTable,
     reset,

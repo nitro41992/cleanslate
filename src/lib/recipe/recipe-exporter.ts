@@ -59,8 +59,9 @@ const INCLUDED_COMMANDS: Set<string> = new Set([
   // Schema commands
   'schema:add_column',
   'schema:delete_column',
-  // Note: standardize:apply is NOT included - Standardize emits individual
-  // transform:replace commands which ARE recipe-compatible
+  // Note: standardize:apply is NOT included because it relies on fuzzy matching
+  // (fingerprint, metaphone, etc.) which is not reproducible across datasets.
+  // Unique value replacements (All tab) emit transform:replace which IS recipe-compatible.
 ])
 
 /**
@@ -249,7 +250,7 @@ export function filterRecipeCompatibleEntries<T extends { action: string }>(
       'file loaded',
       'table created',
       'table persisted',
-      'standardize',  // Standardize now emits individual Find & Replace commands
+      'standardize',  // Actionable standardizations use fuzzy matching - not reproducible
     ]
 
     for (const pattern of excludePatterns) {

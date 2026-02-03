@@ -90,7 +90,7 @@ interface StandardizerActions {
 
   // Utility
   getFilteredClusters: () => ValueCluster[]
-  getSelectedMappings: () => { fromValue: string; toValue: string; rowCount: number }[]
+  getSelectedMappings: () => { fromValue: string; toValue: string; rowCount: number; isUnique: boolean }[]
   clearClusters: () => void
   reset: () => void
 }
@@ -462,7 +462,7 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
 
   getSelectedMappings: () => {
     const { clusters } = get()
-    const mappings: { fromValue: string; toValue: string; rowCount: number }[] = []
+    const mappings: { fromValue: string; toValue: string; rowCount: number; isUnique: boolean }[] = []
 
     for (const cluster of clusters) {
       // Handle single-value clusters (unique values) with custom replacements
@@ -474,6 +474,7 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
             fromValue: value.value,
             toValue: value.customReplacement,
             rowCount: value.count,
+            isUnique: true,  // User-defined replacement - deterministic, recipe-compatible
           })
         }
         continue
@@ -489,6 +490,7 @@ export const useStandardizerStore = create<StandardizerState & StandardizerActio
             fromValue: value.value,
             toValue: masterValue.value,
             rowCount: value.count,
+            isUnique: false,  // Fuzzy-matched cluster - NOT recipe-compatible
           })
         }
       }
