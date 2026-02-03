@@ -326,12 +326,36 @@ export async function applyStandardization(
     .map((m) => `'${m.fromValue.replace(/'/g, "''")}'`)
     .join(', ')
 
+  // PRE-CHECK: Count rows that would actually change (idempotency check)
+  // A row changes only if it matches a from-value AND the from-value differs from to-value
+  const changesNeededQuery = `
+    SELECT COUNT(*) as count FROM "${tableName}"
+    WHERE CAST("${columnName}" AS VARCHAR) IN (${whereValues})
+      AND "${columnName}" IS DISTINCT FROM (CASE
+        ${caseWhenClauses}
+        ELSE "${columnName}"
+        END)
+  `
+  const changesResult = await query<{ count: bigint }>(changesNeededQuery)
+  const rowsNeedingChange = Number(changesResult[0]?.count ?? 0)
+
+  // If no rows would actually change, return early (idempotent - already standardized)
+  if (rowsNeedingChange === 0) {
+    console.log('[StandardizeApply] No rows need changing - values already standardized')
+    return { rowsAffected: 0, hasRowDetails: false, affectedRowIds: [] }
+  }
+
   // Query affected row IDs BEFORE the update (for highlighting support)
+  // Only include rows that will actually change
   let affectedRowIds: string[] = []
   try {
     const rowIdQuery = `
       SELECT _cs_id FROM "${tableName}"
       WHERE CAST("${columnName}" AS VARCHAR) IN (${whereValues})
+        AND "${columnName}" IS DISTINCT FROM (CASE
+          ${caseWhenClauses}
+          ELSE "${columnName}"
+          END)
     `
     const rowIdResult = await query<{ _cs_id: string }>(rowIdQuery)
     affectedRowIds = rowIdResult.map((row) => row._cs_id)
@@ -340,7 +364,7 @@ export async function applyStandardization(
     console.warn('Could not get affected row IDs for highlighting:', e)
   }
 
-  // Execute UPDATE
+  // Execute UPDATE with IS DISTINCT FROM to only update rows that actually change
   const sql = `
     UPDATE "${tableName}"
     SET "${columnName}" = CASE
@@ -348,15 +372,13 @@ export async function applyStandardization(
     ELSE "${columnName}"
     END
     WHERE CAST("${columnName}" AS VARCHAR) IN (${whereValues})
+      AND "${columnName}" IS DISTINCT FROM (CASE
+        ${caseWhenClauses}
+        ELSE "${columnName}"
+        END)
   `
 
   await execute(sql)
-
-  // Calculate total rows affected
-  let totalRowsAffected = 0
-  for (const mapping of mappings) {
-    totalRowsAffected += mapping.rowCount
-  }
 
   // Record audit details - always store value mappings since they're small
   // (we store value->value mappings, not row-level data, so even with many rows
@@ -375,7 +397,7 @@ export async function applyStandardization(
   // Always true for standardization since we store value mappings, not row-level data
   const hasRowDetails = true
 
-  return { rowsAffected: totalRowsAffected, hasRowDetails, affectedRowIds }
+  return { rowsAffected: rowsNeedingChange, hasRowDetails, affectedRowIds }
 }
 
 /**

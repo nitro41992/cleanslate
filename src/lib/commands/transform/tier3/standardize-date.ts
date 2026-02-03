@@ -106,6 +106,33 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
 
     console.log('[StandardizeDate] Using expression:', dateExpr.slice(0, 200) + '...')
 
+    // PRE-CHECK: Use LIMIT 1 to check if ANY row would change (idempotency check)
+    // Compare current value to what it would become after transformation
+    try {
+      const checkResult = await ctx.db.query<{ exists: number }>(
+        `SELECT 1 as exists FROM ${quoteTable(tableName)}
+         WHERE ${quoteColumn(col)} IS NOT NULL
+           AND CAST(${quoteColumn(col)} AS VARCHAR) IS DISTINCT FROM (${dateExpr})
+         LIMIT 1`
+      )
+
+      if (checkResult.length === 0) {
+        // All values already in target format - idempotent
+        console.log('[StandardizeDate] No rows need changing - values already in target format')
+        return {
+          success: true,
+          rowCount: ctx.table.rowCount,
+          columns: ctx.table.columns,
+          affected: 0,
+          newColumnNames: [],
+          droppedColumnNames: [],
+        }
+      }
+    } catch (err) {
+      // If pre-check fails (e.g., complex expression), proceed with transformation
+      console.warn('[StandardizeDate] Pre-check failed, proceeding:', err)
+    }
+
     if (ctx.batchMode) {
       return runBatchedColumnTransform(ctx, col, dateExpr)
     }
@@ -130,11 +157,18 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
       )
       const rowCount = Number(countResult[0]?.count ?? 0)
 
+      // Count rows that have valid dates (these are the "affected" rows)
+      const affectedResult = await ctx.db.query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM ${quoteTable(tableName)}
+         WHERE ${quoteColumn(col)} IS NOT NULL`
+      )
+      const affected = Number(affectedResult[0]?.count ?? 0)
+
       return {
         success: true,
         rowCount,
         columns,
-        affected: rowCount,
+        affected,
         newColumnNames: [],
         droppedColumnNames: [],
       }
