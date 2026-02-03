@@ -670,11 +670,11 @@ export function RecipePanel() {
                           step.enabled
                             ? 'bg-muted/30 border-border/40'
                             : 'bg-muted/10 border-border/20 opacity-50',
-                          isNewlyAdded && 'ring-2 ring-primary ring-offset-1 ring-offset-background animate-pulse'
+                          isNewlyAdded && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
                         )}
                       >
                         {/* Step Header */}
-                        <div className="flex items-center gap-1 p-2">
+                        <div className="flex items-center gap-1 p-1.5">
                           {/* Expand Toggle */}
                           <button
                             className="shrink-0 p-0.5 hover:bg-muted rounded"
@@ -687,49 +687,37 @@ export function RecipePanel() {
                             )}
                           </button>
 
-                          {/* Step Number */}
-                          <span className="text-xs text-muted-foreground w-4 shrink-0">
+                          {/* Step Number & Icon */}
+                          <span className="text-[10px] text-muted-foreground shrink-0">
                             {index + 1}.
                           </span>
-
-                          {/* Icon */}
                           <span className="text-sm shrink-0">{getStepIcon(step)}</span>
 
                           {/* Label */}
-                          <span className="flex-1 truncate text-xs">
+                          <span className="flex-1 truncate text-xs min-w-0">
                             {formatStepLabel(step)}
                           </span>
 
-                          {/* Reorder Buttons */}
-                          <div className="flex items-center shrink-0">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-5 w-5"
-                                  onClick={() => moveStepUp(index)}
-                                  disabled={index === 0}
-                                >
-                                  <ChevronUp className="w-3 h-3" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Move up</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-5 w-5"
-                                  onClick={() => moveStepDown(index)}
-                                  disabled={index === selectedRecipe.steps.length - 1}
-                                >
-                                  <ChevronDown className="w-3 h-3" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Move down</TooltipContent>
-                            </Tooltip>
+                          {/* Compact action buttons */}
+                          <div className="flex items-center gap-0 shrink-0">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              onClick={() => moveStepUp(index)}
+                              disabled={index === 0}
+                            >
+                              <ChevronUp className="w-3 h-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              onClick={() => moveStepDown(index)}
+                              disabled={index === selectedRecipe.steps.length - 1}
+                            >
+                              <ChevronDown className="w-3 h-3" />
+                            </Button>
                           </div>
 
                           {/* Enable Toggle */}
@@ -738,16 +726,6 @@ export function RecipePanel() {
                             onCheckedChange={() => toggleStepEnabled(selectedRecipe.id, step.id)}
                             className="scale-75 shrink-0"
                           />
-
-                          {/* Delete */}
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 text-muted-foreground hover:text-destructive shrink-0"
-                            onClick={() => removeStep(selectedRecipe.id, step.id)}
-                          >
-                            <X className="w-3 h-3" />
-                          </Button>
                         </div>
 
                         {/* Expanded Details */}
@@ -775,6 +753,18 @@ export function RecipePanel() {
                                 </div>
                               )
                             })()}
+                            {/* Delete action */}
+                            <div className="pt-1 border-t border-border/20">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 text-xs text-muted-foreground hover:text-destructive"
+                                onClick={() => removeStep(selectedRecipe.id, step.id)}
+                              >
+                                <X className="w-3 h-3 mr-1" />
+                                Remove step
+                              </Button>
+                            </div>
                           </div>
                         )}
                       </div>

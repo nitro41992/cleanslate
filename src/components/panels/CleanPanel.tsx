@@ -855,11 +855,12 @@ export function CleanPanel() {
                       <DropdownMenuTrigger asChild>
                         <Button
                           variant="outline"
+                          className="flex-1"
                           disabled={!canAddToRecipe() || isApplying}
                           data-testid="add-to-recipe-btn"
                         >
                           <BookOpen className="w-4 h-4 mr-2" />
-                          Recipe
+                          Add to Recipe
                           <ChevronDown className="w-3 h-3 ml-1" />
                         </Button>
                       </DropdownMenuTrigger>

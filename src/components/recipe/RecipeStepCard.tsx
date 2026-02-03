@@ -120,7 +120,7 @@ export function RecipeStepCard({
           step.enabled
             ? 'bg-card border-border/60'
             : 'bg-muted/30 border-border/30 opacity-60',
-          isHighlighted && 'ring-2 ring-primary ring-offset-1 ring-offset-background animate-pulse'
+          isHighlighted && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
         )}
       >
         {/* Step indicator dot */}
