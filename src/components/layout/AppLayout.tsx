@@ -13,6 +13,7 @@ import { useUIStore } from '@/stores/uiStore'
 interface AppLayoutProps {
   children: ReactNode
   panelContent?: ReactNode
+  secondaryPanelContent?: ReactNode
   onNewTable?: () => void
   onPersist?: () => void
   isPersisting?: boolean
@@ -21,6 +22,7 @@ interface AppLayoutProps {
 export function AppLayout({
   children,
   panelContent,
+  secondaryPanelContent,
   onNewTable,
   onPersist,
   isPersisting,
@@ -107,7 +109,9 @@ export function AppLayout({
         <StatusBar />
 
         {/* Feature panel (slides in from right) */}
-        <FeaturePanel>{panelContent}</FeaturePanel>
+        <FeaturePanel secondaryContent={secondaryPanelContent}>
+          {panelContent}
+        </FeaturePanel>
       </div>
     </TooltipProvider>
   )

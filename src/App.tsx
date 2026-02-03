@@ -80,6 +80,7 @@ function App() {
   const isWordWrapEnabled = useTableStore((s) => s.isWordWrapEnabled)
 
   const activePanel = usePreviewStore((s) => s.activePanel)
+  const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
   const clearPendingOperations = usePreviewStore((s) => s.clearPendingOperations)
 
@@ -323,11 +324,23 @@ function App() {
     }
   }
 
+  // Get secondary panel content (for dual panel mode)
+  // Currently only recipe panel can appear as secondary alongside clean
+  const getSecondaryPanelContent = () => {
+    switch (secondaryPanel) {
+      case 'recipe':
+        return <RecipePanel compact />
+      default:
+        return null
+    }
+  }
+
   return (
     <>
       <MobileBlocker />
       <AppLayout
         panelContent={getPanelContent()}
+        secondaryPanelContent={getSecondaryPanelContent()}
         onNewTable={handleNewTable}
         onPersist={handlePersist}
         isPersisting={isPersisting}

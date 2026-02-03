@@ -24,6 +24,8 @@ interface PreviewState {
 
   // Panel state
   activePanel: PanelType
+  // Secondary panel (e.g., Recipe visible alongside Clean)
+  secondaryPanel: PanelType
 
   // Pending operations queue (applied to preview but not yet persisted)
   pendingOperations: PendingOperation[]
@@ -47,7 +49,9 @@ interface PreviewState {
 interface PreviewActions {
   // Panel management
   setActivePanel: (panel: PanelType) => void
+  setSecondaryPanel: (panel: PanelType) => void
   closePanel: () => void
+  closeSecondaryPanel: () => void
 
   // Table management
   setActiveTable: (tableId: string | null, tableName: string | null) => void
@@ -80,6 +84,7 @@ const initialState: PreviewState = {
   activeTableId: null,
   activeTableName: null,
   activePanel: null,
+  secondaryPanel: null,
   pendingOperations: [],
   isPreviewDirty: false,
   previewRowCount: 0,
@@ -98,8 +103,16 @@ export const usePreviewStore = create<PreviewState & PreviewActions>((set) => ({
     set({ activePanel: panel })
   },
 
+  setSecondaryPanel: (panel) => {
+    set({ secondaryPanel: panel })
+  },
+
   closePanel: () => {
     set({ activePanel: null })
+  },
+
+  closeSecondaryPanel: () => {
+    set({ secondaryPanel: null })
   },
 
   // Table management

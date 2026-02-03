@@ -78,7 +78,7 @@ export function CleanPanel() {
   const tables = useTableStore((s) => s.tables)
   const activeTable = tables.find((t) => t.id === activeTableId)
   const timeline = useTimelineStore((s) => activeTableId ? s.getTimeline(activeTableId) : undefined)
-  const setActivePanel = usePreviewStore((s) => s.setActivePanel)
+  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
 
   const columns = activeTable?.columns.map((c) => c.name) || []
   // Count active timeline commands (not undone)
@@ -697,13 +697,13 @@ export function CleanPanel() {
                   Select a transformation from the left to configure it
                 </p>
 
-                {/* Save as Recipe shortcut - show when table has transform history */}
+                {/* Save as Recipe shortcut - opens Recipe panel alongside Clean panel */}
                 {activeCommandCount > 0 && (
                   <Button
                     variant="ghost"
                     size="sm"
                     className="mt-4 text-muted-foreground hover:text-foreground"
-                    onClick={() => setActivePanel('recipe')}
+                    onClick={() => setSecondaryPanel('recipe')}
                   >
                     <BookOpen className="w-4 h-4 mr-2" />
                     Save transforms as recipe

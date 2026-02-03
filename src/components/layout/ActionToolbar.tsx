@@ -72,7 +72,10 @@ interface ActionToolbarProps {
 
 export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   const activePanel = usePreviewStore((s) => s.activePanel)
+  const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
   const setActivePanel = usePreviewStore((s) => s.setActivePanel)
+  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
+  const closeSecondaryPanel = usePreviewStore((s) => s.closeSecondaryPanel)
   const openDiffView = useDiffStore((s) => s.openView)
   const isDiffViewOpen = useDiffStore((s) => s.isViewOpen)
   const openMatchView = useMatcherStore((s) => s.openView)
@@ -98,6 +101,40 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
       return
     }
 
+    // Recipe + Clean dual panel logic
+    if (panelId === 'recipe') {
+      if (activePanel === 'recipe') {
+        // Toggle off recipe
+        setActivePanel(null)
+      } else if (activePanel === 'clean') {
+        // Clean is open - toggle recipe as secondary panel
+        if (secondaryPanel === 'recipe') {
+          closeSecondaryPanel()
+        } else {
+          setSecondaryPanel('recipe')
+        }
+      } else {
+        // Open recipe as primary
+        setActivePanel('recipe')
+      }
+      return
+    }
+
+    if (panelId === 'clean') {
+      if (activePanel === 'clean') {
+        // Toggle off clean
+        setActivePanel(null)
+      } else if (activePanel === 'recipe') {
+        // Recipe is open - switch to Clean as primary with Recipe as secondary
+        setActivePanel('clean')
+        setSecondaryPanel('recipe')
+      } else {
+        // Open clean as primary
+        setActivePanel('clean')
+      }
+      return
+    }
+
     if (activePanel === panelId) {
       // Toggle off if already active
       setActivePanel(null)
@@ -117,6 +154,9 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
           isActive = isMatchViewOpen
         } else if (action.id === 'standardize') {
           isActive = isStandardizeViewOpen
+        } else if (action.id === 'recipe') {
+          // Recipe can be active as primary OR secondary panel
+          isActive = activePanel === 'recipe' || secondaryPanel === 'recipe'
         } else {
           isActive = activePanel === action.id
         }
