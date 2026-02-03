@@ -129,6 +129,28 @@ export function AuditSidebar() {
     [findTimelineCommand]
   )
 
+  // Check if an entry's command is recipe-compatible
+  const isRecipeEligible = useCallback(
+    (entry: AuditLogEntry): boolean => {
+      const cmd = findTimelineCommand(entry.auditEntryId)
+      if (!cmd) return false
+
+      // Reconstruct full command type from params (matches recipe-exporter.ts getCommandType)
+      const params = cmd.params as unknown as Record<string, unknown> | undefined
+      const cmdType =
+        cmd.commandType === 'transform' && params?.transformationType
+          ? `transform:${params.transformationType}`
+          : cmd.commandType === 'scrub' && params?.method
+            ? `scrub:${params.method}`
+            : cmd.commandType === 'standardize'
+              ? 'standardize:apply'
+              : cmd.commandType
+
+      return isRecipeCompatibleCommand(cmdType)
+    },
+    [findTimelineCommand]
+  )
+
   // Filter entries for active table
   const tableEntries = entries.filter((e) => e.tableId === activeTableId)
 
@@ -435,6 +457,19 @@ export function AuditSidebar() {
                         >
                           {entry.entryType === 'A' ? 'Transform' : 'Edit'}
                         </Badge>
+                        {/* Recipe eligibility indicator - only shown for compatible entries */}
+                        {!isFuture && isRecipeEligible(entry) && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="flex items-center text-[10px] text-emerald-500">
+                                <BookOpen className="w-3 h-3" />
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="text-xs">
+                              Can be added to recipe
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
                         {entry.rowsAffected !== undefined && (
                           <span className="text-[10px] text-muted-foreground">
                             {entry.rowsAffected.toLocaleString()} rows
