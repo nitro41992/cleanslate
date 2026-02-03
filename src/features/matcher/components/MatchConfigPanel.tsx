@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { TableCombobox } from '@/components/ui/table-combobox'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import type { TableInfo, BlockingStrategy } from '@/types'
 import { cn } from '@/lib/utils'
@@ -11,11 +10,11 @@ import { cn } from '@/lib/utils'
 interface MatchConfigPanelProps {
   tables: TableInfo[]
   tableId: string | null
+  tableName: string | null
   matchColumn: string | null
   blockingStrategy: BlockingStrategy
   isMatching: boolean
   hasPairs: boolean
-  onTableChange: (tableId: string | null, tableName: string | null) => void
   onMatchColumnChange: (column: string | null) => void
   onBlockingStrategyChange: (strategy: BlockingStrategy) => void
   onFindDuplicates: () => void
@@ -108,33 +107,19 @@ const strategyInfo: Record<BlockingStrategy, StrategyInfo> = {
 export function MatchConfigPanel({
   tables,
   tableId,
+  tableName,
   matchColumn,
   blockingStrategy,
   isMatching,
   hasPairs,
-  onTableChange,
   onMatchColumnChange,
   onBlockingStrategyChange,
   onFindDuplicates,
 }: MatchConfigPanelProps) {
   const selectedTable = tables.find((t) => t.id === tableId)
 
-  // Prepare table options for combobox
-  const tableOptions = tables.map(t => ({ id: t.id, name: t.name, rowCount: t.rowCount }))
-
   // Get column names for combobox
   const columnNames = selectedTable?.columns.map(c => c.name) || []
-
-  const handleTableSelect = (id: string, name: string) => {
-    onTableChange(id, name)
-    onMatchColumnChange(null)
-
-    // If 'none' is selected but new table exceeds row limit, switch to default
-    const newTable = tables.find(t => t.id === id)
-    if (blockingStrategy === 'none' && newTable && newTable.rowCount > MAX_ROWS_FOR_NONE) {
-      onBlockingStrategyChange('first_2_chars')
-    }
-  }
 
   const handleColumnChange = (column: string) => {
     onMatchColumnChange(column || null)
@@ -155,18 +140,13 @@ export function MatchConfigPanel({
         </p>
       </div>
 
-      {/* Table Selection */}
-      <div className="space-y-2">
-        <Label>Table</Label>
-        <TableCombobox
-          tables={tableOptions}
-          value={tableId}
-          onValueChange={handleTableSelect}
-          placeholder="Select table..."
-          disabled={isMatching}
-          autoFocus
-        />
-      </div>
+      {/* Active Table Info */}
+      {tableName && (
+        <div className="space-y-1">
+          <Label className="text-muted-foreground text-xs">Table</Label>
+          <p className="text-sm font-medium">{tableName}</p>
+        </div>
+      )}
 
       {/* Match Column Selection */}
       {selectedTable && (

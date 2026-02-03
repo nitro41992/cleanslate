@@ -37,6 +37,7 @@ interface MatchViewProps {
 
 export function MatchView({ open, onClose }: MatchViewProps) {
   const tables = useTableStore((s) => s.tables)
+  const activeTableId = useTableStore((s) => s.activeTableId)
   const updateTable = useTableStore((s) => s.updateTable)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
   const addTransformationEntry = useAuditStore((s) => s.addTransformationEntry)
@@ -94,6 +95,24 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
   // Confirmation dialog state
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+
+  // Track if we've initialized to avoid re-setting on every render
+  const hasInitialized = useRef(false)
+
+  // Auto-initialize table from activeTableId when view opens
+  useEffect(() => {
+    if (open && !hasInitialized.current && activeTableId && !tableId) {
+      const activeTable = tables.find((t) => t.id === activeTableId)
+      if (activeTable) {
+        setTable(activeTableId, activeTable.name)
+        hasInitialized.current = true
+      }
+    }
+    // Reset initialization flag when view closes
+    if (!open) {
+      hasInitialized.current = false
+    }
+  }, [open, activeTableId, tableId, tables, setTable])
 
   // Virtualizer scroll container ref
   const parentRef = useRef<HTMLDivElement>(null)
@@ -483,11 +502,11 @@ export function MatchView({ open, onClose }: MatchViewProps) {
             <MatchConfigPanel
               tables={tables}
               tableId={tableId}
+              tableName={tableName}
               matchColumn={matchColumn}
               blockingStrategy={blockingStrategy}
               isMatching={isMatching}
               hasPairs={hasResults}
-              onTableChange={setTable}
               onMatchColumnChange={setMatchColumn}
               onBlockingStrategyChange={setBlockingStrategy}
               onFindDuplicates={handleFindDuplicates}

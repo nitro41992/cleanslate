@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Shield, Loader2, Key, Play, X, Info, Lock, EyeOff, Hash, Calendar, Shuffle, Download, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +7,6 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { TableCombobox } from '@/components/ui/table-combobox'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import {
   Collapsible,
@@ -68,6 +67,7 @@ const METHOD_EXAMPLES: Record<string, { before: string; after: string }> = {
 
 export function ScrubPanel() {
   const tables = useTableStore((s) => s.tables)
+  const activeTableId = useTableStore((s) => s.activeTableId)
   const updateTable = useTableStore((s) => s.updateTable)
 
   const closePanel = usePreviewStore((s) => s.closePanel)
@@ -106,7 +106,20 @@ export function ScrubPanel() {
   const [keyMapInfoOpen, setKeyMapInfoOpen] = useState(false)
 
   const selectedTable = tables.find((t) => t.id === tableId)
-  const tableOptions = tables.map(t => ({ id: t.id, name: t.name, rowCount: t.rowCount }))
+
+  // Track if we've initialized to avoid re-setting on every render
+  const hasInitialized = useRef(false)
+
+  // Auto-initialize table from activeTableId when panel is shown
+  useEffect(() => {
+    if (!hasInitialized.current && activeTableId && !tableId) {
+      const activeTable = tables.find((t) => t.id === activeTableId)
+      if (activeTable) {
+        setTable(activeTableId, activeTable.name)
+        hasInitialized.current = true
+      }
+    }
+  }, [activeTableId, tableId, tables, setTable])
 
   // Get columns that don't have rules yet
   const availableColumns = selectedTable?.columns
@@ -116,12 +129,6 @@ export function ScrubPanel() {
   // Get the rule for the selected column
   const selectedRule = rules.find(r => r.column === selectedColumn)
   const selectedMethod = selectedRule?.method || null
-
-  const handleTableSelect = (id: string, name: string) => {
-    setTable(id, name)
-    clearKeyMap()
-    setSelectedColumn(null)
-  }
 
   // Add a column and auto-select it
   const handleAddColumn = (column: string) => {
@@ -406,18 +413,13 @@ export function ScrubPanel() {
       <div className="w-[340px] border-r border-border/50 flex flex-col">
         <ScrollArea className="flex-1">
           <div className="p-4 space-y-4">
-            {/* Table Selection */}
-            <div className="space-y-2">
-              <Label>Table</Label>
-              <TableCombobox
-                tables={tableOptions}
-                value={tableId}
-                onValueChange={handleTableSelect}
-                placeholder="Select table..."
-                disabled={isProcessing}
-                autoFocus
-              />
-            </div>
+            {/* Active Table Info */}
+            {tableName && (
+              <div className="space-y-1">
+                <Label className="text-muted-foreground text-xs">Table</Label>
+                <p className="text-sm font-medium">{tableName}</p>
+              </div>
+            )}
 
             {/* Add Column */}
             {selectedTable && (

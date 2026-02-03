@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { X, ArrowLeft, Check, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -33,6 +33,7 @@ interface StandardizeViewProps {
 
 export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   const tables = useTableStore((s) => s.tables)
+  const activeTableId = useTableStore((s) => s.activeTableId)
   const updateTable = useTableStore((s) => s.updateTable)
 
   const {
@@ -77,6 +78,24 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
 
   // Hook for executing commands with confirmation when discarding redo states
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
+
+  // Track if we've initialized to avoid re-setting on every render
+  const hasInitialized = useRef(false)
+
+  // Auto-initialize table from activeTableId when view opens
+  useEffect(() => {
+    if (open && !hasInitialized.current && activeTableId && !tableId) {
+      const activeTable = tables.find((t) => t.id === activeTableId)
+      if (activeTable) {
+        setTable(activeTableId, activeTable.name)
+        hasInitialized.current = true
+      }
+    }
+    // Reset initialization flag when view closes
+    if (!open) {
+      hasInitialized.current = false
+    }
+  }, [open, activeTableId, tableId, tables, setTable])
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
@@ -368,13 +387,13 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
             <StandardizeConfigPanel
               tables={tables}
               tableId={tableId}
+              tableName={tableName}
               columnName={columnName}
               algorithm={algorithm}
               isAnalyzing={isAnalyzing}
               hasClusters={hasResults}
               validationError={validationError}
               uniqueValueCount={uniqueValueCount}
-              onTableChange={setTable}
               onColumnChange={setColumn}
               onAlgorithmChange={setAlgorithm}
               onAnalyze={startClustering}

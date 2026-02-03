@@ -9,20 +9,19 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { TableCombobox } from '@/components/ui/table-combobox'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import type { TableInfo, ClusteringAlgorithm } from '@/types'
 
 interface StandardizeConfigPanelProps {
   tables: TableInfo[]
   tableId: string | null
+  tableName: string | null
   columnName: string | null
   algorithm: ClusteringAlgorithm
   isAnalyzing: boolean
   hasClusters: boolean
   validationError: string | null
   uniqueValueCount: number
-  onTableChange: (tableId: string | null, tableName: string | null) => void
   onColumnChange: (columnName: string | null) => void
   onAlgorithmChange: (algorithm: ClusteringAlgorithm) => void
   onAnalyze: () => void
@@ -75,13 +74,13 @@ const ALGORITHM_INFO: Record<ClusteringAlgorithm, { title: string; description: 
 export function StandardizeConfigPanel({
   tables,
   tableId,
+  tableName,
   columnName,
   algorithm,
   isAnalyzing,
   hasClusters,
   validationError,
   uniqueValueCount,
-  onTableChange,
   onColumnChange,
   onAlgorithmChange,
   onAnalyze,
@@ -92,17 +91,9 @@ export function StandardizeConfigPanel({
     (c) => c.type.toLowerCase().includes('varchar') || c.type.toLowerCase().includes('text')
   )
 
-  // Prepare table options for combobox
-  const tableOptions = tables.map(t => ({ id: t.id, name: t.name, rowCount: t.rowCount }))
-
   // Get all column names for combobox
   const allColumnNames = columns.map(c => c.name)
   const stringColumnNames = stringColumns.map(c => c.name)
-
-  const handleTableChange = (id: string, name: string) => {
-    onTableChange(id, name)
-    onColumnChange(null)
-  }
 
   const handleColumnChange = (value: string) => {
     onColumnChange(value || null)
@@ -125,18 +116,13 @@ export function StandardizeConfigPanel({
         </p>
       </div>
 
-      {/* Table Selection */}
-      <div className="space-y-2">
-        <Label htmlFor="table-select">Table</Label>
-        <TableCombobox
-          tables={tableOptions}
-          value={tableId}
-          onValueChange={handleTableChange}
-          placeholder="Select a table..."
-          disabled={isAnalyzing}
-          autoFocus
-        />
-      </div>
+      {/* Active Table Info */}
+      {tableName && (
+        <div className="space-y-1">
+          <Label className="text-muted-foreground text-xs">Table</Label>
+          <p className="text-sm font-medium">{tableName}</p>
+        </div>
+      )}
 
       {/* Column Selection */}
       <div className="space-y-2">
