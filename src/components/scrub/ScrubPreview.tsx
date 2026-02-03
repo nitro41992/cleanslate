@@ -11,6 +11,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { obfuscateValue } from '@/lib/obfuscation'
 import { useDuckDB } from '@/hooks/useDuckDB'
+import { useTableStore } from '@/stores/tableStore'
 import { cn } from '@/lib/utils'
 import type { ObfuscationMethod } from '@/types'
 
@@ -49,6 +50,7 @@ export function ScrubPreview({
   const [isLoading, setIsLoading] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
   const { getData } = useDuckDB()
+  const isContextSwitching = useTableStore((s) => s.isContextSwitching)
 
   // Check if preview requirements are met
   const ready = tableName && column && method
@@ -73,6 +75,13 @@ export function ScrubPreview({
 
     // Reset preview if not ready
     if (!ready) {
+      setPreview(null)
+      setIsLoading(false)
+      return
+    }
+
+    // Don't query during context switch - table may be frozen
+    if (isContextSwitching) {
       setPreview(null)
       setIsLoading(false)
       return
@@ -124,7 +133,7 @@ export function ScrubPreview({
         clearTimeout(debounceRef.current)
       }
     }
-  }, [depsKey, ready, method, effectiveSecret, tableName, column, sampleCount, getData])
+  }, [depsKey, ready, method, effectiveSecret, tableName, column, sampleCount, getData, isContextSwitching])
 
   // Don't render if requirements not met
   if (!ready) {

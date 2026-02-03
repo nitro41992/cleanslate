@@ -23,6 +23,7 @@ import { toast } from '@/hooks/use-toast'
 
 export function ScrubberPage() {
   const tables = useTableStore((s) => s.tables)
+  const isContextSwitching = useTableStore((s) => s.isContextSwitching)
   const addAuditEntry = useAuditStore((s) => s.addEntry)
   const { getData, runExecute } = useDuckDB()
 
@@ -55,7 +56,7 @@ export function ScrubberPage() {
   }
 
   const handlePreview = async () => {
-    if (!tableName || rules.length === 0) return
+    if (!tableName || rules.length === 0 || isContextSwitching) return
 
     setIsProcessing(true)
     try {
@@ -83,7 +84,7 @@ export function ScrubberPage() {
   }
 
   const handleApply = async () => {
-    if (!tableName || !tableId || rules.length === 0) return
+    if (!tableName || !tableId || rules.length === 0 || isContextSwitching) return
 
     if (!secret) {
       toast({

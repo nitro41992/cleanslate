@@ -709,6 +709,7 @@ export function DataGrid({
   const removeFilter = useTableStore((s) => s.removeFilter)
   const clearFilters = useTableStore((s) => s.clearFilters)
   const setSort = useTableStore((s) => s.setSort)
+  const isContextSwitching = useTableStore((s) => s.isContextSwitching)
 
   // Track filtered row count (null = no filter active, use total rowCount)
   const [filteredRowCount, setFilteredRowCount] = useState<number | null>(null)
@@ -1225,6 +1226,12 @@ export function DataGrid({
       return
     }
 
+    // Don't fetch during context switch - table may be frozen
+    if (isContextSwitching) {
+      console.log('[DATAGRID] Skipping fetch - context switch in progress')
+      return
+    }
+
     console.log('[DATAGRID] Starting data reload...')
 
     // Lock should already be set by useLayoutEffect, but ensure it's set
@@ -1411,7 +1418,7 @@ export function DataGrid({
             })
           })
       })
-  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, getDataArrowWithKeyset, getFilteredCount, rowCount, dataVersion, isReplaying, isBusy, viewState])
+  }, [tableName, columns, getData, getDataWithRowIds, getDataWithKeyset, getDataArrowWithKeyset, getFilteredCount, rowCount, dataVersion, isReplaying, isBusy, isContextSwitching, viewState])
 
   // Track previous values to detect changes
   const prevHighlightCommandId = useRef<string | null | undefined>(undefined)
