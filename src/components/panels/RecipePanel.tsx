@@ -14,6 +14,7 @@ import {
   Pencil,
   Calendar,
   Columns,
+  Maximize2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,6 +50,7 @@ import {
 } from '@/components/ui/collapsible'
 import { useRecipeStore, selectSelectedRecipe, type ColumnMapping } from '@/stores/recipeStore'
 import { useTableStore } from '@/stores/tableStore'
+import { usePreviewStore } from '@/stores/previewStore'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import type { Recipe, RecipeStep } from '@/types'
@@ -93,6 +95,9 @@ export function RecipePanel() {
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
   const activeTable = tables.find((t) => t.id === activeTableId)
+
+  const setActivePanel = usePreviewStore((s) => s.setActivePanel)
+  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
 
   // Dialog states
   const [showNewRecipeDialog, setShowNewRecipeDialog] = useState(false)
@@ -452,34 +457,55 @@ export function RecipePanel() {
     await executeRecipe(selectedRecipe, pendingColumnMapping)
   }
 
+  // Handle expand to full Recipe panel view
+  const handleExpandToRecipePanel = () => {
+    setActivePanel('recipe')
+    setSecondaryPanel(null)
+  }
+
   return (
     <div className="flex flex-col h-full w-full overflow-hidden">
-      {/* Header: Recipe selector */}
+      {/* Header: Recipe selector with expand toggle */}
       <div className="p-3 shrink-0">
-        {recipes.length > 0 ? (
-          <Select
-            value={selectedRecipeId || ''}
-            onValueChange={(id) => setSelectedRecipe(id || null)}
-          >
-            <SelectTrigger className="h-8 text-sm bg-muted/30 border-border/50">
-              <SelectValue placeholder="Select recipe..." />
-            </SelectTrigger>
-            <SelectContent>
-              {recipes.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {r.name}
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    ({r.steps.length} steps)
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : (
-          <p className="text-xs text-muted-foreground text-center py-1">
-            No recipes yet
-          </p>
-        )}
+        <div className="flex items-center gap-2">
+          {recipes.length > 0 ? (
+            <Select
+              value={selectedRecipeId || ''}
+              onValueChange={(id) => setSelectedRecipe(id || null)}
+            >
+              <SelectTrigger className="h-8 text-sm bg-muted/30 border-border/50 flex-1">
+                <SelectValue placeholder="Select recipe..." />
+              </SelectTrigger>
+              <SelectContent>
+                {recipes.map((r) => (
+                  <SelectItem key={r.id} value={r.id}>
+                    {r.name}
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      ({r.steps.length} steps)
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center py-1 flex-1">
+              No recipes yet
+            </p>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={handleExpandToRecipePanel}
+              >
+                <Maximize2 className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Expand to full Recipe view</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {/* Recipe Details & Steps */}

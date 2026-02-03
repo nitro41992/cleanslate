@@ -10,6 +10,7 @@ import {
   Pencil,
   BookOpen,
   Sparkles,
+  Minimize2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -272,6 +273,12 @@ export function RecipePanelPrimary() {
     setSecondaryPanel('recipe')
   }
 
+  // Handle collapse to Clean panel with Recipe as secondary
+  const handleCollapseToClean = () => {
+    setActivePanel('clean')
+    setSecondaryPanel('recipe')
+  }
+
   // Handle apply recipe
   const handleApplyRecipe = async () => {
     if (!selectedRecipe || !activeTableId || !activeTable) {
@@ -360,6 +367,19 @@ export function RecipePanelPrimary() {
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">Recipes</h3>
             <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={handleCollapseToClean}
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Collapse to Clean view</TooltipContent>
+              </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
