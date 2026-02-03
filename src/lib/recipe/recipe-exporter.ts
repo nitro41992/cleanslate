@@ -59,8 +59,8 @@ const INCLUDED_COMMANDS: Set<string> = new Set([
   // Schema commands
   'schema:add_column',
   'schema:delete_column',
-  // Standardize commands
-  'standardize:apply',
+  // Note: standardize:apply is NOT included - Standardize emits individual
+  // transform:replace commands which ARE recipe-compatible
 ])
 
 /**
@@ -121,10 +121,8 @@ function getCommandType(cmd: TimelineCommand, params: Record<string, unknown>): 
     return `scrub:${params.method}`
   }
 
-  // For standardize
-  if (cmd.commandType === 'standardize') {
-    return 'standardize:apply'
-  }
+  // Note: standardize commands are no longer included in recipes
+  // Standardize panel now emits individual transform:replace commands
 
   // For data/schema commands
   if (cmd.commandType === 'data' && params.dataOperation) {
@@ -251,6 +249,7 @@ export function filterRecipeCompatibleEntries<T extends { action: string }>(
       'file loaded',
       'table created',
       'table persisted',
+      'standardize',  // Standardize now emits individual Find & Replace commands
     ]
 
     for (const pattern of excludePatterns) {

@@ -20,7 +20,7 @@ import { RecordPreviewDrawer } from './components/RecordPreviewDrawer'
 import { useTableStore } from '@/stores/tableStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { useStandardizer } from '@/hooks/useStandardizer'
-import { createCommand } from '@/lib/commands'
+import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
@@ -142,42 +142,67 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     }
 
     try {
-      // Create the standardize command
-      const command = createCommand('standardize:apply', {
+      const executor = getCommandExecutor()
+
+      // Check if we need to discard redo states (only for first command)
+      const firstCommand = createCommand('transform:replace', {
         tableId,
         column: columnName,
-        algorithm,
-        mappings,
+        find: mappings[0].fromValue,
+        replace: mappings[0].toValue,
+        caseSensitive: true,
+        matchType: 'exact' as const,
       })
 
-      // Execute via CommandExecutor with confirmation if discarding redo states
-      // Executor handles: snapshot creation, execution, audit logging, timeline recording
-      const result = await executeWithConfirmation(command, tableId)
+      // Execute first command with confirmation if discarding redo states
+      const firstResult = await executeWithConfirmation(firstCommand, tableId)
 
       // User cancelled the confirmation dialog
-      if (!result) {
+      if (!firstResult) {
         return
       }
 
-      if (result.success) {
-        const rowsAffected = result.executionResult?.affected || 0
-
-        // Note: Audit entry is created by CommandExecutor.recordAudit() - no need to add manually
-
-        // Update tableStore to trigger grid refresh (dataVersion auto-increments)
-        updateTable(tableId, {})
-
-        toast.success('Values Standardized', {
-          description: `Updated ${rowsAffected.toLocaleString()} rows.`,
-        })
-
-        reset()
-        onClose()
-      } else {
+      if (!firstResult.success) {
         toast.error('Standardization Failed', {
-          description: result.error || 'An error occurred',
+          description: firstResult.error || 'An error occurred',
         })
+        return
       }
+
+      let totalRowsAffected = firstResult.executionResult?.affected || 0
+
+      // Execute remaining mappings as individual Find & Replace commands
+      // (no confirmation needed - user already confirmed on first command)
+      for (let i = 1; i < mappings.length; i++) {
+        const mapping = mappings[i]
+        const command = createCommand('transform:replace', {
+          tableId,
+          column: columnName,
+          find: mapping.fromValue,
+          replace: mapping.toValue,
+          caseSensitive: true,
+          matchType: 'exact' as const,
+        })
+
+        const result = await executor.execute(command)
+
+        if (result.success) {
+          totalRowsAffected += result.executionResult?.affected || 0
+        } else {
+          // Log error but continue with remaining mappings
+          console.warn(`Find & Replace failed for "${mapping.fromValue}":`, result.error)
+        }
+      }
+
+      // Update tableStore to trigger grid refresh (dataVersion auto-increments)
+      updateTable(tableId, {})
+
+      toast.success('Values Standardized', {
+        description: `Applied ${mappings.length} replacements, updated ${totalRowsAffected.toLocaleString()} rows.`,
+      })
+
+      reset()
+      onClose()
     } catch (error) {
       console.error('Apply failed:', error)
       toast.error('Apply Failed', {
@@ -189,7 +214,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     tableId,
     tableName,
     columnName,
-    algorithm,
+    executeWithConfirmation,
     updateTable,
     reset,
     onClose,
