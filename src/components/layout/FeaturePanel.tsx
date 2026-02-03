@@ -90,8 +90,8 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
       // Dual panel: 340px (secondary) + 880px (primary) = 1220px
       return 'w-[1220px] max-w-none'
     }
-    // Single panel: existing logic (recipe removed since it's secondary-only now)
-    if (['clean', 'combine', 'scrub'].includes(activePanel || '')) {
+    // Single panel: Recipe gets full 880px as primary panel for recipe management
+    if (['clean', 'combine', 'scrub', 'recipe'].includes(activePanel || '')) {
       return 'w-[880px] max-w-none'
     }
     return 'w-[400px] max-w-none'

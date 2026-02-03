@@ -356,16 +356,27 @@ export function CleanPanel() {
     if (!selectedTransform) return null
 
     // Build step params from current form state
+    // IMPORTANT: Store ALL parameters including empty strings to preserve user intent
     const stepParams: Record<string, unknown> = {}
     if (selectedTransform.params) {
       for (const param of selectedTransform.params) {
-        if (params[param.name]) {
+        const value = params[param.name]
+
+        // Include the parameter if:
+        // 1. It has a non-empty value, OR
+        // 2. It has an explicit empty string (user cleared it), OR
+        // 3. It differs from the default (including when value is '' and default is undefined)
+        const hasValue = value !== undefined && value !== ''
+        const hasExplicitEmpty = value === '' && param.required === false
+        const differsFromDefault = value !== undefined && value !== param.default
+
+        if (hasValue || hasExplicitEmpty || differsFromDefault) {
           if (param.type === 'number') {
-            stepParams[param.name] = parseInt(params[param.name], 10)
+            stepParams[param.name] = parseInt(value, 10)
           } else if (param.name === 'columns') {
-            stepParams[param.name] = params[param.name].split(',').map((c) => c.trim())
+            stepParams[param.name] = value.split(',').map((c: string) => c.trim())
           } else {
-            stepParams[param.name] = params[param.name]
+            stepParams[param.name] = value
           }
         }
       }

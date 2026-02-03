@@ -29,6 +29,7 @@ import { CleanPanel } from '@/components/panels/CleanPanel'
 import { CombinePanel } from '@/components/panels/CombinePanel'
 import { ScrubPanel } from '@/components/panels/ScrubPanel'
 import { RecipePanel } from '@/components/panels/RecipePanel'
+import { RecipePanelPrimary } from '@/components/panels/RecipePanelPrimary'
 
 // Full-screen overlay views
 import { DiffView } from '@/components/diff'
@@ -303,7 +304,7 @@ function App() {
 
   // Get panel content based on active panel
   // Note: Diff and Match are handled as full-screen overlays, not side panels
-  // Recipe is secondary-only (appears alongside Clean), not a primary panel
+  // Recipe can be primary (independent view) or secondary (alongside Clean)
   const getPanelContent = () => {
     switch (activePanel) {
       case 'clean':
@@ -312,6 +313,9 @@ function App() {
         return <CombinePanel />
       case 'scrub':
         return <ScrubPanel />
+      case 'recipe':
+        // Recipe as primary panel (independent recipe management view)
+        return <RecipePanelPrimary />
       case 'match':
         // Match is handled as full-screen overlay via MatchView
         return null

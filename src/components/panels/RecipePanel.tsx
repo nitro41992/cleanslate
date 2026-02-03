@@ -165,36 +165,60 @@ export function RecipePanel() {
     return label
   }
 
-  // Format step parameters for display
-  const formatStepParams = (params: Record<string, unknown>): React.ReactNode => {
-    const entries = Object.entries(params)
-    if (entries.length === 0) return null
+  // Format value for display
+  const formatValue = (value: unknown): React.ReactNode => {
+    if (value === '' || value === null || value === undefined) {
+      return <span className="text-muted-foreground italic">empty</span>
+    }
+    if (Array.isArray(value)) {
+      return value.join(', ')
+    }
+    if (typeof value === 'boolean') {
+      return value ? 'Yes' : 'No'
+    }
+    if (typeof value === 'object') {
+      return JSON.stringify(value)
+    }
+    return String(value)
+  }
 
+  // Format step parameters for display - shows ALL params from transform definition
+  const formatStepParams = (step: RecipeStep): React.ReactNode => {
+    const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
+    const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
+
+    // If no transform definition found, fall back to showing stored params
+    if (!transform?.params) {
+      if (!step.params || Object.keys(step.params).length === 0) return null
+      return (
+        <div className="space-y-1 text-xs">
+          {Object.entries(step.params).map(([key, value]) => {
+            const label = key
+              .replace(/([A-Z])/g, ' $1')
+              .replace(/^./, (s) => s.toUpperCase())
+              .trim()
+            return (
+              <div key={key} className="flex items-start gap-2">
+                <span className="text-muted-foreground shrink-0">{label}:</span>
+                <span className="text-foreground break-all">{formatValue(value)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )
+    }
+
+    // Show ALL defined params, using stored value or default
     return (
       <div className="space-y-1 text-xs">
-        {entries.map(([key, value]) => {
-          const label = key
-            .replace(/([A-Z])/g, ' $1')
-            .replace(/^./, (s) => s.toUpperCase())
-            .trim()
-
-          let displayValue: React.ReactNode
-          if (Array.isArray(value)) {
-            displayValue = value.join(', ')
-          } else if (typeof value === 'object' && value !== null) {
-            displayValue = JSON.stringify(value)
-          } else if (typeof value === 'boolean') {
-            displayValue = value ? 'Yes' : 'No'
-          } else if (value === '' || value === null || value === undefined) {
-            displayValue = <span className="text-muted-foreground italic">empty</span>
-          } else {
-            displayValue = String(value)
-          }
+        {transform.params.map((paramDef) => {
+          const storedValue = step.params?.[paramDef.name]
+          const value = storedValue !== undefined ? storedValue : paramDef.default ?? ''
 
           return (
-            <div key={key} className="flex items-start gap-2">
-              <span className="text-muted-foreground shrink-0">{label}:</span>
-              <span className="text-foreground break-all">{displayValue}</span>
+            <div key={paramDef.name} className="flex items-start gap-2">
+              <span className="text-muted-foreground shrink-0">{paramDef.label}:</span>
+              <span className="text-foreground break-all">{formatValue(value)}</span>
             </div>
           )
         })}
@@ -741,12 +765,16 @@ export function RecipePanel() {
                                 <span className="text-foreground">{step.column}</span>
                               </div>
                             )}
-                            {step.params && Object.keys(step.params).length > 0 && (
-                              <div className="pt-1 border-t border-border/20">
-                                <p className="text-[10px] text-muted-foreground mb-1">Parameters:</p>
-                                {formatStepParams(step.params)}
-                              </div>
-                            )}
+                            {(() => {
+                              const paramsContent = formatStepParams(step)
+                              if (!paramsContent) return null
+                              return (
+                                <div className="pt-1 border-t border-border/20">
+                                  <p className="text-[10px] text-muted-foreground mb-1">Parameters:</p>
+                                  {paramsContent}
+                                </div>
+                              )
+                            })()}
                           </div>
                         )}
                       </div>

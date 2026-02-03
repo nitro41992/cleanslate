@@ -1,4 +1,4 @@
-import { Sparkles, Users, Merge, Shield, GitCompare, Link2 } from 'lucide-react'
+import { Sparkles, Users, Merge, Shield, GitCompare, Link2, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -11,7 +11,7 @@ import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { cn } from '@/lib/utils'
 
-type ActionId = Exclude<PanelType, 'recipe'> | 'standardize'
+type ActionId = PanelType | 'standardize'
 
 const actions: { id: ActionId; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
   {
@@ -56,6 +56,13 @@ const actions: { id: ActionId; label: string; icon: typeof Sparkles; description
     description: 'Compare tables',
     shortcut: '6',
   },
+  {
+    id: 'recipe',
+    label: 'Recipe',
+    icon: BookOpen,
+    description: 'Manage transformation recipes',
+    shortcut: '7',
+  },
 ]
 
 interface ActionToolbarProps {
@@ -98,6 +105,20 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
       } else {
         // Open clean as primary
         setActivePanel('clean')
+      }
+      return
+    }
+
+    if (panelId === 'recipe') {
+      if (activePanel === 'recipe') {
+        // Toggle off recipe
+        setActivePanel(null)
+        closeSecondaryPanel()
+      } else {
+        // Open recipe as primary (independent view)
+        setActivePanel('recipe')
+        // Close secondary panel if it was recipe (from Clean mode)
+        closeSecondaryPanel()
       }
       return
     }
