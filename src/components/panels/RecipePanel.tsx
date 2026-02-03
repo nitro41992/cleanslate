@@ -164,10 +164,10 @@ export function RecipePanel() {
     return getTransformLabel(step)
   }
 
-  // Get category from step type (Transform, Scrub, Standardize)
+  // Get category from step type (Transform, Scrub, Smart Replace)
   const getCategory = (stepType: string): string => {
     if (stepType.startsWith('scrub:')) return 'Scrub'
-    if (stepType.startsWith('standardize:')) return 'Standardize'
+    if (stepType.startsWith('standardize:')) return 'Smart Replace'
     return 'Transform'
   }
 

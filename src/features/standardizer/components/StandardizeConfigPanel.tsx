@@ -118,10 +118,10 @@ export function StandardizeConfigPanel({
       <div className="bg-muted/30 rounded-lg p-3">
         <h2 className="font-medium flex items-center gap-2">
           <Wand2 className="w-4 h-4" />
-          Value Standardizer
+          Smart Replace
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Find and fix inconsistent values in a column
+          Find and fix similar values in a column
         </p>
       </div>
 
@@ -266,7 +266,7 @@ export function StandardizeConfigPanel({
           </li>
           <li className="flex items-start gap-1.5">
             <span className="text-blue-400">4.</span>
-            Review clusters and select values to standardize
+            Review clusters and select values to replace
           </li>
           <li className="flex items-start gap-1.5">
             <span className="text-blue-400">5.</span>

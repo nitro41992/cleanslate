@@ -104,9 +104,9 @@ export function ClusterCard({
             <TooltipContent side="top" className="max-w-[250px]">
               <p>{masterRowCount.toLocaleString()} rows remain as "{cluster.masterValue || '(empty)'}"</p>
               {hasSelectedChanges ? (
-                <p>{selectedVariationRowCount.toLocaleString()} rows will be standardized</p>
+                <p>{selectedVariationRowCount.toLocaleString()} rows will be replaced</p>
               ) : (
-                <p>{selectableCount} variations available to standardize</p>
+                <p>{selectableCount} variations available to replace</p>
               )}
             </TooltipContent>
           </Tooltip>

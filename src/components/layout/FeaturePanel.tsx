@@ -20,15 +20,15 @@ import { Sparkles, Users, Merge, Shield, GitCompare, BookOpen, X, PanelLeft } fr
 // Panel metadata (including recipe for secondary panel display)
 const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: string; description: string; icon: typeof Sparkles; color: string }> = {
   clean: {
-    title: 'Clean & Transform',
-    shortTitle: 'Clean',
-    description: 'Transform and clean your data with powerful operations',
+    title: 'Transform',
+    shortTitle: 'Transform',
+    description: 'Apply transformations to your data',
     icon: Sparkles,
     color: 'text-emerald-500',
   },
   match: {
-    title: 'Find Duplicates',
-    shortTitle: 'Match',
+    title: 'Smart Dedupe',
+    shortTitle: 'Smart Dedupe',
     description: 'Detect and merge duplicate records',
     icon: Users,
     color: 'text-blue-500',

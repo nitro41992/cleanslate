@@ -232,7 +232,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
         addAuditEntry(
           tableId,
           tableName,
-          'Find Duplicates',
+          'Smart Dedupe',
           `Found ${totalFound.toLocaleString()} potential duplicates in '${matchColumn}' column using ${blockingStrategy} grouping, processed ${result.blocksProcessed} blocks${oversizedNote}`,
           'A'
         )
@@ -386,7 +386,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           <div className="h-6 w-px bg-border" />
 
           <h1 className="font-semibold tracking-tight">
-            DUPLICATE FINDER
+            SMART DEDUPE
           </h1>
 
           {hasResults && (

@@ -129,7 +129,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     const mappings = getSelectedMappings()
     if (mappings.length === 0) {
       toast.info('No Changes Selected', {
-        description: 'Select values to standardize before applying.',
+        description: 'Select values to replace before applying.',
       })
       return
     }
@@ -173,7 +173,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
             return // User cancelled
           }
           if (!result.success) {
-            toast.error('Standardization Failed', {
+            toast.error('Smart Replace Failed', {
               description: result.error || 'An error occurred',
             })
             return
@@ -213,7 +213,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
             return // User cancelled
           }
           if (!result.success) {
-            toast.error('Standardization Failed', {
+            toast.error('Smart Replace Failed', {
               description: result.error || 'An error occurred',
             })
             return
@@ -234,7 +234,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       // Update tableStore to trigger grid refresh (dataVersion auto-increments)
       updateTable(tableId, {})
 
-      toast.success('Values Standardized', {
+      toast.success('Smart Replace Complete', {
         description: `Applied ${totalReplacements} replacements, updated ${totalRowsAffected.toLocaleString()} rows.`,
       })
 
@@ -285,7 +285,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
           <div className="h-6 w-px bg-border" />
 
           <h1 className="font-semibold tracking-tight">
-            VALUE STANDARDIZER
+            SMART REPLACE
           </h1>
 
           {hasResults && (
@@ -419,12 +419,12 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
                   <Separator />
                   <div className="p-4 flex items-center gap-3 bg-accent">
                     <span className="text-sm">
-                      Ready to standardize {stats.selectedValues} value{stats.selectedValues !== 1 ? 's' : ''}
+                      Ready to replace {stats.selectedValues} value{stats.selectedValues !== 1 ? 's' : ''}
                     </span>
                     <div className="flex-1" />
                     <Button onClick={handleApply} className="gap-2">
                       <Check className="w-4 h-4" />
-                      Apply Standardization
+                      Apply Replacements
                     </Button>
                   </div>
                 </>
@@ -438,10 +438,10 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
                   <span className="text-4xl">🔗</span>
                 </div>
                 <h2 className="text-xl font-semibold text-foreground mb-2">
-                  Standardize Values
+                  Smart Replace
                 </h2>
                 <p className="text-sm">
-                  Cluster similar values in a column and standardize them to a single master value.
+                  Find similar values in a column and replace them with a single master value.
                   Great for cleaning up inconsistent data entry.
                 </p>
               </div>

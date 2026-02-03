@@ -84,7 +84,7 @@ export function StandardizeDetailTable({ auditEntryId }: StandardizeDetailTableP
       <div className="px-4 py-3 bg-muted/30 rounded-lg mb-4">
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">
-            {allDetails.length} value{allDetails.length !== 1 ? 's' : ''} standardized
+            {allDetails.length} value{allDetails.length !== 1 ? 's' : ''} replaced
           </span>
           <span className="text-sm font-medium">
             {totalRowsAffected.toLocaleString()} total rows updated
@@ -102,7 +102,7 @@ export function StandardizeDetailTable({ auditEntryId }: StandardizeDetailTableP
               </th>
               <th className="w-10"></th>
               <th className="text-left text-xs font-medium text-muted-foreground py-2 px-3">
-                Standardized To
+                Replaced With
               </th>
               <th className="text-right text-xs font-medium text-muted-foreground py-2 px-3">
                 Rows Changed

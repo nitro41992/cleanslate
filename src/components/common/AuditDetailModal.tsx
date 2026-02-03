@@ -42,7 +42,9 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
   const isStandardizeAction =
     parsedDetails?.type === 'standardize' ||
     entry.action?.includes('Standardize Values') ||
-    entry.action === 'Apply Standardization'
+    entry.action === 'Apply Standardization' ||
+    entry.action?.includes('Smart Replace') ||
+    entry.action === 'Apply Replacements'
   // Check for manual/batch edits via entryType OR action name (fallback for edge cases)
   const isManualEdit =
     entry.entryType === 'B' ||
@@ -78,11 +80,11 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
       } else if (isStandardizeAction) {
-        // Export standardize details
+        // Export smart replace details
         const details = await getStandardizeAuditDetails(entry.auditEntryId!)
 
         const csvLines = [
-          'Original Value,Standardized To,Rows Changed',
+          'Original Value,Replaced With,Rows Changed',
           ...details.map((detail) => {
             const fromVal = detail.fromValue.replace(/"/g, '""')
             const toVal = detail.toValue.replace(/"/g, '""')
@@ -95,7 +97,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = `standardize_details_${entry.auditEntryId}_${details.length}values.csv`
+        a.download = `smart_replace_details_${entry.auditEntryId}_${details.length}values.csv`
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
@@ -175,7 +177,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
                 {isMergeAction
                   ? 'Merge Details'
                   : isStandardizeAction
-                    ? 'Standardization Details'
+                    ? 'Smart Replace Details'
                     : isManualEdit
                       ? 'Manual Edit Details'
                       : 'Row-Level Changes'}
@@ -184,7 +186,7 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
                 {isMergeAction
                   ? 'Detailed view of merged duplicate pairs'
                   : isStandardizeAction
-                    ? 'Detailed view of standardized values'
+                    ? 'Detailed view of replaced values'
                     : isManualEdit
                       ? 'Details of the manual cell edit'
                       : 'Detailed view of changes made by this transformation'}

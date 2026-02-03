@@ -16,23 +16,23 @@ type ActionId = PanelType | 'standardize'
 const actions: { id: ActionId; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
   {
     id: 'clean',
-    label: 'Clean',
+    label: 'Transform',
     icon: Sparkles,
     description: 'Transform and clean data',
     shortcut: '1',
   },
   {
     id: 'standardize',
-    label: 'Standardize',
+    label: 'Smart Replace',
     icon: Link2,
-    description: 'Cluster and standardize values',
+    description: 'Find and fix similar values',
     shortcut: '2',
   },
   {
     id: 'match',
-    label: 'Match',
+    label: 'Smart Dedupe',
     icon: Users,
-    description: 'Find duplicate records',
+    description: 'Find and merge duplicate records',
     shortcut: '3',
   },
   {
