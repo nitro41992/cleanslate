@@ -303,6 +303,7 @@ function App() {
 
   // Get panel content based on active panel
   // Note: Diff and Match are handled as full-screen overlays, not side panels
+  // Recipe is secondary-only (appears alongside Clean), not a primary panel
   const getPanelContent = () => {
     switch (activePanel) {
       case 'clean':
@@ -311,8 +312,6 @@ function App() {
         return <CombinePanel />
       case 'scrub':
         return <ScrubPanel />
-      case 'recipe':
-        return <RecipePanel />
       case 'match':
         // Match is handled as full-screen overlay via MatchView
         return null
@@ -325,11 +324,11 @@ function App() {
   }
 
   // Get secondary panel content (for dual panel mode)
-  // Currently only recipe panel can appear as secondary alongside clean
+  // Recipe panel always appears as secondary alongside Clean (never as primary)
   const getSecondaryPanelContent = () => {
     switch (secondaryPanel) {
       case 'recipe':
-        return <RecipePanel compact />
+        return <RecipePanel />
       default:
         return null
     }

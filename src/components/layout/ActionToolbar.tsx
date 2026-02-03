@@ -1,4 +1,4 @@
-import { Sparkles, Users, Merge, Shield, GitCompare, Link2, BookOpen } from 'lucide-react'
+import { Sparkles, Users, Merge, Shield, GitCompare, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -9,10 +9,9 @@ import { usePreviewStore, type PanelType } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
-import { useRecipeStore } from '@/stores/recipeStore'
 import { cn } from '@/lib/utils'
 
-type ActionId = PanelType | 'standardize'
+type ActionId = Exclude<PanelType, 'recipe'> | 'standardize'
 
 const actions: { id: ActionId; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
   {
@@ -57,13 +56,6 @@ const actions: { id: ActionId; label: string; icon: typeof Sparkles; description
     description: 'Compare tables',
     shortcut: '6',
   },
-  {
-    id: 'recipe',
-    label: 'Recipes',
-    icon: BookOpen,
-    description: 'Save and apply recipe templates',
-    shortcut: '7',
-  },
 ]
 
 interface ActionToolbarProps {
@@ -72,9 +64,7 @@ interface ActionToolbarProps {
 
 export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   const activePanel = usePreviewStore((s) => s.activePanel)
-  const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
   const setActivePanel = usePreviewStore((s) => s.setActivePanel)
-  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
   const closeSecondaryPanel = usePreviewStore((s) => s.closeSecondaryPanel)
   const openDiffView = useDiffStore((s) => s.openView)
   const isDiffViewOpen = useDiffStore((s) => s.isViewOpen)
@@ -82,7 +72,6 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
   const isMatchViewOpen = useMatcherStore((s) => s.isViewOpen)
   const openStandardizeView = useStandardizerStore((s) => s.openView)
   const isStandardizeViewOpen = useStandardizerStore((s) => s.isViewOpen)
-  const recipeCount = useRecipeStore((s) => s.recipes.length)
 
   const handleClick = (panelId: ActionId) => {
     // Diff, Match, and Standardize open as full-screen overlays instead of side panels
@@ -101,33 +90,11 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
       return
     }
 
-    // Recipe + Clean dual panel logic
-    if (panelId === 'recipe') {
-      if (activePanel === 'recipe') {
-        // Toggle off recipe
-        setActivePanel(null)
-      } else if (activePanel === 'clean') {
-        // Clean is open - toggle recipe as secondary panel
-        if (secondaryPanel === 'recipe') {
-          closeSecondaryPanel()
-        } else {
-          setSecondaryPanel('recipe')
-        }
-      } else {
-        // Open recipe as primary
-        setActivePanel('recipe')
-      }
-      return
-    }
-
     if (panelId === 'clean') {
       if (activePanel === 'clean') {
-        // Toggle off clean
+        // Toggle off clean (also closes secondary recipe panel)
         setActivePanel(null)
-      } else if (activePanel === 'recipe') {
-        // Recipe is open - switch to Clean as primary with Recipe as secondary
-        setActivePanel('clean')
-        setSecondaryPanel('recipe')
+        closeSecondaryPanel()
       } else {
         // Open clean as primary
         setActivePanel('clean')
@@ -154,9 +121,6 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
           isActive = isMatchViewOpen
         } else if (action.id === 'standardize') {
           isActive = isStandardizeViewOpen
-        } else if (action.id === 'recipe') {
-          // Recipe can be active as primary OR secondary panel
-          isActive = activePanel === 'recipe' || secondaryPanel === 'recipe'
         } else {
           isActive = activePanel === action.id
         }
@@ -179,11 +143,6 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
               >
                 <Icon className="w-4 h-4" />
                 <span className="hidden sm:inline">{action.label}</span>
-                {action.id === 'recipe' && recipeCount > 0 && (
-                  <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-primary text-[10px] text-primary-foreground flex items-center justify-center font-medium">
-                    {recipeCount}
-                  </span>
-                )}
               </Button>
             </TooltipTrigger>
             <TooltipContent>

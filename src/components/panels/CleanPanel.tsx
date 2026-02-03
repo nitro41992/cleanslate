@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Loader2, Sparkles, AlertTriangle, BookOpen } from 'lucide-react'
+import { Loader2, Sparkles, AlertTriangle, BookOpen, ChevronDown, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import { MultiColumnCombobox } from '@/components/ui/multi-column-combobox'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -28,7 +44,9 @@ import {
 import { useTableStore } from '@/stores/tableStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { usePreviewStore } from '@/stores/previewStore'
+import { useRecipeStore } from '@/stores/recipeStore'
 import { toast } from 'sonner'
+import type { RecipeStep } from '@/types'
 import {
   TransformationDefinition,
   validateCastType,
@@ -63,6 +81,11 @@ export function CleanPanel() {
   // Live preview state for validation (disable Apply if no matching rows)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
 
+  // New recipe dialog state
+  const [showNewRecipeDialog, setShowNewRecipeDialog] = useState(false)
+  const [newRecipeName, setNewRecipeName] = useState('')
+  const [pendingStep, setPendingStep] = useState<Omit<RecipeStep, 'id'> | null>(null)
+
   // Keyboard navigation state
   const [columnComboboxOpen, setColumnComboboxOpen] = useState(false)
   const [multiColumnComboboxOpen, setMultiColumnComboboxOpen] = useState(false)
@@ -79,6 +102,13 @@ export function CleanPanel() {
   const activeTable = tables.find((t) => t.id === activeTableId)
   const timeline = useTimelineStore((s) => activeTableId ? s.getTimeline(activeTableId) : undefined)
   const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
+  const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
+
+  // Recipe store access
+  const recipes = useRecipeStore((s) => s.recipes)
+  const addRecipe = useRecipeStore((s) => s.addRecipe)
+  const addStep = useRecipeStore((s) => s.addStep)
+  const setSelectedRecipe = useRecipeStore((s) => s.setSelectedRecipe)
 
   const columns = activeTable?.columns.map((c) => c.name) || []
   // Count active timeline commands (not undone)
@@ -321,6 +351,116 @@ export function CleanPanel() {
     return typeMap[type] || type
   }
 
+  // Build a recipe step from the current form state
+  const buildStepFromCurrentForm = (): Omit<RecipeStep, 'id'> | null => {
+    if (!selectedTransform) return null
+
+    // Build step params from current form state
+    const stepParams: Record<string, unknown> = {}
+    if (selectedTransform.params) {
+      for (const param of selectedTransform.params) {
+        if (params[param.name]) {
+          if (param.type === 'number') {
+            stepParams[param.name] = parseInt(params[param.name], 10)
+          } else if (param.name === 'columns') {
+            stepParams[param.name] = params[param.name].split(',').map((c) => c.trim())
+          } else {
+            stepParams[param.name] = params[param.name]
+          }
+        }
+      }
+    }
+
+    // Determine command type prefix
+    let typePrefix = 'transform'
+    if (['hash', 'mask', 'redact', 'year_only'].includes(selectedTransform.id)) {
+      typePrefix = 'scrub'
+    }
+
+    return {
+      type: `${typePrefix}:${selectedTransform.id}`,
+      label: `${selectedTransform.label}${selectedColumn ? ` → ${selectedColumn}` : ''}`,
+      column: selectedTransform.requiresColumn ? selectedColumn : undefined,
+      params: Object.keys(stepParams).length > 0 ? stepParams : undefined,
+      enabled: true,
+    }
+  }
+
+  // Handle "Add to New Recipe" action
+  const handleAddToNewRecipe = () => {
+    const step = buildStepFromCurrentForm()
+    if (!step) return
+
+    setPendingStep(step)
+    setNewRecipeName('')
+    setShowNewRecipeDialog(true)
+  }
+
+  // Handle creating recipe with the pending step
+  const handleCreateRecipeWithStep = () => {
+    if (!newRecipeName.trim()) {
+      toast.error('Please enter a recipe name')
+      return
+    }
+
+    if (!pendingStep) return
+
+    // Create the recipe first
+    const recipeId = addRecipe({
+      name: newRecipeName.trim(),
+      description: '',
+      version: '1.0',
+      requiredColumns: [],
+      steps: [],
+    })
+
+    // Add the pending step to it
+    addStep(recipeId, pendingStep)
+
+    // Open Recipe panel if not already open
+    if (secondaryPanel !== 'recipe') {
+      setSecondaryPanel('recipe')
+    }
+    setSelectedRecipe(recipeId)
+
+    setShowNewRecipeDialog(false)
+    setPendingStep(null)
+    toast.success('Recipe created', {
+      description: `Added ${selectedTransform?.label} to "${newRecipeName.trim()}"`,
+    })
+  }
+
+  // Handle "Add to Existing Recipe" action
+  const handleAddToExistingRecipe = (recipeId: string) => {
+    const step = buildStepFromCurrentForm()
+    if (!step) return
+
+    const recipe = recipes.find((r) => r.id === recipeId)
+    addStep(recipeId, step)
+
+    // Open Recipe panel if not already open and select the recipe
+    if (secondaryPanel !== 'recipe') {
+      setSecondaryPanel('recipe')
+    }
+    setSelectedRecipe(recipeId)
+
+    toast.success('Step added to recipe', {
+      description: `Added ${selectedTransform?.label} to "${recipe?.name}"`,
+    })
+  }
+
+  // Check if the current form state is valid for adding to a recipe
+  const canAddToRecipe = () => {
+    if (!selectedTransform) return false
+    if (selectedTransform.requiresColumn && !selectedColumn) return false
+    if (selectedTransform.params) {
+      for (const param of selectedTransform.params) {
+        if (param.required !== false && !params[param.name]) return false
+      }
+    }
+    return true
+  }
+
   return (
     <>
       {/* Cast Type Warning Dialog */}
@@ -379,6 +519,37 @@ export function CleanPanel() {
 
       {/* Confirm Discard Undone Operations Dialog */}
       <ConfirmDiscardDialog {...confirmDialogProps} />
+
+      {/* New Recipe Dialog */}
+      <Dialog open={showNewRecipeDialog} onOpenChange={setShowNewRecipeDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Create New Recipe</DialogTitle>
+            <DialogDescription>
+              The current transform will be added as the first step.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Label htmlFor="new-recipe-name">Recipe Name</Label>
+            <Input
+              id="new-recipe-name"
+              value={newRecipeName}
+              onChange={(e) => setNewRecipeName(e.target.value)}
+              placeholder="e.g., Email Cleanup"
+              className="mt-2"
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowNewRecipeDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateRecipeWithStep}>
+              Create & Add Step
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="flex h-full">
         {/* Left Column: Picker (scrollable) */}
@@ -645,26 +816,67 @@ export function CleanPanel() {
                     <ValidationMessage result={validationResult} />
                   )}
 
-                  {/* Apply Button */}
-                  <Button
-                    ref={applyButtonRef}
-                    className="w-full"
-                    onClick={handleApply}
-                    disabled={isApplying || !isValid()}
-                    data-testid="apply-transformation-btn"
-                  >
-                    {isApplying ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Applying...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 mr-2" />
-                        Apply Transformation
-                      </>
-                    )}
-                  </Button>
+                  {/* Action Buttons Row */}
+                  <div className="flex gap-2">
+                    {/* Apply Button */}
+                    <Button
+                      ref={applyButtonRef}
+                      className="flex-1"
+                      onClick={handleApply}
+                      disabled={isApplying || !isValid()}
+                      data-testid="apply-transformation-btn"
+                    >
+                      {isApplying ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Applying...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          Apply
+                        </>
+                      )}
+                    </Button>
+
+                    {/* Add to Recipe Dropdown */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="outline"
+                          disabled={!canAddToRecipe() || isApplying}
+                          data-testid="add-to-recipe-btn"
+                        >
+                          <BookOpen className="w-4 h-4 mr-2" />
+                          Recipe
+                          <ChevronDown className="w-3 h-3 ml-1" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-56">
+                        <DropdownMenuItem onClick={handleAddToNewRecipe}>
+                          <Plus className="w-4 h-4 mr-2" />
+                          Create New Recipe...
+                        </DropdownMenuItem>
+                        {recipes.length > 0 && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
+                            {recipes.map((recipe) => (
+                              <DropdownMenuItem
+                                key={recipe.id}
+                                onClick={() => handleAddToExistingRecipe(recipe.id)}
+                              >
+                                {recipe.name}
+                                <span className="ml-auto text-xs text-muted-foreground">
+                                  {recipe.steps.length} steps
+                                </span>
+                              </DropdownMenuItem>
+                            ))}
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
 
                   {/* Execution Progress (for batched operations) */}
                   {executionProgress && (

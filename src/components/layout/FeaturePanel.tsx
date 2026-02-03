@@ -17,11 +17,12 @@ import { cn } from '@/lib/utils'
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
 import { Sparkles, Users, Merge, Shield, GitCompare, BookOpen, X, PanelLeft } from 'lucide-react'
 
+// Panel metadata (including recipe for secondary panel display)
 const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: string; description: string; icon: typeof Sparkles; color: string }> = {
   clean: {
     title: 'Clean & Transform',
     shortTitle: 'Clean',
-    description: 'Build a recipe of transformations to clean your data',
+    description: 'Transform and clean your data with powerful operations',
     icon: Sparkles,
     color: 'text-emerald-500',
   },
@@ -54,9 +55,9 @@ const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: str
     color: 'text-amber-500',
   },
   recipe: {
-    title: 'Recipe Templates',
+    title: 'Recipe',
     shortTitle: 'Recipe',
-    description: 'Save, load, and apply multi-step transformation recipes',
+    description: 'Save and apply transformation recipes',
     icon: BookOpen,
     color: 'text-sky-500',
   },
@@ -89,8 +90,8 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
       // Dual panel: 340px (secondary) + 880px (primary) = 1220px
       return 'w-[1220px] max-w-none'
     }
-    // Single panel: existing logic
-    if (['clean', 'combine', 'scrub', 'recipe'].includes(activePanel || '')) {
+    // Single panel: existing logic (recipe removed since it's secondary-only now)
+    if (['clean', 'combine', 'scrub'].includes(activePanel || '')) {
       return 'w-[880px] max-w-none'
     }
     return 'w-[400px] max-w-none'
