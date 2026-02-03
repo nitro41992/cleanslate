@@ -77,6 +77,12 @@ async function executeStep(
   const mappedColumn = step.column ? columnMapping[step.column] || step.column : undefined
   const mappedParams = step.params ? applyMappingToParams(step.params, columnMapping) : {}
 
+  // Handle backward compatibility for standardize:apply commands
+  // Older recipes may not have the algorithm field
+  if (commandType === 'standardize:apply' && !mappedParams.algorithm) {
+    mappedParams.algorithm = 'fingerprint' // Default to fingerprint algorithm
+  }
+
   // Create the command
   const command = createCommand(commandType, {
     tableId,

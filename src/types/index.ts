@@ -385,6 +385,7 @@ export interface MergeParams {
 export interface StandardizeParams {
   type: 'standardize'
   columnName: string
+  algorithm: ClusteringAlgorithm
   mappings: StandardizationMapping[]
 }
 

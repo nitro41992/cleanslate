@@ -1640,10 +1640,15 @@ export class CommandExecutor implements ICommandExecutor {
     // Standardize commands need full params for replay (mappings array)
     let timelineParams: import('@/types').TimelineParams
     if (command.type === 'standardize:apply') {
-      const standardizeParams = command.params as { column: string; mappings: unknown[] }
+      const standardizeParams = command.params as {
+        column: string
+        algorithm: import('@/types').ClusteringAlgorithm
+        mappings: unknown[]
+      }
       timelineParams = {
         type: 'standardize',
         columnName: standardizeParams.column,
+        algorithm: standardizeParams.algorithm,
         mappings: standardizeParams.mappings,
       } as import('@/types').StandardizeParams
     } else if (command.type === 'edit:cell') {
