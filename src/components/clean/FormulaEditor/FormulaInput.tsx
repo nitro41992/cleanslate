@@ -143,7 +143,8 @@ function getTokenClass(type: TokenType): string {
     case 'function':
       return 'text-amber-400 font-medium'
     case 'column':
-      return 'text-cyan-400 bg-cyan-400/10 rounded px-0.5'
+      // NO padding/margin - must not affect text width or caret will misalign
+      return 'text-cyan-400'
     case 'string':
       return 'text-emerald-400'
     case 'number':
@@ -225,6 +226,42 @@ export function FormulaInput({
   const [suggestions, setSuggestions] = useState<AutocompleteSuggestion[]>([])
   const [triggerStart, setTriggerStart] = useState<number | null>(null)
   const [anchorPosition, setAnchorPosition] = useState({ top: 0, left: 0 })
+  const [selectedIndex, setSelectedIndex] = useState(0)
+
+  // Refs to avoid stale closures in event handlers
+  // Updated synchronously alongside state to ensure keydown handlers see latest values
+  const isOpenRef = useRef(false)
+  const suggestionsRef = useRef<AutocompleteSuggestion[]>([])
+  const selectedIndexRef = useRef(0)
+  // Flag to skip trigger check immediately after selection (prevents race condition)
+  const justSelectedRef = useRef(false)
+
+  // Wrapper functions that update both state and ref synchronously
+  const updateIsOpen = useCallback((open: boolean) => {
+    isOpenRef.current = open
+    setIsOpen(open)
+  }, [])
+
+  const updateSuggestions = useCallback((newSuggestions: AutocompleteSuggestion[]) => {
+    suggestionsRef.current = newSuggestions
+    setSuggestions(newSuggestions)
+    // Reset selection when suggestions change
+    selectedIndexRef.current = 0
+    setSelectedIndex(0)
+  }, [])
+
+  const updateSelectedIndex = useCallback((indexOrUpdater: number | ((prev: number) => number)) => {
+    if (typeof indexOrUpdater === 'function') {
+      setSelectedIndex(prev => {
+        const newIndex = indexOrUpdater(prev)
+        selectedIndexRef.current = newIndex
+        return newIndex
+      })
+    } else {
+      selectedIndexRef.current = indexOrUpdater
+      setSelectedIndex(indexOrUpdater)
+    }
+  }, [])
 
   // Tokenize the formula
   const tokens = tokenize(value)
@@ -239,6 +276,12 @@ export function FormulaInput({
 
   // Check for autocomplete triggers and update suggestions
   const checkForTriggers = useCallback(() => {
+    // Skip if we just made a selection (prevents race condition with onChange)
+    if (justSelectedRef.current) {
+      justSelectedRef.current = false
+      return
+    }
+
     if (!textareaRef.current) return
 
     const cursorPos = textareaRef.current.selectionStart
@@ -261,13 +304,13 @@ export function FormulaInput({
           label: col,
         }))
 
-        setSuggestions(columnSuggestions)
+        updateSuggestions(columnSuggestions)
         setTriggerStart(cursorPos - atMatch[0].length)
 
         // Position anchor at cursor
         const coords = getCaretCoordinates(textareaRef.current, cursorPos)
         setAnchorPosition({ top: coords.top + 20, left: coords.left })
-        setIsOpen(true)
+        updateIsOpen(true)
         return
       }
     }
@@ -289,20 +332,20 @@ export function FormulaInput({
           description: FUNCTION_SPECS[fn].signature || FUNCTION_SPECS[fn].description,
         }))
 
-        setSuggestions(funcSuggestions)
+        updateSuggestions(funcSuggestions)
         setTriggerStart(cursorPos - funcMatch[1].length)
 
         // Position anchor at cursor
         const coords = getCaretCoordinates(textareaRef.current, cursorPos)
         setAnchorPosition({ top: coords.top + 20, left: coords.left })
-        setIsOpen(true)
+        updateIsOpen(true)
         return
       }
     }
 
     // Close if no match
-    setIsOpen(false)
-  }, [value, columns, onCursorChange])
+    updateIsOpen(false)
+  }, [value, columns, onCursorChange, updateSuggestions, updateIsOpen])
 
   // Handle selection from autocomplete
   const handleSelect = useCallback((suggestion: AutocompleteSuggestion) => {
@@ -318,6 +361,9 @@ export function FormulaInput({
     }
 
     const newValue = before + insertValue + after
+
+    // Set flag to prevent checkForTriggers from re-opening dropdown
+    justSelectedRef.current = true
     onChange(newValue)
 
     // Set cursor position after insertion
@@ -327,49 +373,60 @@ export function FormulaInput({
       textareaRef.current?.focus()
     }, 0)
 
-    setIsOpen(false)
-  }, [triggerStart, value, onChange])
+    updateIsOpen(false)
+  }, [triggerStart, value, onChange, updateIsOpen])
 
-  // Handle keyboard navigation
+  // Handle keyboard navigation - uses refs to avoid stale closure issues
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (!isOpen) return
+    // Use refs for latest values to avoid stale closures
+    const currentSuggestions = suggestionsRef.current
+    const currentIsOpen = isOpenRef.current
+    const currentIndex = selectedIndexRef.current
+
+    if (!currentIsOpen || currentSuggestions.length === 0) return
 
     if (e.key === 'Escape') {
       e.preventDefault()
-      setIsOpen(false)
+      updateIsOpen(false)
       return
     }
 
-    // Let Command handle arrow keys, Enter, Tab
-    if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(e.key)) {
-      // Don't prevent default for Tab if no suggestions
-      if (e.key === 'Tab' && suggestions.length === 0) return
-
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        // Select first suggestion
-        if (suggestions.length > 0) {
-          handleSelect(suggestions[0])
-        }
-      }
+    // Handle arrow navigation ourselves since textarea has focus, not Command
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      updateSelectedIndex(prev => (prev + 1) % currentSuggestions.length)
+      return
     }
-  }, [isOpen, suggestions, handleSelect])
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      updateSelectedIndex(prev => (prev - 1 + currentSuggestions.length) % currentSuggestions.length)
+      return
+    }
+
+    // Select the currently highlighted suggestion
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      handleSelect(currentSuggestions[currentIndex])
+    }
+  }, [handleSelect, updateIsOpen, updateSelectedIndex])
+
 
   // Close on click outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false)
+        updateIsOpen(false)
       }
     }
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+  }, [updateIsOpen])
 
   return (
     <div ref={containerRef} className="relative">
-      <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <Popover open={isOpen} onOpenChange={updateIsOpen}>
         {/* Invisible anchor positioned at cursor */}
         <PopoverAnchor asChild>
           <div
@@ -386,7 +443,8 @@ export function FormulaInput({
             'absolute inset-0 overflow-hidden pointer-events-none',
             'px-3 py-2 text-sm font-mono whitespace-pre-wrap break-words',
             'bg-transparent rounded-md',
-            'm-0'
+            'm-0',
+            'border border-transparent'
           )}
           aria-hidden="true"
         >
@@ -404,7 +462,6 @@ export function FormulaInput({
           value={value}
           onChange={(e) => {
             onChange(e.target.value)
-            // Check triggers after value updates
             setTimeout(checkForTriggers, 0)
           }}
           onScroll={handleScroll}
@@ -420,7 +477,6 @@ export function FormulaInput({
             'resize-y',
             'focus:outline-none focus:ring-2 focus:ring-primary/50',
             'placeholder:text-slate-600',
-            // Make text transparent so highlight shows through
             'text-transparent caret-slate-300',
             'selection:bg-cyan-500/30',
             disabled && 'opacity-50 cursor-not-allowed'
@@ -440,11 +496,13 @@ export function FormulaInput({
           <Command className="bg-slate-800 border-slate-700" shouldFilter={false}>
             <CommandList>
               <CommandGroup>
-                {suggestions.map((suggestion) => (
+                {suggestions.map((suggestion, index) => (
                   <CommandItem
                     key={`${suggestion.type}-${suggestion.value}`}
                     value={suggestion.value}
                     onSelect={() => handleSelect(suggestion)}
+                    onMouseEnter={() => updateSelectedIndex(index)}
+                    data-selected={index === selectedIndex}
                     className="flex items-center gap-2 cursor-pointer"
                   >
                     {suggestion.type === 'column' ? (
