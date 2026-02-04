@@ -590,16 +590,6 @@ export function CleanPanel() {
         </DialogContent>
       </Dialog>
 
-      {/* Privacy Sub-Panel - takes over the entire panel when privacy_batch is selected */}
-      {selectedTransform?.id === 'privacy_batch' ? (
-        <PrivacySubPanel
-          onCancel={resetForm}
-          onApplySuccess={() => {
-            setLastApplied('privacy_batch')
-            setTimeout(resetForm, 1500)
-          }}
-        />
-      ) : (
       <div className="flex h-full">
         {/* Left Column: Picker (scrollable) */}
         <div className="w-[340px] border-r border-border/50 flex flex-col">
@@ -629,6 +619,16 @@ export function CleanPanel() {
 
         {/* Right Column: Configuration (vertically centered, scrollable if needed) */}
         <div className="flex-1 flex flex-col overflow-y-auto">
+          {/* Privacy Sub-Panel - renders in right column when privacy_batch is selected */}
+          {selectedTransform?.id === 'privacy_batch' ? (
+            <PrivacySubPanel
+              onCancel={resetForm}
+              onApplySuccess={() => {
+                setLastApplied('privacy_batch')
+                setTimeout(resetForm, 1500)
+              }}
+            />
+          ) : (
           <div className="flex-1 flex flex-col justify-center p-4">
             {selectedTransform ? (
                 <div className="space-y-4 animate-in fade-in duration-200">
@@ -974,9 +974,9 @@ export function CleanPanel() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
-      )}
     </>
   )
 }

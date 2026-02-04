@@ -19,6 +19,8 @@ import {
   Calendar,
   Shuffle,
   ArrowRight,
+  BookOpen,
+  Plus,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -38,14 +40,32 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import { useTableStore } from '@/stores/tableStore'
+import { useRecipeStore } from '@/stores/recipeStore'
+import { usePreviewStore } from '@/stores/previewStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { createCommand } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { obfuscateValue, OBFUSCATION_METHODS } from '@/lib/obfuscation'
-import type { ScrubMethod } from '@/types'
+import type { ScrubMethod, RecipeStep } from '@/types'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -108,6 +128,14 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
   const { getData } = useDuckDB()
 
+  // Recipe store access
+  const recipes = useRecipeStore((s) => s.recipes)
+  const addRecipe = useRecipeStore((s) => s.addRecipe)
+  const addStep = useRecipeStore((s) => s.addStep)
+  const setSelectedRecipe = useRecipeStore((s) => s.setSelectedRecipe)
+  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
+  const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
+
   // Local state
   const [rules, setRules] = useState<PrivacyRule[]>([])
   const [secret, setSecret] = useState('')
@@ -116,6 +144,11 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
   const [selectedRule, setSelectedRule] = useState<string | null>(null)
   const [secretInfoOpen, setSecretInfoOpen] = useState(false)
   const [keyMapInfoOpen, setKeyMapInfoOpen] = useState(false)
+
+  // Recipe dialog state
+  const [showNewRecipeDialog, setShowNewRecipeDialog] = useState(false)
+  const [newRecipeName, setNewRecipeName] = useState('')
+  const [pendingStep, setPendingStep] = useState<Omit<RecipeStep, 'id'> | null>(null)
 
   // Preview state
   const [preview, setPreview] = useState<PreviewRow[]>([])
@@ -265,35 +298,144 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
     }
   }
 
+  // Build a recipe step from the current form state
+  const buildStepFromCurrentForm = (): Omit<RecipeStep, 'id'> | null => {
+    if (rules.length === 0) return null
+
+    return {
+      type: 'scrub:batch',
+      label: `Privacy Transforms (${rules.length} columns)`,
+      params: {
+        rules: rules.map((r) => ({
+          column: r.column,
+          method: r.method,
+        })),
+        generateKeyMap,
+      },
+      enabled: true,
+    }
+  }
+
+  // Check if the current form state is valid for adding to a recipe
+  const canAddToRecipe = () => {
+    if (rules.length === 0) return false
+    // Don't require secret for recipe (will be provided at execution time)
+    return true
+  }
+
+  // Handle "Add to New Recipe" action
+  const handleAddToNewRecipe = () => {
+    const step = buildStepFromCurrentForm()
+    if (!step) return
+
+    setPendingStep(step)
+    setNewRecipeName('')
+    setShowNewRecipeDialog(true)
+  }
+
+  // Handle creating recipe with the pending step
+  const handleCreateRecipeWithStep = () => {
+    if (!newRecipeName.trim()) {
+      toast.error('Please enter a recipe name')
+      return
+    }
+
+    if (!pendingStep) return
+
+    // Create the recipe first
+    const recipeId = addRecipe({
+      name: newRecipeName.trim(),
+      description: '',
+      version: '1.0',
+      requiredColumns: rules.map((r) => r.column),
+      steps: [],
+    })
+
+    // Add the pending step to it
+    addStep(recipeId, pendingStep)
+
+    // Open Recipe panel if not already open
+    if (secondaryPanel !== 'recipe') {
+      setSecondaryPanel('recipe')
+    }
+    setSelectedRecipe(recipeId)
+
+    setShowNewRecipeDialog(false)
+    setPendingStep(null)
+    toast.success('Recipe created', {
+      description: `Added Privacy Transforms to "${newRecipeName.trim()}"`,
+    })
+  }
+
+  // Handle "Add to Existing Recipe" action
+  const handleAddToExistingRecipe = (recipeId: string) => {
+    const step = buildStepFromCurrentForm()
+    if (!step) return
+
+    const recipe = recipes.find((r) => r.id === recipeId)
+    const added = addStep(recipeId, step)
+
+    if (!added) {
+      toast.info('Step already exists in recipe', {
+        description: 'This exact step is already in the recipe',
+      })
+      return
+    }
+
+    // Open Recipe panel if not already open and select the recipe
+    if (secondaryPanel !== 'recipe') {
+      setSecondaryPanel('recipe')
+    }
+    setSelectedRecipe(recipeId)
+
+    toast.success('Step added to recipe', {
+      description: `Added Privacy Transforms to "${recipe?.name}"`,
+    })
+  }
+
   const currentRule = rules.find((r) => r.column === selectedRule)
 
   return (
     <>
-      <div className="flex h-full">
-        {/* Left Column: Rule Queue */}
-        <div className="w-[340px] border-r border-border/50 flex flex-col">
-          <ScrollArea className="flex-1">
-            <div className="p-4 space-y-4">
-              {/* Header */}
-              <div className="flex items-center gap-2">
-                <Shield className="w-5 h-5 text-teal-400" />
-                <h3 className="font-semibold">Privacy Transforms</h3>
-              </div>
+      {/* Single column layout for right panel positioning */}
+      <div className="flex flex-col h-full">
+        <ScrollArea className="flex-1">
+          <div className="p-4 space-y-4">
+            {/* Header */}
+            <div className="flex items-center gap-2">
+              <Shield className="w-5 h-5 text-teal-400" />
+              <h3 className="font-semibold">Privacy Transforms</h3>
+            </div>
 
-              {/* Add Column */}
-              <div className="space-y-2">
-                <Label>Add Column</Label>
-                <ColumnCombobox
-                  columns={availableColumns}
-                  value=""
-                  onValueChange={handleAddColumn}
-                  placeholder="Select column to add..."
-                  disabled={isProcessing || availableColumns.length === 0}
-                />
-              </div>
+            {/* Empty State - when no columns added yet */}
+            {rules.length === 0 && (
+              <>
+                <div className="flex flex-col items-center justify-center text-center py-6">
+                  <div className="w-12 h-12 rounded-full bg-teal-500/10 flex items-center justify-center mb-4">
+                    <Shield className="w-6 h-6 text-teal-400" />
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Select a column to configure privacy transforms
+                  </p>
+                </div>
+                {/* Add Column - initial state */}
+                <div className="space-y-2">
+                  <Label>Add Column</Label>
+                  <ColumnCombobox
+                    columns={availableColumns}
+                    value=""
+                    onValueChange={handleAddColumn}
+                    placeholder="Select column to add..."
+                    disabled={isProcessing || availableColumns.length === 0}
+                  />
+                </div>
+              </>
+            )}
 
-              {/* Rules Queue */}
-              {rules.length > 0 && (
+            {/* Main workflow when columns exist */}
+            {rules.length > 0 && (
+              <>
+                {/* 1. Columns List */}
                 <div className="space-y-2">
                   <Label>Columns ({rules.length})</Label>
                   <div className="space-y-2">
@@ -333,105 +475,209 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
                     })}
                   </div>
                 </div>
-              )}
 
-              {/* Secret Input - Show when hash is used */}
-              <Collapsible open={hasHashRule}>
-                <CollapsibleContent>
-                  <Collapsible open={secretInfoOpen} onOpenChange={setSecretInfoOpen}>
-                    <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <Label className="flex items-center gap-1.5 text-sm font-medium">
-                          <Key className="w-3.5 h-3.5" />
-                          Hash Secret
-                          <span className="text-destructive">*</span>
-                        </Label>
-                        <CollapsibleTrigger asChild>
-                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-                            <Info className="w-3.5 h-3.5 text-muted-foreground" />
-                          </Button>
-                        </CollapsibleTrigger>
-                      </div>
-                      <Input
-                        type="password"
-                        value={secret}
-                        onChange={(e) => setSecret(e.target.value)}
-                        placeholder="Min 5 characters"
+                {/* 2. Method Configuration - when a column is selected */}
+                {selectedRule && currentRule && (
+                  <div className="space-y-4 pt-2 border-t border-border/50 animate-in fade-in duration-200">
+                    {/* Method Selector */}
+                    <div className="space-y-2">
+                      <Label>Privacy Method</Label>
+                      <Select
+                        value={currentRule.method}
+                        onValueChange={(v) => handleMethodChange(selectedRule, v as ScrubMethod)}
                         disabled={isProcessing}
-                        className={cn((!secret || secret.length < MIN_SECRET_LENGTH) && 'border-amber-500/50')}
-                      />
-                      {!secret ? (
-                        <p className="text-xs text-amber-500">Enter a secret phrase (min 5 chars)</p>
-                      ) : secret.length < MIN_SECRET_LENGTH && (
-                        <p className="text-xs text-amber-500">
-                          {MIN_SECRET_LENGTH - secret.length} more character{MIN_SECRET_LENGTH - secret.length !== 1 ? 's' : ''} needed
-                        </p>
-                      )}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ALL_METHODS.map((method) => (
+                            <SelectItem key={method} value={method}>
+                              <div className="flex items-center gap-2">
+                                {METHOD_ICONS[method]}
+                                <span>{METHOD_LABELS[method]}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {/* Method Description */}
+                      <p className="text-xs text-muted-foreground">
+                        {OBFUSCATION_METHODS.find((m) => m.id === currentRule.method)?.description}
+                      </p>
+                    </div>
+
+                    {/* Hash Secret Input - Show inline when current column uses hash */}
+                    {currentRule.method === 'hash' && (
+                      <Collapsible open={secretInfoOpen} onOpenChange={setSecretInfoOpen}>
+                        <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="flex items-center gap-1.5 text-sm font-medium">
+                              <Key className="w-3.5 h-3.5" />
+                              Hash Secret
+                              <span className="text-destructive">*</span>
+                            </Label>
+                            <CollapsibleTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                                <Info className="w-3.5 h-3.5 text-muted-foreground" />
+                              </Button>
+                            </CollapsibleTrigger>
+                          </div>
+                          <Input
+                            type="password"
+                            value={secret}
+                            onChange={(e) => setSecret(e.target.value)}
+                            placeholder="Min 5 characters"
+                            disabled={isProcessing}
+                            className={cn((!secret || secret.length < MIN_SECRET_LENGTH) && 'border-amber-500/50')}
+                          />
+                          {!secret ? (
+                            <p className="text-xs text-amber-500">Enter a secret phrase (min 5 chars)</p>
+                          ) : secret.length < MIN_SECRET_LENGTH && (
+                            <p className="text-xs text-amber-500">
+                              {MIN_SECRET_LENGTH - secret.length} more character{MIN_SECRET_LENGTH - secret.length !== 1 ? 's' : ''} needed
+                            </p>
+                          )}
+                        </div>
+                        <CollapsibleContent className="mt-2">
+                          <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-xs">
+                            <p className="font-medium text-foreground">Why is this needed?</p>
+                            <p className="text-muted-foreground">
+                              The secret ensures <strong>consistent, secure hashing</strong>.
+                              Same value + same secret = same hash every time.
+                            </p>
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+
+                    {/* Info Card with Example */}
+                    <div className="bg-muted/30 rounded-lg p-3 space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">Example</p>
+                      <div className="flex items-center gap-2 text-xs font-mono">
+                        <span className="text-red-400/80">{METHOD_EXAMPLES[currentRule.method].before}</span>
+                        <span className="text-muted-foreground">→</span>
+                        <span className="text-green-400/80">{METHOD_EXAMPLES[currentRule.method].after}</span>
+                      </div>
+                    </div>
+
+                    {/* Live Preview */}
+                    {preview.length > 0 && (
+                      <div className="rounded-lg border border-teal-500/20 bg-teal-500/5 p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-xs font-medium text-teal-400">
+                            <Shield className="w-3.5 h-3.5" />
+                            Live Preview
+                            {currentRule.method === 'hash' && !secret && (
+                              <span className="text-[10px] text-muted-foreground font-normal">(demo secret)</span>
+                            )}
+                          </div>
+                          {isLoadingPreview && <Loader2 className="w-3 h-3 animate-spin text-teal-400" />}
+                        </div>
+                        <ScrollArea className="h-[100px]">
+                          <div className={cn('space-y-0 pr-3 transition-opacity duration-150', isLoadingPreview && 'opacity-50')}>
+                            {/* Header row */}
+                            <div className="flex items-center gap-3 text-[10px] font-medium text-muted-foreground pb-1.5 border-b border-border/50 mb-1.5">
+                              <span className="min-w-[100px] max-w-[120px]">Original</span>
+                              <ArrowRight className="w-3 h-3 shrink-0" />
+                              <span className="min-w-[100px] max-w-[120px]">Obfuscated</span>
+                            </div>
+                            {/* Data rows */}
+                            {preview.map((row, i) => (
+                              <div
+                                key={i}
+                                className="flex items-center gap-3 text-xs font-mono py-1 border-b border-border/20 last:border-0"
+                              >
+                                <span
+                                  className="text-muted-foreground/80 min-w-[100px] max-w-[120px] truncate"
+                                  title={row.original ?? '(null)'}
+                                >
+                                  {row.original === null ? '(null)' : row.original === '' ? '(empty)' : row.original}
+                                </span>
+                                <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                                <span
+                                  className="text-green-400/90 min-w-[100px] max-w-[120px] truncate"
+                                  title={row.result ?? '(null)'}
+                                >
+                                  {row.result === null ? '(null)' : row.result === '' ? '(empty)' : row.result}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 3. Add Column - after configuration */}
+                <div className="space-y-2 pt-2 border-t border-border/50">
+                  <Label>Add Column</Label>
+                  <ColumnCombobox
+                    columns={availableColumns}
+                    value=""
+                    onValueChange={handleAddColumn}
+                    placeholder="Add more columns..."
+                    disabled={isProcessing || availableColumns.length === 0}
+                  />
+                </div>
+
+                {/* 4. Global Options - at the bottom */}
+                <div className="pt-2 border-t border-border/50">
+                  <Collapsible open={keyMapInfoOpen} onOpenChange={setKeyMapInfoOpen}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="keymap"
+                          checked={generateKeyMap}
+                          onCheckedChange={(checked) => setGenerateKeyMap(checked === true)}
+                          disabled={isProcessing}
+                        />
+                        <Label htmlFor="keymap" className="text-sm cursor-pointer">
+                          Generate Key Map Table
+                        </Label>
+                      </div>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                          <Info className="w-3.5 h-3.5 text-muted-foreground" />
+                        </Button>
+                      </CollapsibleTrigger>
                     </div>
                     <CollapsibleContent className="mt-2">
                       <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-xs">
-                        <p className="font-medium text-foreground">Why is this needed?</p>
+                        <p className="font-medium text-foreground">What is a Key Map Table?</p>
                         <p className="text-muted-foreground">
-                          The secret ensures <strong>consistent, secure hashing</strong>.
-                          Same value + same secret = same hash every time.
+                          Creates a table named <code className="bg-muted px-1 rounded">{activeTable?.name}_keymap</code> that maps
+                          original values to obfuscated values.
                         </p>
+                        <ul className="text-muted-foreground space-y-1 mt-2">
+                          <li className="flex items-start gap-1.5">
+                            <span className="text-teal-400">•</span>
+                            Enables lookup of original values
+                          </li>
+                          <li className="flex items-start gap-1.5">
+                            <span className="text-teal-400">•</span>
+                            Works with recipes (auto-generated on replay)
+                          </li>
+                          <li className="flex items-start gap-1.5">
+                            <span className="text-amber-400">•</span>
+                            Contains sensitive data - handle securely
+                          </li>
+                        </ul>
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
-                </CollapsibleContent>
-              </Collapsible>
-
-              {/* Generate Key Map Option */}
-              <Collapsible open={keyMapInfoOpen} onOpenChange={setKeyMapInfoOpen}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="keymap"
-                      checked={generateKeyMap}
-                      onCheckedChange={(checked) => setGenerateKeyMap(checked === true)}
-                      disabled={isProcessing}
-                    />
-                    <Label htmlFor="keymap" className="text-sm cursor-pointer">
-                      Generate Key Map Table
-                    </Label>
-                  </div>
-                  <CollapsibleTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-                      <Info className="w-3.5 h-3.5 text-muted-foreground" />
-                    </Button>
-                  </CollapsibleTrigger>
                 </div>
-                <CollapsibleContent className="mt-2">
-                  <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-xs">
-                    <p className="font-medium text-foreground">What is a Key Map Table?</p>
-                    <p className="text-muted-foreground">
-                      Creates a table named <code className="bg-muted px-1 rounded">{activeTable?.name}_keymap</code> that maps
-                      original values to obfuscated values.
-                    </p>
-                    <ul className="text-muted-foreground space-y-1 mt-2">
-                      <li className="flex items-start gap-1.5">
-                        <span className="text-teal-400">•</span>
-                        Enables lookup of original values
-                      </li>
-                      <li className="flex items-start gap-1.5">
-                        <span className="text-teal-400">•</span>
-                        Works with recipes (auto-generated on replay)
-                      </li>
-                      <li className="flex items-start gap-1.5">
-                        <span className="text-amber-400">•</span>
-                        Contains sensitive data - handle securely
-                      </li>
-                    </ul>
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-            </div>
-          </ScrollArea>
+              </>
+            )}
+          </div>
+        </ScrollArea>
 
-          {/* Action Buttons */}
-          <div className="p-4 border-t border-border/50 space-y-2">
+        {/* 5. Action Buttons - equal width */}
+        <div className="p-4 border-t border-border/50 space-y-2">
+          <div className="flex gap-2">
             <Button
-              className="w-full bg-teal-600 hover:bg-teal-700"
+              className="flex-1 bg-teal-600 hover:bg-teal-700"
               onClick={handleApply}
               disabled={
                 !activeTable ||
@@ -452,143 +698,89 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
                 </>
               )}
             </Button>
-            <Button
-              variant="ghost"
-              className="w-full"
-              onClick={onCancel}
-              disabled={isProcessing}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
 
-        {/* Right Column: Rule Configuration */}
-        <div className="flex-1 flex flex-col overflow-y-auto">
-          <div className="flex-1 p-4 flex flex-col">
-            {selectedRule && currentRule ? (
-              <div className="space-y-4 animate-in fade-in duration-200 my-auto">
-                {/* Info Card */}
-                <div className="bg-muted/30 rounded-lg p-3 space-y-3">
-                  <div>
-                    <h3 className="font-medium flex items-center gap-2">
-                      {METHOD_ICONS[currentRule.method]}
-                      Configure Privacy Method
-                    </h3>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Column: <span className="font-medium text-foreground">{selectedRule}</span>
-                    </p>
-                  </div>
-
-                  {/* Method Example */}
-                  {METHOD_EXAMPLES[currentRule.method] && (
-                    <div className="border-t border-border/50 pt-2">
-                      <p className="text-xs font-medium text-muted-foreground mb-1.5">Example</p>
-                      <div className="flex items-center gap-2 text-xs font-mono">
-                        <span className="text-red-400/80">{METHOD_EXAMPLES[currentRule.method].before}</span>
-                        <span className="text-muted-foreground">→</span>
-                        <span className="text-green-400/80">{METHOD_EXAMPLES[currentRule.method].after}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Live Preview */}
-                {preview.length > 0 && (
-                  <div className="rounded-lg border border-teal-500/20 bg-teal-500/5 p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-xs font-medium text-teal-400">
-                        <Shield className="w-3.5 h-3.5" />
-                        Live Preview
-                        {currentRule.method === 'hash' && !secret && (
-                          <span className="text-[10px] text-muted-foreground font-normal">(demo secret)</span>
-                        )}
-                      </div>
-                      {isLoadingPreview && <Loader2 className="w-3 h-3 animate-spin text-teal-400" />}
-                    </div>
-                    <ScrollArea className="h-[140px]">
-                      <div className={cn('space-y-0 pr-3 transition-opacity duration-150', isLoadingPreview && 'opacity-50')}>
-                        {/* Header row */}
-                        <div className="flex items-center gap-3 text-[10px] font-medium text-muted-foreground pb-1.5 border-b border-border/50 mb-1.5">
-                          <span className="min-w-[120px] max-w-[140px]">Original</span>
-                          <ArrowRight className="w-3 h-3 shrink-0" />
-                          <span className="min-w-[120px] max-w-[140px]">Obfuscated</span>
-                        </div>
-                        {/* Data rows */}
-                        {preview.map((row, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center gap-3 text-xs font-mono py-1 border-b border-border/20 last:border-0"
-                          >
-                            <span
-                              className="text-muted-foreground/80 min-w-[120px] max-w-[140px] truncate"
-                              title={row.original ?? '(null)'}
-                            >
-                              {row.original === null ? '(null)' : row.original === '' ? '(empty)' : row.original}
-                            </span>
-                            <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
-                            <span
-                              className="text-green-400/90 min-w-[120px] max-w-[140px] truncate"
-                              title={row.result ?? '(null)'}
-                            >
-                              {row.result === null ? '(null)' : row.result === '' ? '(empty)' : row.result}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  </div>
+            {/* Add to Recipe Dropdown - equal width */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={!canAddToRecipe() || isProcessing}
+                  data-testid="privacy-add-to-recipe-btn"
+                >
+                  <BookOpen className="w-4 h-4 mr-2" />
+                  Add to Recipe
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem onClick={handleAddToNewRecipe}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create New Recipe...
+                </DropdownMenuItem>
+                {recipes.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
+                    {recipes.map((recipe) => (
+                      <DropdownMenuItem
+                        key={recipe.id}
+                        onClick={() => handleAddToExistingRecipe(recipe.id)}
+                      >
+                        {recipe.name}
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {recipe.steps.length} steps
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                  </>
                 )}
-
-                {/* Method Selector */}
-                <div className="space-y-2">
-                  <Label>Privacy Method</Label>
-                  <Select
-                    value={currentRule.method}
-                    onValueChange={(v) => handleMethodChange(selectedRule, v as ScrubMethod)}
-                    disabled={isProcessing}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ALL_METHODS.map((method) => (
-                        <SelectItem key={method} value={method}>
-                          <div className="flex items-center gap-2">
-                            {METHOD_ICONS[method]}
-                            <span>{METHOD_LABELS[method]}</span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Method Description */}
-                <div className="text-sm text-muted-foreground">
-                  {OBFUSCATION_METHODS.find((m) => m.id === currentRule.method)?.description}
-                </div>
-              </div>
-            ) : (
-              /* Empty State */
-              <div className="flex flex-col items-center justify-center my-auto min-h-[300px] text-center p-6">
-                <div className="w-12 h-12 rounded-full bg-teal-500/10 flex items-center justify-center mb-4">
-                  <Shield className="w-6 h-6 text-teal-400" />
-                </div>
-                <h3 className="font-medium mb-1">Privacy Transforms</h3>
-                <p className="text-sm text-muted-foreground">
-                  {rules.length > 0
-                    ? 'Select a column from the left to configure its privacy method'
-                    : 'Add columns from the left to configure privacy transforms'}
-                </p>
-              </div>
-            )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
+          <Button
+            variant="ghost"
+            className="w-full"
+            onClick={onCancel}
+            disabled={isProcessing}
+          >
+            Cancel
+          </Button>
         </div>
       </div>
 
       {/* Confirm Discard Undone Operations Dialog */}
       <ConfirmDiscardDialog {...confirmDialogProps} />
+
+      {/* New Recipe Dialog */}
+      <Dialog open={showNewRecipeDialog} onOpenChange={setShowNewRecipeDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Create New Recipe</DialogTitle>
+            <DialogDescription>
+              The privacy transforms will be added as the first step.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Label htmlFor="new-recipe-name">Recipe Name</Label>
+            <Input
+              id="new-recipe-name"
+              value={newRecipeName}
+              onChange={(e) => setNewRecipeName(e.target.value)}
+              placeholder="e.g., PII Scrubbing"
+              className="mt-2"
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowNewRecipeDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateRecipeWithStep}>
+              Create & Add Step
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
