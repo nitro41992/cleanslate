@@ -13,6 +13,7 @@ import type {
   ValidationResult,
 } from '../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../transform/base'
+import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 
 export interface ScrubYearOnlyParams extends BaseTransformParams {
   column: string
@@ -41,21 +42,42 @@ export class ScrubYearOnlyCommand extends Tier3TransformCommand<ScrubYearOnlyPar
       const columns = ctx.table.columns.map((c) => c.name)
       const otherCols = columns.filter((c) => c !== column)
 
-      // Build column list: other columns unchanged, target column transformed to VARCHAR
-      const selectCols = otherCols.map((c) => `"${c}"`).join(', ')
+      // Check if identity columns exist (for legacy tables)
+      const schemaResult = await ctx.db.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = '${tableName}'`
+      )
+      const allTableCols = schemaResult.map(r => r.column_name)
+      const hasCsId = allTableCols.includes(CS_ID_COLUMN)
+      const hasCsOriginId = allTableCols.includes(CS_ORIGIN_ID_COLUMN)
+
+      // Build SELECT parts: identity columns first, then data columns
+      const selectParts: string[] = []
+      if (hasCsId) {
+        selectParts.push(`"${CS_ID_COLUMN}"`)
+      }
+      if (hasCsOriginId) {
+        selectParts.push(`"${CS_ORIGIN_ID_COLUMN}"`)
+      }
+
+      // Add other data columns unchanged
+      for (const col of otherCols) {
+        selectParts.push(`"${col}"`)
+      }
+
+      // Add the transformed column
       const transformExpr = `CASE
         WHEN "${column}" IS NOT NULL AND TRY_CAST("${column}" AS DATE) IS NOT NULL
         THEN strftime(DATE_TRUNC('year', TRY_CAST("${column}" AS DATE)), '%Y-%m-%d')
         ELSE CAST("${column}" AS VARCHAR)
       END AS "${column}"`
-
-      const selectClause = otherCols.length > 0 ? `${selectCols}, ${transformExpr}` : transformExpr
+      selectParts.push(transformExpr)
 
       // Use CTAS pattern to recreate table with transformed column as VARCHAR
-      // CRITICAL: ORDER BY "_cs_id" preserves row order (prevents flaky tests)
+      // Order by _cs_id if it exists, otherwise use default row order
       const tempTable = `_temp_year_only_${Date.now()}`
+      const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
       await ctx.db.execute(
-        `CREATE TABLE "${tempTable}" AS SELECT ${selectClause} FROM "${tableName}" ORDER BY "_cs_id"`
+        `CREATE TABLE "${tempTable}" AS SELECT ${selectParts.join(', ')} FROM "${tableName}" ${orderClause}`
       )
 
       // Drop original and rename temp

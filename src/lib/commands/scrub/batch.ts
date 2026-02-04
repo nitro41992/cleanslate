@@ -17,6 +17,7 @@ import type {
 } from '../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../transform/base'
 import type { ScrubMethod } from '@/types'
+import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 
 /**
  * A single rule in the batch configuration
@@ -152,15 +153,34 @@ export class ScrubBatchCommand extends Tier3TransformCommand<ScrubBatchParams> {
       const allCols = ctx.table.columns.map((c) => c.name)
       const rulesByColumn = new Map(rules.map((r) => [r.column, r]))
 
-      const selectParts = allCols.map((col) => {
+      // Check if identity columns exist (for legacy tables)
+      const schemaResult = await ctx.db.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = '${tableName}'`
+      )
+      const allTableCols = schemaResult.map(r => r.column_name)
+      const hasCsId = allTableCols.includes(CS_ID_COLUMN)
+      const hasCsOriginId = allTableCols.includes(CS_ORIGIN_ID_COLUMN)
+
+      // Start with identity columns (preserve row ordering/identity)
+      const selectParts: string[] = []
+      if (hasCsId) {
+        selectParts.push(`"${CS_ID_COLUMN}"`)
+      }
+      if (hasCsOriginId) {
+        selectParts.push(`"${CS_ORIGIN_ID_COLUMN}"`)
+      }
+
+      // Add data columns with transforms applied
+      for (const col of allCols) {
         const rule = rulesByColumn.get(col)
         if (rule) {
           const sqlExpr = METHOD_SQL[rule.method](col, secret)
           affectedColumns.push(col)
-          return `${sqlExpr} AS "${col}"`
+          selectParts.push(`${sqlExpr} AS "${col}"`)
+        } else {
+          selectParts.push(`"${col}"`)
         }
-        return `"${col}"`
-      })
+      }
 
       // Count affected rows (non-null values in any target column)
       const countConditions = rules.map(
@@ -172,9 +192,11 @@ export class ScrubBatchCommand extends Tier3TransformCommand<ScrubBatchParams> {
       totalAffected = Number(countResult[0]?.count ?? 0)
 
       // Execute CTAS pattern
+      // Order by _cs_id if it exists, otherwise use default row order
       const tempTable = `_temp_scrub_batch_${Date.now()}`
+      const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
       await ctx.db.execute(
-        `CREATE TABLE "${tempTable}" AS SELECT ${selectParts.join(', ')} FROM "${tableName}" ORDER BY "_cs_id"`
+        `CREATE TABLE "${tempTable}" AS SELECT ${selectParts.join(', ')} FROM "${tableName}" ${orderClause}`
       )
       await ctx.db.execute(`DROP TABLE "${tableName}"`)
       await ctx.db.execute(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)

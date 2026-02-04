@@ -48,14 +48,20 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import { useRecipeStore, selectSelectedRecipe, type ColumnMapping } from '@/stores/recipeStore'
+import { useRecipeStore, selectSelectedRecipe } from '@/stores/recipeStore'
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
+import { useRecipeExecution } from '@/hooks/useRecipeExecution'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import type { Recipe, RecipeStep } from '@/types'
-import { TRANSFORMATIONS } from '@/lib/transformations'
+import type { RecipeStep } from '@/types'
 import { formatRecipeValue } from '@/lib/recipe/format-helpers'
+import {
+  getTransformDefinition,
+  getStepIcon,
+  getStepLabel,
+  getReadableStepType,
+} from '@/lib/recipe/transform-lookup'
 
 /**
  * RecipePanel - Companion panel for the Clean panel
@@ -86,12 +92,8 @@ export function RecipePanel() {
   const toggleStepEnabled = useRecipeStore((s) => s.toggleStepEnabled)
   const removeStep = useRecipeStore((s) => s.removeStep)
   const reorderSteps = useRecipeStore((s) => s.reorderSteps)
-  const setColumnMapping = useRecipeStore((s) => s.setColumnMapping)
   const updateColumnMapping = useRecipeStore((s) => s.updateColumnMapping)
   const clearColumnMapping = useRecipeStore((s) => s.clearColumnMapping)
-  const setIsProcessing = useRecipeStore((s) => s.setIsProcessing)
-  const setExecutionProgress = useRecipeStore((s) => s.setExecutionProgress)
-  const setExecutionError = useRecipeStore((s) => s.setExecutionError)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -129,6 +131,13 @@ export function RecipePanel() {
       .map((c) => c.name)
   }, [activeTable])
 
+  // Recipe execution hook with secret handling
+  const { startExecution, continueAfterMapping, secretDialogElement } = useRecipeExecution({
+    activeTableId: activeTableId ?? undefined,
+    activeTableName: activeTable?.name ?? undefined,
+    tableColumns,
+  })
+
   // Detect newly added steps and trigger highlight
   useEffect(() => {
     if (selectedRecipe) {
@@ -146,48 +155,12 @@ export function RecipePanel() {
     }
   }, [selectedRecipe?.steps.length])
 
-  // Get transform icon from step type
-  const getStepIcon = (step: RecipeStep): string => {
-    const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
-    const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
-    return transform?.icon || '🔄'
-  }
-
-  // Get transform label from step type
-  const getTransformLabel = (step: RecipeStep): string => {
-    const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
-    const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
-    return transform?.label || transformId
-  }
-
-  // Format step label for display (transform name only, column shown separately)
-  const formatStepLabel = (step: RecipeStep) => {
-    return getTransformLabel(step)
-  }
-
-  // Get category from step type (Transform, Scrub, Smart Replace)
-  const getCategory = (stepType: string): string => {
-    if (stepType.startsWith('scrub:')) return 'Scrub'
-    if (stepType.startsWith('standardize:')) return 'Smart Replace'
-    return 'Transform'
-  }
-
-  // Get user-friendly type display (Category: Label format)
-  const getReadableType = (step: RecipeStep): string => {
-    const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
-    const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
-    const category = getCategory(step.type)
-    const label = transform?.label || transformId
-    return `${category}: ${label}`
-  }
-
   // Format step parameters for display - shows ALL params from transform definition
   const formatStepParams = (step: RecipeStep): React.ReactNode => {
-    const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
-    const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
+    const transform = getTransformDefinition(step)
 
-    // If no transform definition found, fall back to showing stored params
-    if (!transform?.params) {
+    // If no params defined in transform, or params array is empty, use stored params
+    if (!transform?.params || transform.params.length === 0) {
       if (!step.params || Object.keys(step.params).length === 0) return null
       return (
         <div className="space-y-1 text-xs overflow-hidden">
@@ -371,58 +344,11 @@ export function RecipePanel() {
 
   // Handle apply recipe
   const handleApplyRecipe = async () => {
-    if (!selectedRecipe || !activeTableId || !activeTable) {
-      toast.error('Please select a table first')
-      return
-    }
+    if (!selectedRecipe) return
 
-    const enabledSteps = selectedRecipe.steps.filter((s) => s.enabled)
-    if (enabledSteps.length === 0) {
-      toast.error('Recipe has no enabled steps')
-      return
-    }
-
-    const { matchColumns } = await import('@/lib/recipe/column-matcher')
-    const matchResult = matchColumns(selectedRecipe.requiredColumns, tableColumns)
-
-    if (matchResult.unmapped.length > 0) {
-      const initialMapping: ColumnMapping = {}
-      for (const col of selectedRecipe.requiredColumns) {
-        initialMapping[col] = matchResult.mapping[col] || ''
-      }
-      setColumnMapping(initialMapping)
-      useRecipeStore.getState().setUnmappedColumns(matchResult.unmapped)
+    await startExecution(selectedRecipe, (_recipe, _mapping, _unmapped) => {
       setShowMappingDialog(true)
-      return
-    }
-
-    await executeRecipe(selectedRecipe, matchResult.mapping)
-  }
-
-  // Execute recipe with mapping
-  const executeRecipe = async (recipe: Recipe, mapping: ColumnMapping) => {
-    if (!activeTableId || !activeTable) return
-
-    setIsProcessing(true)
-    setExecutionError(null)
-
-    try {
-      const { executeRecipe: doExecute } = await import('@/lib/recipe/recipe-executor')
-      await doExecute(recipe, activeTableId, activeTable.name, mapping, (progress) => {
-        setExecutionProgress(progress)
-      })
-
-      toast.success(`Recipe applied (${recipe.steps.filter((s) => s.enabled).length} steps)`)
-    } catch (err) {
-      console.error('Recipe execution failed:', err)
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      setExecutionError(message)
-      toast.error('Recipe failed', { description: message })
-    } finally {
-      setIsProcessing(false)
-      setExecutionProgress(null)
-      clearColumnMapping()
-    }
+    })
   }
 
   // Handle confirm column mapping
@@ -436,7 +362,7 @@ export function RecipePanel() {
     }
 
     setShowMappingDialog(false)
-    await executeRecipe(selectedRecipe, pendingColumnMapping)
+    await continueAfterMapping(pendingColumnMapping)
   }
 
   // Handle expand to full Recipe panel view
@@ -637,7 +563,7 @@ export function RecipePanel() {
                           {/* Label with nested column */}
                           <div className="flex-1 min-w-0">
                             <div className="font-medium text-xs leading-tight">
-                              {formatStepLabel(step)}
+                              {getStepLabel(step)}
                             </div>
                             {step.column && (
                               <div className="text-xs text-muted-foreground pl-3 flex items-center gap-1">
@@ -682,7 +608,7 @@ export function RecipePanel() {
                           <div className="flex items-start gap-2 text-xs min-w-0">
                             <span className="text-muted-foreground shrink-0">Type:</span>
                             <span className="text-foreground/80">
-                              {getReadableType(step)}
+                              {getReadableStepType(step)}
                             </span>
                           </div>
                           {(() => {
@@ -946,6 +872,9 @@ export function RecipePanel() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Secret Input Dialog (from shared hook) */}
+      {secretDialogElement}
     </div>
   )
 }

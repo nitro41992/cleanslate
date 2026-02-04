@@ -5,7 +5,7 @@
  * Each step is executed as a separate command (separate undo entry).
  */
 
-import type { Recipe, RecipeStep } from '@/types'
+import type { Recipe, RecipeStep, ScrubMethod } from '@/types'
 import type { ColumnMapping, RecipeExecutionProgress } from '@/stores/recipeStore'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import type { CommandType } from '@/lib/commands'
@@ -19,13 +19,15 @@ import { applyMappingToParams } from './column-matcher'
  * @param tableName - Target table name
  * @param columnMapping - Mapping from recipe columns to table columns
  * @param onProgress - Progress callback
+ * @param secret - Optional secret for hash operations (prompted at apply time, not stored in recipe)
  */
 export async function executeRecipe(
   recipe: Recipe,
   tableId: string,
   _tableName: string,
   columnMapping: ColumnMapping,
-  onProgress?: (progress: RecipeExecutionProgress) => void
+  onProgress?: (progress: RecipeExecutionProgress) => void,
+  secret?: string
 ): Promise<void> {
   const enabledSteps = recipe.steps.filter((s) => s.enabled)
 
@@ -50,7 +52,7 @@ export async function executeRecipe(
     }
 
     try {
-      await executeStep(step, tableId, columnMapping, executor)
+      await executeStep(step, tableId, columnMapping, executor, secret)
       console.log(`[Recipe] Step ${i + 1}/${enabledSteps.length} completed: ${step.label}`)
     } catch (err) {
       console.error(`[Recipe] Step ${i + 1} failed:`, err)
@@ -68,7 +70,8 @@ async function executeStep(
   step: RecipeStep,
   tableId: string,
   columnMapping: ColumnMapping,
-  executor: ReturnType<typeof getCommandExecutor>
+  executor: ReturnType<typeof getCommandExecutor>,
+  secret?: string
 ): Promise<void> {
   // Validate command type
   const commandType = step.type as CommandType
@@ -81,6 +84,12 @@ async function executeStep(
   // Older recipes may not have the algorithm field
   if (commandType === 'standardize:apply' && !mappedParams.algorithm) {
     mappedParams.algorithm = 'fingerprint' // Default to fingerprint algorithm
+  }
+
+  // Inject secret for scrub commands that need it
+  // The secret is provided at apply time, not stored in recipes for security
+  if (secret && (commandType === 'scrub:batch' || commandType === 'scrub:hash')) {
+    mappedParams.secret = secret
   }
 
   // Create the command
@@ -162,5 +171,26 @@ export function previewRecipe(recipe: Recipe, columnMapping?: ColumnMapping): st
       return `${index + 1}. ${type} on "${mappedColumn}"${enabledStr}`
     }
     return `${index + 1}. ${type}${enabledStr}`
+  })
+}
+
+/**
+ * Check if a recipe has steps that require a secret (hash operations).
+ * Used to determine if a secret prompt is needed before execution.
+ *
+ * @param recipe - The recipe to check
+ * @returns true if any enabled step requires a secret
+ */
+export function recipeRequiresSecret(recipe: Recipe): boolean {
+  return recipe.steps.some((step) => {
+    if (!step.enabled) return false
+    // Check scrub:batch steps for hash rules
+    if (step.type === 'scrub:batch') {
+      const rules = step.params?.rules as Array<{ column: string; method: ScrubMethod }> | undefined
+      return rules?.some((r) => r.method === 'hash') ?? false
+    }
+    // Check individual scrub:hash steps
+    if (step.type === 'scrub:hash') return true
+    return false
   })
 }

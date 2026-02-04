@@ -38,12 +38,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { useRecipeStore, selectSelectedRecipe, type ColumnMapping } from '@/stores/recipeStore'
+import { useRecipeStore, selectSelectedRecipe } from '@/stores/recipeStore'
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
+import { useRecipeExecution } from '@/hooks/useRecipeExecution'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import type { Recipe, RecipeStep } from '@/types'
+import type { RecipeStep } from '@/types'
 import { RecipeStepCard } from '@/components/recipe/RecipeStepCard'
 
 /**
@@ -72,12 +73,8 @@ export function RecipePanelPrimary() {
   const toggleStepEnabled = useRecipeStore((s) => s.toggleStepEnabled)
   const removeStep = useRecipeStore((s) => s.removeStep)
   const reorderSteps = useRecipeStore((s) => s.reorderSteps)
-  const setColumnMapping = useRecipeStore((s) => s.setColumnMapping)
   const updateColumnMapping = useRecipeStore((s) => s.updateColumnMapping)
   const clearColumnMapping = useRecipeStore((s) => s.clearColumnMapping)
-  const setIsProcessing = useRecipeStore((s) => s.setIsProcessing)
-  const setExecutionProgress = useRecipeStore((s) => s.setExecutionProgress)
-  const setExecutionError = useRecipeStore((s) => s.setExecutionError)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -109,6 +106,13 @@ export function RecipePanelPrimary() {
       .filter((c) => !c.name.startsWith('_cs_') && !c.name.startsWith('__'))
       .map((c) => c.name)
   }, [activeTable])
+
+  // Recipe execution hook with secret handling
+  const { startExecution, continueAfterMapping, secretDialogElement } = useRecipeExecution({
+    activeTableId: activeTableId ?? undefined,
+    activeTableName: activeTable?.name ?? undefined,
+    tableColumns,
+  })
 
   // Detect newly added steps and trigger highlight
   useEffect(() => {
@@ -281,58 +285,11 @@ export function RecipePanelPrimary() {
 
   // Handle apply recipe
   const handleApplyRecipe = async () => {
-    if (!selectedRecipe || !activeTableId || !activeTable) {
-      toast.error('Please select a table first')
-      return
-    }
+    if (!selectedRecipe) return
 
-    const enabledSteps = selectedRecipe.steps.filter((s) => s.enabled)
-    if (enabledSteps.length === 0) {
-      toast.error('Recipe has no enabled steps')
-      return
-    }
-
-    const { matchColumns } = await import('@/lib/recipe/column-matcher')
-    const matchResult = matchColumns(selectedRecipe.requiredColumns, tableColumns)
-
-    if (matchResult.unmapped.length > 0) {
-      const initialMapping: ColumnMapping = {}
-      for (const col of selectedRecipe.requiredColumns) {
-        initialMapping[col] = matchResult.mapping[col] || ''
-      }
-      setColumnMapping(initialMapping)
-      useRecipeStore.getState().setUnmappedColumns(matchResult.unmapped)
+    await startExecution(selectedRecipe, (_recipe, _mapping, _unmapped) => {
       setShowMappingDialog(true)
-      return
-    }
-
-    await executeRecipe(selectedRecipe, matchResult.mapping)
-  }
-
-  // Execute recipe with mapping
-  const executeRecipe = async (recipe: Recipe, mapping: ColumnMapping) => {
-    if (!activeTableId || !activeTable) return
-
-    setIsProcessing(true)
-    setExecutionError(null)
-
-    try {
-      const { executeRecipe: doExecute } = await import('@/lib/recipe/recipe-executor')
-      await doExecute(recipe, activeTableId, activeTable.name, mapping, (progress) => {
-        setExecutionProgress(progress)
-      })
-
-      toast.success(`Recipe applied (${recipe.steps.filter((s) => s.enabled).length} steps)`)
-    } catch (err) {
-      console.error('Recipe execution failed:', err)
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      setExecutionError(message)
-      toast.error('Recipe failed', { description: message })
-    } finally {
-      setIsProcessing(false)
-      setExecutionProgress(null)
-      clearColumnMapping()
-    }
+    })
   }
 
   // Handle confirm column mapping
@@ -346,7 +303,7 @@ export function RecipePanelPrimary() {
     }
 
     setShowMappingDialog(false)
-    await executeRecipe(selectedRecipe, pendingColumnMapping)
+    await continueAfterMapping(pendingColumnMapping)
   }
 
   // Format date for display
@@ -794,6 +751,9 @@ export function RecipePanelPrimary() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Secret Input Dialog (from shared hook) */}
+      {secretDialogElement}
     </div>
   )
 }

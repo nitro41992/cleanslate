@@ -463,7 +463,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
   // Privacy (FR-D)
   {
     id: 'privacy_batch',
-    label: 'Privacy / Scrub',
+    label: 'Privacy',
     description: 'Apply privacy transforms to multiple columns at once',
     icon: '🛡️',
     requiresColumn: false, // Uses sub-panel for column selection

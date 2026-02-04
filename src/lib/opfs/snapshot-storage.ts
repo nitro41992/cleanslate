@@ -11,7 +11,7 @@
 
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import * as duckdb from '@duckdb/duckdb-wasm'
-import { CS_ID_COLUMN } from '@/lib/duckdb'
+import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { deleteFileIfExists } from './opfs-helpers'
 
 /**
@@ -74,6 +74,65 @@ async function withGlobalExportLock<T>(fn: () => Promise<T>): Promise<T> {
     // Release the lock for next export
     resolve()
   }
+}
+
+/**
+ * Ensure identity columns (_cs_id, _cs_origin_id) exist in a restored table.
+ * Tables from older Parquet snapshots may be missing these columns.
+ *
+ * If missing, recreates the table with identity columns added.
+ */
+async function ensureIdentityColumns(
+  conn: AsyncDuckDBConnection,
+  tableName: string
+): Promise<void> {
+  // Check if _cs_id column exists
+  const columnsResult = await conn.query(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = '${tableName}'
+  `)
+  const columns = columnsResult.toArray().map(row => row.toJSON().column_name as string)
+
+  const hasCsId = columns.includes(CS_ID_COLUMN)
+  const hasCsOriginId = columns.includes(CS_ORIGIN_ID_COLUMN)
+
+  if (hasCsId && hasCsOriginId) {
+    return // Both columns exist, nothing to do
+  }
+
+  console.log(`[Snapshot] Adding missing identity columns to ${tableName}`)
+
+  // Get non-internal column names for SELECT
+  const dataColumns = columns
+    .filter(c => c !== CS_ID_COLUMN && c !== CS_ORIGIN_ID_COLUMN)
+    .map(c => `"${c}"`)
+    .join(', ')
+
+  // Build SELECT clause with identity columns
+  const selectParts: string[] = []
+
+  if (!hasCsId) {
+    selectParts.push(`ROW_NUMBER() OVER () as "${CS_ID_COLUMN}"`)
+  } else {
+    selectParts.push(`"${CS_ID_COLUMN}"`)
+  }
+
+  if (!hasCsOriginId) {
+    selectParts.push(`gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}"`)
+  } else {
+    selectParts.push(`"${CS_ORIGIN_ID_COLUMN}"`)
+  }
+
+  selectParts.push(dataColumns)
+
+  // Recreate table with identity columns
+  const tempTable = `__temp_restore_${Date.now()}`
+  await conn.query(`
+    CREATE TABLE "${tempTable}" AS
+    SELECT ${selectParts.join(', ')} FROM "${tableName}"
+  `)
+  await conn.query(`DROP TABLE "${tableName}"`)
+  await conn.query(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
 }
 
 /**
@@ -589,6 +648,9 @@ export async function importTableFromParquet(
 
     await db.dropFile(fileName)
   }
+
+  // Ensure identity columns exist (for snapshots from older versions)
+  await ensureIdentityColumns(conn, targetTableName)
 }
 
 /**

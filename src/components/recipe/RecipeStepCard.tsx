@@ -7,8 +7,8 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { RecipeStep } from '@/types'
-import { TRANSFORMATIONS } from '@/lib/transformations'
 import { formatRecipeValue } from '@/lib/recipe/format-helpers'
+import { getTransformDefinition, getStepIcon, getStepLabel } from '@/lib/recipe/transform-lookup'
 
 interface RecipeStepCardProps {
   step: RecipeStep
@@ -40,10 +40,9 @@ export function RecipeStepCard({
   onDelete,
 }: RecipeStepCardProps) {
   // Get transform definition for full parameter info
-  const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
-  const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
-  const icon = transform?.icon || '🔄'
-  const label = transform?.label || transformId
+  const transform = getTransformDefinition(step)
+  const icon = getStepIcon(step)
+  const label = getStepLabel(step)
 
   // Get human-readable label for a parameter
   const getParamLabel = (name: string): string => {
@@ -61,8 +60,8 @@ export function RecipeStepCard({
 
   // Build complete parameter list from transform definition
   const getAllParams = (): { name: string; label: string; value: unknown }[] => {
-    if (!transform?.params) {
-      // No params defined - return stored params if any
+    // If no params defined in transform, or params array is empty, use stored params
+    if (!transform?.params || transform.params.length === 0) {
       if (step.params && Object.keys(step.params).length > 0) {
         return Object.entries(step.params).map(([name, value]) => ({
           name,
