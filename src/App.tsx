@@ -328,7 +328,7 @@ function App() {
   }
 
   // Get secondary panel content (for dual panel mode)
-  // Recipe panel always appears as secondary alongside Clean (never as primary)
+  // RecipePanel (compact) appears as secondary alongside Clean panel
   const getSecondaryPanelContent = () => {
     switch (secondaryPanel) {
       case 'recipe':

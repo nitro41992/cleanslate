@@ -126,6 +126,13 @@ export function RecipePanelPrimary() {
     tableColumns,
   })
 
+  // Auto-select first recipe when panel opens and none is selected
+  useEffect(() => {
+    if (recipes.length > 0 && !selectedRecipeId) {
+      setSelectedRecipe(recipes[0].id)
+    }
+  }, [recipes, selectedRecipeId, setSelectedRecipe])
+
   // Detect newly added steps and trigger highlight
   useEffect(() => {
     if (selectedRecipe) {
