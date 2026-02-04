@@ -2,8 +2,8 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { FileText, WrapText } from 'lucide-react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { MobileBlocker } from '@/components/layout/MobileBlocker'
+import { EmptyStateLanding } from '@/components/layout/EmptyStateLanding'
 import { Toaster } from '@/components/ui/sonner'
-import { FileDropzone } from '@/components/common/FileDropzone'
 import { IngestionWizard } from '@/components/common/IngestionWizard'
 import { DataGrid } from '@/components/grid/DataGrid'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -338,6 +338,45 @@ function App() {
     }
   }
 
+  // When no table is loaded, show the minimal landing page
+  if (!activeTable) {
+    return (
+      <>
+        <MobileBlocker />
+        <EmptyStateLanding
+          onFileDrop={handleFileDrop}
+          isLoading={isLoading}
+          isReady={isReady}
+        />
+
+        {/* Hidden file input - still needed for programmatic triggers */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.json,.parquet,.xlsx,.xls"
+          onChange={handleFileInputChange}
+          className="hidden"
+          data-testid="file-input"
+        />
+
+        {/* CSV Ingestion Wizard */}
+        <IngestionWizard
+          open={showWizard}
+          onOpenChange={(open) => {
+            setShowWizard(open)
+            if (!open) handleWizardCancel()
+          }}
+          file={pendingFile?.file ?? null}
+          preloadedBuffer={pendingFile?.buffer}
+          onConfirm={handleWizardConfirm}
+        />
+
+        {/* Sonner Toaster */}
+        <Toaster />
+      </>
+    )
+  }
+
   return (
     <>
       <MobileBlocker />
@@ -350,21 +389,7 @@ function App() {
       >
         {/* Main Preview Area */}
         <div className="flex-1 flex flex-col min-h-0 p-4">
-          {!activeTable ? (
-            /* Empty State */
-            <div className="flex-1 flex items-center justify-center">
-              <div className="max-w-md w-full">
-                <FileDropzone onFileDrop={handleFileDrop} isLoading={isLoading} />
-                {!isReady && (
-                  <p className="text-center text-sm text-muted-foreground mt-4">
-                    Initializing data engine...
-                  </p>
-                )}
-              </div>
-            </div>
-          ) : (
-            /* Data Preview */
-            <Card className="flex-1 flex flex-col overflow-hidden">
+          <Card className="flex-1 flex flex-col overflow-hidden">
               <CardHeader className="py-3 shrink-0 border-b border-border/50">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm flex items-center gap-2">
@@ -422,7 +447,6 @@ function App() {
                 )}
               </CardContent>
             </Card>
-          )}
         </div>
       </AppLayout>
 
