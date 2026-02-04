@@ -50,6 +50,7 @@ npm run test:headed   # Run tests in headed browser mode
 | Standardize | `/` (panel) | `standardizerStore` | Format standardization (dates, phones, addresses) |
 | Diff | `/` (overlay) | `diffStore` | Compare tables side-by-side |
 | Audit Log | sidebar | `auditStore` | Timeline of all operations |
+| Recipe | `/` (panel) | `recipeStore` | Build, save, and replay transformation sequences |
 
 ### Directory Structure
 ```
@@ -58,6 +59,7 @@ src/
 ├── features/         # Feature modules (combiner/, matcher/, scrubber/, standardizer/, diff/)
 ├── lib/
 │   ├── commands/     # Command Pattern (transform/, edit/, data/, schema/, combine/, match/, scrub/, standardize/)
+│   ├── recipe/       # Recipe builder and executor
 │   ├── duckdb/       # DuckDB initialization & queries
 │   ├── opfs/         # OPFS storage utilities
 │   ├── persistence/  # State persistence
@@ -86,9 +88,9 @@ All data mutations go through the Command Pattern for automatic undo/redo and au
 **Three-Tier Undo Strategy:**
 | Tier | Mechanism | Speed | Examples |
 |------|-----------|-------|----------|
-| 1 | Expression chaining | Instant | trim, lowercase, uppercase, replace, hash, mask |
+| 1 | Expression chaining | Instant | trim, lowercase, uppercase, replace, hash, mask, last4, zero, scramble |
 | 2 | Inverse SQL | Fast | rename_column, edit:cell, combine:stack/join, data:insert_row, data:delete_row, schema:add_column, schema:delete_column |
-| 3 | Snapshot restore | Slower | remove_duplicates, cast_type, split_column, match:merge |
+| 3 | Snapshot restore | Slower | remove_duplicates, cast_type, split_column, match:merge, scrub:batch |
 
 **Usage:**
 ```typescript
@@ -350,3 +352,5 @@ See @e2e/CLAUDE.md for detailed patterns, helpers, and fixtures.
 - **TypeScript:** Strict mode, path alias `@/*` → `./src/*`, target ES2020
 - **Row Identity:** `_cs_origin_id` column tracks stable row identity for diff operations across transforms
 - **Panel Architecture:** Main feature UIs are in `components/panels/`, not `features/` — the `features/` directory contains business logic
+- **Recipe Secrets:** Hash secrets are prompted at apply time, never stored in recipes
+- **Command Idempotency:** Operations affecting 0 rows skip audit/timeline recording
