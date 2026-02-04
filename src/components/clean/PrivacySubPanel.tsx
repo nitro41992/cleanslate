@@ -62,6 +62,7 @@ import { useRecipeStore } from '@/stores/recipeStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { createCommand } from '@/lib/commands'
+import { getTableColumns, query } from '@/lib/duckdb'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { obfuscateValue, OBFUSCATION_METHODS } from '@/lib/obfuscation'
@@ -123,6 +124,8 @@ interface PreviewRow {
 export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelProps) {
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
+  const addTable = useTableStore((s) => s.addTable)
+  const setActiveTable = useTableStore((s) => s.setActiveTable)
   const activeTable = tables.find((t) => t.id === activeTableId)
 
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
@@ -280,6 +283,27 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
 
       if (!result.success) {
         throw new Error(result.error || 'Privacy batch operation failed')
+      }
+
+      // Register the key map table with tableStore if it was generated
+      // Note: addTable() makes the new table active, but we want to stay on the main table
+      if (generateKeyMap) {
+        const keyMapTableName = `${activeTable.name}_keymap`
+        const originalTableId = activeTable.id
+        try {
+          const columns = await getTableColumns(keyMapTableName)
+          const rowCountResult = await query<{ count: number }>(
+            `SELECT COUNT(*) as count FROM "${keyMapTableName}"`
+          )
+          const rowCount = Number(rowCountResult[0]?.count ?? 0)
+          addTable(keyMapTableName, columns, rowCount)
+          // Restore focus to the original table (don't trigger freeze/thaw)
+          setActiveTable(originalTableId)
+          console.log(`[PrivacySubPanel] Registered key map table: ${keyMapTableName} with ${rowCount} rows`)
+        } catch (error) {
+          console.error('[PrivacySubPanel] Failed to register key map table:', error)
+          // Don't fail the whole operation - the key map was created in DuckDB
+        }
       }
 
       const affected = result.executionResult?.affected ?? 0

@@ -276,13 +276,14 @@ export class ScrubBatchCommand extends Tier3TransformCommand<ScrubBatchParams> {
     data: { column: string; original: string; obfuscated: string }[]
   ): Promise<void> {
     const keyMapTableName = `${ctx.table.name}_keymap`
+    const tempTableName = `_temp_keymap_${Date.now()}`
 
     // Drop existing key map if any
     await ctx.db.execute(`DROP TABLE IF EXISTS "${keyMapTableName}"`)
 
-    // Create key map table
+    // Create temporary key map table (without _cs_id)
     await ctx.db.execute(`
-      CREATE TABLE "${keyMapTableName}" (
+      CREATE TABLE "${tempTableName}" (
         column_name VARCHAR,
         original VARCHAR,
         obfuscated VARCHAR
@@ -301,10 +302,24 @@ export class ScrubBatchCommand extends Tier3TransformCommand<ScrubBatchParams> {
       }).join(',\n')
 
       await ctx.db.execute(`
-        INSERT INTO "${keyMapTableName}" (column_name, original, obfuscated)
+        INSERT INTO "${tempTableName}" (column_name, original, obfuscated)
         VALUES ${values}
       `)
     }
+
+    // Create final table with _cs_id column for DataGrid compatibility
+    await ctx.db.execute(`
+      CREATE TABLE "${keyMapTableName}" AS
+      SELECT
+        ROW_NUMBER() OVER () AS ${CS_ID_COLUMN},
+        column_name,
+        original,
+        obfuscated
+      FROM "${tempTableName}"
+    `)
+
+    // Drop temp table
+    await ctx.db.execute(`DROP TABLE "${tempTableName}"`)
   }
 
   getAuditInfo(_ctx: CommandContext, result: ExecutionResult): AuditInfo {

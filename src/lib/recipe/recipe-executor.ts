@@ -10,6 +10,8 @@ import type { ColumnMapping, RecipeExecutionProgress } from '@/stores/recipeStor
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import type { CommandType } from '@/lib/commands'
 import { applyMappingToParams } from './column-matcher'
+import { getTableColumns, query } from '@/lib/duckdb'
+import { useTableStore } from '@/stores/tableStore'
 
 /**
  * Execute a recipe against a table.
@@ -24,7 +26,7 @@ import { applyMappingToParams } from './column-matcher'
 export async function executeRecipe(
   recipe: Recipe,
   tableId: string,
-  _tableName: string,
+  tableName: string,
   columnMapping: ColumnMapping,
   onProgress?: (progress: RecipeExecutionProgress) => void,
   secret?: string
@@ -52,7 +54,7 @@ export async function executeRecipe(
     }
 
     try {
-      await executeStep(step, tableId, columnMapping, executor, secret)
+      await executeStep(step, tableId, tableName, columnMapping, executor, secret)
       console.log(`[Recipe] Step ${i + 1}/${enabledSteps.length} completed: ${step.label}`)
     } catch (err) {
       console.error(`[Recipe] Step ${i + 1} failed:`, err)
@@ -69,6 +71,7 @@ export async function executeRecipe(
 async function executeStep(
   step: RecipeStep,
   tableId: string,
+  tableName: string,
   columnMapping: ColumnMapping,
   executor: ReturnType<typeof getCommandExecutor>,
   secret?: string
@@ -104,6 +107,27 @@ async function executeStep(
 
   if (!result.success) {
     throw new Error(result.error || 'Command execution failed')
+  }
+
+  // Register key map table if this was a scrub:batch step with generateKeyMap
+  // Note: addTable() makes the new table active, but we want to stay on the main table
+  if (commandType === 'scrub:batch' && mappedParams.generateKeyMap) {
+    const keyMapTableName = `${tableName}_keymap`
+    try {
+      const columns = await getTableColumns(keyMapTableName)
+      const rowCountResult = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM "${keyMapTableName}"`
+      )
+      const rowCount = Number(rowCountResult[0]?.count ?? 0)
+      const store = useTableStore.getState()
+      store.addTable(keyMapTableName, columns, rowCount)
+      // Restore focus to the original table (don't trigger freeze/thaw)
+      store.setActiveTable(tableId)
+      console.log(`[Recipe] Registered key map table: ${keyMapTableName} with ${rowCount} rows`)
+    } catch (error) {
+      console.error('[Recipe] Failed to register key map table:', error)
+      // Don't fail the whole recipe - the key map was created in DuckDB
+    }
   }
 }
 
