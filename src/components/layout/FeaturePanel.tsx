@@ -65,6 +65,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
   const activePanel = usePreviewStore((s) => s.activePanel)
   const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
   const setActivePanel = usePreviewStore((s) => s.setActivePanel)
+  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
   const closeSecondaryPanel = usePreviewStore((s) => s.closeSecondaryPanel)
 
   const isOpen = activePanel !== null
@@ -131,17 +132,29 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
                   </SheetDescription>
                 </div>
 
-                {/* Close secondary panel button (when in dual mode) */}
-                {hasDualPanels && secondaryMeta && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-2 shrink-0"
-                    onClick={closeSecondaryPanel}
-                  >
-                    <secondaryMeta.icon className="w-4 h-4" />
-                    Close {secondaryMeta.shortTitle}
-                  </Button>
+                {/* Recipe panel toggle button (Open when closed, Close when open) */}
+                {activePanel === 'clean' && (
+                  hasDualPanels && secondaryMeta ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2 shrink-0"
+                      onClick={closeSecondaryPanel}
+                    >
+                      <secondaryMeta.icon className="w-4 h-4" />
+                      Close Recipes
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2 shrink-0"
+                      onClick={() => setSecondaryPanel('recipe')}
+                    >
+                      <BookOpen className="w-4 h-4" />
+                      Open Recipes
+                    </Button>
+                  )
                 )}
 
                 {/* Close entire panel button */}

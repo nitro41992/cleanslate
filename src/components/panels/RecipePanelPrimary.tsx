@@ -315,7 +315,22 @@ export function RecipePanelPrimary() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex flex-col h-full">
+      {/* Header bar with Transform View button */}
+      <div className="flex items-center justify-end px-4 py-1.5 border-b border-border/40 shrink-0">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleCollapseToClean}
+          className="gap-2"
+        >
+          <Sparkles className="w-4 h-4" />
+          Transform View
+        </Button>
+      </div>
+
+      {/* Main content */}
+      <div className="flex flex-1 min-h-0">
       {/* Left Sidebar: Recipe List */}
       <div className="w-[280px] shrink-0 border-r border-border/40 flex flex-col bg-muted/10">
         {/* Sidebar Header */}
@@ -323,14 +338,6 @@ export function RecipePanelPrimary() {
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">Recipes</h3>
             <div className="flex items-center gap-1">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7"
-                onClick={handleCollapseToClean}
-              >
-                Transform View
-              </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -632,6 +639,7 @@ export function RecipePanelPrimary() {
             </div>
           </div>
         )}
+      </div>
       </div>
 
       {/* New Recipe Dialog */}
