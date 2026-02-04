@@ -805,4 +805,132 @@ test.describe('Recipe Functionality', () => {
       expect(recipeState.recipes.map((r) => r.name)).toContain('Hash Recipe')
     })
   })
+
+  // ==================== GROUP H: Scrub Batch Column Mapping ====================
+
+  test.describe('H: Scrub Batch Column Mapping', () => {
+    test('H1: should include scrub:batch rules columns in requiredColumns', async () => {
+      // Upload test data
+      await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+      await wizard.waitForOpen()
+      await wizard.import()
+      await inspector.waitForTableLoaded('basic_data', 5)
+
+      // Import recipe with scrub:batch step that has rules array
+      await page.getByTestId('toolbar-recipe').click()
+      await expect(page.getByRole('button', { name: 'Import recipe' })).toBeVisible({ timeout: 5000 })
+
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.getByRole('button', { name: 'Import recipe' }).click(),
+      ])
+      await fileChooser.setFiles(getJSONFixturePath('recipe-with-scrub-batch.json'))
+      await expect(page.getByText('Recipe "Privacy Recipe" imported')).toBeVisible({ timeout: 5000 })
+
+      // Verify recipe was imported with correct requiredColumns (should include columns from rules array)
+      const recipeState = await inspector.getRecipeState()
+      const recipe = recipeState.recipes.find((r) => r.name === 'Privacy Recipe')
+      expect(recipe).toBeDefined()
+
+      // The recipe should have 3 required columns: name (from step1), email and city (from scrub:batch rules)
+      expect(recipe!.requiredColumns).toContain('name')
+      expect(recipe!.requiredColumns).toContain('email')
+      expect(recipe!.requiredColumns).toContain('city')
+      expect(recipe!.requiredColumns).toHaveLength(3)
+    })
+
+    test('H2: should show scrub:batch columns in mapping dialog for non-matching columns', async () => {
+      // Upload a file with different column names
+      // mixed-case.csv has: id, name, status (no email or city column)
+      // recipe-with-scrub-batch.json requires: name, email, city
+      await laundromat.uploadFile(getFixturePath('mixed-case.csv'))
+      await wizard.waitForOpen()
+      await wizard.import()
+      await inspector.waitForTableLoaded('mixed_case', 3)
+
+      // Import recipe that expects columns not present in table
+      await page.getByTestId('toolbar-recipe').click()
+      await expect(page.getByRole('button', { name: 'Import recipe' })).toBeVisible({ timeout: 5000 })
+
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.getByRole('button', { name: 'Import recipe' }).click(),
+      ])
+      await fileChooser.setFiles(getJSONFixturePath('recipe-with-scrub-batch.json'))
+      await expect(page.getByText('Recipe "Privacy Recipe" imported')).toBeVisible({ timeout: 5000 })
+
+      // Select and try to apply - should show mapping dialog
+      await page.getByRole('button', { name: /Privacy Recipe/ }).click()
+      await page.getByRole('button', { name: 'Apply to Table' }).click()
+
+      // Mapping dialog should appear
+      const mappingDialog = page.getByRole('dialog').filter({ hasText: 'Column Mapping' })
+      await expect(mappingDialog).toBeVisible({ timeout: 5000 })
+
+      // Should show unmapped badges for the missing columns from scrub:batch rules
+      // Both 'email' and 'city' should need mapping (they're from the rules array)
+      // Use .first() since there should be 2 unmapped badges (one for each column)
+      const unmappedBadges = page.getByText('unmapped')
+      await expect(unmappedBadges.first()).toBeVisible()
+      // Verify there are exactly 2 unmapped columns (email and city from rules)
+      await expect(unmappedBadges).toHaveCount(2)
+
+      // Verify all 3 columns are shown in mapping dialog (name should auto-match, email and city should need mapping)
+      // Check that the dialog contains rows for email and city columns
+      await expect(mappingDialog.getByText('email', { exact: true })).toBeVisible()
+      await expect(mappingDialog.getByText('city', { exact: true })).toBeVisible()
+    })
+
+    test('H3: should apply recipe with scrub:batch after column mapping', async () => {
+      // Upload test data with matching columns
+      await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+      await wizard.waitForOpen()
+      await wizard.import()
+      await inspector.waitForTableLoaded('basic_data', 5)
+
+      // Get initial values for comparison
+      const initialRows = await inspector.runQuery<{ name: string; email: string; city: string }>(
+        'SELECT name, email, city FROM basic_data ORDER BY "_cs_id" LIMIT 1'
+      )
+      expect(initialRows[0].email).toBe('john@example.com')
+
+      // Import recipe with scrub:batch
+      await page.getByTestId('toolbar-recipe').click()
+      await expect(page.getByRole('button', { name: 'Import recipe' })).toBeVisible({ timeout: 5000 })
+
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.getByRole('button', { name: 'Import recipe' }).click(),
+      ])
+      await fileChooser.setFiles(getJSONFixturePath('recipe-with-scrub-batch.json'))
+      await expect(page.getByText('Recipe "Privacy Recipe" imported')).toBeVisible({ timeout: 5000 })
+
+      // Select and apply the recipe (columns should match exactly)
+      await page.getByRole('button', { name: /Privacy Recipe/ }).click()
+      await page.getByRole('button', { name: 'Apply to Table' }).click()
+
+      // Wait for data to be transformed by polling SQL
+      // Email should be redacted, city should be masked, name should be uppercase
+      await expect.poll(async () => {
+        const rows = await inspector.runQuery<{ name: string; email: string; city: string }>(
+          'SELECT name, email, city FROM basic_data ORDER BY "_cs_id" LIMIT 1'
+        )
+        return rows[0].email
+      }, { timeout: 30000, message: 'Email should be redacted by scrub:batch' }).toBe('[REDACTED]')
+
+      // Verify all transformations applied correctly
+      const rows = await inspector.runQuery<{ name: string; email: string; city: string }>(
+        'SELECT name, email, city FROM basic_data ORDER BY "_cs_id" LIMIT 1'
+      )
+
+      // Name should be uppercase (from step1)
+      expect(rows[0].name).toBe(initialRows[0].name.toUpperCase())
+
+      // Email should be redacted (from scrub:batch rules)
+      expect(rows[0].email).toBe('[REDACTED]')
+
+      // City should be masked (from scrub:batch rules) - format: first char + asterisks + last char
+      expect(rows[0].city).toMatch(/^.+\*+.+$/)
+    })
+  })
 })

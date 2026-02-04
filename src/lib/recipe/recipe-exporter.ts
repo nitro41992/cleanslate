@@ -223,6 +223,16 @@ export function extractRequiredColumns(steps: RecipeStep[]): string[] {
       if (cols) {
         cols.forEach((c) => columns.add(c))
       }
+
+      // For scrub:batch rules
+      const rules = step.params.rules as Array<{ column: string }> | undefined
+      if (rules && Array.isArray(rules)) {
+        rules.forEach((rule) => {
+          if (rule && typeof rule.column === 'string') {
+            columns.add(rule.column)
+          }
+        })
+      }
     }
   }
 

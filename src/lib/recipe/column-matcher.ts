@@ -171,6 +171,14 @@ export function applyMappingToParams(
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
     } else if (key === 'sourceColumns' && Array.isArray(value)) {
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
+    } else if (key === 'rules' && Array.isArray(value)) {
+      // Map columns inside scrub:batch rules
+      result[key] = value.map((rule) => {
+        if (rule && typeof rule === 'object' && 'column' in rule && typeof rule.column === 'string') {
+          return { ...rule, column: mapping[rule.column] || rule.column }
+        }
+        return rule
+      })
     } else {
       result[key] = value
     }
