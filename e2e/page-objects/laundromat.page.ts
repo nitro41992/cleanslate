@@ -330,7 +330,8 @@ export class LaundromatPage {
   }
 
   /**
-   * Open the Scrub panel for obfuscation
+   * @deprecated Scrub panel was removed. Privacy functionality moved to Clean panel Privacy group.
+   * This method will fail as the toolbar-scrub button no longer exists.
    */
   async openScrubPanel(): Promise<void> {
     await this.closePanel()

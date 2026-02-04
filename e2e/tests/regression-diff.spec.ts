@@ -1,7 +1,7 @@
 import { test, expect, Page } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
-import { DiffViewPage } from '../page-objects/diff-view.page'
+// import { DiffViewPage } from '../page-objects/diff-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
 

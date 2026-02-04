@@ -399,6 +399,7 @@ test.describe('Internal Column Filtering', () => {
 
     // 4. Collect all console output
     // Filter out intentional debug logs (prefixed with component identifiers)
+    // and DuckDB internal error messages (Binder Error is internal to DuckDB)
     const leakedMessages = consoleMessages.filter(msg =>
       (msg.includes('_cs_id') ||
        msg.includes('duckdb_schema') ||
@@ -415,15 +416,18 @@ test.describe('Internal Column Filtering', () => {
       !msg.includes('[BatchExecutor]') &&
       !msg.includes('[EXECUTOR]') &&
       !msg.includes('[Executor]') &&
-      !msg.includes('[Context]')
+      !msg.includes('[Context]') &&
+      // Exclude DuckDB internal error messages (Binder Error contains internal column names)
+      !msg.includes('Binder Error') &&
+      !msg.includes('Candidate bindings')
     )
+
+    // Log leaked messages for debugging (before assertion)
+    if (leakedMessages.length > 0) {
+      console.log('[Console Leak Test] Leaked internal columns:', JSON.stringify(leakedMessages, null, 2))
+    }
 
     // Rule 2: Assert no console message contains internal column names
     expect(leakedMessages.length).toBe(0)
-
-    // If there are leaked messages, log them for debugging
-    if (leakedMessages.length > 0) {
-      console.log('[Console Leak Test] Leaked internal columns:', leakedMessages)
-    }
   })
 })

@@ -35,6 +35,14 @@ async function runFindDuplicatesHelper(
     ;(stores?.matcherStore as any)?.setState({ maybeThreshold: 60 })
   })
 
+  // Wait for threshold to propagate (Zustand setState is async)
+  await page.waitForFunction(() => {
+    const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (stores?.matcherStore as any)?.getState()
+    return state?.maybeThreshold === 60
+  }, { timeout: 5000 })
+
   // Click Find Duplicates and wait for completion
   await page.getByTestId('find-duplicates-btn').click()
   await inspector.waitForMergeComplete()
@@ -574,7 +582,8 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     await matchView.waitForOpen()
 
     // Verify match view is open with correct title
-    await expect(page.getByText('DUPLICATE FINDER')).toBeVisible()
+    // Use h1 heading to avoid ambiguity with toolbar button and h2 config panel heading
+    await expect(page.getByRole('heading', { level: 1, name: 'SMART DEDUPE' })).toBeVisible()
 
     // Run find duplicates using helper
     await runFindDuplicates()
@@ -1006,12 +1015,14 @@ test.describe.serial('FR-C1: Merge Audit Drill-Down', () => {
     expect(Object.keys(deletedData!).length).toBeGreaterThan(0)
   })
 })
-test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
+// FR-D2: Privacy transforms are now accessed via Transform > Privacy in Clean Panel
+test.describe('FR-D2: Privacy Transforms (Clean Panel)', () => {
   let browser: Browser
   let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
+  let picker: TransformationPickerPage
   let inspector: StoreInspector
 
   test.beforeAll(async ({ browser: b }) => {
@@ -1019,12 +1030,13 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   })
 
   // Use fresh CONTEXT per test for true isolation (prevents cascade failures from WASM crashes)
-  // per e2e/CLAUDE.md: Scrubber operations need context isolation to clean up WebWorker state
+  // per e2e/CLAUDE.md: Privacy operations need context isolation to clean up WebWorker state
   test.beforeEach(async () => {
     context = await browser.newContext()
     page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
+    picker = new TransformationPickerPage(page)
 
     // MUST navigate BEFORE creating inspector (inspector references window.__CLEANSLATE_STORES__)
     await laundromat.goto()
@@ -1070,53 +1082,55 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
     await inspector.waitForTableLoaded('fr_d2_pii', 5)
   }
 
-  test('should load scrubber panel', async () => {
+  test('should load privacy sub-panel', async () => {
     // Load test data
     await loadPIIData()
 
-    // Open scrub panel via toolbar (single-page app)
-    await laundromat.openScrubPanel()
-    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
+    // Open Clean panel and select Privacy transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Privacy')
+
+    // Verify Privacy sub-panel is visible (shows initial message and Add Column section)
+    await expect(page.getByText('Select a column to configure privacy transforms')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('Add Column')).toBeVisible({ timeout: 5000 })
   })
 
   test('should hash sensitive columns', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
+    await expect(page.getByTestId('panel-clean')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
-    // Open scrub panel
-    await laundromat.openScrubPanel()
-    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
+    // Open Clean panel and select Privacy transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Privacy')
 
-    // Select the table (first combobox is table selector)
+    // Wait for Privacy sub-panel to load
+    await expect(page.getByText('Add Column')).toBeVisible({ timeout: 5000 })
+
+    // Add ssn column using the "Add Column" combobox
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-
-    // Wait for "Add Column to Scrub" combobox to appear
-    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
-
-    // Add ssn column using the "Add Column to Scrub" combobox (second combobox)
-    await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: 'ssn' }).click()
 
-    // Column is auto-selected and shows configuration panel
-    // Wait for the column to appear in "Columns to Scrub" list
-    await expect(page.getByText('Columns to Scrub')).toBeVisible()
+    // Column is auto-selected and shows configuration
+    // Wait for column to appear in the list
+    await expect(page.getByText('ssn')).toBeVisible()
 
-    // Select Hash method by clicking on the method card text
-    // Methods are displayed as clickable cards - use force:true since parent div handles click
-    await page.getByText('Hash (SHA-256)').click({ force: true })
+    // Select Hash (MD5) method from the Privacy Method dropdown
+    await page.getByRole('combobox').filter({ hasText: /Redact/i }).click()
+    await page.getByRole('option', { name: /Hash/i }).click()
 
-    // Wait for and fill in the project secret (appears when Hash is selected)
-    await expect(page.getByPlaceholder(/Min 5 characters/i)).toBeVisible()
-    await page.getByPlaceholder(/Min 5 characters/i).fill('test-secret-123')
+    // Wait for and fill in the hash secret (appears when Hash is selected)
+    const secretInput = page.locator('input[type="password"]')
+    await expect(secretInput).toBeVisible({ timeout: 5000 })
+    await secretInput.fill('test-secret-123')
 
-    // Apply scrubbing (now modifies in-place via command pattern)
-    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
+    // Apply privacy transforms
+    await page.getByRole('button', { name: /Apply All/i }).click()
 
-    // Wait for scrubbing to complete by polling for hashed data
-    // (waitForTransformComplete doesn't work for scrub operations)
+    // Wait for transform to complete by polling for hashed data
     await expect.poll(async () => {
       const data = await inspector.getTableData('fr_d2_pii')
       return data[0]?.ssn
@@ -1138,33 +1152,29 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should redact PII patterns', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
+    await expect(page.getByTestId('panel-clean')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
-    // Open scrub panel
-    await laundromat.openScrubPanel()
-    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
+    // Open Clean panel and select Privacy transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Privacy')
 
-    // Select the table (first combobox is table selector)
+    // Wait for Privacy sub-panel to load
+    await expect(page.getByText('Add Column')).toBeVisible({ timeout: 5000 })
+
+    // Add email column using the "Add Column" combobox
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-
-    // Wait for "Add Column to Scrub" combobox to appear
-    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
-
-    // Add email column using the "Add Column to Scrub" combobox (second combobox)
-    await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: 'email' }).click()
 
     // Column is auto-selected with 'redact' as default method
-    // Redact is already selected by default, so no need to click the radio
-    await expect(page.getByText('Columns to Scrub')).toBeVisible()
+    // Redact is already selected by default, so no need to change method
+    await expect(page.getByText('email')).toBeVisible()
 
-    // Apply scrubbing (now modifies in-place via command pattern)
-    // Redact doesn't require a secret
-    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
+    // Apply privacy transforms (Redact doesn't require a secret)
+    await page.getByRole('button', { name: /Apply All/i }).click()
 
-    // Wait for scrubbing to complete by polling for redacted data
+    // Wait for transform to complete by polling for redacted data
     await expect.poll(async () => {
       const data = await inspector.getTableData('fr_d2_pii')
       return data[0]?.email
@@ -1179,34 +1189,31 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should mask partial values', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
+    await expect(page.getByTestId('panel-clean')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
-    // Open scrub panel
-    await laundromat.openScrubPanel()
-    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
+    // Open Clean panel and select Privacy transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Privacy')
 
-    // Select the table (first combobox is table selector)
+    // Wait for Privacy sub-panel to load
+    await expect(page.getByText('Add Column')).toBeVisible({ timeout: 5000 })
+
+    // Add full_name column using the "Add Column" combobox
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-
-    // Wait for "Add Column to Scrub" combobox to appear
-    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
-
-    // Add full_name column using the "Add Column to Scrub" combobox (second combobox)
-    await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: 'full_name' }).click()
 
-    // Column is auto-selected, now select Mask method by clicking on the method card text
-    await expect(page.getByText('Columns to Scrub')).toBeVisible()
-    // Use force:true since parent div handles click
-    await page.getByText('Mask', { exact: true }).click({ force: true })
+    // Column is auto-selected, now select Mask method from the Privacy Method dropdown
+    await expect(page.getByText('full_name')).toBeVisible()
+    await page.getByRole('combobox').filter({ hasText: /Redact/i }).click()
+    await page.getByRole('option', { name: /Mask/i }).click()
 
-    // Apply scrubbing (Mask doesn't require a secret)
-    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
+    // Apply privacy transforms (Mask doesn't require a secret)
+    await page.getByRole('button', { name: /Apply All/i }).click()
 
-    // Wait for scrubbing to complete by polling for masked data
-    // "John Smith" should become something like "J*******h"
+    // Wait for transform to complete by polling for masked data
+    // "John Smith" should become something like "J*********h"
     await expect.poll(async () => {
       const data = await inspector.getTableData('fr_d2_pii')
       return data[0]?.full_name
@@ -1220,33 +1227,30 @@ test.describe('FR-D2: Obfuscation (Smart Scrubber)', () => {
   test('should extract year only from dates', async () => {
     // Load fresh data for this test
     await page.keyboard.press('Escape')
-    await expect(page.getByTestId('panel-scrub')).toBeHidden({ timeout: 2000 }).catch(() => {})
+    await expect(page.getByTestId('panel-clean')).toBeHidden({ timeout: 2000 }).catch(() => {})
     await loadPIIData()
 
-    // Open scrub panel
-    await laundromat.openScrubPanel()
-    await expect(page.getByRole('heading', { name: 'Scrub Data' })).toBeVisible()
+    // Open Clean panel and select Privacy transformation
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+    await picker.selectTransformation('Privacy')
 
-    // Select the table (first combobox is table selector)
+    // Wait for Privacy sub-panel to load
+    await expect(page.getByText('Add Column')).toBeVisible({ timeout: 5000 })
+
+    // Add birth_date column using the "Add Column" combobox
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: /fr_d2_pii/i }).first().click()
-
-    // Wait for "Add Column to Scrub" combobox to appear
-    await expect(page.getByText('Add Column to Scrub')).toBeVisible()
-
-    // Add birth_date column using the "Add Column to Scrub" combobox (second combobox)
-    await page.getByRole('combobox').nth(1).click()
     await page.getByRole('option', { name: 'birth_date' }).click()
 
-    // Column is auto-selected, now select Year Only method by clicking on the method card text
-    await expect(page.getByText('Columns to Scrub')).toBeVisible()
-    // Use force:true since parent div handles click
-    await page.getByText('Year Only', { exact: true }).click({ force: true })
+    // Column is auto-selected, now select Year Only method from the Privacy Method dropdown
+    await expect(page.getByText('birth_date')).toBeVisible()
+    await page.getByRole('combobox').filter({ hasText: /Redact/i }).click()
+    await page.getByRole('option', { name: /Year Only/i }).click()
 
-    // Apply scrubbing (Year Only doesn't require a secret)
-    await page.getByRole('button', { name: /Apply Scrub Rules/i }).click()
+    // Apply privacy transforms (Year Only doesn't require a secret)
+    await page.getByRole('button', { name: /Apply All/i }).click()
 
-    // Wait for scrubbing to complete by polling for year_only data
+    // Wait for transform to complete by polling for year_only data
     await expect.poll(async () => {
       const data = await inspector.getTableData('fr_d2_pii')
       return data[0]?.birth_date

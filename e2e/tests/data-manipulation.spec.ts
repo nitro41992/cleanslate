@@ -115,7 +115,7 @@ test.describe('Data Manipulation Operations', () => {
 
       // Get initial row order
       const initialRows = await inspector.runQuery('SELECT id, name FROM basic_data ORDER BY "_cs_id"')
-      const initialNames = initialRows.map(r => r.name)
+      const _initialNames = initialRows.map(r => r.name)
       // Should be: John Doe, Jane Smith, Bob Johnson, Alice Brown, Charlie Wilson
 
       // Act: Click on row 2 (Jane Smith) and insert above

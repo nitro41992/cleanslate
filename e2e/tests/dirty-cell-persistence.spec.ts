@@ -75,7 +75,7 @@ test.describe('Dirty Cell Indicator Persistence', () => {
       'SELECT _cs_id, name FROM basic_data ORDER BY _cs_id LIMIT 1'
     )
     const firstCsId = rowsBefore[0]._cs_id
-    const originalValue = rowsBefore[0].name
+    const _originalValue = rowsBefore[0].name
 
     // Click on the cell to edit it
     // The grid is 0-indexed: col 0 is id, col 1 is name

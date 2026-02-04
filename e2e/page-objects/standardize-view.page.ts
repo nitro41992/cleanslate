@@ -15,7 +15,7 @@ export class StandardizeViewPage {
     this.backButton = page.getByRole('button', { name: /Back to Tables/i })
     this.closeButton = page.locator('[data-testid="standardize-view"] header button').last()
     this.analyzeButton = page.getByTestId('standardize-analyze-btn')
-    this.applyButton = page.getByRole('button', { name: /Apply Standardization/i })
+    this.applyButton = page.getByRole('button', { name: /Apply Replacements/i })
     this.newAnalysisButton = page.getByRole('button', { name: /New Analysis/i })
   }
 
@@ -24,8 +24,8 @@ export class StandardizeViewPage {
    */
   async waitForOpen(): Promise<void> {
     await expect(this.container).toBeVisible({ timeout: 10000 })
-    // Use h1 role to avoid ambiguity with h2 "Value Standardizer" in config panel
-    await expect(this.container.getByRole('heading', { level: 1, name: 'VALUE STANDARDIZER' })).toBeVisible()
+    // Use h1 role to avoid ambiguity with h2 in config panel
+    await expect(this.container.getByRole('heading', { level: 1, name: 'SMART REPLACE' })).toBeVisible()
   }
 
   /**
@@ -37,23 +37,21 @@ export class StandardizeViewPage {
   }
 
   /**
-   * Select a table to standardize
+   * @deprecated Table is now auto-selected from activeTableId. This method is a no-op.
+   * The table name is displayed as static text, not a dropdown.
    */
-  async selectTable(tableName: string): Promise<void> {
-    // Table combobox is within the config panel, find by role within container
-    // There may be multiple comboboxes, table is the first enabled one
-    const tableSelect = this.container.getByRole('combobox').first()
-    await tableSelect.waitFor({ state: 'visible', timeout: 5000 })
-    await tableSelect.click()
-    await this.page.getByRole('option', { name: new RegExp(tableName) }).click()
+  async selectTable(_tableName: string): Promise<void> {
+    // Table is auto-selected from activeTableId when the view opens.
+    // No action needed - just verify the table is displayed.
+    // The table name is shown as static text in the config panel.
   }
 
   /**
    * Select a column to standardize
    */
   async selectColumn(columnName: string): Promise<void> {
-    // Column combobox is the second combobox (after table selection enables it)
-    const columnSelect = this.container.getByRole('combobox').nth(1)
+    // Column combobox is now the only combobox (since table is auto-selected)
+    const columnSelect = this.container.getByRole('combobox').first()
     await columnSelect.waitFor({ state: 'visible', timeout: 5000 })
     await columnSelect.click()
     await this.page.getByRole('option', { name: columnName }).click()
@@ -172,7 +170,7 @@ export class StandardizeViewPage {
       { timeout: 10000 }
     )
     // Wait for notification to appear confirming completion
-    await expect(this.page.locator('text=/Values Standardized|Standardization Applied/i')).toBeVisible({ timeout: 5000 }).catch(() => {})
+    await expect(this.page.locator('text=/Smart Replace Complete/i')).toBeVisible({ timeout: 5000 }).catch(() => {})
   }
 
   /**

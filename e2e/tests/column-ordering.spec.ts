@@ -180,8 +180,8 @@ test.describe('Column Order Preservation', () => {
     await laundromat.closePanel()
 
     // Verify order might be affected after transform (this will show the bug)
-    const afterTransform = await inspector.getTableColumns('column_order_test')
-    // console.log('After transform:', afterTransform.map(c => c.name))
+    const _afterTransform = await inspector.getTableColumns('column_order_test')
+    // console.log('After transform:', _afterTransform.map(c => c.name))
 
     await laundromat.clickUndo()
 
@@ -197,16 +197,31 @@ test.describe('Column Order Preservation', () => {
     await inspector.waitForTableLoaded('column_order_test', 4)
 
     // Act: Transform → Undo → Redo
+    // Use Uppercase (always creates a change) instead of Trim (no-op if no whitespace)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
-    await picker.addTransformation('Trim Whitespace', { column: 'name' })
+    await picker.addTransformation('Uppercase', { column: 'name' })
     await laundromat.closePanel()
 
+    // Wait for transform to complete and timeline to sync (undo button enabled)
+    const tables = await inspector.getTables()
+    const tableId = tables.find(t => t.name === 'column_order_test')?.id
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
+    await expect(laundromat.undoButton).toBeEnabled({ timeout: 10000 })
+
+    // Now capture column order after transform is fully applied
     const afterTransform = await inspector.getTableColumns('column_order_test')
     const orderAfterTransform = afterTransform.map(c => c.name)
 
     await laundromat.clickUndo()
     await laundromat.clickRedo()
+
+    // Wait for redo operation to complete before checking column order
+    if (tableId) {
+      await inspector.waitForTransformComplete(tableId)
+    }
 
     // Assert: Redo restores the SAME order as after transform (not shuffled again)
     const afterRedo = await inspector.getTableColumns('column_order_test')

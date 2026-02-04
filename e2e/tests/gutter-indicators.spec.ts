@@ -151,7 +151,7 @@ test.describe('Gutter Indicators for Last Edit Location', () => {
     page.on('console', msg => {
       const text = msg.text()
       if (text.includes('[Persistence]') || text.includes('[Executor]') || text.includes('[DATAGRID]')) {
-        console.log(`[Browser] ${text}`)
+        // console.log(`[Browser] ${text}`)
       }
     })
 

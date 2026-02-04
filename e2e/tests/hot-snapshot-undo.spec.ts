@@ -101,7 +101,7 @@ test.describe('LRU Hot Snapshot Undo', () => {
       return rows.length > 0
     }, { timeout: 15000 }).toBe(true)
 
-    const dataAfterCast = await inspector.getTableData('with_duplicates')
+    const _dataAfterCast = await inspector.getTableData('with_duplicates')
 
     // Close the panel before undo (panel intercepts button clicks)
     await laundromat.closePanel()

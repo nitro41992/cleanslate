@@ -351,10 +351,10 @@ test.describe('OPFS Persistence - Auto-Flush', () => {
   test.afterEach(async () => {
     try {
       await cleanupOPFSTestData(page)
-    } catch {}
+    } catch { /* Ignore cleanup errors */ }
     try {
       await context.close()
-    } catch {}
+    } catch { /* Ignore cleanup errors */ }
   })
 
   // Skipped: Intermittent timeout issues with rapid transformations
@@ -446,10 +446,10 @@ test.describe('OPFS Persistence - Audit Log Pruning', () => {
   test.afterEach(async () => {
     try {
       await cleanupOPFSTestData(page)
-    } catch {}
+    } catch { /* Ignore cleanup errors */ }
     try {
       await context.close()
-    } catch {}
+    } catch { /* Ignore cleanup errors */ }
   })
 
   test('should prune audit log to last 100 entries on init', async () => {

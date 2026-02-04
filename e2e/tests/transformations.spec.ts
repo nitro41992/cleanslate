@@ -4,7 +4,7 @@ import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { TransformationPickerPage } from '../page-objects/transformation-picker.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
-import { coolHeapLight } from '../helpers/cleanup-helpers'
+// import { coolHeapLight } from '../helpers/cleanup-helpers'
 
 /**
  * Transformation Tests
@@ -710,8 +710,8 @@ test.describe('Transformations: _cs_id Lineage Preservation (Large File)', () =>
 
     // 1. Generate CSV with duplicates (100 rows, 30 unique after dedup)
     const csvContent = await generateDuplicatesCSV(100, 30)
-    const csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
-    // console.log(`[_cs_id Lineage Test] Generated CSV: ${csvSizeMB}MB (100 rows, 30 unique)`)
+    const _csvSizeMB = (csvContent.length / (1024 * 1024)).toFixed(2)
+    // console.log(`[_cs_id Lineage Test] Generated CSV: ${_csvSizeMB}MB (100 rows, 30 unique)`)
 
     // 2. Upload and import - write to temp file first
     await inspector.runQuery('DROP TABLE IF EXISTS dedup_large_test')

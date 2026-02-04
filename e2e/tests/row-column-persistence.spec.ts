@@ -94,7 +94,7 @@ async function clickRowMarker(page: Page, rowIndex: number): Promise<void> {
  * @param page - Playwright page
  * @param columnIndex - 0-based column index (excluding row marker column)
  */
-async function clickColumnHeader(page: Page, columnIndex: number): Promise<void> {
+async function _clickColumnHeader(page: Page, columnIndex: number): Promise<void> {
   const gridContainer = page.getByTestId('data-grid')
   const gridBox = await gridContainer.boundingBox()
   if (!gridBox) throw new Error('Grid container not found')
@@ -133,7 +133,7 @@ test.describe('Row and Column Persistence', () => {
     page.on('console', msg => {
       const text = msg.text()
       if (text.includes('[Persistence]') || text.includes('[Executor]')) {
-        console.log(`[Browser] ${text}`)
+        // console.log(`[Browser] ${text}`)
       }
     })
 
@@ -206,11 +206,11 @@ test.describe('Row and Column Persistence', () => {
     console.log('[Test FR-ROW-PERSIST-1] Original Parquet size:', originalSize)
 
     // Verify initial row count
-    let rowsBefore = await inspector.runQuery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM basic_data')
+    const rowsBefore = await inspector.runQuery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM basic_data')
     expect(Number(rowsBefore[0].cnt)).toBe(5)
 
     // Get initial data to verify order later
-    const initialData = await inspector.runQuery<{ id: number; name: string }>('SELECT id, name FROM basic_data ORDER BY "_cs_id"')
+    const _initialData = await inspector.runQuery<{ id: number; name: string }>('SELECT id, name FROM basic_data ORDER BY "_cs_id"')
 
     // Click on row marker to open row menu for first row
     await clickRowMarker(page, 0)
@@ -314,7 +314,7 @@ test.describe('Row and Column Persistence', () => {
           }
         }
         return files
-      } catch (e) {
+      } catch {
         return [{ name: 'error', size: -1 }]
       }
     })
@@ -427,7 +427,7 @@ test.describe('Row and Column Persistence', () => {
               currentSize = file.size
             }
           }
-        } catch { }
+        } catch { /* Ignore OPFS errors */ }
 
         return {
           saving: uiState?.savingTables?.size > 0,
@@ -457,7 +457,7 @@ test.describe('Row and Column Persistence', () => {
           }
         }
         return files
-      } catch (e) {
+      } catch {
         return [{ name: 'error', size: -1 }]
       }
     })
@@ -548,7 +548,7 @@ test.describe('Row and Column Persistence', () => {
               currentSize = file.size
             }
           }
-        } catch { }
+        } catch { /* Ignore OPFS errors */ }
 
         return {
           saving: uiState?.savingTables?.size > 0,
@@ -611,7 +611,7 @@ test.describe('Row and Column Persistence', () => {
               currentSize = file.size
             }
           }
-        } catch { }
+        } catch { /* Ignore OPFS errors */ }
 
         return {
           saving: uiState?.savingTables?.size > 0,
@@ -1126,7 +1126,7 @@ test.describe('Row and Column Persistence', () => {
               break
             }
           }
-        } catch { }
+        } catch { /* Ignore OPFS errors */ }
 
         return { saving: uiState?.savingTables?.size > 0, hasTmpFiles }
       })
@@ -1241,7 +1241,7 @@ test.describe('Row and Column Persistence', () => {
               break
             }
           }
-        } catch { }
+        } catch { /* Ignore OPFS errors */ }
 
         return {
           saving: uiState?.savingTables?.size > 0,

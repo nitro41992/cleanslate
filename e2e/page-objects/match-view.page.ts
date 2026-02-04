@@ -24,7 +24,8 @@ export class MatchViewPage {
    */
   async waitForOpen(): Promise<void> {
     await expect(this.container).toBeVisible({ timeout: 10000 })
-    await expect(this.page.getByText('DUPLICATE FINDER')).toBeVisible()
+    // Use h1 heading to avoid ambiguity with toolbar button and h2 config panel heading
+    await expect(this.container.getByRole('heading', { level: 1, name: 'SMART DEDUPE' })).toBeVisible()
   }
 
   /**
@@ -36,21 +37,21 @@ export class MatchViewPage {
   }
 
   /**
-   * Select a table to search for duplicates
+   * @deprecated Table is now auto-selected from activeTableId. This method is a no-op.
+   * The table name is displayed as static text, not a dropdown.
    */
-  async selectTable(tableName: string): Promise<void> {
-    // Click the table dropdown (first select in config panel)
-    const tableSelect = this.page.locator('[data-testid="match-view"]').getByRole('combobox').first()
-    await tableSelect.click()
-    await this.page.getByRole('option', { name: new RegExp(tableName) }).click()
+  async selectTable(_tableName: string): Promise<void> {
+    // Table is auto-selected from activeTableId when the view opens.
+    // No action needed - just verify the table is displayed.
+    // The table name is shown as static text in the config panel.
   }
 
   /**
    * Select a column to match on
    */
   async selectColumn(columnName: string): Promise<void> {
-    // Click the column dropdown (second select in config panel)
-    const columnSelect = this.page.locator('[data-testid="match-view"]').getByRole('combobox').nth(1)
+    // Click the column dropdown (now the only combobox since table is auto-selected)
+    const columnSelect = this.page.locator('[data-testid="match-view"]').getByRole('combobox').first()
     await columnSelect.click()
     await this.page.getByRole('option', { name: columnName }).click()
   }

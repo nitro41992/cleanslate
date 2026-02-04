@@ -134,7 +134,7 @@ export async function coolHeap(
       for (const table of diffTables) {
         await inspector.runQuery(`DROP TABLE IF EXISTS "${table.name}"`).catch(() => {})
       }
-    } catch (error) {
+    } catch {
       // Silently ignore errors - table may not exist
     }
   }
@@ -152,11 +152,11 @@ export async function coolHeap(
         if (oldestIdToKeep !== undefined) {
           // This would require accessing auditStore directly
           // For now, just log a warning
-          console.warn(`Audit log has ${auditEntries.length} entries (threshold: ${auditThreshold})`)
+          // console.warn(`Audit log has ${auditEntries.length} entries (threshold: ${auditThreshold})`)
           // Future: Implement pruning via auditStore.pruneOldEntries(oldestIdToKeep)
         }
       }
-    } catch (error) {
+    } catch {
       // Silently ignore errors
     }
   }
@@ -169,7 +169,7 @@ export async function coolHeap(
       for (const table of tables) {
         await inspector.runQuery(`DROP TABLE IF EXISTS "${table.name}"`).catch(() => {})
       }
-    } catch (error) {
+    } catch {
       // Silently ignore errors
     }
   }

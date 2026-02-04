@@ -1,11 +1,11 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page, Browser, BrowserContext } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
 import { IngestionWizardPage } from '../page-objects/ingestion-wizard.page'
 import { StandardizeViewPage } from '../page-objects/standardize-view.page'
 import { DiffViewPage } from '../page-objects/diff-view.page'
 import { createStoreInspector, StoreInspector } from '../helpers/store-inspector'
 import { getFixturePath } from '../helpers/file-upload'
-import { expectClusterMembership, getClusterMasterValues } from '../helpers/high-fidelity-assertions'
+import { getClusterMasterValues } from '../helpers/high-fidelity-assertions'
 
 /**
  * FR-F: Value Standardization Tests
@@ -14,11 +14,13 @@ import { expectClusterMembership, getClusterMasterValues } from '../helpers/high
  * inconsistent values in a column.
  *
  * Per e2e/CLAUDE.md Section 1: Standardization tests involve clustering
- * which is memory-intensive. Use beforeEach with fresh page to prevent
- * "Target Closed" crashes if a test fails.
+ * which is memory-intensive. Use beforeEach with fresh CONTEXT to prevent
+ * "Target Closed" crashes from WASM worker state corruption.
  */
 
 test.describe('FR-F: Value Standardization', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -26,11 +28,16 @@ test.describe('FR-F: Value Standardization', () => {
   let inspector: StoreInspector
 
   // Extended timeout for clustering operations
-  test.setTimeout(90000)
+  test.setTimeout(120000)
 
-  // Fresh page per test to prevent stale references
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Fresh CONTEXT per test for complete WASM isolation (per e2e/CLAUDE.md)
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     standardize = new StandardizeViewPage(page)
@@ -54,7 +61,11 @@ test.describe('FR-F: Value Standardization', () => {
     } catch {
       // Ignore errors during cleanup
     }
-    await page.close()  // Force WASM worker garbage collection
+    try {
+      await context.close()  // Terminates all pages + WebWorkers for complete WASM cleanup
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   async function loadTestData() {
@@ -249,7 +260,7 @@ test.describe('FR-F: Value Standardization', () => {
     await standardize.filterBy('actionable')
 
     // Verify apply button is visible (values are selected by default)
-    await expect(page.getByRole('button', { name: /Apply Standardization/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Apply Replacements/i })).toBeVisible()
 
     // Apply standardization
     await standardize.apply()
@@ -348,7 +359,7 @@ test.describe('FR-F: Value Standardization', () => {
     await standardize.waitForClusters()
 
     // Get initial cluster count
-    const initialCount = await standardize.getClusterCount()
+    const _initialCount = await standardize.getClusterCount()
 
     // Search for "John"
     await standardize.search('John')
@@ -569,8 +580,8 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
       { timeout: 3000 }
     )
 
-    // Verify modal title shows "Standardization Details" (not generic "Row-Level Changes")
-    await expect(modal.locator('text=Standardization Details')).toBeVisible({ timeout: 5000 })
+    // Verify modal title shows "Smart Replace Details" (not generic "Row-Level Changes")
+    await expect(modal.locator('text=Smart Replace Details')).toBeVisible({ timeout: 5000 })
 
     // Verify StandardizeDetailTable is rendered (not generic AuditDetailTable)
     const standardizeTable = modal.getByTestId('standardize-detail-table')
@@ -578,7 +589,7 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
 
     // Verify it shows value mappings (from → to) column headers
     await expect(modal.locator('text=Original Value')).toBeVisible()
-    await expect(modal.locator('text=Standardized To')).toBeVisible()
+    await expect(modal.locator('text=Replaced With')).toBeVisible()
     await expect(modal.locator('text=Rows Changed')).toBeVisible()
 
     // Verify table name is shown in summary
