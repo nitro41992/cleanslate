@@ -520,7 +520,18 @@ export class CommandExecutor implements ICommandExecutor {
       // This keeps the audit log meaningful and noise-free
       let auditInfo
       const hasAffectedRows = executionResult.affected !== undefined && executionResult.affected > 0
-      if (!skipAudit && hasAffectedRows) {
+
+      // SCHEMA CHANGE DETECTION: Commands that change schema structure (rename, add, delete column)
+      // return affected=0 but MUST be recorded in timeline for undo/redo to work.
+      // Detect these by checking for renameMappings, newColumnNames, or droppedColumnNames.
+      const isSchemaChange = Boolean(
+        (executionResult.renameMappings && Object.keys(executionResult.renameMappings).length > 0) ||
+        (executionResult.newColumnNames && executionResult.newColumnNames.length > 0) ||
+        (executionResult.droppedColumnNames && executionResult.droppedColumnNames.length > 0)
+      )
+      // Record audit for data changes OR schema changes
+      const shouldRecordAudit = !skipAudit && (hasAffectedRows || isSchemaChange)
+      if (shouldRecordAudit) {
         progress('auditing', 60, 'Recording audit log...')
         auditInfo = command.getAuditInfo(updatedCtx, executionResult)
         // Use pre-generated auditEntryId for:
@@ -533,8 +544,8 @@ export class CommandExecutor implements ICommandExecutor {
           auditInfo.auditEntryId = preGeneratedAuditEntryId
         }
         this.recordAudit(ctx.table.id, ctx.table.name, auditInfo)
-      } else if (!hasAffectedRows) {
-        console.log(`[EXECUTOR] Skipping audit log - no rows affected (idempotent operation)`)
+      } else if (!hasAffectedRows && !isSchemaChange) {
+        console.log(`[EXECUTOR] Skipping audit log - no rows affected and not a schema change (idempotent operation)`)
       }
 
       // Step 6: Diff view
@@ -660,10 +671,12 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // Step 7: Record timeline for undo/redo
-      // IDEMPOTENCY: Skip timeline when affected=0 (no changes made)
-      // This prevents undo stack pollution from no-op operations
+      // IDEMPOTENCY: Skip timeline when affected=0 AND not a schema change
+      // This prevents undo stack pollution from no-op operations while ensuring
+      // schema changes (rename_column, add_column, delete_column) are always recorded
       let highlightInfo: HighlightInfo | undefined
-      if (!skipTimeline && hasAffectedRows) {
+      const shouldRecordTimeline = !skipTimeline && (hasAffectedRows || isSchemaChange)
+      if (shouldRecordTimeline) {
         progress('complete', 90, 'Recording timeline...')
         const rowPredicate = await command.getAffectedRowsPredicate(updatedCtx)
         highlightInfo = {
@@ -685,8 +698,8 @@ export class CommandExecutor implements ICommandExecutor {
 
         // Sync with legacy timelineStore for UI integration (highlight, drill-down)
         this.syncExecuteToTimelineStore(ctx.table.id, ctx.table.name, command, auditInfo, affectedRowIds, currentColumnOrder, newColumnOrder)
-      } else if (!hasAffectedRows) {
-        console.log(`[EXECUTOR] Skipping timeline recording - no rows affected (idempotent operation)`)
+      } else if (!hasAffectedRows && !isSchemaChange) {
+        console.log(`[EXECUTOR] Skipping timeline recording - no rows affected and not a schema change (idempotent operation)`)
       }
 
       // Chained Tier 1: Compute diff from pre-snapshot (captures previous → new, not original → new)

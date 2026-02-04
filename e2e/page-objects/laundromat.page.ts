@@ -280,6 +280,19 @@ export class LaundromatPage {
     // Commit with Enter
     await this.page.keyboard.press('Enter')
 
+    // Check if "Discard Undone Changes?" dialog appears (when editing after undo)
+    // This dialog uses Radix AlertDialog which has role="alertdialog"
+    const dialog = this.page.getByRole('alertdialog')
+    const dialogVisible = await dialog.isVisible().catch(() => false)
+
+    if (dialogVisible) {
+      // Click "Discard & Continue" to proceed with the edit
+      const confirmButton = dialog.getByRole('button', { name: 'Discard & Continue' })
+      await confirmButton.waitFor({ state: 'visible', timeout: 2000 })
+      await confirmButton.click()
+      await dialog.waitFor({ state: 'hidden', timeout: 2000 })
+    }
+
     // Wait for the edit command to complete by checking tableStore (semantic wait)
     await this.page.waitForFunction(
       () => {

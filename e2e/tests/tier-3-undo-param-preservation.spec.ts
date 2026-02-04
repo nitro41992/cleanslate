@@ -44,8 +44,11 @@ test.describe('Bug: Tier 3 Undo Parameter Preservation', () => {
 
     // Capture browser console logs for debugging
     page.on('console', _msg => {
+      // Uncomment to see replay/timeline logs during debugging:
       // const text = _msg.text()
-      // console.log(`[BROWSER] ${text}`)
+      // if (text.includes('[REPLAY]') || text.includes('[TIMELINE]')) {
+      //   console.log(`[BROWSER] ${text}`)
+      // }
     })
 
     laundromat = new LaundromatPage(page)
@@ -72,10 +75,8 @@ test.describe('Bug: Tier 3 Undo Parameter Preservation', () => {
     }
   })
 
-  // TODO: This test identifies a real implementation bug - pad_zeros length parameter (9) is not
-  // preserved during timeline replay after Tier 3 undo. The data shows "123" instead of "000000123".
-  // Needs investigation in src/lib/commands/utils/param-extraction.ts and timeline-engine.
-  test.skip('pad zeros params should persist after unrelated rename undo', async () => {
+  // TEST: Verifies pad_zeros length parameter preservation during timeline replay after undo.
+  test('pad zeros params should persist after unrelated rename undo', async () => {
     // Setup: Import test data
     await inspector.runQuery('DROP TABLE IF EXISTS undo_param_test')
     await laundromat.uploadFile(getFixturePath('undo-param-test.csv'))
@@ -104,7 +105,36 @@ test.describe('Bug: Tier 3 Undo Parameter Preservation', () => {
     expect(dataBefore[1].account_number).toBe('000000456')
     expect(dataBefore[2].account_number).toBe('000000789')
 
+    // Debug: Check what params are stored in the timeline
+    const timelineParams = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const timelineStore = stores?.timelineStore as any
+      const state = timelineStore?.getState?.()
+      if (!state?.timelines) return { error: 'no timelines' }
+
+      // Get the first timeline
+      const timelines = state.timelines as Map<string, { commands: Array<{ params: unknown }> }>
+      for (const [, timeline] of timelines) {
+        if (timeline.commands.length > 0) {
+          const padZerosCmd = timeline.commands[0]
+          return {
+            commandParams: padZerosCmd.params,
+            commandCount: timeline.commands.length
+          }
+        }
+      }
+      return { error: 'no commands' }
+    })
+    console.log('[TEST] Timeline params after pad_zeros:', JSON.stringify(timelineParams, null, 2))
+
+    // Close panel before applying next transform to avoid WASM pressure
+    await laundromat.closePanel()
+    await page.getByTestId('panel-clean').waitFor({ state: 'hidden', timeout: 3000 })
+
     // Step 2: Rename DIFFERENT column (name → customer_name)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
     await picker.addTransformation('Rename Column', {
       column: 'name',
       params: { 'New column name': 'customer_name' }
