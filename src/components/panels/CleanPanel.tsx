@@ -484,7 +484,8 @@ export function CleanPanel() {
   const selectedRecipe = recipes.find((r) => r.id === selectedRecipeId)
 
   // Check if the current form state is valid for adding to a recipe
-  // Uses the same validation logic as isValid() for UX parity
+  // Note: Less strict than isValid() - allows adding to recipes even with 0 matching rows
+  // because recipes are often planned for future use with different data
   const canAddToRecipe = () => {
     if (!selectedTransform) return false
     if (selectedTransform.requiresColumn && !selectedColumn) return false
@@ -494,18 +495,15 @@ export function CleanPanel() {
       }
     }
 
-    // Semantic validation: block no-op and invalid transforms
+    // Semantic validation: still block no-op and invalid transforms
+    // (e.g., replace 'foo' with 'foo' is always pointless)
     if (validationResult.status === 'no_op' || validationResult.status === 'invalid') {
       return false
     }
 
-    // Live preview validation: block if preview shows no matching rows
-    // Only check when preview is ready and not loading (to avoid blocking during debounce)
-    if (previewState?.isReady && !previewState.isLoading && !previewState.hasError) {
-      if (previewState.totalMatching === 0) {
-        return false
-      }
-    }
+    // Note: We intentionally do NOT check live preview here.
+    // Users should be able to add transforms to recipes even if the current
+    // data has no matching rows - recipes are often planned for future use.
 
     return true
   }
