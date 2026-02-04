@@ -104,6 +104,7 @@ export function CleanPanel() {
   const timeline = useTimelineStore((s) => activeTableId ? s.getTimeline(activeTableId) : undefined)
   const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
   const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
+  const closeSecondaryPanel = usePreviewStore((s) => s.closeSecondaryPanel)
 
   // Recipe store access
   const recipes = useRecipeStore((s) => s.recipes)
@@ -500,6 +501,15 @@ export function CleanPanel() {
     return true
   }
 
+  // Toggle Recipe panel visibility
+  const handleToggleRecipe = () => {
+    if (secondaryPanel === 'recipe') {
+      closeSecondaryPanel()
+    } else {
+      setSecondaryPanel('recipe')
+    }
+  }
+
   return (
     <>
       {/* Cast Type Warning Dialog */}
@@ -590,7 +600,22 @@ export function CleanPanel() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex h-full">
+      <div className="flex flex-col h-full">
+        {/* Header bar with Recipe Manager toggle */}
+        <div className="flex items-center justify-end px-4 py-2 border-b border-border/40 shrink-0">
+          <Button
+            variant={secondaryPanel === 'recipe' ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={handleToggleRecipe}
+            className="gap-2"
+          >
+            <BookOpen className="w-4 h-4" />
+            {secondaryPanel === 'recipe' ? 'Close Recipes' : 'Open Recipes'}
+          </Button>
+        </div>
+
+        {/* Two-column layout */}
+        <div className="flex flex-1 min-h-0">
         {/* Left Column: Picker (scrollable) */}
         <div className="w-[340px] border-r border-border/50 flex flex-col">
           <ScrollArea className="flex-1">
@@ -975,6 +1000,7 @@ export function CleanPanel() {
             )}
           </div>
           )}
+        </div>
         </div>
       </div>
     </>

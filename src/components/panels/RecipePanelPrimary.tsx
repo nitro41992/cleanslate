@@ -10,7 +10,6 @@ import {
   Pencil,
   BookOpen,
   Sparkles,
-  Minimize2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -324,19 +323,14 @@ export function RecipePanelPrimary() {
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">Recipes</h3>
             <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={handleCollapseToClean}
-                  >
-                    <Minimize2 className="w-3.5 h-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Collapse to Clean view</TooltipContent>
-              </Tooltip>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                onClick={handleCollapseToClean}
+              >
+                Transform View
+              </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -483,9 +477,6 @@ export function RecipePanelPrimary() {
 
               {/* Metadata badges */}
               <div className="flex items-center gap-2 mt-3">
-                <Badge variant="secondary" className="text-xs">
-                  v{selectedRecipe.version}
-                </Badge>
                 <Badge variant="outline" className="text-xs">
                   {selectedRecipe.steps.filter((s) => s.enabled).length}/{selectedRecipe.steps.length} enabled
                 </Badge>

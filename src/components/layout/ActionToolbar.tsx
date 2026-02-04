@@ -1,4 +1,4 @@
-import { Sparkles, Users, Merge, GitCompare, Link2, BookOpen } from 'lucide-react'
+import { Sparkles, Users, Merge, GitCompare, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -49,13 +49,6 @@ const actions: { id: ActionId; label: string; icon: typeof Sparkles; description
     description: 'Compare tables',
     shortcut: '5',
   },
-  {
-    id: 'recipe',
-    label: 'Recipe',
-    icon: BookOpen,
-    description: 'Manage transformation recipes',
-    shortcut: '6',
-  },
 ]
 
 interface ActionToolbarProps {
@@ -98,20 +91,6 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
       } else {
         // Open clean as primary
         setActivePanel('clean')
-      }
-      return
-    }
-
-    if (panelId === 'recipe') {
-      if (activePanel === 'recipe') {
-        // Toggle off recipe
-        setActivePanel(null)
-        closeSecondaryPanel()
-      } else {
-        // Open recipe as primary (independent view)
-        setActivePanel('recipe')
-        // Close secondary panel if it was recipe (from Clean mode)
-        closeSecondaryPanel()
       }
       return
     }

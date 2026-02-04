@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
   Columns,
-  Maximize2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -369,19 +368,14 @@ export function RecipePanel() {
               No recipes yet
             </p>
           )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={handleExpandToRecipePanel}
-              >
-                <Maximize2 className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Expand to full Recipe view</TooltipContent>
-          </Tooltip>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0"
+            onClick={handleExpandToRecipePanel}
+          >
+            Recipe View
+          </Button>
         </div>
       </div>
 
