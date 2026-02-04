@@ -8,11 +8,7 @@ import {
   X,
   AlertCircle,
   ChevronDown,
-  ChevronRight,
   ChevronUp,
-  Check,
-  Pencil,
-  Calendar,
   Columns,
   Maximize2,
 } from 'lucide-react'
@@ -43,11 +39,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
 import { useRecipeStore, selectSelectedRecipe } from '@/stores/recipeStore'
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
@@ -110,19 +101,12 @@ export function RecipePanel() {
   const [newRecipeName, setNewRecipeName] = useState('')
 
   // Editing states
-  const [editingName, setEditingName] = useState(false)
   const [editingDescription, setEditingDescription] = useState(false)
-  const [tempName, setTempName] = useState('')
   const [tempDescription, setTempDescription] = useState('')
-
-  // Note: Steps are always expanded in minimized panel (removed expandedSteps state)
 
   // Track newly added steps for highlight animation
   const [newlyAddedStepId, setNewlyAddedStepId] = useState<string | null>(null)
   const prevStepsLengthRef = useRef<number>(0)
-
-  // Metadata visibility
-  const [showMetadata, setShowMetadata] = useState(false)
 
   // Get table columns for mapping
   const tableColumns = useMemo(() => {
@@ -209,22 +193,6 @@ export function RecipePanel() {
       minute: '2-digit',
     })
   }
-
-  // Handle recipe name edit
-  const startEditingName = () => {
-    if (selectedRecipe) {
-      setTempName(selectedRecipe.name)
-      setEditingName(true)
-    }
-  }
-
-  const saveNameEdit = () => {
-    if (selectedRecipe && tempName.trim()) {
-      updateRecipe(selectedRecipe.id, { name: tempName.trim() })
-    }
-    setEditingName(false)
-  }
-
   // Handle recipe description edit
   const startEditingDescription = () => {
     if (selectedRecipe) {
@@ -422,41 +390,7 @@ export function RecipePanel() {
         <div className="p-3 space-y-3 w-full overflow-hidden">
           {selectedRecipe ? (
             <>
-              {/* Recipe Name (editable) */}
-              <div>
-                {editingName ? (
-                  <div className="flex items-center gap-1">
-                    <Input
-                      value={tempName}
-                      onChange={(e) => setTempName(e.target.value)}
-                      className="h-7 text-sm font-medium"
-                      autoFocus
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') saveNameEdit()
-                        if (e.key === 'Escape') setEditingName(false)
-                      }}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={saveNameEdit}
-                    >
-                      <Check className="w-3 h-3" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div
-                    className="flex items-center gap-1 group cursor-pointer"
-                    onClick={startEditingName}
-                  >
-                    <span className="text-sm font-medium">{selectedRecipe.name}</span>
-                    <Pencil className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                )}
-              </div>
-
-              {/* Recipe Description (editable) */}
+              {/* Recipe Description (editable) - name is already in dropdown */}
               <div>
                 {editingDescription ? (
                   <div className="space-y-1">
@@ -486,44 +420,24 @@ export function RecipePanel() {
                 )}
               </div>
 
-              {/* Metadata Toggle */}
-              <Collapsible open={showMetadata} onOpenChange={setShowMetadata}>
-                <CollapsibleTrigger asChild>
-                  <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                    {showMetadata ? (
-                      <ChevronDown className="w-3 h-3" />
-                    ) : (
-                      <ChevronRight className="w-3 h-3" />
-                    )}
-                    Metadata
-                  </button>
-                </CollapsibleTrigger>
-                <CollapsibleContent className="pt-2 space-y-2">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Calendar className="w-3 h-3" />
-                    <span>Created: {formatDate(selectedRecipe.createdAt)}</span>
+              {/* Metadata - always visible */}
+              <div className="space-y-1.5 text-[11px] text-muted-foreground">
+                <div className="flex items-center gap-4">
+                  <span>Created {formatDate(selectedRecipe.createdAt)}</span>
+                  <span>·</span>
+                  <span>Modified {formatDate(selectedRecipe.modifiedAt)}</span>
+                </div>
+                {selectedRecipe.requiredColumns.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <Columns className="w-3 h-3 shrink-0" />
+                    {selectedRecipe.requiredColumns.map((col) => (
+                      <Badge key={col} variant="secondary" className="text-[10px] px-1.5 py-0">
+                        {col}
+                      </Badge>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Calendar className="w-3 h-3" />
-                    <span>Modified: {formatDate(selectedRecipe.modifiedAt)}</span>
-                  </div>
-                  {selectedRecipe.requiredColumns.length > 0 && (
-                    <div className="flex items-start gap-2 text-xs">
-                      <Columns className="w-3 h-3 mt-0.5 text-muted-foreground shrink-0" />
-                      <div className="flex flex-wrap gap-1">
-                        {selectedRecipe.requiredColumns.map((col) => (
-                          <Badge key={col} variant="secondary" className="text-[10px] px-1 py-0">
-                            {col}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="text-xs text-muted-foreground">
-                    Version: {selectedRecipe.version}
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
+                )}
+              </div>
 
               {/* Steps Header */}
               <div className="flex items-center justify-between pt-2 border-t border-border/30 mt-2">
