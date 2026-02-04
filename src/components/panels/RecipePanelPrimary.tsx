@@ -12,6 +12,7 @@ import {
   Sparkles,
   Search,
   Wand2,
+  Columns,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -495,16 +496,31 @@ export function RecipePanelPrimary() {
                 </p>
               )}
 
-              {/* Metadata badges */}
-              <div className="flex items-center gap-2 mt-3">
-                <Badge variant="outline" className="text-xs">
-                  {selectedRecipe.steps.filter((s) => s.enabled).length}/{selectedRecipe.steps.length} enabled
-                </Badge>
-                {selectedRecipe.requiredColumns.length > 0 && (
+              {/* Metadata */}
+              <div className="space-y-2 mt-3">
+                {/* Dates */}
+                <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                  <span>Created {formatDate(selectedRecipe.createdAt)}</span>
+                  <span>·</span>
+                  <span>Modified {formatDate(selectedRecipe.modifiedAt)}</span>
+                </div>
+
+                {/* Steps and columns badges */}
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant="outline" className="text-xs">
-                    {selectedRecipe.requiredColumns.length} columns
+                    {selectedRecipe.steps.filter((s) => s.enabled).length}/{selectedRecipe.steps.length} enabled
                   </Badge>
-                )}
+                  {selectedRecipe.requiredColumns.length > 0 && (
+                    <>
+                      <Columns className="w-3.5 h-3.5 text-muted-foreground ml-2" />
+                      {selectedRecipe.requiredColumns.map((col) => (
+                        <Badge key={col} variant="secondary" className="text-xs">
+                          {col}
+                        </Badge>
+                      ))}
+                    </>
+                  )}
+                </div>
               </div>
 
               {/* Action buttons */}
