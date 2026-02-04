@@ -1,11 +1,12 @@
 import { useState, useCallback, useMemo } from 'react'
-import { ChevronRight, History, FileText, Eye, Download, X, Crosshair, BookOpen } from 'lucide-react'
+import { History, FileText, Eye, Download, X, Crosshair, BookOpen, Layers, PenLine } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Separator } from '@/components/ui/separator'
 import {
   Dialog,
   DialogContent,
@@ -30,6 +31,17 @@ import { extractRecipeSteps, extractRequiredColumns, isRecipeCompatibleCommand }
 import { toast } from 'sonner'
 import type { AuditLogEntry } from '@/types'
 import { cn } from '@/lib/utils'
+
+/**
+ * Feature flag: Audit entry highlight functionality
+ *
+ * Disabled because:
+ * 1. The Diff feature provides similar functionality with more detail
+ * 2. Reduces UI complexity in the audit sidebar
+ *
+ * To re-enable: Set to `true`
+ */
+const ENABLE_AUDIT_HIGHLIGHT = false
 
 export function AuditSidebar() {
   const auditSidebarOpen = usePreviewStore((s) => s.auditSidebarOpen)
@@ -295,136 +307,144 @@ export function AuditSidebar() {
 
   return (
     <>
-      <aside className="w-96 border-l border-border/50 bg-card/30 flex flex-col shrink-0" data-testid="audit-sidebar">
+      <aside className="w-[420px] border-l border-border/40 bg-gradient-to-b from-card/50 to-card/30 flex flex-col shrink-0" data-testid="audit-sidebar">
         {/* Header */}
-        <div className="h-12 flex items-center justify-between px-3 border-b border-border/50 shrink-0">
-          <div className="flex items-center gap-2">
-            <History className="w-4 h-4 text-muted-foreground" />
-            <span className="font-medium text-sm">Audit Log</span>
-            {tableEntries.length > 0 && (
-              <Badge variant="secondary" className="text-[10px] h-5">
-                {tableEntries.length}
-              </Badge>
-            )}
-            {/* Timeline position indicator */}
-            {commandCount > 0 && (
-              <Badge variant="outline" className="text-[10px] h-5 text-muted-foreground">
-                {currentPosition + 1}/{commandCount}
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            {highlightedCommandId && (
+        <div className="px-5 py-4 border-b border-border/40 shrink-0">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-primary/10">
+                <History className="w-4 h-4 text-primary" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-sm tracking-tight">Audit Log</h2>
+                <p className="text-xs text-muted-foreground">
+                  {tableEntries.length} {tableEntries.length === 1 ? 'change' : 'changes'}
+                  {commandCount > 0 && (
+                    <span className="ml-1.5 text-muted-foreground/60">
+                      · {currentPosition + 1}/{commandCount}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              {ENABLE_AUDIT_HIGHLIGHT && highlightedCommandId && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-primary hover:bg-primary/10"
+                      onClick={clearHighlight}
+                    >
+                      <Crosshair className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Clear highlights</TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7 text-primary"
-                    onClick={clearHighlight}
+                    className="h-8 w-8 hover:bg-muted/60"
+                    onClick={handleExportAsRecipe}
+                    disabled={recipeCompatibleCount === 0}
+                    data-testid="export-as-recipe-btn"
                   >
-                    <Crosshair className="w-3.5 h-3.5" />
+                    <BookOpen className="w-4 h-4" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Clear highlights</TooltipContent>
+                <TooltipContent>
+                  Export as Recipe
+                  {recipeCompatibleCount > 0 && (
+                    <span className="text-muted-foreground ml-1">
+                      ({recipeCompatibleCount} transforms)
+                    </span>
+                  )}
+                </TooltipContent>
               </Tooltip>
-            )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={handleExportAsRecipe}
-                  disabled={recipeCompatibleCount === 0}
-                  data-testid="export-as-recipe-btn"
-                >
-                  <BookOpen className="w-3.5 h-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Export as Recipe
-                {recipeCompatibleCount > 0 && (
-                  <span className="text-muted-foreground ml-1">
-                    ({recipeCompatibleCount} transforms)
-                  </span>
-                )}
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={handleExportLog}
-                  disabled={tableEntries.length === 0}
-                  data-testid="audit-export-btn"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Export audit log</TooltipContent>
-            </Tooltip>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={() => {
-                clearHighlight() // Clear highlights when closing
-                setAuditSidebarOpen(false)
-              }}
-            >
-              <X className="w-3.5 h-3.5" />
-            </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 hover:bg-muted/60"
+                    onClick={handleExportLog}
+                    disabled={tableEntries.length === 0}
+                    data-testid="audit-export-btn"
+                  >
+                    <Download className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Export audit log</TooltipContent>
+              </Tooltip>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 hover:bg-muted/60"
+                onClick={() => {
+                  if (ENABLE_AUDIT_HIGHLIGHT) clearHighlight()
+                  setAuditSidebarOpen(false)
+                }}
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
         </div>
 
         {/* Entries */}
         <ScrollArea className="flex-1">
           {tableEntries.length === 0 ? (
-            <div className="p-4 text-center text-sm text-muted-foreground">
-              <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p>No changes yet.</p>
-              <p className="text-xs mt-1">
-                Apply transforms, matches, or other operations to see history here.
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+              <div className="p-4 rounded-2xl bg-muted/30 mb-4">
+                <FileText className="w-10 h-10 text-muted-foreground/50" />
+              </div>
+              <p className="font-medium text-sm text-muted-foreground">No changes yet</p>
+              <p className="text-xs text-muted-foreground/70 mt-1 max-w-[200px]">
+                Apply transforms or edit data to see your change history here.
               </p>
             </div>
           ) : (
-            <div className="p-2 px-3 space-y-1">
+            <div className="p-4 space-y-3">
               {tableEntries.map((entry, index) => {
                 const entryState = getEntryState(entry, index)
                 const isFuture = entryState === 'future'
                 const isCurrent = entryState === 'current'
+                const isTransform = entry.entryType === 'A'
 
-                // Check if we need to show separator before this entry
-                // Show separator before current entry if previous entry is future (undone)
-                // This creates a visual divider between undone actions and current state
                 const prevEntry = index > 0 ? tableEntries[index - 1] : null
                 const prevState = prevEntry ? getEntryState(prevEntry, index - 1) : null
                 const showSeparatorBefore = isCurrent && prevState === 'future'
 
                 return (
-                  <div key={entry.id}>
+                  <div
+                    key={entry.id}
+                    className="animate-in"
+                    style={{ animationDelay: `${Math.min(index * 30, 300)}ms` }}
+                  >
                     {/* Current State separator */}
                     {showSeparatorBefore && (
-                      <div className="flex items-center gap-2 py-2 my-1">
-                        <div className="flex-1 border-t border-primary/30" />
-                        <span className="text-[10px] text-primary/70 font-medium px-1">
+                      <div className="flex items-center gap-3 py-3 mb-3">
+                        <Separator className="flex-1 bg-primary/20" />
+                        <span className="text-[11px] font-medium text-primary/80 uppercase tracking-wider">
                           Current State
                         </span>
-                        <div className="flex-1 border-t border-primary/30" />
+                        <Separator className="flex-1 bg-primary/20" />
                       </div>
                     )}
                     <div
                       role="button"
                       tabIndex={0}
                       className={cn(
-                        'w-full text-left p-2 rounded-lg transition-colors group cursor-pointer',
-                        'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1',
-                        isFuture && 'opacity-40',
-                        isCurrent && 'border-l-2 border-primary bg-primary/5',
-                        !isFuture && 'hover:bg-muted/50'
+                        'group relative w-full text-left rounded-xl transition-all duration-200 cursor-pointer',
+                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                        isFuture && 'opacity-50',
+                        isCurrent
+                          ? 'bg-primary/8 border border-primary/20 shadow-sm shadow-primary/5'
+                          : 'bg-card/60 border border-border/30 hover:bg-card/80 hover:border-border/50 hover:shadow-sm'
                       )}
                       onClick={() => setSelectedEntry(entry)}
                       onKeyDown={(e) => {
@@ -435,78 +455,116 @@ export function AuditSidebar() {
                       }}
                       data-testid={entry.hasRowDetails ? 'audit-entry-with-details' : undefined}
                     >
-                      <div className="flex items-start justify-between gap-2 overflow-hidden">
-                        <div className="min-w-0 flex-1 overflow-hidden">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium truncate">{entry.action}</p>
-                            {/* Undone badge for future entries */}
-                            {isFuture && (
-                              <Badge variant="outline" className="text-[10px] h-4 px-1 opacity-80 shrink-0">
-                                Undone
-                              </Badge>
+                      {/* Current indicator bar */}
+                      {isCurrent && (
+                        <div className="absolute left-0 top-3 bottom-3 w-[3px] rounded-full bg-primary" />
+                      )}
+
+                      <div className="p-4">
+                        {/* Top row: Type icon + Action + Undone badge */}
+                        <div className="flex items-start gap-3">
+                          <div className={cn(
+                            'shrink-0 p-2 rounded-lg transition-colors',
+                            isTransform
+                              ? 'bg-primary/10 text-primary'
+                              : 'bg-amber-500/10 text-amber-500'
+                          )}>
+                            {isTransform ? (
+                              <Layers className="w-4 h-4" />
+                            ) : (
+                              <PenLine className="w-4 h-4" />
                             )}
                           </div>
-                          <p className="text-xs text-muted-foreground line-clamp-3 break-all overflow-hidden">
-                            {entry.details}
-                          </p>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-medium text-sm text-foreground truncate">
+                                {entry.action}
+                              </h3>
+                              {isFuture && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] h-5 px-1.5 bg-muted/50 text-muted-foreground border-muted-foreground/20 shrink-0"
+                                >
+                                  Undone
+                                </Badge>
+                              )}
+                            </div>
+                            {entry.details && (
+                              <p className="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">
+                                {entry.details}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                        <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5" />
-                      </div>
-                      <div className="flex items-center gap-2 mt-1">
-                        <Badge
-                          variant={entry.entryType === 'A' ? 'default' : 'secondary'}
-                          className="text-[10px] h-4 px-1.5"
-                        >
-                          {entry.entryType === 'A' ? 'Transform' : 'Edit'}
-                        </Badge>
-                        {/* Recipe eligibility indicator - only shown for compatible entries */}
-                        {!isFuture && isRecipeEligible(entry) && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <div className="flex items-center text-[10px] text-emerald-500">
-                                <BookOpen className="w-3 h-3" />
-                              </div>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" className="text-xs">
-                              Can be added to recipe
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
-                        {entry.rowsAffected !== undefined && (
-                          <span className="text-[10px] text-muted-foreground">
-                            {entry.rowsAffected.toLocaleString()} rows
-                          </span>
-                        )}
-                        <span className="text-[10px] text-muted-foreground ml-auto">
-                          {formatTime(entry.timestamp)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-1">
-                        {entry.hasRowDetails && (
-                          <div className="flex items-center gap-1 text-[10px] text-primary">
-                            <Eye className="w-3 h-3" />
-                            <span>View details</span>
-                          </div>
-                        )}
-                        {/* Highlight in grid button - hidden for full-table operations */}
-                        {shouldShowHighlight(entry) && (
-                          <button
-                            onClick={(e) => toggleHighlight(entry, e)}
+
+                        {/* Bottom row: Metadata */}
+                        <div className="flex items-center gap-3 mt-3 pt-3 border-t border-border/30">
+                          <Badge
+                            variant={isTransform ? 'default' : 'secondary'}
                             className={cn(
-                              'flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition-colors',
-                              highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
-                                ? 'bg-primary/20 text-primary'
-                                : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                              'text-[10px] h-5 px-2 font-medium',
+                              isTransform
+                                ? 'bg-primary/15 text-primary hover:bg-primary/20 border-0'
+                                : 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/15 border-0'
                             )}
-                            title="Highlight affected cells in grid"
                           >
-                            <Crosshair className="w-3 h-3" />
-                            <span>
-                              {highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
-                                ? 'Clear'
-                                : 'Highlight'}
+                            {isTransform ? 'Transform' : 'Edit'}
+                          </Badge>
+
+                          {/* Recipe eligibility indicator */}
+                          {!isFuture && isRecipeEligible(entry) && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="flex items-center gap-1 text-emerald-500">
+                                  <BookOpen className="w-3.5 h-3.5" />
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="text-xs">
+                                Can be added to recipe
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+
+                          {entry.rowsAffected !== undefined && (
+                            <span className="text-[11px] text-muted-foreground">
+                              {entry.rowsAffected.toLocaleString()} rows
                             </span>
-                          </button>
+                          )}
+
+                          <span className="text-[11px] text-muted-foreground/70 ml-auto">
+                            {formatTime(entry.timestamp)}
+                          </span>
+                        </div>
+
+                        {/* Hidden highlight controls (feature flagged) */}
+                        {ENABLE_AUDIT_HIGHLIGHT && (entry.hasRowDetails || shouldShowHighlight(entry)) && (
+                          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/30">
+                            {entry.hasRowDetails && (
+                              <div className="flex items-center gap-1.5 text-xs text-primary">
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>View details</span>
+                              </div>
+                            )}
+                            {shouldShowHighlight(entry) && (
+                              <button
+                                onClick={(e) => toggleHighlight(entry, e)}
+                                className={cn(
+                                  'flex items-center gap-1.5 text-xs px-2 py-1 rounded-md transition-colors',
+                                  highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
+                                    ? 'bg-primary/20 text-primary'
+                                    : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                                )}
+                                title="Highlight affected cells in grid"
+                              >
+                                <Crosshair className="w-3.5 h-3.5" />
+                                <span>
+                                  {highlightedCommandId === findTimelineCommand(entry.auditEntryId)?.id
+                                    ? 'Clear'
+                                    : 'Highlight'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
