@@ -7,6 +7,7 @@ CleanSlate Pro is a browser-based, local-first data operations suite for regulat
 ## 2. Rules (Strict)
 
 - **MUST** push the plan file with your commits
+- **MUST** follow DRY principles
 - **MUST NOT** create `.md` files in root folder unless explicitly asked
 - **MUST NOT** use tools like `sed`, `cat` or `awk` — use Edit, Read, Update or Find tools or TypeScript LSP
 - **MUST** ensure E2E tests pass; if failing, work with me to determine if issue is implementation or test intent
