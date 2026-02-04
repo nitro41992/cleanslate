@@ -133,11 +133,15 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
 
   // Recipe store access
   const recipes = useRecipeStore((s) => s.recipes)
+  const selectedRecipeId = useRecipeStore((s) => s.selectedRecipeId)
   const addRecipe = useRecipeStore((s) => s.addRecipe)
   const addStep = useRecipeStore((s) => s.addStep)
   const setSelectedRecipe = useRecipeStore((s) => s.setSelectedRecipe)
   const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
   const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
+
+  // Get the selected recipe for button display
+  const selectedRecipe = recipes.find((r) => r.id === selectedRecipeId)
 
   // Local state
   const [rules, setRules] = useState<PrivacyRule[]>([])
@@ -415,6 +419,12 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
     toast.success('Step added to recipe', {
       description: `Added Privacy Transforms to "${recipe?.name}"`,
     })
+  }
+
+  // Handle direct add to selected recipe (when recipe panel is open with a selection)
+  const handleAddToSelectedRecipe = () => {
+    if (!selectedRecipeId) return
+    handleAddToExistingRecipe(selectedRecipeId)
   }
 
   const currentRule = rules.find((r) => r.column === selectedRule)
@@ -701,7 +711,7 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
         <div className="p-4 border-t border-border/50 space-y-2">
           <div className="flex gap-2">
             <Button
-              className="flex-1 bg-teal-600 hover:bg-teal-700"
+              className="flex-1 bg-teal-600 hover:bg-teal-700 transition-all duration-150"
               onClick={handleApply}
               disabled={
                 !activeTable ||
@@ -723,43 +733,66 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
               )}
             </Button>
 
-            {/* Add to Recipe Dropdown - equal width */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            {/* Add to Recipe - always rendered but hidden when recipe panel closed */}
+            <div
+              className={`transition-all duration-150 overflow-hidden ${
+                secondaryPanel === 'recipe'
+                  ? 'flex-1 opacity-100'
+                  : 'w-0 opacity-0'
+              }`}
+            >
+              {selectedRecipeId && selectedRecipe ? (
+                // Direct add to selected recipe
                 <Button
                   variant="outline"
-                  className="flex-1"
+                  className="w-full whitespace-nowrap"
                   disabled={!canAddToRecipe() || isProcessing}
+                  onClick={handleAddToSelectedRecipe}
                   data-testid="privacy-add-to-recipe-btn"
                 >
                   <BookOpen className="w-4 h-4 mr-2" />
-                  Add to Recipe
+                  Add to {selectedRecipe.name}
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem onClick={handleAddToNewRecipe}>
-                  <Plus className="w-4 h-4 mr-2" />
-                  Create New Recipe...
-                </DropdownMenuItem>
-                {recipes.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
-                    {recipes.map((recipe) => (
-                      <DropdownMenuItem
-                        key={recipe.id}
-                        onClick={() => handleAddToExistingRecipe(recipe.id)}
-                      >
-                        {recipe.name}
-                        <span className="ml-auto text-xs text-muted-foreground">
-                          {recipe.steps.length} steps
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                  </>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              ) : (
+                // Dropdown when no recipe selected
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full whitespace-nowrap"
+                      disabled={!canAddToRecipe() || isProcessing}
+                      data-testid="privacy-add-to-recipe-btn"
+                    >
+                      <BookOpen className="w-4 h-4 mr-2" />
+                      Add to Recipe
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuItem onClick={handleAddToNewRecipe}>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Create New Recipe...
+                    </DropdownMenuItem>
+                    {recipes.length > 0 && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
+                        {recipes.map((recipe) => (
+                          <DropdownMenuItem
+                            key={recipe.id}
+                            onClick={() => handleAddToExistingRecipe(recipe.id)}
+                          >
+                            {recipe.name}
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              {recipe.steps.length} steps
+                            </span>
+                          </DropdownMenuItem>
+                        ))}
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
           </div>
           <Button
             variant="ghost"

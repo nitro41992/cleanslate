@@ -107,6 +107,7 @@ export function CleanPanel() {
 
   // Recipe store access
   const recipes = useRecipeStore((s) => s.recipes)
+  const selectedRecipeId = useRecipeStore((s) => s.selectedRecipeId)
   const addRecipe = useRecipeStore((s) => s.addRecipe)
   const addStep = useRecipeStore((s) => s.addStep)
   const setSelectedRecipe = useRecipeStore((s) => s.setSelectedRecipe)
@@ -472,6 +473,15 @@ export function CleanPanel() {
       description: `Added ${selectedTransform?.label} to "${recipe?.name}"`,
     })
   }
+
+  // Handle direct add to selected recipe (when recipe panel is open with a selection)
+  const handleAddToSelectedRecipe = () => {
+    if (!selectedRecipeId) return
+    handleAddToExistingRecipe(selectedRecipeId)
+  }
+
+  // Get the selected recipe name for button display
+  const selectedRecipe = recipes.find((r) => r.id === selectedRecipeId)
 
   // Check if the current form state is valid for adding to a recipe
   // Uses the same validation logic as isValid() for UX parity
@@ -870,7 +880,7 @@ export function CleanPanel() {
                     {/* Apply Button */}
                     <Button
                       ref={applyButtonRef}
-                      className="flex-1"
+                      className="flex-1 transition-all duration-150"
                       onClick={handleApply}
                       disabled={isApplying || !isValid()}
                       data-testid="apply-transformation-btn"
@@ -888,44 +898,67 @@ export function CleanPanel() {
                       )}
                     </Button>
 
-                    {/* Add to Recipe Dropdown */}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
+                    {/* Add to Recipe - always rendered but hidden when recipe panel closed */}
+                    <div
+                      className={`transition-all duration-150 overflow-hidden ${
+                        secondaryPanel === 'recipe'
+                          ? 'flex-1 opacity-100'
+                          : 'w-0 opacity-0'
+                      }`}
+                    >
+                      {selectedRecipeId && selectedRecipe ? (
+                        // Direct add to selected recipe
                         <Button
                           variant="outline"
-                          className="flex-1"
+                          className="w-full whitespace-nowrap"
                           disabled={!canAddToRecipe() || isApplying}
+                          onClick={handleAddToSelectedRecipe}
                           data-testid="add-to-recipe-btn"
                         >
                           <BookOpen className="w-4 h-4 mr-2" />
-                          Add to Recipe
-                          <ChevronDown className="w-3 h-3 ml-1" />
+                          Add to {selectedRecipe.name}
                         </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-56">
-                        <DropdownMenuItem onClick={handleAddToNewRecipe}>
-                          <Plus className="w-4 h-4 mr-2" />
-                          Create New Recipe...
-                        </DropdownMenuItem>
-                        {recipes.length > 0 && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
-                            {recipes.map((recipe) => (
-                              <DropdownMenuItem
-                                key={recipe.id}
-                                onClick={() => handleAddToExistingRecipe(recipe.id)}
-                              >
-                                {recipe.name}
-                                <span className="ml-auto text-xs text-muted-foreground">
-                                  {recipe.steps.length} steps
-                                </span>
-                              </DropdownMenuItem>
-                            ))}
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                      ) : (
+                        // Dropdown when no recipe selected
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="w-full whitespace-nowrap"
+                              disabled={!canAddToRecipe() || isApplying}
+                              data-testid="add-to-recipe-btn"
+                            >
+                              <BookOpen className="w-4 h-4 mr-2" />
+                              Add to Recipe
+                              <ChevronDown className="w-3 h-3 ml-1" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-56">
+                            <DropdownMenuItem onClick={handleAddToNewRecipe}>
+                              <Plus className="w-4 h-4 mr-2" />
+                              Create New Recipe...
+                            </DropdownMenuItem>
+                            {recipes.length > 0 && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
+                                {recipes.map((recipe) => (
+                                  <DropdownMenuItem
+                                    key={recipe.id}
+                                    onClick={() => handleAddToExistingRecipe(recipe.id)}
+                                  >
+                                    {recipe.name}
+                                    <span className="ml-auto text-xs text-muted-foreground">
+                                      {recipe.steps.length} steps
+                                    </span>
+                                  </DropdownMenuItem>
+                                ))}
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </div>
                   </div>
 
                   {/* Execution Progress (for batched operations) */}
