@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { RecipeCombobox } from '@/components/ui/recipe-combobox'
 import {
   Tooltip,
   TooltipContent,
@@ -345,24 +346,13 @@ export function RecipePanel() {
       <div className="p-3 shrink-0">
         <div className="flex items-center gap-2">
           {recipes.length > 0 ? (
-            <Select
-              value={selectedRecipeId || ''}
-              onValueChange={(id) => setSelectedRecipe(id || null)}
-            >
-              <SelectTrigger className="h-8 text-sm bg-muted/30 border-border/50 flex-1">
-                <SelectValue placeholder="Select recipe..." />
-              </SelectTrigger>
-              <SelectContent>
-                {recipes.map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.name}
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      ({r.steps.length} steps)
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <RecipeCombobox
+              recipes={recipes}
+              value={selectedRecipeId}
+              onValueChange={setSelectedRecipe}
+              placeholder="Select recipe..."
+              className="h-8 text-sm flex-1"
+            />
           ) : (
             <p className="text-xs text-muted-foreground text-center py-1 flex-1">
               No recipes yet
