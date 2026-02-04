@@ -11,6 +11,7 @@ import {
   BookOpen,
   Sparkles,
   Search,
+  Wand2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -276,19 +277,13 @@ export function RecipePanelPrimary() {
     input.click()
   }
 
-  // Handle "Add Step" - opens Clean panel as secondary
+  // Handle "Add Steps" - opens Clean panel as secondary
   const handleAddStep = () => {
     if (!selectedRecipeId) {
       toast.error('Please select or create a recipe first')
       return
     }
     // Switch to Clean as primary, Recipe as secondary
-    setActivePanel('clean')
-    setSecondaryPanel('recipe')
-  }
-
-  // Handle collapse to Clean panel with Recipe as secondary
-  const handleCollapseToClean = () => {
     setActivePanel('clean')
     setSecondaryPanel('recipe')
   }
@@ -327,19 +322,6 @@ export function RecipePanelPrimary() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header bar with Transform View button */}
-      <div className="flex items-center justify-end px-4 py-1.5 border-b border-border/40 shrink-0">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleCollapseToClean}
-          className="gap-2"
-        >
-          <Sparkles className="w-4 h-4" />
-          Transform View
-        </Button>
-      </div>
-
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
       {/* Left Sidebar: Recipe List */}
@@ -383,14 +365,14 @@ export function RecipePanelPrimary() {
 
         {/* Search Input */}
         {recipes.length > 0 && (
-          <div className="p-2 border-b border-border/40">
+          <div className="px-3 py-3 border-b border-border/40">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search recipes..."
-                className="h-8 pl-8 text-sm"
+                className="h-9 pl-8 text-sm"
               />
             </div>
           </div>
@@ -614,8 +596,8 @@ export function RecipePanelPrimary() {
                     size="sm"
                     onClick={handleAddStep}
                   >
-                    <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                    Add Step
+                    <Wand2 className="w-3.5 h-3.5 mr-1.5" />
+                    Add Steps
                   </Button>
                 </div>
 
@@ -630,8 +612,8 @@ export function RecipePanelPrimary() {
                       size="sm"
                       onClick={handleAddStep}
                     >
-                      <Plus className="w-3.5 h-3.5 mr-1.5" />
-                      Add First Step
+                      <Wand2 className="w-3.5 h-3.5 mr-1.5" />
+                      Add Steps
                     </Button>
                   </div>
                 ) : (
