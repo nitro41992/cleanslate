@@ -1,9 +1,10 @@
-import { ReactNode, useEffect } from 'react'
+import { ReactNode, useEffect, useCallback } from 'react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AppHeader } from './AppHeader'
 import { StatusBar } from './StatusBar'
 import { AuditSidebar } from './AuditSidebar'
 import { FeaturePanel } from './FeaturePanel'
+import { actions, type ActionId } from './ActionToolbar'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useDiffStore } from '@/stores/diffStore'
 import { useMatcherStore } from '@/stores/matcherStore'
@@ -32,7 +33,24 @@ export function AppLayout({
   const openMatchView = useMatcherStore((s) => s.openView)
   const openStandardizeView = useStandardizerStore((s) => s.openView)
 
-  // Keyboard shortcuts for panels
+  // Handler for action shortcuts - centralized from ActionToolbar
+  const handleActionShortcut = useCallback((actionId: ActionId) => {
+    switch (actionId) {
+      case 'diff':
+        openDiffView()
+        break
+      case 'match':
+        openMatchView()
+        break
+      case 'standardize':
+        openStandardizeView()
+        break
+      default:
+        setActivePanel(actionId)
+    }
+  }, [setActivePanel, openDiffView, openMatchView, openStandardizeView])
+
+  // Keyboard shortcuts for panels - uses shortcuts defined in ActionToolbar
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Only handle if not in an input
@@ -43,34 +61,26 @@ export function AppLayout({
         return
       }
 
-      // Number keys 1-6 for panels (2, 3, and 6 open overlays)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        switch (e.key) {
-          case '1':
-            setActivePanel('clean')
-            break
-          case '2':
-            openStandardizeView()
-            break
-          case '3':
-            openMatchView()
-            break
-          case '4':
-            setActivePanel('combine')
-            break
-          case '5':
-            openDiffView()
-            break
-          case 'Escape':
-            setActivePanel(null)
-            break
+        // Escape closes panel
+        if (e.key === 'Escape') {
+          setActivePanel(null)
+          return
+        }
+
+        // Check if key matches any action shortcut (case-insensitive)
+        const action = actions.find(
+          a => a.shortcut.toLowerCase() === e.key.toLowerCase()
+        )
+        if (action) {
+          handleActionShortcut(action.id)
         }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setActivePanel, openDiffView, openMatchView, openStandardizeView])
+  }, [setActivePanel, handleActionShortcut])
 
   // Event listener for storage quota warning to open sidebar
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { Wand2, Users, Merge, GitCompare, Link2 } from 'lucide-react'
+import { Wand2, Users, Merge, GitCompare, Link2, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -11,43 +11,50 @@ import { useMatcherStore } from '@/stores/matcherStore'
 import { useStandardizerStore } from '@/stores/standardizerStore'
 import { cn } from '@/lib/utils'
 
-type ActionId = PanelType | 'standardize'
+export type ActionId = PanelType | 'standardize'
 
-const actions: { id: ActionId; label: string; icon: typeof Wand2; description: string; shortcut: string }[] = [
+export const actions: { id: ActionId; label: string; icon: typeof Wand2; description: string; shortcut: string }[] = [
   {
     id: 'clean',
     label: 'Transform',
     icon: Wand2,
     description: 'Transform and clean data',
-    shortcut: '1',
+    shortcut: 'T',
   },
   {
     id: 'standardize',
     label: 'Smart Replace',
     icon: Link2,
     description: 'Find and fix similar values',
-    shortcut: '2',
+    shortcut: 'S',
   },
   {
     id: 'match',
-    label: 'Smart Dedupe',
+    label: 'Merge',
     icon: Users,
     description: 'Find and merge duplicate records',
-    shortcut: '3',
+    shortcut: 'M',
   },
   {
     id: 'combine',
     label: 'Combine',
     icon: Merge,
     description: 'Stack or join tables',
-    shortcut: '4',
+    shortcut: 'C',
   },
   {
     id: 'diff',
     label: 'Diff',
     icon: GitCompare,
     description: 'Compare tables',
-    shortcut: '5',
+    shortcut: 'D',
+  },
+  {
+    id: 'recipe',
+    label: 'Recipes',
+    icon: BookOpen,
+    description: 'Build and apply transformation recipes',
+    shortcut: 'R',
   },
 ]
 

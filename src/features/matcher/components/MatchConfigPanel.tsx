@@ -133,7 +133,7 @@ export function MatchConfigPanel({
       <div className="bg-muted rounded-lg p-3">
         <h2 className="font-medium flex items-center gap-2">
           <Users className="w-4 h-4" />
-          Smart Dedupe
+          Merge
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
           Detect and merge duplicate records based on similarity

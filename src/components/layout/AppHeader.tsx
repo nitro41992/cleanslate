@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Layers, Download, History, Upload, Save } from 'lucide-react'
+import { Layers, Download, History, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -78,24 +78,6 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
 
         {/* Table selector dropdown */}
         <TableSelector onNewTable={onNewTable} />
-
-        {/* Add file button when table is active */}
-        {activeTable && onNewTable && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onNewTable}
-                className="text-muted-foreground"
-              >
-                <Upload className="w-4 h-4 mr-1" />
-                <span className="hidden sm:inline">Add file</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Import another file</TooltipContent>
-          </Tooltip>
-        )}
       </div>
 
       {/* Center section: Action toolbar */}
