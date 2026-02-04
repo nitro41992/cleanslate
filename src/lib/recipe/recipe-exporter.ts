@@ -121,9 +121,14 @@ function getCommandType(cmd: TimelineCommand, params: Record<string, unknown>): 
     return `transform:${params.transformationType}`
   }
 
-  // For scrub commands
-  if (cmd.commandType === 'scrub' && params.method) {
-    return `scrub:${params.method}`
+  // For scrub commands (batch uses transformationType, individual scrubs use method)
+  if (cmd.commandType === 'scrub') {
+    if (params.transformationType) {
+      return `scrub:${params.transformationType}`
+    }
+    if (params.method) {
+      return `scrub:${params.method}`
+    }
   }
 
   // Note: standardize commands are no longer included in recipes
@@ -171,6 +176,7 @@ function extractCustomParams(
     'transformationType',
     'dataOperation',
     'method',
+    'secret', // Prompted at apply time for security (see recipe-executor.ts)
   ])
 
   const customParams: Record<string, unknown> = {}

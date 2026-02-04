@@ -140,11 +140,13 @@ export function AuditSidebar() {
       const cmdType =
         cmd.commandType === 'transform' && params?.transformationType
           ? `transform:${params.transformationType}`
-          : cmd.commandType === 'scrub' && params?.method
-            ? `scrub:${params.method}`
-            : cmd.commandType === 'standardize'
-              ? 'standardize:apply'
-              : cmd.commandType
+          : cmd.commandType === 'scrub' && params?.transformationType
+            ? `scrub:${params.transformationType}`
+            : cmd.commandType === 'scrub' && params?.method
+              ? `scrub:${params.method}`
+              : cmd.commandType === 'standardize'
+                ? 'standardize:apply'
+                : cmd.commandType
 
       return isRecipeCompatibleCommand(cmdType)
     },

@@ -101,8 +101,19 @@ function buildDetails(command: TimelineCommand): string {
     case 'join':
       return `Joined with "${params.rightTableName}" on "${params.keyColumn}" (${params.joinType})`
 
-    case 'scrub':
-      return `Applied ${params.rules?.length || 0} obfuscation rules`
+    case 'scrub': {
+      // Rules may be at top level (ScrubParams type) or nested under params
+      // due to timeline param structure from executor.ts
+      const paramsAny = params as unknown as Record<string, unknown>
+      const nestedParams = paramsAny.params as Record<string, unknown> | undefined
+      const rules = (nestedParams?.rules || paramsAny.rules || []) as Array<{ column: string; method: string }>
+      if (rules.length === 0) {
+        return 'Applied 0 obfuscation rules'
+      }
+      // Format: "3 rules: SSN → mask, Phone → last4"
+      const rulesDescription = rules.map((r) => `${r.column} → ${r.method}`).join(', ')
+      return `Applied ${rules.length} rule${rules.length !== 1 ? 's' : ''}: ${rulesDescription}`
+    }
 
     case 'batch_edit':
       return `Batch edited ${params.changes?.length || 0} cells`
