@@ -470,11 +470,11 @@ export function DiffView({ open, onClose }: DiffViewProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-background/95 animate-in fade-in-0 duration-200"
+      className="fixed inset-0 z-50 bg-background animate-in fade-in-0 duration-200"
       data-testid="diff-view"
     >
       {/* Header */}
-      <header className="h-14 border-b border-border/50 bg-card/50 flex items-center justify-between px-4">
+      <header className="h-14 border-b border-border/50 bg-card flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
@@ -578,7 +578,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       <div className="flex h-[calc(100vh-3.5rem)]">
         {/* Left Config Panel - Show only when no results */}
         {!hasResults && (
-          <div className="w-80 border-r border-border/50 bg-card/30">
+          <div className="w-80 border-r border-border/50 bg-card">
             <DiffConfigPanel
               tables={tables}
               mode={mode}
@@ -631,12 +631,12 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               )}
 
               {/* Summary Pills (clickable for filtering) */}
-              <div className="p-4 border-b border-border/50 bg-card/30">
+              <div className="p-4 border-b border-border/50 bg-card">
                 <DiffSummaryPills summary={summary} />
               </div>
 
               {/* Controls Row */}
-              <div className="px-4 py-2 border-b border-border/50 bg-card/20 flex items-center gap-3">
+              <div className="px-4 py-2 border-b border-border/50 bg-card flex items-center gap-3">
                 {/* Column Filter Dropdown - Searchable */}
                 <ColumnFilterCombobox
                   columns={allColumns
@@ -705,7 +705,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               </div>
 
               {/* Footer with row count */}
-              <div className="px-4 py-2 border-t border-border/50 bg-card/30 flex items-center justify-between text-xs text-muted-foreground">
+              <div className="px-4 py-2 border-t border-border/50 bg-card flex items-center justify-between text-xs text-muted-foreground">
                 <span>
                   {(statusFilter || columnFilter) ? (
                     <>
@@ -732,7 +732,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
             /* Empty State - Configure Instructions */
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
               <div className="text-center max-w-md">
-                <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-6">
+                <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-6">
                   <span className="text-4xl">⚡</span>
                 </div>
                 <h2 className="text-xl font-semibold text-foreground mb-2">

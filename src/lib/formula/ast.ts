@@ -12,6 +12,7 @@ export type ASTNode =
   | StringLiteral
   | NumberLiteral
   | BooleanLiteral
+  | InExpression
 
 export interface BinaryExpression {
   type: 'BinaryExpression'
@@ -79,6 +80,15 @@ export type FunctionName =
   // Null handling
   | 'COALESCE'
   | 'ISBLANK'
+  // Comparison functions
+  | 'CONTAINS'
+  | 'ICONTAINS'
+  | 'STARTSWITH'
+  | 'ENDSWITH'
+  | 'LIKE'
+  | 'ILIKE'
+  | 'REGEX'
+  | 'BETWEEN'
 
 export interface ColumnRef {
   type: 'ColumnRef'
@@ -98,6 +108,13 @@ export interface NumberLiteral {
 export interface BooleanLiteral {
   type: 'BooleanLiteral'
   value: boolean
+}
+
+export interface InExpression {
+  type: 'InExpression'
+  value: ASTNode
+  list: ASTNode[]
+  negated: boolean // true for NOT IN
 }
 
 /**

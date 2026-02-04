@@ -848,7 +848,7 @@ export function VirtualizedDiffGrid({
 
     return (
       <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8">
-        <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
+        <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4">
           <span className="text-2xl">{hasColumnChanges ? '📊' : '✓'}</span>
         </div>
         <p className="font-medium">

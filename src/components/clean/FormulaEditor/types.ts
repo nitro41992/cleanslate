@@ -9,7 +9,7 @@ import type { FunctionName } from '@/lib/formula/ast'
 /**
  * Category for organizing functions in the UI
  */
-export type FunctionCategory = 'conditional' | 'text' | 'numeric' | 'logical' | 'null'
+export type FunctionCategory = 'conditional' | 'text' | 'numeric' | 'logical' | 'null' | 'comparison'
 
 /**
  * Extended function info for UI display
@@ -53,7 +53,15 @@ export interface FormulaTemplate {
   label: string
   description: string
   formula: string
-  category: 'conditional' | 'text' | 'math' | 'null'
+  category: 'conditional' | 'text' | 'math' | 'null' | 'comparison'
+}
+
+/**
+ * Column with type information for type-aware suggestions
+ */
+export interface ColumnWithType {
+  name: string
+  type: string // VARCHAR, INTEGER, DOUBLE, BOOLEAN, DATE, TIMESTAMP, etc.
 }
 
 /**
@@ -64,6 +72,8 @@ export interface AutocompleteSuggestion {
   value: string
   label: string
   description?: string
+  /** Column type for type-aware UI (only for column suggestions) */
+  columnType?: string
 }
 
 /**
@@ -77,7 +87,8 @@ export type OutputMode = 'new' | 'replace'
 export interface FormulaEditorProps {
   value: string
   onChange: (value: string) => void
-  columns: string[]
+  /** Columns can be passed as strings (names only) or with type info */
+  columns: string[] | ColumnWithType[]
   outputMode: OutputMode
   onOutputModeChange: (mode: OutputMode) => void
   outputColumn: string
@@ -93,7 +104,8 @@ export interface FormulaEditorProps {
 export interface FormulaInputProps {
   value: string
   onChange: (value: string) => void
-  columns: string[]
+  /** Columns can be passed as strings (names only) or with type info */
+  columns: string[] | ColumnWithType[]
   disabled?: boolean
   placeholder?: string
   onCursorChange?: (position: number) => void

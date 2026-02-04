@@ -114,6 +114,8 @@ export function CleanPanel() {
   const setSelectedRecipe = useRecipeStore((s) => s.setSelectedRecipe)
 
   const columns = activeTable?.columns.map((c) => c.name) || []
+  // Columns with type info for type-aware FormulaEditor
+  const columnsWithTypes = activeTable?.columns.map((c) => ({ name: c.name, type: c.type })) || []
   // Count active timeline commands (not undone)
   const activeCommandCount = timeline
     ? timeline.commands.slice(0, timeline.currentPosition + 1).length
@@ -664,7 +666,7 @@ export function CleanPanel() {
               <FormulaEditor
                 value={params.formula || ''}
                 onChange={(formula) => setParams({ ...params, formula })}
-                columns={columns}
+                columns={columnsWithTypes}
                 outputMode={(params.outputMode as OutputMode) || 'new'}
                 onOutputModeChange={(mode) => setParams({ ...params, outputMode: mode })}
                 outputColumn={params.outputColumn || ''}
@@ -784,7 +786,7 @@ export function CleanPanel() {
             {selectedTransform ? (
                 <div className="space-y-4 animate-in fade-in duration-200">
                   {/* Enhanced Transform Info */}
-                  <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+                  <div className="bg-muted rounded-lg p-3 space-y-3">
                     {/* Header */}
                     <div>
                       <h3 className="font-medium flex items-center gap-2">
@@ -829,7 +831,7 @@ export function CleanPanel() {
 
                   {/* Custom SQL Context Helper */}
                   {selectedTransform.id === 'custom_sql' && activeTable && (
-                    <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 space-y-3">
+                    <div className="bg-slate-900 border border-slate-700/50 rounded-lg p-3 space-y-3">
                       {/* Table Info */}
                       <div>
                         <p className="text-xs font-medium text-slate-400 mb-1">Table</p>

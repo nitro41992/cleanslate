@@ -157,7 +157,7 @@ export function DiffConfigPanel({
   if (tables.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
+        <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4">
           <GitCompare className="w-8 h-8 text-muted-foreground" />
         </div>
         <h3 className="font-semibold text-lg mb-2">No tables loaded</h3>
@@ -196,7 +196,7 @@ export function DiffConfigPanel({
                   'flex items-center gap-3 p-3 rounded-lg border text-left transition-all',
                   mode === 'compare-preview'
                     ? 'border-primary bg-primary/10 text-foreground'
-                    : 'border-border/50 bg-muted/20 text-muted-foreground hover:bg-muted/40'
+                    : 'border-border/50 bg-muted text-muted-foreground hover:bg-muted/80'
                 )}
               >
                 <Eye className="w-5 h-5 shrink-0" />
@@ -211,7 +211,7 @@ export function DiffConfigPanel({
                   'flex items-center gap-3 p-3 rounded-lg border text-left transition-all',
                   mode === 'compare-tables'
                     ? 'border-primary bg-primary/10 text-foreground'
-                    : 'border-border/50 bg-muted/20 text-muted-foreground hover:bg-muted/40'
+                    : 'border-border/50 bg-muted text-muted-foreground hover:bg-muted/80'
                 )}
               >
                 <FileStack className="w-5 h-5 shrink-0" />
@@ -228,7 +228,7 @@ export function DiffConfigPanel({
             <>
               {activeTableId ? (
                 <div className="space-y-3">
-                  <div className="p-3 bg-muted/30 rounded-lg">
+                  <div className="p-3 bg-muted rounded-lg">
                     <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1">
                       Active Table
                     </p>
@@ -266,7 +266,7 @@ export function DiffConfigPanel({
                   )}
                 </div>
               ) : (
-                <div className="p-3 bg-muted/30 rounded-lg text-center">
+                <div className="p-3 bg-muted rounded-lg text-center">
                   <p className="text-sm text-muted-foreground">
                     Select a table to compare with its original state.
                   </p>
@@ -279,7 +279,7 @@ export function DiffConfigPanel({
           {mode === 'compare-tables' && (
             <>
               {tables.length < 2 ? (
-                <div className="p-3 bg-muted/30 rounded-lg text-center">
+                <div className="p-3 bg-muted rounded-lg text-center">
                   <p className="text-sm text-muted-foreground">
                     Load at least 2 tables to compare them.
                   </p>
@@ -361,7 +361,7 @@ export function DiffConfigPanel({
               <Label className="text-xs uppercase tracking-wider text-muted-foreground">
                 Key Columns (for matching rows)
               </Label>
-              <div className="border border-border/50 rounded-lg bg-muted/20 max-h-48 overflow-auto">
+              <div className="border border-border/50 rounded-lg bg-muted max-h-48 overflow-auto">
                 <div className="p-2 space-y-1">
                   {columns.map((col) => (
                     <label

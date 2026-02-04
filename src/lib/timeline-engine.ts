@@ -108,19 +108,25 @@ export async function listSnapshotTables(): Promise<string[]> {
 /**
  * Check if a Parquet snapshot has the _cs_origin_id column.
  * Old snapshots created before this feature was added won't have it.
+ *
+ * Uses file registration approach (like diff-engine) to work even when OPFS is disabled.
  */
 async function snapshotHasOriginId(snapshotId: string): Promise<boolean> {
   try {
-    // Get the file path for the snapshot
+    const db = await initDuckDB()
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
     // Check for single file or chunked files
     let filePattern: string
+    const filesToRegister: string[] = []
+
     try {
-      await snapshotsDir.getFileHandle(`${snapshotId}.parquet`)
-      filePattern = `${snapshotId}.parquet`
+      const fileName = `${snapshotId}.parquet`
+      await snapshotsDir.getFileHandle(fileName, { create: false })
+      filePattern = fileName
+      filesToRegister.push(fileName)
     } catch {
       // Try chunked pattern
       const { listFiles } = await import('@/lib/opfs/opfs-helpers')
@@ -130,14 +136,32 @@ async function snapshotHasOriginId(snapshotId: string): Promise<boolean> {
         return false
       }
       filePattern = `${snapshotId}_part_*.parquet`
+      filesToRegister.push(...chunks)
     }
 
-    // Query Parquet schema to check for _cs_origin_id column
+    // Register files with DuckDB before querying schema
+    // This is required because opfs:// path may not work when OPFS is disabled
+    const { registerFileWithRetry } = await import('@/lib/opfs/snapshot-storage')
+    for (const fileName of filesToRegister) {
+      const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+      await registerFileWithRetry(db, fileHandle, fileName)
+    }
+
+    // Query Parquet schema using registered filename (no opfs:// prefix)
     const columns = await query<{ name: string }>(
-      `SELECT DISTINCT name FROM parquet_schema('opfs://cleanslate/snapshots/${filePattern}')`
+      `SELECT DISTINCT name FROM parquet_schema('${filePattern}')`
     )
     const columnNames = columns.map(c => c.name)
     const hasOriginId = columnNames.includes(CS_ORIGIN_ID_COLUMN)
+
+    // Cleanup registered files
+    for (const fileName of filesToRegister) {
+      try {
+        await db.dropFile(fileName)
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
 
     console.log(`[Timeline] Snapshot ${snapshotId} has _cs_origin_id: ${hasOriginId}`)
     return hasOriginId
@@ -196,6 +220,22 @@ export async function createTimelineOriginalSnapshot(
     `SELECT COUNT(*) as count FROM "${tableName}"`
   )
   const rowCount = Number(countResult[0].count)
+
+  // DIAGNOSTIC: Capture sample _cs_origin_id values before snapshot export
+  // This helps debug diff issues where rows don't match
+  try {
+    const sampleOriginIds = await query<{ origin_id: string }>(`
+      SELECT "${CS_ORIGIN_ID_COLUMN}" as origin_id FROM "${tableName}" LIMIT 3
+    `)
+    console.log(`[Timeline] Creating original snapshot - sample _cs_origin_id values:`, {
+      tableName,
+      snapshotId,
+      rowCount,
+      sampleOriginIds: sampleOriginIds.map(r => r.origin_id)
+    })
+  } catch (err) {
+    console.warn('[Timeline] Could not get sample origin IDs:', err)
+  }
 
   if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
     console.log(`[Timeline] Creating Parquet original snapshot for ${rowCount.toLocaleString()} rows...`)

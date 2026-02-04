@@ -104,7 +104,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
         {meta && (
           <>
             {/* Header */}
-            <SheetHeader className="px-4 py-3 border-b border-border/40 shrink-0 bg-card/50">
+            <SheetHeader className="px-4 py-3 border-b border-border/40 shrink-0 bg-card">
               <div className="flex items-center gap-3">
                 {/* Primary panel info */}
                 <div className={cn(
@@ -120,7 +120,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
                     {hasDualPanels && secondaryMeta && (
                       <Badge
                         variant="secondary"
-                        className="text-[10px] px-1.5 py-0 h-5 bg-muted/50 hover:bg-muted/70 cursor-default"
+                        className="text-[10px] px-1.5 py-0 h-5 bg-muted hover:bg-muted/80 cursor-default"
                       >
                         <PanelLeft className="w-3 h-3 mr-1 opacity-60" />
                         {secondaryMeta.shortTitle}

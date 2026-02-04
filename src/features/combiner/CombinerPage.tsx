@@ -17,7 +17,7 @@ export function CombinerPage() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <header className="h-14 flex items-center justify-between px-6 border-b border-border/50 bg-card/30">
+      <header className="h-14 flex items-center justify-between px-6 border-b border-border/50 bg-card">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
             <Merge className="w-4 h-4 text-primary" />

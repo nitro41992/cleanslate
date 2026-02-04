@@ -39,6 +39,34 @@ const TEMPLATES: FormulaTemplate[] = [
     category: 'conditional',
   },
   {
+    id: 'comparison-contains',
+    label: 'Contains',
+    description: 'Check if column contains text',
+    formula: 'IF(CONTAINS(@column, "search"), "Yes", "No")',
+    category: 'comparison',
+  },
+  {
+    id: 'comparison-in',
+    label: 'In List',
+    description: 'Check if value is in a list',
+    formula: 'IF(@status IN ("active", "pending"), "Open", "Closed")',
+    category: 'comparison',
+  },
+  {
+    id: 'comparison-between',
+    label: 'In Range',
+    description: 'Check if value is within a range',
+    formula: 'IF(BETWEEN(@age, 18, 65), "Working age", "Other")',
+    category: 'comparison',
+  },
+  {
+    id: 'comparison-startswith',
+    label: 'Starts With',
+    description: 'Check if text starts with prefix',
+    formula: 'IF(STARTSWITH(@code, "A"), "Type A", "Other")',
+    category: 'comparison',
+  },
+  {
     id: 'text-combine',
     label: 'Combine',
     description: 'Join multiple columns with a separator',
@@ -102,6 +130,12 @@ const CATEGORY_STYLES: Record<FormulaTemplate['category'], {
     border: 'border-blue-500/25 hover:border-blue-400/50',
     label: 'Logic'
   },
+  comparison: {
+    bg: 'bg-rose-500/10 hover:bg-rose-500/20',
+    text: 'text-rose-400',
+    border: 'border-rose-500/25 hover:border-rose-400/50',
+    label: 'Compare'
+  },
   text: {
     bg: 'bg-emerald-500/10 hover:bg-emerald-500/20',
     text: 'text-emerald-400',
@@ -123,7 +157,7 @@ const CATEGORY_STYLES: Record<FormulaTemplate['category'], {
 }
 
 // Group templates by category for organized display
-const CATEGORY_ORDER: FormulaTemplate['category'][] = ['conditional', 'text', 'math', 'null']
+const CATEGORY_ORDER: FormulaTemplate['category'][] = ['conditional', 'comparison', 'text', 'math', 'null']
 
 export function TemplateGallery({ onInsert, disabled }: TemplateGalleryProps) {
   const [isOpen, setIsOpen] = useState(false)

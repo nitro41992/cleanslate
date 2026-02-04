@@ -456,7 +456,7 @@ export function RecipePanel() {
                             'relative rounded-lg border transition-all duration-300 w-full max-w-full overflow-hidden',
                             step.enabled
                               ? cn('bg-card', colors.border, colors.selectedBg)
-                              : 'bg-muted/20 border border-border/20 opacity-60',
+                              : 'bg-muted border border-border/20 opacity-60',
                             isNewlyAdded && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
                           )}
                         >

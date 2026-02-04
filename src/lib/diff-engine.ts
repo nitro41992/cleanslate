@@ -645,11 +645,40 @@ export async function runDiff(
 
     // Determine JOIN condition and CASE logic based on diff mode
     // For preview mode:
-    // - Use _cs_origin_id if both tables have it (stable identity survives row insertion)
-    // - Fall back to _cs_id if either table lacks _cs_origin_id (backwards compatibility)
+    // - Use _cs_origin_id if both tables have it AND values actually match
+    // - Fall back to _cs_id if either table lacks _cs_origin_id OR values don't match
     const hasOriginIdA = colsAAllNames.includes(CS_ORIGIN_ID_COLUMN)
     const hasOriginIdB = colsBAllNames.includes(CS_ORIGIN_ID_COLUMN)
-    const useOriginId = hasOriginIdA && hasOriginIdB
+    let useOriginId = hasOriginIdA && hasOriginIdB
+
+    // CRITICAL: Check if _cs_origin_id values actually match between tables
+    // If the snapshot was created from different data (e.g., data was re-imported),
+    // the UUIDs won't match and we need to fall back to _cs_id
+    if (useOriginId && diffMode === 'preview') {
+      try {
+        // Simple check: try to find ANY matching row
+        const matchResult = await query<{ one: number }>(`
+          SELECT 1 as one
+          FROM ${sourceTableExpr} a
+          INNER JOIN "${tableB}" b ON a."${CS_ORIGIN_ID_COLUMN}" = b."${CS_ORIGIN_ID_COLUMN}"
+          LIMIT 1
+        `)
+        const hasAnyMatch = matchResult.length > 0
+
+        console.log('[Diff] _cs_origin_id match check:', { hasAnyMatch, resultLength: matchResult.length })
+
+        if (!hasAnyMatch) {
+          console.warn('[Diff] _cs_origin_id values do not match between snapshot and current table!')
+          console.warn('[Diff] This usually means the data was re-imported or the snapshot is stale.')
+          console.warn('[Diff] Falling back to _cs_id matching (may be less accurate if rows were inserted/deleted)')
+          useOriginId = false
+        }
+      } catch (err) {
+        // On error, DON'T fall back - keep using _cs_origin_id
+        // The error might be transient, and _cs_origin_id matching is more accurate
+        console.warn('[Diff] Could not verify _cs_origin_id match (keeping _cs_origin_id):', err)
+      }
+    }
 
     if (diffMode === 'preview') {
       console.log('[Diff] Preview mode origin ID check:', {
@@ -735,11 +764,20 @@ export async function runDiff(
     console.log('[Diff] Column projection:', {
       allColumns: allColumns.length,
       neededColumns: neededColumns.size,
+      neededColumnsList: [...neededColumns],
       columnListA: colsAFiltered.length,
       columnListB: colsBFiltered.length,
+      colsAFiltered,
+      colsBFiltered,
       memoryReductionEstimate: allColumns.length > 0
         ? `${Math.round((1 - neededColumns.size / allColumns.length) * 100)}%`
         : 'N/A'
+    })
+
+    // DIAGNOSTIC: Log the exact join condition
+    console.log('[Diff] Join condition:', {
+      diffJoinCondition,
+      diffCaseLogicFirstLine: diffCaseLogic.trim().split('\n')[0]
     })
 
     const createTempTableQuery = `

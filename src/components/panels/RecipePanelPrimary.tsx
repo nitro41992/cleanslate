@@ -333,7 +333,7 @@ export function RecipePanelPrimary() {
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
       {/* Left Sidebar: Recipe List */}
-      <div className="w-[280px] shrink-0 border-r border-border/40 flex flex-col bg-muted/10">
+      <div className="w-[280px] shrink-0 border-r border-border/40 flex flex-col bg-card">
         {/* Sidebar Header */}
         <div className="p-3 border-b border-border/40">
           <div className="flex items-center justify-between">

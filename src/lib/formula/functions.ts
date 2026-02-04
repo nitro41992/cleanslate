@@ -8,7 +8,7 @@
 import type { FunctionName } from './ast'
 
 /** Category for organizing functions in the UI */
-export type FunctionCategory = 'conditional' | 'text' | 'numeric' | 'logical' | 'null'
+export type FunctionCategory = 'conditional' | 'text' | 'numeric' | 'logical' | 'null' | 'comparison'
 
 export interface FunctionSpec {
   /** Minimum number of arguments */
@@ -283,6 +283,88 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
     signature: 'ISBLANK(value)',
     category: 'null',
     example: 'IF(ISBLANK(@phone), "N/A", @phone)',
+  },
+
+  // ===== COMPARISON FUNCTIONS =====
+  CONTAINS: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `CONTAINS(CAST(${args[0]} AS VARCHAR), ${args[1]})`,
+    returnsBoolean: true,
+    description: 'CONTAINS(text, search) - Check if text contains search string',
+    signature: 'CONTAINS(text, search)',
+    category: 'comparison',
+    example: 'IF(CONTAINS(@email, "@gmail"), "Gmail", "Other")',
+  },
+  ICONTAINS: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `CONTAINS(LOWER(CAST(${args[0]} AS VARCHAR)), LOWER(${args[1]}))`,
+    returnsBoolean: true,
+    description: 'ICONTAINS(text, search) - Case-insensitive contains check',
+    signature: 'ICONTAINS(text, search)',
+    category: 'comparison',
+    example: 'IF(ICONTAINS(@name, "smith"), "Match", "No match")',
+  },
+  STARTSWITH: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `STARTS_WITH(CAST(${args[0]} AS VARCHAR), ${args[1]})`,
+    returnsBoolean: true,
+    description: 'STARTSWITH(text, prefix) - Check if text starts with prefix',
+    signature: 'STARTSWITH(text, prefix)',
+    category: 'comparison',
+    example: 'IF(STARTSWITH(@phone, "+1"), "US", "International")',
+  },
+  ENDSWITH: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `ENDS_WITH(CAST(${args[0]} AS VARCHAR), ${args[1]})`,
+    returnsBoolean: true,
+    description: 'ENDSWITH(text, suffix) - Check if text ends with suffix',
+    signature: 'ENDSWITH(text, suffix)',
+    category: 'comparison',
+    example: 'IF(ENDSWITH(@email, ".edu"), "Academic", "Other")',
+  },
+  LIKE: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `(CAST(${args[0]} AS VARCHAR) LIKE ${args[1]})`,
+    returnsBoolean: true,
+    description: 'LIKE(text, pattern) - SQL LIKE pattern matching (% = any chars, _ = single char)',
+    signature: 'LIKE(text, pattern)',
+    category: 'comparison',
+    example: 'IF(LIKE(@code, "A%"), "A-series", "Other")',
+  },
+  ILIKE: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `(CAST(${args[0]} AS VARCHAR) ILIKE ${args[1]})`,
+    returnsBoolean: true,
+    description: 'ILIKE(text, pattern) - Case-insensitive LIKE pattern matching',
+    signature: 'ILIKE(text, pattern)',
+    category: 'comparison',
+    example: 'IF(ILIKE(@name, "john%"), "John variant", "Other")',
+  },
+  REGEX: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `REGEXP_MATCHES(CAST(${args[0]} AS VARCHAR), ${args[1]})`,
+    returnsBoolean: true,
+    description: 'REGEX(text, pattern) - Regular expression matching',
+    signature: 'REGEX(text, pattern)',
+    category: 'comparison',
+    example: 'IF(REGEX(@email, "^[a-z]+@"), "Valid prefix", "Invalid")',
+  },
+  BETWEEN: {
+    minArgs: 3,
+    maxArgs: 3,
+    toSQL: (args) => `(${args[0]} BETWEEN ${args[1]} AND ${args[2]})`,
+    returnsBoolean: true,
+    description: 'BETWEEN(value, min, max) - Check if value is within range (inclusive)',
+    signature: 'BETWEEN(value, min, max)',
+    category: 'comparison',
+    example: 'IF(BETWEEN(@age, 18, 65), "Working age", "Other")',
   },
 }
 

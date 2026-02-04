@@ -210,7 +210,7 @@ export function AppShell({ children }: AppShellProps) {
         {/* Sidebar */}
         <aside
           className={cn(
-            'flex flex-col border-r border-border/50 bg-card/50 transition-all duration-300',
+            'flex flex-col border-r border-border/50 bg-card transition-all duration-300',
             sidebarCollapsed ? 'w-16' : 'w-64'
           )}
         >

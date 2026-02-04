@@ -13,7 +13,7 @@
  * - Output mode toggle (new column vs replace existing)
  */
 
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { FunctionSquare, Plus, RefreshCw } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -23,7 +23,24 @@ import { cn } from '@/lib/utils'
 import { FormulaInput } from './FormulaInput'
 import { FunctionBrowser } from './FunctionBrowser'
 import { TemplateGallery } from './TemplateGallery'
-import type { FormulaEditorProps } from './types'
+import type { FormulaEditorProps, ColumnWithType } from './types'
+
+/**
+ * Check if columns array contains type info
+ */
+function hasTypeInfo(columns: string[] | ColumnWithType[]): columns is ColumnWithType[] {
+  return columns.length > 0 && typeof columns[0] === 'object'
+}
+
+/**
+ * Get column names from columns array (handles both formats)
+ */
+function getColumnNames(columns: string[] | ColumnWithType[]): string[] {
+  if (hasTypeInfo(columns)) {
+    return columns.map(c => c.name)
+  }
+  return columns
+}
 
 export function FormulaEditor({
   value,
@@ -37,6 +54,9 @@ export function FormulaEditor({
   onTargetColumnChange,
   disabled,
 }: FormulaEditorProps) {
+
+  // Get column names array for display
+  const columnNames = useMemo(() => getColumnNames(columns), [columns])
 
   // Insert function at cursor (appends parenthesis)
   const handleFunctionInsert = useCallback((functionName: string) => {
@@ -58,7 +78,7 @@ export function FormulaEditor({
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
       {/* Header with inline columns */}
-      <div className="bg-muted/30 rounded-lg p-3">
+      <div className="bg-muted rounded-lg p-3">
         <div className="flex items-center gap-2">
           <FunctionSquare className="w-5 h-5 text-amber-400" />
           <h3 className="font-medium">Formula Builder</h3>
@@ -87,12 +107,12 @@ export function FormulaEditor({
 
       {/* Available Columns - RIGHT BELOW FORMULA INPUT */}
       <div className="flex flex-wrap gap-1.5 -mt-1">
-        {columns.slice(0, 12).map(col => (
+        {columnNames.slice(0, 12).map(colName => (
           <button
-            key={col}
+            key={colName}
             type="button"
             onClick={() => {
-              const ref = col.includes(' ') ? `@[${col}]` : `@${col}`
+              const ref = colName.includes(' ') ? `@[${colName}]` : `@${colName}`
               onChange(value + ref)
             }}
             className={cn(
@@ -104,12 +124,12 @@ export function FormulaEditor({
             )}
             disabled={disabled}
           >
-            @{col}
+            @{colName}
           </button>
         ))}
-        {columns.length > 12 && (
+        {columnNames.length > 12 && (
           <span className="text-[10px] text-muted-foreground self-center px-1">
-            +{columns.length - 12} more (type @ to see all)
+            +{columnNames.length - 12} more (type @ to see all)
           </span>
         )}
       </div>
@@ -166,7 +186,7 @@ export function FormulaEditor({
         <div className="space-y-2 animate-in slide-in-from-top-2 duration-200">
           <Label>Column to Replace</Label>
           <ColumnCombobox
-            columns={columns}
+            columns={columnNames}
             value={targetColumn}
             onValueChange={onTargetColumnChange}
             placeholder="Select column to replace..."

@@ -15,6 +15,7 @@ import type {
   StringLiteral,
   NumberLiteral,
   BooleanLiteral,
+  InExpression,
   ParseResult,
   FunctionName,
 } from './ast'
@@ -50,11 +51,15 @@ ExcelFormula {
   orOp = caseInsensitive<"OR">
   andOp = caseInsensitive<"AND">
 
-  // Comparison operators
-  Comparison = AddExpr compOp AddExpr  -- compare
+  // Comparison operators (including IN / NOT IN)
+  Comparison = AddExpr notInOp "(" ListOf<Expression, ","> ")"  -- notIn
+             | AddExpr inOp "(" ListOf<Expression, ","> ")"  -- in
+             | AddExpr compOp AddExpr  -- compare
              | AddExpr
 
   compOp = "<=" | ">=" | "<>" | "!=" | "=" | "<" | ">"
+  inOp = caseInsensitive<"IN">
+  notInOp = caseInsensitive<"NOT"> spaces caseInsensitive<"IN">
 
   // Additive: + - &
   AddExpr = AddExpr "+" MulExpr  -- add
@@ -86,7 +91,7 @@ ExcelFormula {
   FunctionCall = functionName "(" ListOf<Expression, ","> ")"
 
   // Supported function names (case-insensitive)
-  // NOTE: Longer names MUST come before shorter prefixes (IFERROR before IF)
+  // NOTE: Longer names MUST come before shorter prefixes (IFERROR before IF, ICONTAINS before CONTAINS)
   functionName = caseInsensitive<"IFERROR">
                | caseInsensitive<"ISBLANK">
                | caseInsensitive<"IF">
@@ -110,6 +115,14 @@ ExcelFormula {
                | caseInsensitive<"OR">
                | caseInsensitive<"NOT">
                | caseInsensitive<"COALESCE">
+               | caseInsensitive<"ICONTAINS">
+               | caseInsensitive<"CONTAINS">
+               | caseInsensitive<"STARTSWITH">
+               | caseInsensitive<"ENDSWITH">
+               | caseInsensitive<"ILIKE">
+               | caseInsensitive<"LIKE">
+               | caseInsensitive<"REGEX">
+               | caseInsensitive<"BETWEEN">
 
   // Column reference: @name or @[Name With Spaces]
   ColumnRef = "@" (bracketedName | simpleName)
@@ -171,6 +184,24 @@ semantics.addOperation<unknown>('toAST', {
   },
 
   // Comparison
+  Comparison_notIn(left, _notInOp, _lparen, list, _rparen) {
+    const listItems = list.asIteration().children.map((child) => child.toAST()) as ASTNode[]
+    return {
+      type: 'InExpression',
+      value: left.toAST(),
+      list: listItems,
+      negated: true,
+    } as InExpression
+  },
+  Comparison_in(left, _inOp, _lparen, list, _rparen) {
+    const listItems = list.asIteration().children.map((child) => child.toAST()) as ASTNode[]
+    return {
+      type: 'InExpression',
+      value: left.toAST(),
+      list: listItems,
+      negated: false,
+    } as InExpression
+  },
   Comparison_compare(left, op, right) {
     const opStr = op.sourceString.trim()
     return {
@@ -414,6 +445,10 @@ export function extractColumnRefs(formula: string): string[] {
       case 'FunctionCall':
         node.arguments.forEach(walk)
         break
+      case 'InExpression':
+        walk(node.value)
+        node.list.forEach(walk)
+        break
       // Literals have no column refs
     }
   }
@@ -448,6 +483,10 @@ export function validateFormulaSyntax(formula: string): { valid: boolean; error?
         break
       case 'UnaryExpression':
         checkFunctions(node.argument)
+        break
+      case 'InExpression':
+        checkFunctions(node.value)
+        node.list.forEach(checkFunctions)
         break
     }
   }

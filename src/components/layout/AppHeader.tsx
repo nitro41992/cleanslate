@@ -65,7 +65,7 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
   }
 
   return (
-    <header className="h-14 flex items-center justify-between px-4 border-b border-border/50 bg-card/50 shrink-0">
+    <header className="h-14 flex items-center justify-between px-4 border-b border-border/50 bg-card shrink-0">
       {/* Left section: Logo + Table selector */}
       <div className="flex items-center gap-4">
         {/* Logo */}

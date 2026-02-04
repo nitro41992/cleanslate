@@ -19,8 +19,62 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from '@/components/ui/popover'
-import type { Token, TokenType, FormulaInputProps, AutocompleteSuggestion } from './types'
+import type { Token, TokenType, FormulaInputProps, AutocompleteSuggestion, ColumnWithType } from './types'
 import { FUNCTION_SPECS, getSupportedFunctions } from '@/lib/formula'
+
+/**
+ * Check if columns array contains type info
+ */
+function hasTypeInfo(columns: string[] | ColumnWithType[]): columns is ColumnWithType[] {
+  return columns.length > 0 && typeof columns[0] === 'object'
+}
+
+/**
+ * Get short type label for display
+ */
+function getTypeLabel(type: string): string {
+  const typeMap: Record<string, string> = {
+    'VARCHAR': 'text',
+    'INTEGER': 'int',
+    'BIGINT': 'int',
+    'DOUBLE': 'num',
+    'FLOAT': 'num',
+    'DECIMAL': 'num',
+    'BOOLEAN': 'bool',
+    'DATE': 'date',
+    'TIMESTAMP': 'time',
+    'TIME': 'time',
+  }
+  // Handle type with modifiers like VARCHAR(255)
+  const baseType = type.split('(')[0].toUpperCase()
+  return typeMap[baseType] || type.toLowerCase().slice(0, 4)
+}
+
+/**
+ * Get badge color based on type
+ */
+function getTypeBadgeClass(type: string): string {
+  const baseType = type.split('(')[0].toUpperCase()
+  switch (baseType) {
+    case 'VARCHAR':
+    case 'TEXT':
+      return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+    case 'INTEGER':
+    case 'BIGINT':
+    case 'DOUBLE':
+    case 'FLOAT':
+    case 'DECIMAL':
+      return 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+    case 'BOOLEAN':
+      return 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+    case 'DATE':
+    case 'TIMESTAMP':
+    case 'TIME':
+      return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+    default:
+      return 'bg-slate-500/20 text-slate-400 border-slate-500/30'
+  }
+}
 
 /**
  * Tokenize a formula string for syntax highlighting.
@@ -293,18 +347,32 @@ export function FormulaInput({
     const atMatch = textBeforeCursor.match(/@(\[?[^\]\s,()]*)?$/)
     if (atMatch) {
       const query = atMatch[1]?.replace('[', '') || ''
-      const filteredColumns = columns
-        .filter(col => col.toLowerCase().includes(query.toLowerCase()))
-        .slice(0, 8)
+
+      // Filter columns based on query - handle both string[] and ColumnWithType[]
+      let filteredColumns: AutocompleteSuggestion[]
+      if (hasTypeInfo(columns)) {
+        filteredColumns = columns
+          .filter(col => col.name.toLowerCase().includes(query.toLowerCase()))
+          .slice(0, 8)
+          .map(col => ({
+            type: 'column' as const,
+            value: col.name.includes(' ') ? `@[${col.name}]` : `@${col.name}`,
+            label: col.name,
+            columnType: col.type,
+          }))
+      } else {
+        filteredColumns = columns
+          .filter(col => col.toLowerCase().includes(query.toLowerCase()))
+          .slice(0, 8)
+          .map(col => ({
+            type: 'column' as const,
+            value: col.includes(' ') ? `@[${col}]` : `@${col}`,
+            label: col,
+          }))
+      }
 
       if (filteredColumns.length > 0) {
-        const columnSuggestions: AutocompleteSuggestion[] = filteredColumns.map(col => ({
-          type: 'column',
-          value: col.includes(' ') ? `@[${col}]` : `@${col}`,
-          label: col,
-        }))
-
-        updateSuggestions(columnSuggestions)
+        updateSuggestions(filteredColumns)
         setTriggerStart(cursorPos - atMatch[0].length)
 
         // Position anchor at cursor
@@ -511,11 +579,22 @@ export function FormulaInput({
                       <FunctionSquare className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                     )}
                     <div className="flex-1 min-w-0">
-                      <div className={cn(
-                        'font-mono text-sm',
-                        suggestion.type === 'column' ? 'text-cyan-300' : 'text-amber-300'
-                      )}>
-                        {suggestion.label}
+                      <div className="flex items-center gap-2">
+                        <span className={cn(
+                          'font-mono text-sm',
+                          suggestion.type === 'column' ? 'text-cyan-300' : 'text-amber-300'
+                        )}>
+                          {suggestion.label}
+                        </span>
+                        {/* Type badge for columns */}
+                        {suggestion.columnType && (
+                          <span className={cn(
+                            'text-[9px] px-1.5 py-0.5 rounded border font-medium',
+                            getTypeBadgeClass(suggestion.columnType)
+                          )}>
+                            {getTypeLabel(suggestion.columnType)}
+                          </span>
+                        )}
                       </div>
                       {suggestion.description && (
                         <div className="text-[10px] text-slate-400 truncate">

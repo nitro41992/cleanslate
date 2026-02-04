@@ -307,7 +307,7 @@ export function AuditSidebar() {
 
   return (
     <>
-      <aside className="w-[420px] border-l border-border/40 bg-gradient-to-b from-card/50 to-card/30 flex flex-col shrink-0" data-testid="audit-sidebar">
+      <aside className="w-[420px] border-l border-border/40 bg-card flex flex-col shrink-0" data-testid="audit-sidebar">
         {/* Header */}
         <div className="px-5 py-4 border-b border-border/40 shrink-0">
           <div className="flex items-center justify-between">
@@ -399,7 +399,7 @@ export function AuditSidebar() {
         <ScrollArea className="flex-1">
           {tableEntries.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
-              <div className="p-4 rounded-2xl bg-muted/30 mb-4">
+              <div className="p-4 rounded-2xl bg-muted mb-4">
                 <FileText className="w-10 h-10 text-muted-foreground/50" />
               </div>
               <p className="font-medium text-sm text-muted-foreground">No changes yet</p>
@@ -444,7 +444,7 @@ export function AuditSidebar() {
                         isFuture && 'opacity-50',
                         isCurrent
                           ? 'bg-primary/8 border border-primary/20 shadow-sm shadow-primary/5'
-                          : 'bg-card/60 border border-border/30 hover:bg-card/80 hover:border-border/50 hover:shadow-sm'
+                          : 'bg-card border border-border/30 hover:bg-muted hover:border-border/50 hover:shadow-sm'
                       )}
                       onClick={() => setSelectedEntry(entry)}
                       onKeyDown={(e) => {

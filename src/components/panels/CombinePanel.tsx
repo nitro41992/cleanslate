@@ -400,7 +400,7 @@ export function CombinePanel() {
                 <Label>Selected Tables ({selectedTables.length}/2)</Label>
                 <div className="space-y-2">
                   {selectedTables.map((table, index) => (
-                    <div key={table!.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
+                    <div key={table!.id} className="flex items-center justify-between p-2 bg-muted rounded-lg">
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <Badge variant="outline" className="shrink-0">{index + 1}</Badge>
                         <span className="text-sm truncate">{table!.name}</span>
@@ -492,7 +492,7 @@ export function CombinePanel() {
           {mode === 'stack' && showStackConfig && (
             <div className="space-y-4 animate-in fade-in duration-200">
               {/* Stack Info Card */}
-              <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+              <div className="bg-muted rounded-lg p-3 space-y-3">
                 <div>
                   <h3 className="font-medium flex items-center gap-2">
                     <Layers className="w-4 h-4" />
@@ -590,7 +590,7 @@ export function CombinePanel() {
           {mode === 'join' && showJoinConfig && (
             <div className="space-y-4 animate-in fade-in duration-200">
               {/* Join Info Card */}
-              <div className="bg-muted/30 rounded-lg p-3 space-y-3">
+              <div className="bg-muted rounded-lg p-3 space-y-3">
                 <div>
                   <h3 className="font-medium flex items-center gap-2">
                     <Link2 className="w-4 h-4" />

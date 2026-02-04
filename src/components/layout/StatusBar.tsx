@@ -8,7 +8,7 @@ export function StatusBar() {
   const estimatedSizeMB = usePreviewStore((s) => s.estimatedSizeMB)
 
   return (
-    <footer className="h-10 flex items-center justify-between px-4 border-t border-border/50 bg-card/30 shrink-0">
+    <footer className="h-10 flex items-center justify-between px-4 border-t border-border/50 bg-card shrink-0">
       {/* Left: Memory indicator and file size warning */}
       <div className="flex items-center gap-4">
         <MemoryIndicator compact />

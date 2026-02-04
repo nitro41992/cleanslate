@@ -12,6 +12,7 @@ import type {
   BinaryExpression,
   UnaryExpression,
   FunctionCall,
+  InExpression,
   TranspileResult,
   ValidationResult,
   ValidationError,
@@ -64,6 +65,8 @@ function inferType(node: ASTNode): 'string' | 'number' | 'boolean' | 'unknown' {
       if (spec?.returnsBoolean) return 'boolean'
       return 'unknown'
     }
+    case 'InExpression':
+      return 'boolean'
     default:
       return 'unknown'
   }
@@ -141,6 +144,9 @@ function transpileNode(node: ASTNode, ctx: TranspileContext): string {
     case 'FunctionCall':
       return transpileFunctionCall(node, ctx)
 
+    case 'InExpression':
+      return transpileInExpression(node, ctx)
+
     default:
       ctx.errors.push({ message: `Unknown AST node type: ${(node as ASTNode).type}` })
       return 'NULL'
@@ -201,6 +207,16 @@ function transpileUnaryExpression(node: UnaryExpression, ctx: TranspileContext):
       ctx.errors.push({ message: `Unknown unary operator: ${node.operator}` })
       return 'NULL'
   }
+}
+
+/**
+ * Transpile IN / NOT IN expressions.
+ */
+function transpileInExpression(node: InExpression, ctx: TranspileContext): string {
+  const value = transpileNode(node.value, ctx)
+  const list = node.list.map((item) => transpileNode(item, ctx))
+  const op = node.negated ? 'NOT IN' : 'IN'
+  return `(${value} ${op} (${list.join(', ')}))`
 }
 
 /**
