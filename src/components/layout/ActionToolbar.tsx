@@ -1,4 +1,4 @@
-import { Sparkles, Users, Merge, GitCompare, Link2 } from 'lucide-react'
+import { Wand2, Users, Merge, GitCompare, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -13,11 +13,11 @@ import { cn } from '@/lib/utils'
 
 type ActionId = PanelType | 'standardize'
 
-const actions: { id: ActionId; label: string; icon: typeof Sparkles; description: string; shortcut: string }[] = [
+const actions: { id: ActionId; label: string; icon: typeof Wand2; description: string; shortcut: string }[] = [
   {
     id: 'clean',
     label: 'Transform',
-    icon: Sparkles,
+    icon: Wand2,
     description: 'Transform and clean data',
     shortcut: '1',
   },

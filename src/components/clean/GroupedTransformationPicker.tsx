@@ -401,7 +401,7 @@ export const GroupedTransformationPicker = forwardRef<
                       'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 relative',
                       colors.iconBg
                     )}>
-                      <span className="text-base leading-none">{t.icon}</span>
+                      <t.icon className="w-4 h-4" />
                       {lastApplied === t.id && (
                         <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center shadow-sm">
                           <Check className="w-2.5 h-2.5 text-white" />
@@ -460,9 +460,7 @@ export const GroupedTransformationPicker = forwardRef<
               )}
             >
               <div className="flex items-center gap-2">
-                <span className={cn('text-base', colors.header)}>
-                  {group.icon}
-                </span>
+                <group.icon className={cn('w-4 h-4', colors.header)} />
                 <span className={cn('text-sm font-semibold tracking-tight', colors.header)}>
                   {group.label}
                 </span>
@@ -514,7 +512,7 @@ export const GroupedTransformationPicker = forwardRef<
                         'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 relative',
                         colors.iconBg
                       )}>
-                        <span className="text-base leading-none">{t.icon}</span>
+                        <t.icon className="w-4 h-4" />
                         {lastApplied === t.id && (
                           <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center shadow-sm">
                             <Check className="w-2.5 h-2.5 text-white" />

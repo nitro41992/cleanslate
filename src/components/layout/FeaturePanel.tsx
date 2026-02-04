@@ -15,15 +15,15 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
-import { Sparkles, Users, Merge, GitCompare, BookOpen, X, PanelLeft } from 'lucide-react'
+import { Wand2, Users, Merge, GitCompare, BookOpen, X, PanelLeft } from 'lucide-react'
 
 // Panel metadata (including recipe for secondary panel display)
-const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: string; description: string; icon: typeof Sparkles; color: string }> = {
+const panelMeta: Record<NonNullable<PanelType>, { title: string; shortTitle: string; description: string; icon: typeof Wand2; color: string }> = {
   clean: {
     title: 'Transform',
     shortTitle: 'Transform',
     description: 'Apply transformations to your data',
-    icon: Sparkles,
+    icon: Wand2,
     color: 'text-emerald-500',
   },
   match: {
@@ -69,7 +69,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
 
   const isOpen = activePanel !== null
   const meta = activePanel ? panelMeta[activePanel] : null
-  const Icon = meta?.icon || Sparkles
+  const Icon = meta?.icon || Wand2
 
   // Secondary panel metadata
   const secondaryMeta = secondaryPanel ? panelMeta[secondaryPanel] : null
@@ -132,23 +132,34 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
                 </div>
 
                 {/* Close secondary panel button (when in dual mode) */}
-                {hasDualPanels && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0"
-                        onClick={closeSecondaryPanel}
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">
-                      Close {secondaryMeta?.shortTitle} panel
-                    </TooltipContent>
-                  </Tooltip>
+                {hasDualPanels && secondaryMeta && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 shrink-0"
+                    onClick={closeSecondaryPanel}
+                  >
+                    <secondaryMeta.icon className="w-4 h-4" />
+                    Close {secondaryMeta.shortTitle}
+                  </Button>
                 )}
+
+                {/* Close entire panel button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0"
+                      onClick={() => setActivePanel(null)}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    Close panel
+                  </TooltipContent>
+                </Tooltip>
               </div>
             </SheetHeader>
 

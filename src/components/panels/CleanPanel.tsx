@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Loader2, Sparkles, AlertTriangle, BookOpen, ChevronDown, Plus } from 'lucide-react'
+import { Loader2, Wand2, AlertTriangle, BookOpen, ChevronDown, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -601,18 +601,20 @@ export function CleanPanel() {
       </Dialog>
 
       <div className="flex flex-col h-full">
-        {/* Header bar with Recipe Manager toggle */}
-        <div className="flex items-center justify-end px-4 py-2 border-b border-border/40 shrink-0">
-          <Button
-            variant={secondaryPanel === 'recipe' ? 'secondary' : 'outline'}
-            size="sm"
-            onClick={handleToggleRecipe}
-            className="gap-2"
-          >
-            <BookOpen className="w-4 h-4" />
-            {secondaryPanel === 'recipe' ? 'Close Recipes' : 'Open Recipes'}
-          </Button>
-        </div>
+        {/* Header bar with Open Recipes button (only shown when Recipe panel is closed) */}
+        {secondaryPanel !== 'recipe' && (
+          <div className="flex items-center justify-end px-4 py-1.5 border-b border-border/40 shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleToggleRecipe}
+              className="gap-2"
+            >
+              <BookOpen className="w-4 h-4" />
+              Open Recipes
+            </Button>
+          </div>
+        )}
 
         {/* Two-column layout */}
         <div className="flex flex-1 min-h-0">
@@ -662,7 +664,7 @@ export function CleanPanel() {
                     {/* Header */}
                     <div>
                       <h3 className="font-medium flex items-center gap-2">
-                        <span className="text-lg">{selectedTransform.icon}</span>
+                        <selectedTransform.icon className="w-5 h-5" />
                         {selectedTransform.label}
                       </h3>
                       <p className="text-sm text-muted-foreground mt-1">
@@ -907,7 +909,7 @@ export function CleanPanel() {
                         </>
                       ) : (
                         <>
-                          <Sparkles className="w-4 h-4 mr-2" />
+                          <Wand2 className="w-4 h-4 mr-2" />
                           Apply
                         </>
                       )}
@@ -977,10 +979,7 @@ export function CleanPanel() {
             ) : (
               /* Empty State for right column */
               <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
-                <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
-                  <Sparkles className="w-6 h-6 text-muted-foreground" />
-                </div>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-lg text-muted-foreground">
                   Select a transformation from the left to configure it
                 </p>
 

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Sparkles, Download, History, Upload, Save } from 'lucide-react'
+import { Layers, Download, History, Upload, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -71,7 +71,7 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
         {/* Logo */}
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-primary-foreground" />
+            <Layers className="w-4 h-4 text-primary-foreground" />
           </div>
           <span className="font-semibold text-lg hidden md:inline">CleanSlate</span>
         </div>

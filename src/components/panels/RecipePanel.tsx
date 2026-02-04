@@ -489,7 +489,7 @@ export function RecipePanel() {
                                 colors.iconBg
                               )}
                             >
-                              <span className="text-sm">{getStepIcon(step)}</span>
+                              {(() => { const Icon = getStepIcon(step); return <Icon className="w-3.5 h-3.5" /> })()}
                             </div>
 
                             {/* Label with step number */}

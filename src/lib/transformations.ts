@@ -8,6 +8,38 @@ import {
   ROW_DETAIL_THRESHOLD,
   type DbConnection,
 } from '@/lib/commands/audit-capture'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Scissors,
+  ArrowDownAZ,
+  ArrowUpAZ,
+  CaseSensitive,
+  CaseLower,
+  Languages,
+  FileX2,
+  Minimize2,
+  ListX,
+  ArrowLeftRight,
+  CircleDot,
+  TextCursorInput,
+  Braces,
+  Terminal,
+  DollarSign,
+  Minus,
+  Hash,
+  Calendar,
+  CalendarCheck,
+  SplitSquareHorizontal,
+  Combine,
+  ArrowDownToLine,
+  ShieldCheck,
+  Type,
+  Search,
+  TableProperties,
+  Calculator,
+  CalendarDays,
+  Shield,
+} from 'lucide-react'
 
 // Adapter to use global DB functions with the new DbConnection interface
 const globalDbConnection: DbConnection = {
@@ -45,7 +77,7 @@ export interface TransformationDefinition {
   id: TransformationType
   label: string
   description: string
-  icon: string
+  icon: LucideIcon
   requiresColumn: boolean
   params?: {
     name: string
@@ -90,7 +122,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'trim',
     label: 'Trim Whitespace',
     description: 'Remove leading and trailing spaces',
-    icon: '✂️',
+    icon: Scissors,
     requiresColumn: true,
     examples: [
       { before: '"  hello  "', after: '"hello"' },
@@ -102,7 +134,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'lowercase',
     label: 'Lowercase',
     description: 'Convert text to lowercase',
-    icon: 'a',
+    icon: ArrowDownAZ,
     requiresColumn: true,
     examples: [
       { before: '"HELLO"', after: '"hello"' },
@@ -114,7 +146,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'uppercase',
     label: 'Uppercase',
     description: 'Convert text to UPPERCASE',
-    icon: 'A',
+    icon: ArrowUpAZ,
     requiresColumn: true,
     examples: [
       { before: '"hello"', after: '"HELLO"' },
@@ -126,7 +158,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'remove_duplicates',
     label: 'Remove Duplicates',
     description: 'Remove duplicate rows',
-    icon: '🔄',
+    icon: ListX,
     requiresColumn: false,
     examples: [
       { before: '100 rows', after: '95 rows' },
@@ -137,7 +169,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'replace_empty',
     label: 'Replace Empty',
     description: 'Replace empty/null values with a specified value',
-    icon: '🔄',
+    icon: CircleDot,
     requiresColumn: true,
     params: [
       { name: 'replaceWith', type: 'text', label: 'Replace with', default: '' },
@@ -152,7 +184,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'replace',
     label: 'Find & Replace',
     description: 'Replace text values',
-    icon: '🔍',
+    icon: ArrowLeftRight,
     requiresColumn: true,
     params: [
       { name: 'find', type: 'text', label: 'Find' },
@@ -188,7 +220,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'rename_column',
     label: 'Rename Column',
     description: 'Change column name',
-    icon: '📝',
+    icon: TextCursorInput,
     requiresColumn: true,
     params: [{ name: 'newName', type: 'text', label: 'New column name' }],
     examples: [
@@ -200,7 +232,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'cast_type',
     label: 'Cast Type',
     description: 'Convert column data type',
-    icon: '🔢',
+    icon: Braces,
     requiresColumn: true,
     params: [
       {
@@ -228,7 +260,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'custom_sql',
     label: 'Custom SQL',
     description: 'Run any DuckDB SQL command',
-    icon: '💻',
+    icon: Terminal,
     requiresColumn: false,
     params: [{ name: 'sql', type: 'text', label: 'SQL Query' }],
     examples: [
@@ -247,7 +279,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'title_case',
     label: 'Title Case',
     description: 'Capitalize first letter of each word',
-    icon: '🔤',
+    icon: CaseSensitive,
     requiresColumn: true,
     examples: [
       { before: '"john doe"', after: '"John Doe"' },
@@ -259,7 +291,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'remove_accents',
     label: 'Remove Accents',
     description: 'Remove diacritical marks (café → cafe)',
-    icon: 'ê',
+    icon: Languages,
     requiresColumn: true,
     examples: [
       { before: '"café"', after: '"cafe"' },
@@ -271,7 +303,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'remove_non_printable',
     label: 'Remove Non-Printable',
     description: 'Remove tabs, newlines, control characters',
-    icon: '🚫',
+    icon: FileX2,
     requiresColumn: true,
     examples: [
       { before: '"hello\\t\\n"', after: '"hello"' },
@@ -283,7 +315,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'collapse_spaces',
     label: 'Collapse Spaces',
     description: 'Replace multiple spaces with single space',
-    icon: '⎵',
+    icon: Minimize2,
     requiresColumn: true,
     examples: [
       { before: '"hello    world"', after: '"hello world"' },
@@ -295,7 +327,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'sentence_case',
     label: 'Sentence Case',
     description: 'Capitalize first letter only',
-    icon: 'Aa',
+    icon: CaseLower,
     requiresColumn: true,
     examples: [
       { before: '"HELLO WORLD"', after: '"Hello world"' },
@@ -308,7 +340,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'unformat_currency',
     label: 'Unformat Currency',
     description: 'Remove $ , and convert to number',
-    icon: '💵',
+    icon: DollarSign,
     requiresColumn: true,
     examples: [
       { before: '"$1,234.56"', after: '1234.56' },
@@ -320,7 +352,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'fix_negatives',
     label: 'Fix Negatives',
     description: 'Convert (500.00) to -500.00',
-    icon: '−',
+    icon: Minus,
     requiresColumn: true,
     examples: [
       { before: '"(500.00)"', after: '-500' },
@@ -332,7 +364,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'pad_zeros',
     label: 'Pad Zeros',
     description: 'Left-pad numbers with zeros',
-    icon: '0',
+    icon: Hash,
     requiresColumn: true,
     params: [
       { name: 'length', type: 'number', label: 'Target length', default: '5' },
@@ -348,7 +380,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'standardize_date',
     label: 'Standardize Date',
     description: 'Convert dates to a standard text format',
-    icon: '📅',
+    icon: Calendar,
     requiresColumn: true,
     params: [
       {
@@ -373,7 +405,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'calculate_age',
     label: 'Calculate Age',
     description: 'Create age column from date of birth',
-    icon: '🎂',
+    icon: CalendarCheck,
     requiresColumn: true,
     params: [
       {
@@ -397,7 +429,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'split_column',
     label: 'Split Column',
     description: 'Split by delimiter into multiple columns',
-    icon: '✂️',
+    icon: SplitSquareHorizontal,
     requiresColumn: true,
     params: [
       {
@@ -425,7 +457,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'combine_columns',
     label: 'Combine Columns',
     description: 'Merge multiple columns into one',
-    icon: '🔗',
+    icon: Combine,
     requiresColumn: false,
     params: [
       { name: 'columns', type: 'text', label: 'Columns' },
@@ -452,7 +484,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'fill_down',
     label: 'Fill Down',
     description: 'Fill empty cells with value from above',
-    icon: '⬇️',
+    icon: ArrowDownToLine,
     requiresColumn: true,
     examples: [
       { before: 'NULL', after: '"value from above"' },
@@ -465,7 +497,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     id: 'privacy_batch',
     label: 'Privacy',
     description: 'Apply privacy transforms to multiple columns at once',
-    icon: '🛡️',
+    icon: ShieldCheck,
     requiresColumn: false, // Uses sub-panel for column selection
     params: [], // Handled by sub-panel UI
     examples: [
@@ -486,7 +518,7 @@ export const TRANSFORMATION_GROUPS = [
   {
     id: 'text',
     label: 'Text Cleaning',
-    icon: '✦',
+    icon: Type,
     color: 'emerald' as const,
     transforms: [
       'trim', 'lowercase', 'uppercase', 'title_case', 'sentence_case',
@@ -496,14 +528,14 @@ export const TRANSFORMATION_GROUPS = [
   {
     id: 'replace',
     label: 'Find & Replace',
-    icon: '⬡',
+    icon: Search,
     color: 'blue' as const,
     transforms: ['replace', 'replace_empty'],
   },
   {
     id: 'structure',
     label: 'Structure',
-    icon: '◫',
+    icon: TableProperties,
     color: 'violet' as const,
     transforms: [
       'rename_column', 'remove_duplicates', 'split_column',
@@ -513,28 +545,28 @@ export const TRANSFORMATION_GROUPS = [
   {
     id: 'numeric',
     label: 'Numeric',
-    icon: '▣',
+    icon: Calculator,
     color: 'amber' as const,
     transforms: ['unformat_currency', 'fix_negatives', 'pad_zeros'],
   },
   {
     id: 'dates',
     label: 'Dates',
-    icon: '◉',
+    icon: CalendarDays,
     color: 'rose' as const,
     transforms: ['standardize_date', 'calculate_age', 'fill_down'],
   },
   {
     id: 'privacy',
     label: 'Privacy',
-    icon: '🛡️',
+    icon: Shield,
     color: 'teal' as const,
     transforms: ['privacy_batch'],
   },
   {
     id: 'advanced',
     label: 'Advanced',
-    icon: '⌘',
+    icon: Terminal,
     color: 'slate' as const,
     transforms: ['custom_sql'],
   },

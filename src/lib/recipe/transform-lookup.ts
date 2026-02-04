@@ -13,6 +13,8 @@ import {
   type CategoryColorClasses,
 } from '@/lib/ui/transform-colors'
 import type { RecipeStep } from '@/types'
+import type { LucideIcon } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 
 /**
  * Maps command type IDs (after prefix stripping) to TRANSFORMATIONS IDs.
@@ -43,9 +45,9 @@ export function getTransformDefinition(step: RecipeStep) {
 /**
  * Get the icon for a recipe step.
  */
-export function getStepIcon(step: RecipeStep): string {
+export function getStepIcon(step: RecipeStep): LucideIcon {
   const transform = getTransformDefinition(step)
-  return transform?.icon || '🔄'
+  return transform?.icon || RefreshCw
 }
 
 /**

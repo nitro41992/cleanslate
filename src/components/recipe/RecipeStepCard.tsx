@@ -135,7 +135,7 @@ export function RecipeStepCard({
               colors.iconBg
             )}
           >
-            <span className="text-base">{icon}</span>
+            {(() => { const Icon = icon; return <Icon className="w-4 h-4" /> })()}
           </div>
 
           {/* Label with step number */}
