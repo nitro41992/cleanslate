@@ -495,15 +495,17 @@ export function CleanPanel() {
       }
     }
 
-    // Semantic validation: still block no-op and invalid transforms
-    // (e.g., replace 'foo' with 'foo' is always pointless)
-    if (validationResult.status === 'no_op' || validationResult.status === 'invalid') {
+    // Semantic validation: block truly invalid transforms but allow data-dependent no-ops
+    // - 'invalid': Transform cannot work (e.g., column doesn't exist)
+    // - 'no_op' with NO_MATCHES: Current data has no matches - OK for recipes since
+    //   recipes are often planned for different data
+    // - Other 'no_op': Inherently pointless (e.g., replace 'foo' with 'foo') - still block
+    if (validationResult.status === 'invalid') {
       return false
     }
-
-    // Note: We intentionally do NOT check live preview here.
-    // Users should be able to add transforms to recipes even if the current
-    // data has no matching rows - recipes are often planned for future use.
+    if (validationResult.status === 'no_op' && validationResult.code !== 'NO_MATCHES') {
+      return false
+    }
 
     return true
   }

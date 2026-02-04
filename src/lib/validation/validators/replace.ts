@@ -33,11 +33,32 @@ export async function validateReplace(
   // Escape single quotes for SQL
   const escapedFind = findValue.replace(/'/g, "''")
 
+  // Get case sensitivity and match type from params
+  const caseSensitive = params?.caseSensitive === true || params?.caseSensitive === 'true'
+  const matchType = (params?.matchType as string) ?? 'contains'
+
+  // Build WHERE clause based on match type and case sensitivity
+  let whereClause: string
+  if (matchType === 'exact') {
+    if (caseSensitive) {
+      whereClause = `CAST(${quotedCol} AS VARCHAR) = '${escapedFind}'`
+    } else {
+      whereClause = `LOWER(CAST(${quotedCol} AS VARCHAR)) = LOWER('${escapedFind}')`
+    }
+  } else {
+    // contains
+    if (caseSensitive) {
+      whereClause = `CAST(${quotedCol} AS VARCHAR) LIKE '%${escapedFind}%'`
+    } else {
+      whereClause = `LOWER(CAST(${quotedCol} AS VARCHAR)) LIKE LOWER('%${escapedFind}%')`
+    }
+  }
+
   // Count rows containing the search value
   const result = await query<{ match_count: number }>(`
     SELECT COUNT(*) as match_count
     FROM "${tableName}"
-    WHERE CAST(${quotedCol} AS VARCHAR) LIKE '%${escapedFind}%'
+    WHERE ${whereClause}
   `)
 
   // Convert BigInt to Number (DuckDB returns BigInt)
