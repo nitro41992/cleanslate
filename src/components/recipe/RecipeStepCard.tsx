@@ -8,6 +8,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { RecipeStep } from '@/types'
 import { TRANSFORMATIONS } from '@/lib/transformations'
+import { formatRecipeValue } from '@/lib/recipe/format-helpers'
 
 interface RecipeStepCardProps {
   step: RecipeStep
@@ -43,23 +44,6 @@ export function RecipeStepCard({
   const transform = TRANSFORMATIONS.find((t) => t.id === transformId)
   const icon = transform?.icon || '🔄'
   const label = transform?.label || transformId
-
-  // Format value for display
-  const formatValue = (value: unknown): React.ReactNode => {
-    if (value === '' || value === null || value === undefined) {
-      return <span className="text-muted-foreground/60 italic">(empty)</span>
-    }
-    if (Array.isArray(value)) {
-      return value.join(', ')
-    }
-    if (typeof value === 'boolean') {
-      return value ? 'Yes' : 'No'
-    }
-    if (typeof value === 'object') {
-      return JSON.stringify(value)
-    }
-    return String(value)
-  }
 
   // Get human-readable label for a parameter
   const getParamLabel = (name: string): string => {
@@ -235,7 +219,7 @@ export function RecipeStepCard({
                     {label}:
                   </span>
                   <span className="text-foreground break-all">
-                    {formatValue(value)}
+                    {formatRecipeValue(value)}
                   </span>
                 </div>
               ))}

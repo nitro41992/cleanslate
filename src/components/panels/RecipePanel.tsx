@@ -55,6 +55,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import type { Recipe, RecipeStep } from '@/types'
 import { TRANSFORMATIONS } from '@/lib/transformations'
+import { formatRecipeValue } from '@/lib/recipe/format-helpers'
 
 /**
  * RecipePanel - Companion panel for the Clean panel
@@ -180,23 +181,6 @@ export function RecipePanel() {
     return `${category}: ${label}`
   }
 
-  // Format value for display
-  const formatValue = (value: unknown): React.ReactNode => {
-    if (value === '' || value === null || value === undefined) {
-      return <span className="text-muted-foreground italic">empty</span>
-    }
-    if (Array.isArray(value)) {
-      return value.join(', ')
-    }
-    if (typeof value === 'boolean') {
-      return value ? 'Yes' : 'No'
-    }
-    if (typeof value === 'object') {
-      return JSON.stringify(value)
-    }
-    return String(value)
-  }
-
   // Format step parameters for display - shows ALL params from transform definition
   const formatStepParams = (step: RecipeStep): React.ReactNode => {
     const transformId = step.type.replace(/^(transform|scrub|standardize):/, '')
@@ -215,7 +199,7 @@ export function RecipePanel() {
             return (
               <div key={key} className="flex items-start gap-2 min-w-0">
                 <span className="text-muted-foreground shrink-0">{label}:</span>
-                <span className="text-foreground break-all min-w-0">{formatValue(value)}</span>
+                <span className="text-foreground break-all min-w-0">{formatRecipeValue(value)}</span>
               </div>
             )
           })}
@@ -233,7 +217,7 @@ export function RecipePanel() {
           return (
             <div key={paramDef.name} className="flex items-start gap-2 min-w-0">
               <span className="text-muted-foreground shrink-0">{paramDef.label}:</span>
-              <span className="text-foreground break-all min-w-0">{formatValue(value)}</span>
+              <span className="text-foreground break-all min-w-0">{formatRecipeValue(value)}</span>
             </div>
           )
         })}
