@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Layers, Upload, Sparkles } from 'lucide-react'
+import { Layers, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/uiStore'
 
@@ -16,7 +16,7 @@ export function EmptyStateLanding({
   isReady = true,
 }: EmptyStateLandingProps) {
   const loadingMessage = useUIStore((s) => s.loadingMessage)
-  const [isHovering, setIsHovering] = useState(false)
+  const [isHoveringDropzone, setIsHoveringDropzone] = useState(false)
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -62,13 +62,13 @@ export function EmptyStateLanding({
             <div
               className={cn(
                 "absolute inset-0 bg-primary/20 blur-2xl rounded-full transition-all duration-700",
-                (isDragActive || isHovering) && "bg-primary/30 blur-3xl scale-150"
+                (isDragActive || isHoveringDropzone) && "bg-primary/30 blur-3xl scale-150"
               )}
             />
             <div
               className={cn(
                 "relative w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center shadow-lg transition-all duration-300",
-                (isDragActive || isHovering) && "scale-110 shadow-xl shadow-primary/25"
+                (isDragActive || isHoveringDropzone) && "scale-110 shadow-xl shadow-primary/25"
               )}
             >
               <Layers className="w-8 h-8 text-primary-foreground" />
@@ -84,87 +84,44 @@ export function EmptyStateLanding({
           </p>
         </div>
 
-        {/* Dropzone */}
+        {/* Dropzone - simple, no animations */}
         <div
           {...getRootProps()}
           data-testid="file-dropzone"
-          onMouseEnter={() => setIsHovering(true)}
-          onMouseLeave={() => setIsHovering(false)}
+          onMouseEnter={() => setIsHoveringDropzone(true)}
+          onMouseLeave={() => setIsHoveringDropzone(false)}
           className={cn(
-            'w-full relative group cursor-pointer',
-            isLoading && 'pointer-events-none'
+            'w-full rounded-xl border-2 border-dashed p-8 cursor-pointer',
+            isDragActive
+              ? 'border-primary bg-primary/5'
+              : 'border-border bg-muted/20 hover:bg-muted/40',
+            isLoading && 'pointer-events-none opacity-60'
           )}
         >
           <input {...getInputProps()} data-testid="file-input" />
 
-          {/* Outer glow on active */}
-          <div
-            className={cn(
-              "absolute -inset-1 bg-gradient-to-r from-primary/0 via-primary/10 to-primary/0 rounded-2xl opacity-0 blur-xl transition-all duration-500",
-              isDragActive && "opacity-100"
-            )}
-          />
+          <div className="flex flex-col items-center gap-4">
+            <div
+              className={cn(
+                'w-12 h-12 rounded-full flex items-center justify-center',
+                isDragActive ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground'
+              )}
+            >
+              <Upload className="w-6 h-6" />
+            </div>
 
-          {/* Main dropzone container */}
-          <div
-            className={cn(
-              'relative rounded-2xl border-2 border-dashed transition-all duration-300',
-              'bg-card/30 backdrop-blur-sm',
-              isDragActive
-                ? 'border-primary bg-primary/5 scale-[1.02]'
-                : isHovering
-                  ? 'border-muted-foreground/30 bg-card/50'
-                  : 'border-border/50',
-              isLoading && 'opacity-60'
-            )}
-          >
-            <div className="flex flex-col items-center py-12 px-8">
-              {/* Upload icon with animated ring */}
-              <div className="relative mb-6">
-                {/* Pulsing ring on drag */}
-                {isDragActive && (
-                  <div className="absolute inset-0 rounded-full border-2 border-primary animate-ping opacity-30" />
-                )}
-                <div
-                  className={cn(
-                    'w-14 h-14 rounded-full flex items-center justify-center transition-all duration-300',
-                    isDragActive
-                      ? 'bg-primary/15 text-primary scale-110'
-                      : 'bg-muted/50 text-muted-foreground group-hover:bg-muted group-hover:text-foreground'
-                  )}
-                >
-                  <Upload className="w-6 h-6" />
-                </div>
-              </div>
-
-              {/* Text */}
-              <div className="text-center">
-                <p className={cn(
-                  'text-base font-medium transition-colors duration-200',
-                  isDragActive ? 'text-primary' : 'text-foreground'
-                )}>
-                  {isDragActive
-                    ? 'Drop your file here'
-                    : isLoading
-                      ? loadingMessage || 'Processing...'
-                      : 'Drop a CSV file here'}
-                </p>
-                {!isLoading && (
-                  <p className="text-sm text-muted-foreground mt-1.5">
-                    or <span className="text-primary/80 hover:text-primary transition-colors">browse</span> to upload
-                  </p>
-                )}
-              </div>
-
-              {/* File type hint */}
+            <div className="text-center">
+              <p className="font-medium">
+                {isDragActive
+                  ? 'Drop your file here'
+                  : isLoading
+                    ? loadingMessage || 'Processing...'
+                    : 'Drop a CSV file here'}
+              </p>
               {!isLoading && (
-                <div className={cn(
-                  'mt-6 flex items-center gap-1.5 text-xs transition-colors duration-200',
-                  isDragActive ? 'text-primary/70' : 'text-muted-foreground/60'
-                )}>
-                  <Sparkles className="w-3 h-3" />
-                  <span>CSV files supported</span>
-                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  or click to browse
+                </p>
               )}
             </div>
           </div>
