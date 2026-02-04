@@ -71,6 +71,12 @@ if (import.meta.env.DEV) {
     ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.isBatchingEnabled = isBatchingEnabled
   })
 
+  import('./stores/recipeStore').then(({ useRecipeStore }) => {
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ =
+      (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__ || {}
+    ;(window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__!.recipeStore = useRecipeStore
+  })
+
   // Expose fuzzy matcher for E2E testing
   import('./lib/fuzzy-matcher').then((fuzzyMatcher) => {
     ;(window as Window & { __CLEANSLATE_FUZZY_MATCHER__?: typeof fuzzyMatcher }).__CLEANSLATE_FUZZY_MATCHER__ = fuzzyMatcher

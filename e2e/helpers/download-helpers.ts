@@ -12,6 +12,11 @@ export interface TXTDownloadResult {
   lines: string[]
 }
 
+export interface JSONDownloadResult {
+  filename: string
+  content: object
+}
+
 /**
  * Click the export button and capture the downloaded CSV
  */
@@ -136,5 +141,42 @@ export async function downloadAndVerifyTXT(
     filename: download.suggestedFilename(),
     content,
     lines,
+  }
+}
+
+/**
+ * Trigger a download and capture the downloaded JSON content
+ * @param page - Playwright page
+ * @param triggerFn - Async function that triggers the download (e.g., clicking export button)
+ */
+export async function downloadRecipeJSON(
+  page: Page,
+  triggerFn: () => Promise<void>
+): Promise<JSONDownloadResult> {
+  // Start waiting for download before triggering
+  const downloadPromise = page.waitForEvent('download')
+
+  // Execute the trigger function
+  await triggerFn()
+
+  // Wait for download
+  const download = await downloadPromise
+
+  // Get file content
+  const stream = await download.createReadStream()
+  const chunks: Buffer[] = []
+
+  if (stream) {
+    for await (const chunk of stream) {
+      chunks.push(Buffer.from(chunk))
+    }
+  }
+
+  const contentStr = Buffer.concat(chunks).toString('utf-8')
+  const content = JSON.parse(contentStr)
+
+  return {
+    filename: download.suggestedFilename(),
+    content,
   }
 }

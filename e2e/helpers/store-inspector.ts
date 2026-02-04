@@ -49,6 +49,30 @@ export interface EditDirtyState {
   dirtyCount: number
 }
 
+export interface RecipeStoreState {
+  recipes: Array<{
+    id: string
+    name: string
+    description: string
+    version: string
+    requiredColumns: string[]
+    steps: Array<{
+      id: string
+      type: string
+      label: string
+      column?: string
+      params?: Record<string, unknown>
+      enabled: boolean
+    }>
+    createdAt: Date
+    modifiedAt: Date
+  }>
+  selectedRecipeId: string | null
+  isProcessing: boolean
+  executionProgress: { currentStep: number; totalSteps: number; currentStepLabel: string } | null
+  executionError: string | null
+}
+
 export interface TimelineDirtyCellsState {
   dirtyCells: string[]  // Array of "csId:columnName" keys
   count: number
@@ -249,6 +273,17 @@ export interface StoreInspector {
    * @returns Number of pending (unbatched) edits
    */
   getPendingEditsCount: (tableId: string) => Promise<number>
+  /**
+   * Get recipe store state for recipe testing.
+   * @returns Recipe store state including recipes, selection, processing, and error state
+   */
+  getRecipeState: () => Promise<RecipeStoreState>
+  /**
+   * Wait for recipe execution to complete.
+   * Polls recipeStore.isProcessing to detect when execution finishes.
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForRecipeExecutionComplete: (timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -945,6 +980,44 @@ async getTableList(): Promise<TableInfo[]> {
         const pendingEdits = state?.pendingEdits?.get(tid)
         return pendingEdits?.length ?? 0
       }, tableId)
+    },
+
+    async getRecipeState(): Promise<RecipeStoreState> {
+      return page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (!stores?.recipeStore) {
+          return {
+            recipes: [],
+            selectedRecipeId: null,
+            isProcessing: false,
+            executionProgress: null,
+            executionError: null,
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (stores.recipeStore as any).getState()
+        return {
+          recipes: state?.recipes || [],
+          selectedRecipeId: state?.selectedRecipeId ?? null,
+          isProcessing: state?.isProcessing ?? false,
+          executionProgress: state?.executionProgress ?? null,
+          executionError: state?.executionError ?? null,
+        }
+      })
+    },
+
+    async waitForRecipeExecutionComplete(timeout = 30000): Promise<void> {
+      await page.waitForFunction(
+        () => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.recipeStore) return true  // No recipe store = nothing to wait for
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.recipeStore as any).getState()
+          // Wait for isProcessing to become false
+          return state?.isProcessing === false
+        },
+        { timeout }
+      )
     },
   }
 }

@@ -1,0 +1,17 @@
+{
+  "name": "Hash Recipe",
+  "description": "Recipe with hash step that requires a secret",
+  "version": "1.0",
+  "requiredColumns": ["email"],
+  "steps": [
+    {
+      "id": "step1",
+      "type": "scrub:hash",
+      "label": "Hash Email",
+      "column": "email",
+      "enabled": true
+    }
+  ],
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "modifiedAt": "2024-01-01T00:00:00.000Z"
+}

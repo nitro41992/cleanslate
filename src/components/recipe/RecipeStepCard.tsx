@@ -147,6 +147,7 @@ export function RecipeStepCard({
                   className="h-6 w-6"
                   onClick={onMoveUp}
                   disabled={isFirst}
+                  aria-label="Move step up"
                 >
                   <ChevronUp className="w-3.5 h-3.5" />
                 </Button>
@@ -162,6 +163,7 @@ export function RecipeStepCard({
                   className="h-6 w-6"
                   onClick={onMoveDown}
                   disabled={isLast}
+                  aria-label="Move step down"
                 >
                   <ChevronDown className="w-3.5 h-3.5" />
                 </Button>
@@ -176,6 +178,8 @@ export function RecipeStepCard({
                   size="icon"
                   className="h-6 w-6"
                   onClick={onToggleEnabled}
+                  aria-label={step.enabled ? 'Disable step' : 'Enable step'}
+                  aria-pressed={step.enabled}
                 >
                   {step.enabled ? (
                     <ToggleRight className="w-3.5 h-3.5 text-primary" />
@@ -196,6 +200,7 @@ export function RecipeStepCard({
                   size="icon"
                   className="h-6 w-6 text-muted-foreground hover:text-destructive"
                   onClick={onDelete}
+                  aria-label="Delete step"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </Button>

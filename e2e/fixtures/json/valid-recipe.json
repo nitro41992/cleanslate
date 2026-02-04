@@ -1,0 +1,24 @@
+{
+  "name": "Test Recipe",
+  "description": "E2E test recipe for validation",
+  "version": "1.0",
+  "requiredColumns": ["name", "email"],
+  "steps": [
+    {
+      "id": "step1",
+      "type": "transform:trim",
+      "label": "Trim name",
+      "column": "name",
+      "enabled": true
+    },
+    {
+      "id": "step2",
+      "type": "transform:uppercase",
+      "label": "Uppercase email",
+      "column": "email",
+      "enabled": true
+    }
+  ],
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "modifiedAt": "2024-01-01T00:00:00.000Z"
+}
