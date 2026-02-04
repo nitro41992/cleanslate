@@ -123,9 +123,14 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
   },
 
   removeTable: (id) => {
+    // Get table name BEFORE removal for snapshot cleanup
+    const table = get().tables.find((t) => t.id === id)
+    const tableName = table?.name
+
     // Clean up timeline snapshots (fire-and-forget)
     // This removes _timeline_original_* and _timeline_snapshot_* tables from DuckDB
-    cleanupTimelineSnapshots(id).catch((err) => {
+    // Pass tableName so cleanup works even if timeline doesn't exist
+    cleanupTimelineSnapshots(id, tableName).catch((err) => {
       console.warn(`Failed to cleanup timeline snapshots for table ${id}:`, err)
     })
 

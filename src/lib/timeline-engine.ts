@@ -1418,17 +1418,21 @@ async function executeForwardUpdate(
  * Called when a table is deleted
  * Handles both in-memory and Parquet snapshots
  */
-export async function cleanupTimelineSnapshots(tableId: string): Promise<void> {
+export async function cleanupTimelineSnapshots(tableId: string, tableName?: string): Promise<void> {
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
   const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
 
+  // Determine the table name from timeline or parameter
+  // This ensures cleanup works even if timeline doesn't exist
+  const effectiveTableName = timeline?.tableName ?? tableName
+
   // Try to delete by tableName-based snapshot (current naming scheme)
   // This handles cases where the timeline store was reset but OPFS files still exist
-  if (timeline?.tableName) {
+  if (effectiveTableName) {
     try {
-      const sanitizedTableName = timeline.tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      const sanitizedTableName = effectiveTableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       await deleteParquetSnapshot(`original_${sanitizedTableName}`)
       console.log(`[Timeline] Deleted Parquet snapshot by tableName: original_${sanitizedTableName}`)
     } catch (e) {
