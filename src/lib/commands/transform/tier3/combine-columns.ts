@@ -61,7 +61,7 @@ export class CombineColumnsCommand extends Tier3TransformCommand<CombineColumnsP
     const tableName = ctx.table.name
     const tempTable = `${tableName}_temp_${Date.now()}`
     const columnNames = this.getColumnNames()
-    const delimiter = this.params.delimiter ?? ' '
+    const delimiter = this.params.delimiter ?? ''
     const newColName = this.params.newColumnName ?? 'combined'
     const ignoreEmpty = this.params.ignoreEmpty ?? true
 

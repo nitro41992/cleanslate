@@ -461,7 +461,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     requiresColumn: false,
     params: [
       { name: 'columns', type: 'text', label: 'Columns' },
-      { name: 'delimiter', type: 'text', label: 'Separator', default: ' ' },
+      { name: 'delimiter', type: 'text', label: 'Separator', default: '' },
       { name: 'newColumnName', type: 'text', label: 'New column name', default: 'combined' },
       {
         name: 'ignoreEmpty',
@@ -763,12 +763,7 @@ async function countAffectedRows(
       const splitMode = (step.params?.splitMode as string) || 'delimiter'
 
       if (splitMode === 'delimiter') {
-        // Apply same trimming logic as transformation execution
-        // (handles case where delimiter field has default space that gets appended to user input)
-        let delimiter = (step.params?.delimiter as string) || ' '
-        if (delimiter.trim().length > 0) {
-          delimiter = delimiter.trim()
-        }
+        const delimiter = (step.params?.delimiter as string) || ' '
         const escapedDelim = delimiter.replace(/'/g, "''")
         const splitResult = await query<{ count: number }>(
           `SELECT COUNT(*) as count FROM "${tableName}" WHERE ${column} IS NOT NULL AND ${column} LIKE '%${escapedDelim}%'`
@@ -1383,12 +1378,7 @@ export async function applyTransformation(
         `
       } else {
         // Default: delimiter mode
-        // If delimiter contains non-whitespace chars, trim it (fixes " -" becoming the delimiter when user types "-")
-        // But if it's only whitespace (e.g., just a space), keep it as-is for splitting by space
-        let delimiter = (step.params?.delimiter as string) || ' '
-        if (delimiter.trim().length > 0) {
-          delimiter = delimiter.trim()
-        }
+        const delimiter = (step.params?.delimiter as string) || ' '
         const escapedDelim = delimiter.replace(/'/g, "''")
 
         // Find max number of parts
@@ -1436,12 +1426,7 @@ export async function applyTransformation(
 
     case 'combine_columns': {
       const columnList = (step.params?.columns as string || '').split(',').map(c => c.trim()).filter(Boolean)
-      // If delimiter contains non-whitespace chars, trim it (fixes " |" issue when user types "|")
-      // But if it's only whitespace (e.g., just a space), keep it as-is
-      let delimiter = (step.params?.delimiter as string) ?? ' '
-      if (delimiter.trim().length > 0) {
-        delimiter = delimiter.trim()
-      }
+      const delimiter = (step.params?.delimiter as string) ?? ''
       const newColName = (step.params?.newColumnName as string) || 'combined'
       const ignoreEmpty = (step.params?.ignoreEmpty as string) !== 'false'
       const escapedDelim = delimiter.replace(/'/g, "''")

@@ -328,10 +328,7 @@ async function captureSplitColumnDetails(
   // New value: shows actual split result for better audit fidelity
   let newExpr: string
   if (splitMode === 'delimiter') {
-    let delimiter = (params?.delimiter as string) || ' '
-    if (delimiter.trim().length > 0) {
-      delimiter = delimiter.trim()
-    }
+    const delimiter = (params?.delimiter as string) || ' '
     const escapedDelim = delimiter.replace(/'/g, "''")
     newExpr = `'Split by "' || '${escapedDelim}' || '": ' || CAST(string_split(CAST("${column}" AS VARCHAR), '${escapedDelim}') AS VARCHAR)`
   } else if (splitMode === 'position') {
@@ -371,10 +368,7 @@ async function captureCombineColumnsDetails(
   params?: Record<string, unknown>
 ): Promise<boolean> {
   const columnList = ((params?.columns as string) || '').split(',').map(c => c.trim()).filter(Boolean)
-  let delimiter = (params?.delimiter as string) ?? ' '
-  if (delimiter.trim().length > 0) {
-    delimiter = delimiter.trim()
-  }
+  const delimiter = (params?.delimiter as string) ?? ''
   const newColName = (params?.newColumnName as string) || 'combined'
   const ignoreEmpty = (params?.ignoreEmpty as string) !== 'false'
   const escapedDelim = delimiter.replace(/'/g, "''")

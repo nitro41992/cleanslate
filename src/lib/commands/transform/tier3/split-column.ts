@@ -78,10 +78,7 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
         ).join(', ')
       } else {
         // Delimiter mode
-        let delimiter = this.params.delimiter || ' '
-        if (delimiter.trim().length > 0) {
-          delimiter = delimiter.trim()
-        }
+        const delimiter = this.params.delimiter || ' '
         const escapedDelim = escapeSqlString(delimiter)
 
         // Get max parts
@@ -107,10 +104,7 @@ export class SplitColumnCommand extends Tier3TransformCommand<SplitColumnParams>
         afterExpression = `substring(CAST(${quoteColumn(col)} AS VARCHAR), 1, ${len})`
       } else {
         // Delimiter mode
-        let delimiter = this.params.delimiter || ' '
-        if (delimiter.trim().length > 0) {
-          delimiter = delimiter.trim()
-        }
+        const delimiter = this.params.delimiter || ' '
         const escapedDelim = escapeSqlString(delimiter)
         afterExpression = `string_split(CAST(${quoteColumn(col)} AS VARCHAR), '${escapedDelim}')[1]`
       }

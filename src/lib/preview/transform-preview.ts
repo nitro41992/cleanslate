@@ -279,10 +279,7 @@ async function generatePreviewSQL(
       const splitMode = params.splitMode || 'delimiter'
 
       if (splitMode === 'delimiter') {
-        let delimiter = params.delimiter || ' '
-        if (delimiter.trim().length > 0) {
-          delimiter = delimiter.trim()
-        }
+        const delimiter = params.delimiter || ' '
         const escapedDelim = escapeValue(delimiter)
 
         // Return structured result showing each part separately
@@ -332,10 +329,7 @@ async function generatePreviewSQL(
       const columnList = (params.columns || '').split(',').map((c) => c.trim()).filter(Boolean)
       if (columnList.length < 2) return null
 
-      let delimiter = params.delimiter ?? ' '
-      if (delimiter.trim().length > 0) {
-        delimiter = delimiter.trim()
-      }
+      const delimiter = params.delimiter ?? ''
       const escapedDelim = escapeValue(delimiter)
       const ignoreEmpty = params.ignoreEmpty !== 'false'
 
