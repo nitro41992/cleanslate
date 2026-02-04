@@ -132,6 +132,8 @@ export type TransformationType =
   | 'split_column'
   | 'combine_columns'
   | 'fill_down'
+  // Advanced
+  | 'excel_formula'
   // Privacy (FR-D)
   | 'privacy_batch'
 

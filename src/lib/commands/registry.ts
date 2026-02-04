@@ -99,6 +99,7 @@ export const TRANSFORM_TO_COMMAND: Record<string, CommandType> = {
   pad_zeros: 'transform:pad_zeros',
   fill_down: 'transform:fill_down',
   custom_sql: 'transform:custom_sql',
+  excel_formula: 'transform:excel_formula',
 }
 
 /**
@@ -159,6 +160,7 @@ export const TIER_3_COMMANDS: Set<CommandType> = new Set([
   'transform:pad_zeros',
   'transform:fill_down',
   'transform:custom_sql',
+  'transform:excel_formula',
   'standardize:apply',
   'match:merge',
   'scrub:redact',
@@ -253,6 +255,7 @@ export function getCommandLabel(type: CommandType): string {
     'transform:pad_zeros': 'Pad Zeros',
     'transform:fill_down': 'Fill Down',
     'transform:custom_sql': 'Custom SQL',
+    'transform:excel_formula': 'Formula Builder',
     'standardize:apply': 'Apply Standardization',
     'match:merge': 'Merge Duplicates',
     'combine:stack': 'Stack Tables',

@@ -67,6 +67,7 @@ import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { useSemanticValidation } from '@/hooks/useSemanticValidation'
 import { PrivacySubPanel } from '@/components/clean/PrivacySubPanel'
+import { FormulaEditor, type OutputMode } from '@/components/clean/FormulaEditor'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -206,6 +207,25 @@ export function CleanPanel() {
 
   const isValid = () => {
     if (!selectedTransform) return false
+
+    // Special validation for excel_formula (Formula Builder)
+    if (selectedTransform.id === 'excel_formula') {
+      // Formula is required
+      if (!params.formula || params.formula.trim() === '') return false
+
+      // Output mode validation
+      const outputMode = params.outputMode || 'new'
+      if (outputMode === 'new') {
+        // New column name is required
+        if (!params.outputColumn || params.outputColumn.trim() === '') return false
+      } else if (outputMode === 'replace') {
+        // Target column is required
+        if (!params.targetColumn || params.targetColumn.trim() === '') return false
+      }
+
+      return true
+    }
+
     if (selectedTransform.requiresColumn && !selectedColumn) return false
     if (selectedTransform.params) {
       for (const param of selectedTransform.params) {
@@ -638,6 +658,127 @@ export function CleanPanel() {
                 setTimeout(resetForm, 1500)
               }}
             />
+          ) : selectedTransform?.id === 'excel_formula' ? (
+            /* Formula Builder Sub-Panel */
+            <div className="flex-1 flex flex-col p-4 overflow-y-auto">
+              <FormulaEditor
+                value={params.formula || ''}
+                onChange={(formula) => setParams({ ...params, formula })}
+                columns={columns}
+                outputMode={(params.outputMode as OutputMode) || 'new'}
+                onOutputModeChange={(mode) => setParams({ ...params, outputMode: mode })}
+                outputColumn={params.outputColumn || ''}
+                onOutputColumnChange={(col) => setParams({ ...params, outputColumn: col })}
+                targetColumn={params.targetColumn || ''}
+                onTargetColumnChange={(col) => setParams({ ...params, targetColumn: col })}
+                disabled={isApplying}
+              />
+
+              {/* Action Buttons for Formula Builder */}
+              <div className="mt-4 space-y-2 pt-4 border-t border-border/50">
+                <div className="flex gap-2">
+                  <Button
+                    ref={applyButtonRef}
+                    className="flex-1 transition-all duration-150"
+                    onClick={handleApply}
+                    disabled={isApplying || !isValid()}
+                    data-testid="apply-transformation-btn"
+                  >
+                    {isApplying ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Applying...
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 className="w-4 h-4 mr-2" />
+                        Apply Formula
+                      </>
+                    )}
+                  </Button>
+
+                  {/* Add to Recipe - always rendered but hidden when recipe panel closed */}
+                  <div
+                    className={`transition-all duration-150 overflow-hidden ${
+                      secondaryPanel === 'recipe'
+                        ? 'flex-1 opacity-100'
+                        : 'w-0 opacity-0'
+                    }`}
+                  >
+                    {selectedRecipeId && selectedRecipe ? (
+                      <Button
+                        variant="outline"
+                        className="w-full whitespace-nowrap"
+                        disabled={!canAddToRecipe() || isApplying}
+                        onClick={handleAddToSelectedRecipe}
+                        data-testid="add-to-recipe-btn"
+                      >
+                        <BookOpen className="w-4 h-4 mr-2" />
+                        Add to {selectedRecipe.name}
+                      </Button>
+                    ) : (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="outline"
+                            className="w-full whitespace-nowrap"
+                            disabled={!canAddToRecipe() || isApplying}
+                            data-testid="add-to-recipe-btn"
+                          >
+                            <BookOpen className="w-4 h-4 mr-2" />
+                            Add to Recipe
+                            <ChevronDown className="w-3 h-3 ml-1" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-56">
+                          <DropdownMenuItem onClick={handleAddToNewRecipe}>
+                            <Plus className="w-4 h-4 mr-2" />
+                            Create New Recipe...
+                          </DropdownMenuItem>
+                          {recipes.length > 0 && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
+                              {recipes.map((recipe) => (
+                                <DropdownMenuItem
+                                  key={recipe.id}
+                                  onClick={() => handleAddToExistingRecipe(recipe.id)}
+                                >
+                                  {recipe.name}
+                                  <span className="ml-auto text-xs text-muted-foreground">
+                                    {recipe.steps.length} steps
+                                  </span>
+                                </DropdownMenuItem>
+                              ))}
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </div>
+                </div>
+
+                {/* Execution Progress */}
+                {executionProgress && (
+                  <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>{executionProgress.message}</span>
+                      <span>{Math.round(executionProgress.progress)}%</span>
+                    </div>
+                    <Progress value={executionProgress.progress} className="h-2" />
+                  </div>
+                )}
+
+                <Button
+                  variant="ghost"
+                  className="w-full"
+                  onClick={resetForm}
+                  disabled={isApplying}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
           ) : (
           <div className="flex-1 flex flex-col justify-center p-4">
             {selectedTransform ? (

@@ -39,6 +39,7 @@ import {
   Calculator,
   CalendarDays,
   Shield,
+  FunctionSquare,
 } from 'lucide-react'
 
 // Adapter to use global DB functions with the new DbConnection interface
@@ -115,6 +116,7 @@ export const EXPENSIVE_TRANSFORMS = new Set([
   'fill_down',
   'split_column',
   'combine_columns',
+  'excel_formula',
 ])
 
 export const TRANSFORMATIONS: TransformationDefinition[] = [
@@ -492,6 +494,39 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
     ],
     hints: ['Copies value from row above if null', 'Useful for grouped/hierarchical data'],
   },
+  // Advanced
+  {
+    id: 'excel_formula',
+    label: 'Formula Builder',
+    description: 'Apply Excel-like formulas with syntax highlighting and autocomplete',
+    icon: FunctionSquare,
+    requiresColumn: false, // Column selected via @syntax in formula
+    params: [
+      { name: 'formula', type: 'text', label: 'Formula', required: true },
+      { name: 'outputColumn', type: 'text', label: 'New Column Name', required: false },
+      {
+        name: 'outputMode',
+        type: 'select',
+        label: 'Output',
+        options: [
+          { value: 'new', label: 'New Column' },
+          { value: 'replace', label: 'Replace Column' },
+        ],
+        default: 'new',
+      },
+      { name: 'targetColumn', type: 'text', label: 'Column to Replace', required: false },
+    ],
+    examples: [
+      { before: 'IF(@score > 80, "Pass", "Fail")', after: 'Pass/Fail based on score' },
+      { before: 'CONCAT(@first, " ", @last)', after: 'John Doe' },
+      { before: '@price * @quantity', after: '150.00' },
+    ],
+    hints: [
+      'Type @ to insert column references',
+      'Syntax highlighting shows functions, columns, strings',
+      'Use templates for common formula patterns',
+    ],
+  },
   // Privacy (FR-D)
   {
     id: 'privacy_batch',
@@ -568,7 +603,7 @@ export const TRANSFORMATION_GROUPS = [
     label: 'Advanced',
     icon: Terminal,
     color: 'slate' as const,
-    transforms: ['custom_sql'],
+    transforms: ['excel_formula', 'custom_sql'],
   },
 ] as const
 

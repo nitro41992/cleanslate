@@ -5,9 +5,10 @@
  * Shows users how their data will transform with the selected parameters.
  */
 
-import { query } from '@/lib/duckdb'
+import { query, getTableColumns } from '@/lib/duckdb'
 import type { TransformationType } from '@/types'
 import { buildDateParseExpression, buildAgeExpression, type AgePrecision } from '@/lib/commands/utils/date'
+import { transpileFormula } from '@/lib/formula'
 
 export interface PreviewRow {
   original: string | null
@@ -59,6 +60,7 @@ export const PREVIEW_SUPPORTED_TRANSFORMS: TransformationType[] = [
   'remove_accents',
   'collapse_spaces',
   'replace_empty',
+  'excel_formula',
 ]
 
 /**
@@ -448,6 +450,56 @@ async function generatePreviewSQL(
       }
     }
 
+    case 'excel_formula': {
+      const formula = params.formula || ''
+      const outputMode = params.outputMode || 'new'
+      const targetColumn = params.targetColumn || ''
+
+      if (!formula.trim()) return null
+
+      // Get available columns for transpilation
+      let availableColumns: string[]
+      try {
+        const columns = await getTableColumns(tableName, true)
+        availableColumns = columns.map((c) => c.name).filter((n) => n !== '_cs_id')
+      } catch {
+        return null
+      }
+
+      // Transpile formula to SQL
+      const transpileResult = transpileFormula(formula, availableColumns)
+
+      if (!transpileResult.success || !transpileResult.sql) {
+        // Return null to signal preview not available (error shown in UI)
+        return null
+      }
+
+      const sqlExpr = transpileResult.sql
+
+      if (outputMode === 'new') {
+        // Preview: show formula result as new column
+        return {
+          sql: `SELECT 'Formula result' as original,
+                       CAST((${sqlExpr}) AS VARCHAR) as result
+                FROM ${table}
+                LIMIT ${limit}`,
+          countSql: `SELECT COUNT(*) as count FROM ${table}`,
+        }
+      } else {
+        // Preview: show before (target column) and after (formula result)
+        const targetCol = quoteCol(targetColumn)
+        return {
+          sql: `SELECT CAST(${targetCol} AS VARCHAR) as original,
+                       CAST((${sqlExpr}) AS VARCHAR) as result
+                FROM ${table}
+                WHERE ${targetCol} IS DISTINCT FROM (${sqlExpr})
+                LIMIT ${limit}`,
+          countSql: `SELECT COUNT(*) as count FROM ${table}
+                     WHERE ${targetCol} IS DISTINCT FROM (${sqlExpr})`,
+        }
+      }
+    }
+
     default:
       return null
   }
@@ -553,6 +605,7 @@ export function isPreviewReady(
   // Column-based transforms need a column
   const requiresColumn = ![
     'combine_columns',
+    'excel_formula', // Uses @column syntax in formula
   ].includes(transformType)
 
   if (requiresColumn && !column) {
@@ -582,6 +635,16 @@ export function isPreviewReady(
       return Boolean(params.format)
     case 'calculate_age':
       return true // Only needs column
+    case 'excel_formula': {
+      // Need formula and either outputColumn (new mode) or targetColumn (replace mode)
+      const hasFormula = Boolean(params.formula?.trim())
+      const outputMode = params.outputMode || 'new'
+      if (outputMode === 'new') {
+        return hasFormula && Boolean(params.outputColumn?.trim())
+      } else {
+        return hasFormula && Boolean(params.targetColumn?.trim())
+      }
+    }
     default:
       return true // Most transforms just need column
   }

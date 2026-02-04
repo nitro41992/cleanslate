@@ -38,6 +38,7 @@ export type CommandType =
   | 'transform:pad_zeros'
   | 'transform:fill_down'
   | 'transform:custom_sql'
+  | 'transform:excel_formula'
   // Standardize (Tier 3)
   | 'standardize:apply'
   // Match (Tier 3)
