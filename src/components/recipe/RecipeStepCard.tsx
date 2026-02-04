@@ -1,5 +1,6 @@
-import { ChevronUp, ChevronDown, ToggleLeft, ToggleRight, Trash2 } from 'lucide-react'
+import { ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import {
   Tooltip,
   TooltipContent,
@@ -8,7 +9,12 @@ import {
 import { cn } from '@/lib/utils'
 import type { RecipeStep } from '@/types'
 import { formatRecipeValue } from '@/lib/recipe/format-helpers'
-import { getTransformDefinition, getStepIcon, getStepLabel } from '@/lib/recipe/transform-lookup'
+import {
+  getTransformDefinition,
+  getStepIcon,
+  getStepLabel,
+  getStepColorClasses,
+} from '@/lib/recipe/transform-lookup'
 
 interface RecipeStepCardProps {
   step: RecipeStep
@@ -25,9 +31,10 @@ interface RecipeStepCardProps {
  * RecipeStepCard - Displays a single recipe step with all parameters
  *
  * Key features:
- * - Shows ALL parameters from transform definition, not just stored values
- * - Empty values displayed as "(empty)" in muted italic
- * - Pipeline-style visual with step number and connector
+ * - Color-coded icon containers matching transform picker
+ * - Left border + tinted background for enabled state
+ * - Pipeline connectors with category color
+ * - Shows ALL parameters from transform definition
  */
 export function RecipeStepCard({
   step,
@@ -43,6 +50,7 @@ export function RecipeStepCard({
   const transform = getTransformDefinition(step)
   const icon = getStepIcon(step)
   const label = getStepLabel(step)
+  const colors = getStepColorClasses(step)
 
   // Get human-readable label for a parameter
   const getParamLabel = (name: string): string => {
@@ -93,7 +101,7 @@ export function RecipeStepCard({
     <div className="relative">
       {/* Pipeline connector from previous step */}
       {!isFirst && (
-        <div className="absolute left-4 -top-1 w-0.5 h-2 bg-border/60" />
+        <div className="absolute left-4 -top-2 w-0.5 h-2 bg-border" />
       )}
 
       {/* Main card */}
@@ -103,34 +111,38 @@ export function RecipeStepCard({
           step.enabled
             ? 'bg-card border-border/60'
             : 'bg-muted/30 border-border/30 opacity-60',
-          isHighlighted && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
+          isHighlighted &&
+            'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
         )}
       >
         {/* Step indicator dot */}
         <div
           className={cn(
-            'absolute left-4 top-3 w-2 h-2 rounded-full',
+            'absolute left-4 top-4 w-2 h-2 rounded-full',
             step.enabled ? 'bg-primary' : 'bg-muted-foreground/40'
           )}
         />
 
         {/* Header row */}
-        <div className="flex items-start gap-2 pl-8 pr-2 pt-2 pb-1">
-          {/* Step number and icon */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-xs text-muted-foreground font-medium">
-              {index + 1}.
-            </span>
+        <div className="flex items-start gap-2 pl-8 pr-2 pt-3 pb-2">
+          {/* Icon container - matches transform picker */}
+          <div
+            className={cn(
+              'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
+              colors.iconBg
+            )}
+          >
             <span className="text-base">{icon}</span>
           </div>
 
           {/* Label with nested column */}
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-sm leading-tight">
-              {label}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">{index + 1}.</span>
+              <span className="text-sm font-medium">{label}</span>
             </div>
             {step.column && (
-              <div className="text-xs text-muted-foreground pl-3 flex items-center gap-1">
+              <div className="text-xs text-muted-foreground pl-4 flex items-center gap-1">
                 <span className="text-muted-foreground/60">↳</span>
                 <span className="truncate">{step.column}</span>
               </div>
@@ -173,20 +185,13 @@ export function RecipeStepCard({
 
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  onClick={onToggleEnabled}
-                  aria-label={step.enabled ? 'Disable step' : 'Enable step'}
-                  aria-pressed={step.enabled}
-                >
-                  {step.enabled ? (
-                    <ToggleRight className="w-3.5 h-3.5 text-primary" />
-                  ) : (
-                    <ToggleLeft className="w-3.5 h-3.5 text-muted-foreground" />
-                  )}
-                </Button>
+                <div>
+                  <Switch
+                    checked={step.enabled}
+                    onCheckedChange={() => onToggleEnabled()}
+                    aria-label={step.enabled ? 'Disable step' : 'Enable step'}
+                  />
+                </div>
               </TooltipTrigger>
               <TooltipContent side="top">
                 {step.enabled ? 'Disable step' : 'Enable step'}
@@ -212,19 +217,12 @@ export function RecipeStepCard({
 
         {/* Parameters section */}
         {params.length > 0 && (
-          <div className="pl-8 pr-3 pb-2 pt-1 border-t border-border/30 mt-1">
-            <div className="space-y-1">
+          <div className="pl-8 pr-3 pb-3 pt-2 border-t border-border/30">
+            <div className="space-y-1.5">
               {params.map(({ name, label, value }) => (
-                <div
-                  key={name}
-                  className="flex items-start gap-2 text-xs"
-                >
-                  <span className="text-muted-foreground min-w-[80px] shrink-0">
-                    {label}:
-                  </span>
-                  <span className="text-foreground break-all">
-                    {formatRecipeValue(value)}
-                  </span>
+                <div key={name} className="flex items-start gap-3 text-xs">
+                  <span className="text-muted-foreground min-w-[100px]">{label}:</span>
+                  <span className="text-foreground/80">{formatRecipeValue(value)}</span>
                 </div>
               ))}
             </div>
@@ -234,7 +232,7 @@ export function RecipeStepCard({
 
       {/* Pipeline connector to next step */}
       {!isLast && (
-        <div className="absolute left-4 -bottom-1 w-0.5 h-2 bg-border/60" />
+        <div className="absolute left-4 -bottom-2 w-0.5 h-2 bg-border" />
       )}
     </div>
   )

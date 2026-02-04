@@ -61,6 +61,7 @@ import {
   getStepIcon,
   getStepLabel,
   getReadableStepType,
+  getStepColorClasses,
 } from '@/lib/recipe/transform-lookup'
 
 /**
@@ -537,103 +538,134 @@ export function RecipePanel() {
                   Use &quot;Add to Recipe&quot; in the transform form to add steps
                 </p>
               ) : (
-                <div className="space-y-1.5 w-full max-w-full">
+                <div className="space-y-3 w-full max-w-full">
                   {selectedRecipe.steps.map((step, index) => {
                     const isNewlyAdded = step.id === newlyAddedStepId
+                    const colors = getStepColorClasses(step)
+                    const isFirst = index === 0
+                    const isLast = index === selectedRecipe.steps.length - 1
 
                     return (
-                      <div
-                        key={step.id}
-                        className={cn(
-                          'rounded-lg border transition-all duration-300 w-full max-w-full overflow-hidden',
-                          step.enabled
-                            ? 'bg-card/50 border-border/50'
-                            : 'bg-muted/20 border-border/20 opacity-60',
-                          isNewlyAdded && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
+                      <div key={step.id} className="relative">
+                        {/* Pipeline connector from previous step */}
+                        {!isFirst && (
+                          <div className="absolute left-3 -top-2 w-0.5 h-2 bg-border" />
                         )}
-                      >
-                        {/* Step Header */}
-                        <div className="flex items-start gap-1.5 p-2">
-                          {/* Step Number & Icon */}
-                          <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums mt-0.5">
-                            {index + 1}.
-                          </span>
-                          <span className="text-sm shrink-0">{getStepIcon(step)}</span>
 
-                          {/* Label with nested column */}
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium text-xs leading-tight">
-                              {getStepLabel(step)}
-                            </div>
-                            {step.column && (
-                              <div className="text-xs text-muted-foreground pl-3 flex items-center gap-1">
-                                <span className="text-muted-foreground/60">↳</span>
-                                <span className="truncate">{step.column}</span>
-                              </div>
+                        {/* Main card */}
+                        <div
+                          className={cn(
+                            'relative rounded-lg border transition-all duration-300 w-full max-w-full overflow-hidden',
+                            step.enabled
+                              ? 'bg-card border-border/50'
+                              : 'bg-muted/20 border-border/20 opacity-60',
+                            isNewlyAdded && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background animate-in fade-in slide-in-from-bottom-2 duration-300'
+                          )}
+                        >
+                          {/* Step indicator dot */}
+                          <div
+                            className={cn(
+                              'absolute left-3 top-3 w-1.5 h-1.5 rounded-full',
+                              step.enabled ? 'bg-primary' : 'bg-muted-foreground/40'
                             )}
-                          </div>
-
-                          {/* Compact action buttons */}
-                          <div className="flex items-center shrink-0">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 hover:bg-muted/50"
-                              onClick={() => moveStepUp(index)}
-                              disabled={index === 0}
-                            >
-                              <ChevronUp className="w-3 h-3" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 hover:bg-muted/50"
-                              onClick={() => moveStepDown(index)}
-                              disabled={index === selectedRecipe.steps.length - 1}
-                            >
-                              <ChevronDown className="w-3 h-3" />
-                            </Button>
-                          </div>
-
-                          {/* Enable Toggle */}
-                          <Switch
-                            checked={step.enabled}
-                            onCheckedChange={() => toggleStepEnabled(selectedRecipe.id, step.id)}
-                            className="scale-75 shrink-0"
                           />
+
+                          {/* Step Header */}
+                          <div className="flex items-start gap-1.5 pl-6 pr-2 py-2">
+                            {/* Icon container - matches transform picker */}
+                            <div
+                              className={cn(
+                                'w-6 h-6 rounded-md flex items-center justify-center shrink-0',
+                                colors.iconBg
+                              )}
+                            >
+                              <span className="text-sm">{getStepIcon(step)}</span>
+                            </div>
+
+                            {/* Label with nested column */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-muted-foreground tabular-nums">
+                                  {index + 1}.
+                                </span>
+                                <span className="font-medium text-xs leading-tight">
+                                  {getStepLabel(step)}
+                                </span>
+                              </div>
+                              {step.column && (
+                                <div className="text-xs text-muted-foreground pl-3 flex items-center gap-1">
+                                  <span className="text-muted-foreground/60">↳</span>
+                                  <span className="truncate">{step.column}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Compact action buttons */}
+                            <div className="flex items-center shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5 hover:bg-muted/50"
+                                onClick={() => moveStepUp(index)}
+                                disabled={index === 0}
+                              >
+                                <ChevronUp className="w-3 h-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5 hover:bg-muted/50"
+                                onClick={() => moveStepDown(index)}
+                                disabled={index === selectedRecipe.steps.length - 1}
+                              >
+                                <ChevronDown className="w-3 h-3" />
+                              </Button>
+                            </div>
+
+                            {/* Enable Toggle */}
+                            <Switch
+                              checked={step.enabled}
+                              onCheckedChange={() => toggleStepEnabled(selectedRecipe.id, step.id)}
+                              className="scale-75 shrink-0"
+                            />
+                          </div>
+
+                          {/* Always Expanded Details */}
+                          <div className="pl-6 pr-3 pb-2 pt-1.5 border-t border-border/30 space-y-2 overflow-hidden">
+                            <div className="flex items-start gap-2 text-xs min-w-0">
+                              <span className="text-muted-foreground shrink-0">Type:</span>
+                              <span className="text-foreground/80">
+                                {getReadableStepType(step)}
+                              </span>
+                            </div>
+                            {(() => {
+                              const paramsContent = formatStepParams(step)
+                              if (!paramsContent) return null
+                              return (
+                                <div className="pt-1.5 border-t border-border/30 overflow-hidden">
+                                  {paramsContent}
+                                </div>
+                              )
+                            })()}
+                            {/* Delete action */}
+                            <div className="pt-1.5 border-t border-border/30">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 text-xs text-muted-foreground hover:text-destructive"
+                                onClick={() => removeStep(selectedRecipe.id, step.id)}
+                              >
+                                <X className="w-3 h-3 mr-1" />
+                                Remove step
+                              </Button>
+                            </div>
+                          </div>
                         </div>
 
-                        {/* Always Expanded Details */}
-                        <div className="px-3 pb-2 pt-1.5 border-t border-border/40 space-y-2 overflow-hidden">
-                          <div className="flex items-start gap-2 text-xs min-w-0">
-                            <span className="text-muted-foreground shrink-0">Type:</span>
-                            <span className="text-foreground/80">
-                              {getReadableStepType(step)}
-                            </span>
-                          </div>
-                          {(() => {
-                            const paramsContent = formatStepParams(step)
-                            if (!paramsContent) return null
-                            return (
-                              <div className="pt-1.5 border-t border-border/30 overflow-hidden">
-                                <p className="text-[10px] text-muted-foreground mb-1">Parameters:</p>
-                                {paramsContent}
-                              </div>
-                            )
-                          })()}
-                          {/* Delete action */}
-                          <div className="pt-1.5 border-t border-border/30">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 text-xs text-muted-foreground hover:text-destructive"
-                              onClick={() => removeStep(selectedRecipe.id, step.id)}
-                            >
-                              <X className="w-3 h-3 mr-1" />
-                              Remove step
-                            </Button>
-                          </div>
-                        </div>
+                        {/* Pipeline connector to next step */}
+                        {!isLast && (
+                          <div className="absolute left-3 -bottom-2 w-0.5 h-2 bg-border" />
+                        )}
                       </div>
                     )
                   })}

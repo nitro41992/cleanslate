@@ -12,18 +12,18 @@ export function formatRecipeValue(value: unknown): ReactNode {
   if (Array.isArray(value)) {
     // Handle arrays of objects (e.g., scrub rules)
     if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
-      // Format scrub rules as nested vertical list
+      // Format scrub rules as nested vertical list with ↳ indicator (consistent with other cards)
       if ('column' in value[0] && 'method' in value[0]) {
         return (
           <div className="flex flex-col gap-0.5 mt-0.5">
             {value.map((item, idx) => {
               const rule = item as { column: string; method: string }
               return (
-                <div key={idx} className="flex items-center gap-1.5 text-foreground pl-2">
-                  <span className="text-muted-foreground/50">•</span>
+                <div key={idx} className="flex items-center gap-1.5 text-foreground">
+                  <span className="text-muted-foreground/60">↳</span>
                   <span className="font-medium">{rule.column}</span>
-                  <span className="text-muted-foreground">→</span>
-                  <span>{rule.method}</span>
+                  <span className="text-muted-foreground mx-1">→</span>
+                  <span className="text-foreground/80">{rule.method}</span>
                 </div>
               )
             })}

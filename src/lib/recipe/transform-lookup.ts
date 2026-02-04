@@ -5,6 +5,13 @@
  */
 
 import { TRANSFORMATIONS } from '@/lib/transformations'
+import {
+  getTransformColor,
+  getTransformColorClasses,
+  categoryColorClasses,
+  type TransformCategoryColor,
+  type CategoryColorClasses,
+} from '@/lib/ui/transform-colors'
 import type { RecipeStep } from '@/types'
 
 /**
@@ -67,3 +74,22 @@ export function getReadableStepType(step: RecipeStep): string {
   const label = getStepLabel(step)
   return `${category}: ${label}`
 }
+
+/**
+ * Get the category color for a recipe step.
+ */
+export function getStepColor(step: RecipeStep): TransformCategoryColor {
+  const transformId = getTransformId(step.type)
+  return getTransformColor(transformId)
+}
+
+/**
+ * Get the color classes for a recipe step.
+ */
+export function getStepColorClasses(step: RecipeStep): CategoryColorClasses {
+  const transformId = getTransformId(step.type)
+  return getTransformColorClasses(transformId)
+}
+
+// Re-export color utilities for convenience
+export { categoryColorClasses, type TransformCategoryColor, type CategoryColorClasses }
