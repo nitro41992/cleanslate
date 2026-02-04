@@ -10,6 +10,7 @@ import {
   Pencil,
   BookOpen,
   Sparkles,
+  Search,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -94,6 +95,9 @@ export function RecipePanelPrimary() {
   const [tempName, setTempName] = useState('')
   const [tempDescription, setTempDescription] = useState('')
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('')
+
   // Track newly added steps for highlight animation
   const [newlyAddedStepId, setNewlyAddedStepId] = useState<string | null>(null)
   const prevStepsLengthRef = useRef<number>(0)
@@ -105,6 +109,13 @@ export function RecipePanelPrimary() {
       .filter((c) => !c.name.startsWith('_cs_') && !c.name.startsWith('__'))
       .map((c) => c.name)
   }, [activeTable])
+
+  // Filter recipes based on search query
+  const filteredRecipes = useMemo(() => {
+    if (!searchQuery.trim()) return recipes
+    const query = searchQuery.toLowerCase()
+    return recipes.filter((r) => r.name.toLowerCase().includes(query))
+  }, [recipes, searchQuery])
 
   // Recipe execution hook with secret handling
   const { startExecution, continueAfterMapping, secretDialogElement } = useRecipeExecution({
@@ -370,6 +381,21 @@ export function RecipePanelPrimary() {
           </div>
         </div>
 
+        {/* Search Input */}
+        {recipes.length > 0 && (
+          <div className="p-2 border-b border-border/40">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search recipes..."
+                className="h-8 pl-8 text-sm"
+              />
+            </div>
+          </div>
+        )}
+
         {/* Recipe List */}
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
@@ -387,8 +413,13 @@ export function RecipePanelPrimary() {
                   Create Recipe
                 </Button>
               </div>
+            ) : filteredRecipes.length === 0 ? (
+              <div className="text-center py-8">
+                <Search className="w-6 h-6 mx-auto text-muted-foreground/40 mb-2" />
+                <p className="text-xs text-muted-foreground">No matching recipes</p>
+              </div>
             ) : (
-              recipes.map((recipe) => (
+              filteredRecipes.map((recipe) => (
                 <button
                   key={recipe.id}
                   onClick={() => setSelectedRecipe(recipe.id)}
