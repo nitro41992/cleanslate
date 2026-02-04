@@ -1,4 +1,4 @@
-import { Table, Plus, ChevronDown, Trash2, Copy, Loader2, Snowflake } from 'lucide-react'
+import { Table, Plus, ChevronDown, Trash2, Loader2, Snowflake } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -16,8 +16,6 @@ import {
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useState } from 'react'
-import { duplicateTable } from '@/lib/duckdb'
-import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { formatNumber } from '@/lib/utils'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { ConfirmDeleteTableDialog } from './ConfirmDeleteTableDialog'
@@ -34,12 +32,10 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
   const switchToTable = useTableStore((s) => s.switchToTable)
   const isContextSwitching = useTableStore((s) => s.isContextSwitching)
   const isTableFrozen = useTableStore((s) => s.isTableFrozen)
-  const checkpointTable = useTableStore((s) => s.checkpointTable)
 
   const setPreviewActiveTable = usePreviewStore((s) => s.setActiveTable)
   const { deleteTable } = useDuckDB()
 
-  const [checkpointLoading, setCheckpointLoading] = useState<string | null>(null)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [tableToDelete, setTableToDelete] = useState<{ id: string; name: string; rowCount: number } | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -71,41 +67,6 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
       // Simple switch (no freeze/thaw needed - same table or first table)
       setActiveTable(tableId)
       setPreviewActiveTable(tableId, table.name)
-    }
-  }
-
-  const handleCheckpoint = async (tableId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    const table = tables.find((t) => t.id === tableId)
-    if (!table) return
-
-    setCheckpointLoading(tableId)
-    try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-      const checkpointName = `${table.name}_checkpoint_${timestamp}`
-
-      const { columns, rowCount } = await duplicateTable(table.name, checkpointName)
-
-      // Get transformations from timeline-derived audit
-      const tableTransformations = getAuditEntriesForTable(tableId)
-        .map((e) => ({
-          action: e.action,
-          details: e.details,
-          timestamp: e.timestamp,
-          rowsAffected: e.rowsAffected,
-        }))
-
-      checkpointTable(
-        tableId,
-        checkpointName,
-        columns.map((c) => ({ ...c, nullable: true })),
-        rowCount,
-        tableTransformations
-      )
-    } catch (error) {
-      console.error('Failed to create checkpoint:', error)
-    } finally {
-      setCheckpointLoading(null)
     }
   }
 
@@ -220,24 +181,6 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
                 </div>
               </div>
               <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6"
-                      disabled={checkpointLoading === table.id}
-                      onClick={(e) => handleCheckpoint(table.id, e)}
-                    >
-                      {checkpointLoading === table.id ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Copy className="w-3 h-3" />
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Create checkpoint</TooltipContent>
-                </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
