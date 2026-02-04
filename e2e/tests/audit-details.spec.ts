@@ -473,8 +473,8 @@ test.describe('Audit Row Details', () => {
     // Wait for sidebar content to stabilize before interacting
     await expect(manualEditElement).toBeVisible({ timeout: 10000 })
 
-    // This element SHOULD have the "View details" text since it now has drill-down
-    await expect(manualEditElement.locator('text=View details')).toBeVisible()
+    // Note: "View details" text is hidden when ENABLE_AUDIT_HIGHLIGHT = false
+    // The entry is still clickable to open the modal
 
     // Click to open the modal
     await manualEditElement.click()
