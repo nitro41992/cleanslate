@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Eye, ArrowRight, AlertCircle } from 'lucide-react'
+import { Eye, ArrowRight, AlertCircle, AlertTriangle } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { TransformationType } from '@/types'
@@ -27,6 +27,8 @@ export interface PreviewState {
   hasError: boolean
   /** Whether preview is ready (requirements met) */
   isReady: boolean
+  /** Number of rows where the result is NULL (silent failure warning) */
+  nullCount?: number
 }
 
 interface TransformPreviewProps {
@@ -119,9 +121,10 @@ export function TransformPreview({
         totalMatching: preview?.totalMatching ?? 0,
         hasError: !!preview?.error,
         isReady: ready,
+        nullCount: preview?.nullCount,
       })
     }
-  }, [onPreviewStateChange, isLoading, preview?.totalMatching, preview?.error, ready])
+  }, [onPreviewStateChange, isLoading, preview?.totalMatching, preview?.error, preview?.nullCount, ready])
 
   // Don't render if transform doesn't support preview
   if (!supportsPreview) {
@@ -148,9 +151,17 @@ export function TransformPreview({
           Live Preview
         </div>
         {preview && !isLoading && (
-          <span className="text-[10px] text-muted-foreground">
-            {displayCount} of {preview.totalMatching.toLocaleString()} matching
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground">
+              {displayCount} of {preview.totalMatching.toLocaleString()} matching
+            </span>
+            {preview.nullCount !== undefined && preview.nullCount > 0 && (
+              <div className="flex items-center gap-1 text-[10px] text-amber-500">
+                <AlertTriangle className="w-3 h-3" />
+                <span>{preview.nullCount.toLocaleString()} rows produce NULL</span>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

@@ -30,7 +30,7 @@ import { useTableStore } from '@/stores/tableStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { toast } from 'sonner'
-import type { RecipeStep } from '@/types'
+import type { RecipeStep, TransformationType } from '@/types'
 import {
   TRANSFORMATIONS,
   TransformationDefinition,
@@ -73,6 +73,7 @@ export function CleanPanel() {
 
   // Formula tab state (separate from transforms tab)
   const [formulaParams, setFormulaParams] = useState<Record<string, string>>({})
+  const [formulaPreviewState, setFormulaPreviewState] = useState<PreviewState | null>(null)
 
   // Keyboard navigation state
   const [columnComboboxOpen, setColumnComboboxOpen] = useState(false)
@@ -188,6 +189,7 @@ export function CleanPanel() {
   const resetFormulaForm = () => {
     setFormulaParams({})
     setLastApplied(null)
+    setFormulaPreviewState(null)
   }
 
   const handleTabChange = (tab: string) => {
@@ -436,6 +438,12 @@ export function CleanPanel() {
     } else if (outputMode === 'replace') {
       if (!formulaParams.targetColumn || formulaParams.targetColumn.trim() === '') return false
     }
+    // Block Apply if preview shows an error (e.g., invalid SQL, bad column refs)
+    if (formulaPreviewState?.isReady && !formulaPreviewState.isLoading) {
+      if (formulaPreviewState.hasError) {
+        return false
+      }
+    }
     return true
   }
 
@@ -594,7 +602,7 @@ export function CleanPanel() {
         <TabsContent value="transforms" className="flex-1 mt-0 overflow-hidden">
           <div className="flex h-full">
             {/* Left Column: Picker (scrollable) */}
-            <div className="w-[340px] border-r border-border/50 flex flex-col">
+            <div className="w-[340px] min-w-[340px] border-r border-border/50 flex flex-col overflow-hidden">
               <ScrollArea className="flex-1">
                 <div className="p-4">
                   <GroupedTransformationPicker
@@ -883,6 +891,18 @@ export function CleanPanel() {
                   onTargetColumnChange={(col) => setFormulaParams({ ...formulaParams, targetColumn: col })}
                   disabled={isApplying}
                 />
+
+                {/* Live Preview for Formula Builder */}
+                {activeTable && (
+                  <TransformPreview
+                    tableName={activeTable.name}
+                    column={undefined}
+                    transformType={'excel_formula' as TransformationType}
+                    params={formulaParams}
+                    sampleCount={10}
+                    onPreviewStateChange={setFormulaPreviewState}
+                  />
+                )}
 
                 {/* Action Buttons for Formula Builder */}
                 <div className="mt-4 space-y-2 pt-4 border-t border-border/50">

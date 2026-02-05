@@ -31,6 +31,8 @@ export interface PreviewResult {
   rows: PreviewRow[]
   totalMatching: number
   error?: string
+  /** Number of rows where the formula result is NULL (e.g., division by zero) */
+  nullCount?: number
   /** For split_column: shows parts in structured format */
   splitRows?: SplitPreviewRow[]
   /** Column name being split (for header display) */
@@ -87,6 +89,8 @@ function escapeValue(val: string): string {
 interface PreviewSQLResult {
   sql: string
   countSql: string
+  /** SQL to count rows where the result is NULL (for silent failure warnings) */
+  nullCountSql?: string
   /** True for split_column - uses structured parts instead of single result */
   isSplit?: boolean
   /** True for combine_columns - uses structured source values */
@@ -476,6 +480,8 @@ async function generatePreviewSQL(
 
       const sqlExpr = transpileResult.sql
 
+      const nullCountSql = `SELECT COUNT(*) as count FROM ${table} WHERE (${sqlExpr}) IS NULL`
+
       if (outputMode === 'new') {
         // Preview: show formula result as new column
         return {
@@ -484,6 +490,7 @@ async function generatePreviewSQL(
                 FROM ${table}
                 LIMIT ${limit}`,
           countSql: `SELECT COUNT(*) as count FROM ${table}`,
+          nullCountSql,
         }
       } else {
         // Preview: show before (target column) and after (formula result)
@@ -496,6 +503,7 @@ async function generatePreviewSQL(
                 LIMIT ${limit}`,
           countSql: `SELECT COUNT(*) as count FROM ${table}
                      WHERE ${targetCol} IS DISTINCT FROM (${sqlExpr})`,
+          nullCountSql,
         }
       }
     }
@@ -567,10 +575,18 @@ export async function generatePreview(
     }
 
     // Standard preview - run queries in parallel
-    const [rows, countResult] = await Promise.all([
+    const queries: Promise<unknown[]>[] = [
       query<{ original: string | null; result: string | null }>(sqlResult.sql),
       query<{ count: number }>(sqlResult.countSql),
-    ])
+    ]
+    if (sqlResult.nullCountSql) {
+      queries.push(query<{ count: number }>(sqlResult.nullCountSql))
+    }
+
+    const results = await Promise.all(queries)
+    const rows = results[0] as { original: string | null; result: string | null }[]
+    const countResult = results[1] as { count: number }[]
+    const nullCountResult = results[2] as { count: number }[] | undefined
 
     return {
       rows: rows.map((r) => ({
@@ -578,15 +594,44 @@ export async function generatePreview(
         result: r.result,
       })),
       totalMatching: Number(countResult[0]?.count ?? 0),
+      nullCount: nullCountResult
+        ? Number(nullCountResult[0]?.count ?? 0)
+        : undefined,
     }
   } catch (error) {
     console.error('Preview generation failed:', error)
+    const rawMessage = error instanceof Error ? error.message : 'Preview failed'
     return {
       rows: [],
       totalMatching: 0,
-      error: error instanceof Error ? error.message : 'Preview failed',
+      error: humanizePreviewError(rawMessage),
     }
   }
+}
+
+/**
+ * Humanize DuckDB error messages for user-friendly display
+ */
+export function humanizePreviewError(message: string): string {
+  if (/Referenced column.*not found/i.test(message)) {
+    const match = message.match(/Referenced column\s+"([^"]+)"/i)
+    const colName = match?.[1] ?? 'unknown'
+    return `Column "${colName}" not found. Check your @column references.`
+  }
+  if (/Conversion Error|Could not convert/i.test(message)) {
+    return 'Type mismatch: formula result incompatible with column type.'
+  }
+  if (/division by zero/i.test(message)) {
+    return 'Division by zero in some rows. Consider wrapping with IFERROR().'
+  }
+  if (/Binder Error/i.test(message)) {
+    return 'Formula error. Check function names and column references.'
+  }
+  // Truncate long messages
+  if (message.length > 120) {
+    return message.slice(0, 117) + '...'
+  }
+  return message
 }
 
 /**
