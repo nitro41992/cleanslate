@@ -324,10 +324,10 @@ export const GroupedTransformationPicker = forwardRef<
   return (
     <div
       ref={containerRef}
-      className="space-y-2 outline-none"
+      className="space-y-3 outline-none"
     >
       {/* Search Input */}
-      <div className="relative">
+      <div className="relative mb-1">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           ref={searchInputRef}
@@ -339,7 +339,7 @@ export const GroupedTransformationPicker = forwardRef<
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           disabled={disabled}
-          className="pl-9 pr-8 h-9"
+          className="pl-9 pr-8 h-10"
           data-testid="transformation-search-input"
         />
         {searchQuery && (
@@ -365,7 +365,7 @@ export const GroupedTransformationPicker = forwardRef<
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground px-1 py-1">
+              <div className="text-xs text-muted-foreground px-1 pb-1">
                 {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
               </div>
               {searchResults.map((t, index) => {
@@ -390,10 +390,10 @@ export const GroupedTransformationPicker = forwardRef<
                       'transition-colors duration-150',
                       'hover:bg-muted/40',
                       'disabled:opacity-50 disabled:cursor-not-allowed',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                       selectedTransform?.id === t.id && colors.selected,
                       lastApplied === t.id && 'border-l-2 border-green-500 bg-green-500/5',
-                      isHighlighted && 'ring-2 ring-primary/50 bg-muted/60'
+                      isHighlighted && 'ring-2 ring-inset ring-primary/50 bg-muted/60'
                     )}
                   >
                     {/* Icon container */}
@@ -422,7 +422,7 @@ export const GroupedTransformationPicker = forwardRef<
                     {/* Group badge */}
                     {group && (
                       <span className={cn(
-                        'text-[10px] px-1.5 py-0.5 rounded-full border shrink-0',
+                        'text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 truncate max-w-[72px]',
                         colors.badge
                       )}>
                         {group.label}
@@ -502,7 +502,7 @@ export const GroupedTransformationPicker = forwardRef<
                         'transition-colors duration-150',
                         'hover:bg-muted/40',
                         'disabled:opacity-50 disabled:cursor-not-allowed',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                         selectedTransform?.id === t.id && colors.selected,
                         lastApplied === t.id && 'border-l-2 border-green-500 bg-green-500/5'
                       )}

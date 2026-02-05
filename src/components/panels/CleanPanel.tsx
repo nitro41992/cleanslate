@@ -14,7 +14,6 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import { MultiColumnCombobox } from '@/components/ui/multi-column-combobox'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { TransformPreview, type PreviewState } from '@/components/clean/TransformPreview'
 import { ValidationMessage } from '@/components/clean/ValidationMessage'
 import {
@@ -602,8 +601,8 @@ export function CleanPanel() {
         <TabsContent value="transforms" className="flex-1 mt-0 overflow-hidden">
           <div className="flex h-full">
             {/* Left Column: Picker (scrollable) */}
-            <div className="w-[340px] min-w-[340px] border-r border-border/50 flex flex-col overflow-hidden">
-              <ScrollArea className="flex-1">
+            <div className="w-[340px] min-w-[340px] max-w-[340px] border-r border-border/50 flex flex-col">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden">
                 <div className="p-4">
                   <GroupedTransformationPicker
                     ref={pickerRef}
@@ -624,7 +623,7 @@ export function CleanPanel() {
                     </div>
                   )}
                 </div>
-              </ScrollArea>
+              </div>
             </div>
 
             {/* Right Column: Configuration (vertically centered, scrollable if needed) */}
