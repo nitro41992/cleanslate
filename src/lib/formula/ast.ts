@@ -65,6 +65,8 @@ export type FunctionName =
   | 'TRIM'
   | 'CONCAT'
   | 'SUBSTITUTE'
+  | 'PROPER'
+  | 'SPLIT'
   // Numeric functions
   | 'ROUND'
   | 'ABS'
@@ -88,7 +90,13 @@ export type FunctionName =
   | 'LIKE'
   | 'ILIKE'
   | 'REGEX'
+  | 'REGEXEXTRACT'
   | 'BETWEEN'
+  // Date functions
+  | 'YEAR'
+  | 'MONTH'
+  | 'DAY'
+  | 'DATEDIFF'
 
 export interface ColumnRef {
   type: 'ColumnRef'

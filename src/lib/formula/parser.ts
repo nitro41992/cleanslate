@@ -91,7 +91,7 @@ ExcelFormula {
   FunctionCall = functionName "(" ListOf<Expression, ","> ")"
 
   // Supported function names (case-insensitive)
-  // NOTE: Longer names MUST come before shorter prefixes (IFERROR before IF, ICONTAINS before CONTAINS)
+  // NOTE: Longer names MUST come before shorter prefixes (IFERROR before IF, ICONTAINS before CONTAINS, REGEXEXTRACT before REGEX, DATEDIFF before DAY)
   functionName = caseInsensitive<"IFERROR">
                | caseInsensitive<"ISBLANK">
                | caseInsensitive<"IF">
@@ -104,6 +104,8 @@ ExcelFormula {
                | caseInsensitive<"TRIM">
                | caseInsensitive<"CONCAT">
                | caseInsensitive<"SUBSTITUTE">
+               | caseInsensitive<"PROPER">
+               | caseInsensitive<"SPLIT">
                | caseInsensitive<"ROUND">
                | caseInsensitive<"ABS">
                | caseInsensitive<"CEILING">
@@ -121,8 +123,13 @@ ExcelFormula {
                | caseInsensitive<"ENDSWITH">
                | caseInsensitive<"ILIKE">
                | caseInsensitive<"LIKE">
+               | caseInsensitive<"REGEXEXTRACT">
                | caseInsensitive<"REGEX">
                | caseInsensitive<"BETWEEN">
+               | caseInsensitive<"DATEDIFF">
+               | caseInsensitive<"YEAR">
+               | caseInsensitive<"MONTH">
+               | caseInsensitive<"DAY">
 
   // Column reference: @name or @[Name With Spaces]
   ColumnRef = "@" (bracketedName | simpleName)

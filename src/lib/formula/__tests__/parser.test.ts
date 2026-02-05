@@ -241,6 +241,61 @@ describe('parseFormula', () => {
       })
       expect((result.ast as { arguments: unknown[] }).arguments).toHaveLength(3)
     })
+
+    it('parses PROPER function', () => {
+      const result = parseFormula('PROPER(@name)')
+      expect(result.success).toBe(true)
+      expect(result.ast).toMatchObject({
+        type: 'FunctionCall',
+        name: 'PROPER',
+        arguments: [{ type: 'ColumnRef', columnName: 'name' }],
+      })
+    })
+
+    it('parses SPLIT function', () => {
+      const result = parseFormula('SPLIT(@name, " ", 1)')
+      expect(result.success).toBe(true)
+      expect(result.ast).toMatchObject({
+        type: 'FunctionCall',
+        name: 'SPLIT',
+      })
+      expect((result.ast as { arguments: unknown[] }).arguments).toHaveLength(3)
+    })
+
+    it('parses date functions YEAR, MONTH, DAY', () => {
+      for (const fn of ['YEAR', 'MONTH', 'DAY']) {
+        const result = parseFormula(`${fn}(@date_col)`)
+        expect(result.success).toBe(true)
+        expect(result.ast).toMatchObject({
+          type: 'FunctionCall',
+          name: fn,
+          arguments: [{ type: 'ColumnRef', columnName: 'date_col' }],
+        })
+      }
+    })
+
+    it('parses DATEDIFF function', () => {
+      const result = parseFormula('DATEDIFF(@start, @end)')
+      expect(result.success).toBe(true)
+      expect(result.ast).toMatchObject({
+        type: 'FunctionCall',
+        name: 'DATEDIFF',
+        arguments: [
+          { type: 'ColumnRef', columnName: 'start' },
+          { type: 'ColumnRef', columnName: 'end' },
+        ],
+      })
+    })
+
+    it('parses REGEXEXTRACT function', () => {
+      const result = parseFormula('REGEXEXTRACT(@email, "^[^@]+")')
+      expect(result.success).toBe(true)
+      expect(result.ast).toMatchObject({
+        type: 'FunctionCall',
+        name: 'REGEXEXTRACT',
+      })
+      expect((result.ast as { arguments: unknown[] }).arguments).toHaveLength(2)
+    })
   })
 
   describe('logical operators', () => {
@@ -374,6 +429,14 @@ describe('validateFormulaSyntax', () => {
       'OR(@a, @b)',
       'COALESCE(@a, @b)',
       'ISBLANK(@a)',
+      // New functions
+      'PROPER(@a)',
+      'SPLIT(@a, ",", 1)',
+      'YEAR(@a)',
+      'MONTH(@a)',
+      'DAY(@a)',
+      'DATEDIFF(@a, @b)',
+      'REGEXEXTRACT(@a, "pattern")',
     ]
 
     for (const formula of functionFormulas) {

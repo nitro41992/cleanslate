@@ -8,7 +8,7 @@
 import type { FunctionName } from './ast'
 
 /** Category for organizing functions in the UI */
-export type FunctionCategory = 'conditional' | 'text' | 'numeric' | 'logical' | 'null' | 'comparison'
+export type FunctionCategory = 'conditional' | 'text' | 'numeric' | 'logical' | 'null' | 'comparison' | 'date'
 
 export interface FunctionSpec {
   /** Minimum number of arguments */
@@ -158,6 +158,26 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
     signature: 'SUBSTITUTE(text, old_text, new_text)',
     category: 'text',
     example: 'SUBSTITUTE(@phone, "-", "")',
+  },
+  PROPER: {
+    minArgs: 1,
+    maxArgs: 1,
+    toSQL: (args) => `INITCAP(CAST(${args[0]} AS VARCHAR))`,
+    returnsString: true,
+    description: 'PROPER(text) - Capitalizes first letter of each word',
+    signature: 'PROPER(text)',
+    category: 'text',
+    example: 'PROPER(@name)',
+  },
+  SPLIT: {
+    minArgs: 3,
+    maxArgs: 3,
+    toSQL: (args) => `SPLIT_PART(CAST(${args[0]} AS VARCHAR), ${args[1]}, ${args[2]})`,
+    returnsString: true,
+    description: 'SPLIT(text, delimiter, position) - Splits text and returns Nth part (1-indexed)',
+    signature: 'SPLIT(text, delimiter, position)',
+    category: 'text',
+    example: 'SPLIT(@full_name, " ", 1)',
   },
 
   // ===== NUMERIC FUNCTIONS =====
@@ -356,6 +376,16 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
     category: 'comparison',
     example: 'IF(REGEX(@email, "^[a-z]+@"), "Valid prefix", "Invalid")',
   },
+  REGEXEXTRACT: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `REGEXP_EXTRACT(CAST(${args[0]} AS VARCHAR), ${args[1]})`,
+    returnsString: true,
+    description: 'REGEXEXTRACT(text, pattern) - Extracts text matching regex pattern',
+    signature: 'REGEXEXTRACT(text, pattern)',
+    category: 'comparison',
+    example: 'REGEXEXTRACT(@email, "^[^@]+")',
+  },
   BETWEEN: {
     minArgs: 3,
     maxArgs: 3,
@@ -365,6 +395,48 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
     signature: 'BETWEEN(value, min, max)',
     category: 'comparison',
     example: 'IF(BETWEEN(@age, 18, 65), "Working age", "Other")',
+  },
+
+  // ===== DATE FUNCTIONS =====
+  YEAR: {
+    minArgs: 1,
+    maxArgs: 1,
+    toSQL: (args) => `YEAR(${args[0]})`,
+    returnsNumber: true,
+    description: 'YEAR(date) - Extracts year from date',
+    signature: 'YEAR(date)',
+    category: 'date',
+    example: 'YEAR(@created_at)',
+  },
+  MONTH: {
+    minArgs: 1,
+    maxArgs: 1,
+    toSQL: (args) => `MONTH(${args[0]})`,
+    returnsNumber: true,
+    description: 'MONTH(date) - Extracts month (1-12) from date',
+    signature: 'MONTH(date)',
+    category: 'date',
+    example: 'MONTH(@created_at)',
+  },
+  DAY: {
+    minArgs: 1,
+    maxArgs: 1,
+    toSQL: (args) => `DAY(${args[0]})`,
+    returnsNumber: true,
+    description: 'DAY(date) - Extracts day of month (1-31) from date',
+    signature: 'DAY(date)',
+    category: 'date',
+    example: 'DAY(@created_at)',
+  },
+  DATEDIFF: {
+    minArgs: 2,
+    maxArgs: 2,
+    toSQL: (args) => `DATE_DIFF('day', ${args[0]}, ${args[1]})`,
+    returnsNumber: true,
+    description: 'DATEDIFF(start_date, end_date) - Days between two dates',
+    signature: 'DATEDIFF(start_date, end_date)',
+    category: 'date',
+    example: 'DATEDIFF(@start_date, @end_date)',
   },
 }
 

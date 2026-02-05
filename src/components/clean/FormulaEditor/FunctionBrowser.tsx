@@ -27,10 +27,11 @@ const CATEGORY_INFO: Record<FunctionCategory, { label: string; color: string }> 
   logical: { label: 'Logical', color: 'text-orange-400' },
   null: { label: 'Null Handling', color: 'text-cyan-400' },
   comparison: { label: 'Comparison', color: 'text-rose-400' },
+  date: { label: 'Date', color: 'text-sky-400' },
 }
 
 // Order of categories
-const CATEGORY_ORDER: FunctionCategory[] = ['conditional', 'comparison', 'text', 'numeric', 'logical', 'null']
+const CATEGORY_ORDER: FunctionCategory[] = ['conditional', 'comparison', 'text', 'numeric', 'logical', 'null', 'date']
 
 export function FunctionBrowser({ onInsert, disabled }: FunctionBrowserProps) {
   const [isOpen, setIsOpen] = useState(false)
