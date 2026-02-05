@@ -151,6 +151,35 @@ export function canMatchAllColumns(
 }
 
 /**
+ * Apply column mapping to formula text.
+ * Replaces @column and @[Column Name] references with mapped names.
+ *
+ * @param formula - The formula string
+ * @param mapping - Column mapping
+ * @returns Formula with mapped column names
+ */
+function applyMappingToFormula(formula: string, mapping: ColumnMapping): string {
+  let result = formula
+
+  // Replace @[Column Name] references (must be done first to avoid partial matches)
+  result = result.replace(/@\[([^\]]+)\]/g, (_, colName: string) => {
+    const mapped = mapping[colName] || colName
+    // If mapped name has spaces, keep bracket syntax
+    return mapped.includes(' ') ? `@[${mapped}]` : `@${mapped}`
+  })
+
+  // Replace @columnName references (simple names without spaces)
+  result = result.replace(/@([a-zA-Z_][a-zA-Z0-9_]*)/g, (match, colName: string) => {
+    const mapped = mapping[colName]
+    if (!mapped) return match
+    // If mapped name has spaces, use bracket syntax
+    return mapped.includes(' ') ? `@[${mapped}]` : `@${mapped}`
+  })
+
+  return result
+}
+
+/**
  * Apply column mapping to a recipe step's params.
  * Replaces column references with actual table column names.
  *
@@ -167,10 +196,19 @@ export function applyMappingToParams(
   for (const [key, value] of Object.entries(params)) {
     if (key === 'column' && typeof value === 'string') {
       result[key] = mapping[value] || value
+    } else if (key === 'targetColumn' && typeof value === 'string') {
+      // For excel_formula replace mode
+      result[key] = mapping[value] || value
     } else if (key === 'columns' && Array.isArray(value)) {
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
     } else if (key === 'sourceColumns' && Array.isArray(value)) {
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
+    } else if (key === 'referencedColumns' && Array.isArray(value)) {
+      // Map referencedColumns array for excel_formula
+      result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
+    } else if (key === 'formula' && typeof value === 'string') {
+      // Map column references within formula text
+      result[key] = applyMappingToFormula(value, mapping)
     } else if (key === 'rules' && Array.isArray(value)) {
       // Map columns inside scrub:batch rules
       result[key] = value.map((rule) => {

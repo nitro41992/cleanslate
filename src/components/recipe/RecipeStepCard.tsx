@@ -210,7 +210,7 @@ export function RecipeStepCard({
               {params.map(({ name, label: paramLabel, value }) => (
                 <div key={name} className="flex items-start gap-3 text-xs">
                   <span className="text-muted-foreground min-w-[80px] shrink-0">{paramLabel}:</span>
-                  <span className="text-foreground/90">{formatRecipeValue(value)}</span>
+                  <span className="text-foreground/90">{formatRecipeValue(value, name)}</span>
                 </div>
               ))}
             </div>

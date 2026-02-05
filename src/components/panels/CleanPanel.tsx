@@ -68,6 +68,7 @@ import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { useSemanticValidation } from '@/hooks/useSemanticValidation'
 import { PrivacySubPanel } from '@/components/clean/PrivacySubPanel'
 import { FormulaEditor, type OutputMode } from '@/components/clean/FormulaEditor'
+import { extractColumnRefs } from '@/lib/formula'
 
 export function CleanPanel() {
   const [isApplying, setIsApplying] = useState(false)
@@ -383,6 +384,39 @@ export function CleanPanel() {
   // Build a recipe step from the current form state
   const buildStepFromCurrentForm = (): Omit<RecipeStep, 'id'> | null => {
     if (!selectedTransform) return null
+
+    // Special handling for excel_formula (Formula Builder)
+    if (selectedTransform.id === 'excel_formula') {
+      const formula = params.formula || ''
+      const outputMode = params.outputMode || 'new'
+      const referencedColumns = extractColumnRefs(formula)
+
+      const stepParams: Record<string, unknown> = {
+        formula,
+        outputMode,
+        referencedColumns,
+      }
+
+      // Add output-specific params
+      if (outputMode === 'new') {
+        stepParams.outputColumn = params.outputColumn || ''
+      } else {
+        stepParams.targetColumn = params.targetColumn || ''
+      }
+
+      // Build appropriate label
+      const outputLabel = outputMode === 'new'
+        ? params.outputColumn
+        : params.targetColumn
+
+      return {
+        type: 'transform:excel_formula',
+        label: `Formula Builder → ${outputLabel}`,
+        column: undefined, // Formula doesn't use the standard column field
+        params: stepParams,
+        enabled: true,
+      }
+    }
 
     // Build step params from current form state
     // IMPORTANT: Store ALL parameters including empty strings to preserve user intent

@@ -236,8 +236,8 @@ export class ExcelFormulaCommand extends Tier3TransformCommand<ExcelFormulaParam
     return {
       ...baseInfo,
       action: outputMode === 'new'
-        ? `Excel Formula → ${outputColumn}`
-        : `Excel Formula → ${targetColumn}`,
+        ? `Formula Builder → ${outputColumn}`
+        : `Formula Builder → ${targetColumn}`,
       details: {
         type: 'transform' as const,
         transformationType: 'excel_formula',

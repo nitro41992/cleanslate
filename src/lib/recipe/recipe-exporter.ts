@@ -51,6 +51,7 @@ const INCLUDED_COMMANDS: Set<string> = new Set([
   'transform:pad_zeros',
   'transform:fill_down',
   'transform:custom_sql',
+  'transform:excel_formula',
   // Scrub commands
   'scrub:hash',
   'scrub:mask',
@@ -232,6 +233,18 @@ export function extractRequiredColumns(steps: RecipeStep[]): string[] {
             columns.add(rule.column)
           }
         })
+      }
+
+      // For excel_formula: add referencedColumns
+      const referencedColumns = step.params.referencedColumns as string[] | undefined
+      if (referencedColumns && Array.isArray(referencedColumns)) {
+        referencedColumns.forEach((c) => columns.add(c))
+      }
+
+      // For excel_formula replace mode: targetColumn is a dependency
+      const targetColumn = step.params.targetColumn as string | undefined
+      if (targetColumn) {
+        columns.add(targetColumn)
       }
     }
   }
