@@ -1,5 +1,6 @@
 import { Wand2, Users, Merge, GitCompare, Link2, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Separator } from '@/components/ui/separator'
 import {
   Tooltip,
   TooltipContent,
@@ -110,53 +111,69 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
     }
   }
 
+  const dataActionIds: ActionId[] = ['clean', 'standardize', 'match', 'combine']
+  const utilityActionIds: ActionId[] = ['diff', 'recipe']
+  const dataActions = actions.filter(a => dataActionIds.includes(a.id))
+  const utilityActions = actions.filter(a => utilityActionIds.includes(a.id))
+
+  const renderButton = (action: typeof actions[number]) => {
+    let isActive = false
+    if (action.id === 'diff') {
+      isActive = isDiffViewOpen
+    } else if (action.id === 'match') {
+      isActive = isMatchViewOpen
+    } else if (action.id === 'standardize') {
+      isActive = isStandardizeViewOpen
+    } else {
+      isActive = activePanel === action.id
+    }
+    const Icon = action.icon
+
+    return (
+      <Tooltip key={action.id}>
+        <TooltipTrigger asChild>
+          <Button
+            variant={isActive ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => handleClick(action.id)}
+            disabled={disabled}
+            className={cn(
+              'gap-2 transition-all relative',
+              isActive && 'shadow-md'
+            )}
+            aria-pressed={isActive}
+            data-testid={`toolbar-${action.id}`}
+          >
+            <Icon className="w-4 h-4" />
+            <span className="hidden sm:inline">{action.label}</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p className="font-medium">{action.label}</p>
+          <p className="text-xs text-muted-foreground">
+            {action.description}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Press <kbd className="px-1 py-0.5 bg-muted rounded text-[10px]">{action.shortcut}</kbd> to toggle
+          </p>
+        </TooltipContent>
+      </Tooltip>
+    )
+  }
+
   return (
     <div className="flex items-center gap-1" role="toolbar" aria-label="Data operations">
-      {actions.map((action) => {
-        // Diff, Match, and Standardize use overlay state, others use panel state
-        let isActive = false
-        if (action.id === 'diff') {
-          isActive = isDiffViewOpen
-        } else if (action.id === 'match') {
-          isActive = isMatchViewOpen
-        } else if (action.id === 'standardize') {
-          isActive = isStandardizeViewOpen
-        } else {
-          isActive = activePanel === action.id
-        }
-        const Icon = action.icon
+      {/* Data mutation actions — primary group */}
+      <div role="group" aria-label="Data transformations" className="flex items-center gap-0.5 bg-muted/30 rounded-lg px-1 py-0.5">
+        {dataActions.map(renderButton)}
+      </div>
 
-        return (
-          <Tooltip key={action.id}>
-            <TooltipTrigger asChild>
-              <Button
-                variant={isActive ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => handleClick(action.id)}
-                disabled={disabled}
-                className={cn(
-                  'gap-2 transition-all relative',
-                  isActive && 'shadow-md'
-                )}
-                aria-pressed={isActive}
-                data-testid={`toolbar-${action.id}`}
-              >
-                <Icon className="w-4 h-4" />
-                <span className="hidden sm:inline">{action.label}</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p className="font-medium">{action.label}</p>
-              <p className="text-xs text-muted-foreground">
-                {action.description}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Press <kbd className="px-1 py-0.5 bg-muted rounded text-[10px]">{action.shortcut}</kbd> to toggle
-              </p>
-            </TooltipContent>
-          </Tooltip>
-        )
-      })}
+      <Separator orientation="vertical" className="h-5 mx-1" />
+
+      {/* Utility tools — secondary group */}
+      <div role="group" aria-label="Workspace tools" className="flex items-center gap-0.5">
+        {utilityActions.map(renderButton)}
+      </div>
     </div>
   )
 }
