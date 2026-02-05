@@ -28,13 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { ColumnCombobox } from '@/components/ui/combobox'
 import {
   Tooltip,
   TooltipContent,
@@ -755,21 +749,14 @@ export function RecipePanelPrimary() {
                     )}
                   </div>
                   <span className="text-muted-foreground">→</span>
-                  <Select
-                    value={currentMapping}
-                    onValueChange={(value) => updateColumnMapping(col, value)}
-                  >
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="Select column..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tableColumns.map((tc) => (
-                        <SelectItem key={tc} value={tc}>
-                          {tc}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex-1">
+                    <ColumnCombobox
+                      columns={tableColumns}
+                      value={currentMapping}
+                      onValueChange={(value) => updateColumnMapping(col, value)}
+                      placeholder="Select column..."
+                    />
+                  </div>
                 </div>
               )
             })}
