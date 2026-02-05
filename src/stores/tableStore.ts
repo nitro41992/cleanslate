@@ -584,14 +584,8 @@ if (typeof window !== 'undefined') {
     useTableStore.subscribe((state) => {
       // Skip save during state restoration to avoid write cycles
       if (isRestoringState) {
-        console.log('[TableStore] Skipping save - restoring state')
         return
       }
-
-      console.log('[TableStore] State changed, triggering debounced save:', {
-        tables: state.tables.length,
-        activeTableId: state.activeTableId,
-      })
 
       // Trigger debounced save
       debouncedSaveInstance.trigger(async () => {

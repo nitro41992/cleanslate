@@ -9,6 +9,7 @@ import DataGridLib, {
   DataEditorRef,
   Highlight,
   Rectangle,
+  CompactSelection,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Table as ArrowTable } from 'apache-arrow'
@@ -1042,10 +1043,15 @@ export function DataGrid({
         const filterIndicator = hasFilter ? ' ⚡' : ''
         const title = `${col}${sortIndicator}${filterIndicator}`
 
-        // Priority: 1. User-saved width, 2. Type-based default, 3. Fallback 150px
+        // Calculate minimum width based on header text length
+        // ~8px per character for 13px font + 40px for icon and padding
+        const headerBasedWidth = Math.max(80, title.length * 8 + 40)
+
+        // Priority: 1. User-saved width, 2. Header-based width, 3. Type-based default
         const savedWidth = columnPreferences?.widths?.[col]
         const typeBasedWidth = colType ? getDefaultColumnWidth(colType) : 150
-        const width = savedWidth ?? typeBasedWidth
+        const autoWidth = Math.max(headerBasedWidth, typeBasedWidth)
+        const width = savedWidth ?? autoWidth
 
         // Get type-specific icon for header
         const icon = colType ? getColumnIcon(colType) : undefined
@@ -2339,11 +2345,17 @@ export function DataGrid({
   const BASE_ROW_HEIGHT = 33
   const WORD_WRAP_ROW_HEIGHT = 80 // Match official demo row height
 
-  // Track word wrap changes to force grid remount
+  // Track word wrap and column changes to force grid remount
   // When row height changes dramatically (33px ↔ 80px), Glide Data Grid's virtualization
-  // gets confused. A clean remount with a new key is the simplest reliable fix.
+  // gets confused. Similarly, when columns are added/removed, the grid's cached scroll
+  // boundaries become stale and won't extend to show new columns.
+  // A clean remount with a new key is the simplest reliable fix for both cases.
   const [gridKey, setGridKey] = useState(0)
   const prevWordWrapRef = useRef(wordWrapEnabled)
+
+  // Track columns by joining names - more reliable than count for batched updates
+  const columnSignature = columns.join(',')
+  const prevColumnSignatureRef = useRef(columnSignature)
 
   useEffect(() => {
     if (prevWordWrapRef.current !== wordWrapEnabled) {
@@ -2352,6 +2364,26 @@ export function DataGrid({
     }
     prevWordWrapRef.current = wordWrapEnabled
   }, [wordWrapEnabled])
+
+  useEffect(() => {
+    if (prevColumnSignatureRef.current !== columnSignature) {
+      // Columns changed - force grid to recalculate column widths and scroll boundaries
+      console.log('[DATAGRID] Columns changed, remeasuring. Old:', prevColumnSignatureRef.current.split(',').length, 'New:', columns.length)
+      pageCacheRef.current.clear()
+
+      // Use remeasureColumns API to force scroll boundary recalculation
+      // This is more reliable than key-based remount for dynamic column changes
+      if (gridRef.current) {
+        // Small delay to ensure React has processed the column changes
+        requestAnimationFrame(() => {
+          // Create a selection of all columns to remeasure
+          const allColumns = CompactSelection.fromSingleSelection([0, columns.length])
+          gridRef.current?.remeasureColumns?.(allColumns)
+        })
+      }
+    }
+    prevColumnSignatureRef.current = columnSignature
+  }, [columnSignature, columns.length])
 
 
   if (isLoading) {
