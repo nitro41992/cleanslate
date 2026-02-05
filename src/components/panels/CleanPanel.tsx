@@ -784,7 +784,7 @@ export function CleanPanel() {
                         {/* Apply Button */}
                         <Button
                           ref={applyButtonRef}
-                          className="flex-1 transition-all duration-150"
+                          className="flex-1 transition-colors duration-150"
                           onClick={handleApply}
                           disabled={isApplying || !isValid()}
                           data-testid="apply-transformation-btn"
@@ -888,7 +888,7 @@ export function CleanPanel() {
                 <div className="mt-4 space-y-2 pt-4 border-t border-border/50">
                   <div className="flex gap-2">
                     <Button
-                      className="flex-1 transition-all duration-150"
+                      className="flex-1 transition-colors duration-150"
                       onClick={handleFormulaApply}
                       disabled={isApplying || !isFormulaValid()}
                       data-testid="apply-formula-btn"

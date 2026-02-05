@@ -154,10 +154,10 @@ export function AddToRecipeButton({
     <>
       {/* Button/Dropdown - animated visibility based on recipe panel */}
       <div
-        className={`transition-all duration-150 overflow-hidden ${
+        className={`basis-0 min-w-0 overflow-hidden transition-[flex-grow,opacity] duration-200 ease-out ${
           secondaryPanel === 'recipe'
-            ? 'flex-1 opacity-100'
-            : 'w-0 opacity-0'
+            ? 'grow opacity-100'
+            : 'grow-0 opacity-0'
         }`}
       >
         {selectedRecipeId && selectedRecipe ? (

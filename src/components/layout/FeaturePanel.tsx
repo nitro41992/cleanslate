@@ -178,21 +178,22 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
 
             {/* Content area */}
             <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden">
-              {/* Secondary panel content (left, narrower) */}
-              {hasDualPanels && (
-                <div
-                  className={cn(
-                    'w-[340px] shrink-0 flex flex-col',
-                    'border-r border-border/40',
-                    'animate-in slide-in-from-left-2 fade-in duration-200'
-                  )}
-                  data-testid={`panel-${secondaryPanel}`}
-                >
-                  <div className="flex-1 min-h-0 w-full max-w-full overflow-hidden">
-                    {secondaryContent}
-                  </div>
+              {/* Secondary panel content (left, narrower) — always rendered, width-animated */}
+              <div
+                className={cn(
+                  'shrink-0 flex flex-col overflow-hidden',
+                  'border-r border-border/40',
+                  'transition-[width,opacity] duration-300 ease-out',
+                  hasDualPanels
+                    ? 'w-[340px] opacity-100'
+                    : 'w-0 opacity-0'
+                )}
+                data-testid={secondaryPanel ? `panel-${secondaryPanel}` : undefined}
+              >
+                <div className="flex-1 min-h-0 w-[340px] max-w-[340px] overflow-hidden">
+                  {secondaryContent}
                 </div>
-              )}
+              </div>
 
               {/* Primary panel content (right, fills remaining space) */}
               <div
