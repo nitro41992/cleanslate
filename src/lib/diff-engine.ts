@@ -732,10 +732,9 @@ export async function runDiff(
     // key columns (join), value columns (modification check),
     // plus new/removed columns (for column-level change detection)
     const neededColumns = new Set<string>(['_cs_id'])
-    // Add _cs_origin_id if using it for matching in preview mode
-    if (diffMode === 'preview' && useOriginId) {
-      neededColumns.add(CS_ORIGIN_ID_COLUMN)
-    }
+    // Always add _cs_origin_id - needed for stable row matching during fetch
+    // (even if not used for diff matching, it's used for JOIN in fetchDiffPage)
+    neededColumns.add(CS_ORIGIN_ID_COLUMN)
     keyColumns.forEach(c => neededColumns.add(c))
     valueColumns.forEach(c => neededColumns.add(c))
     // Add columns only in A (user's removed columns) - needed for removedColumnModificationExpr
@@ -793,6 +792,8 @@ export async function runDiff(
         COALESCE(a."_cs_id", b."_cs_id") as row_id,
         a."_cs_id" as a_row_id,
         b."_cs_id" as b_row_id,
+        a."_cs_origin_id" as a_origin_id,
+        b."_cs_origin_id" as b_origin_id,
         b._row_num as b_row_num,
         COALESCE(b._row_num, a._row_num + 1000000000) as sort_key,
         ${diffCaseLogic}
@@ -1068,7 +1069,7 @@ export async function fetchDiffPage(
         // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
         const result = await query<DiffRow>(`
           WITH b_current_rows AS (
-            SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+            SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
             FROM "${targetTableName}"
           )
           SELECT
@@ -1077,9 +1078,9 @@ export async function fetchDiffPage(
             b_nums.current_row_num as b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}_part_*.parquet') d
-          LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
-          LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-          LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
+          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
+          LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
+          LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
@@ -1114,7 +1115,7 @@ export async function fetchDiffPage(
         // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
         const result = await query<DiffRow>(`
           WITH b_current_rows AS (
-            SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+            SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
             FROM "${targetTableName}"
           )
           SELECT
@@ -1123,9 +1124,9 @@ export async function fetchDiffPage(
             b_nums.current_row_num as b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}.parquet') d
-          LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
-          LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-          LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
+          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
+          LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
+          LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
@@ -1146,7 +1147,7 @@ export async function fetchDiffPage(
   // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
   return query<DiffRow>(`
     WITH b_current_rows AS (
-      SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+      SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
       FROM "${targetTableName}"
     )
     SELECT
@@ -1155,9 +1156,9 @@ export async function fetchDiffPage(
       b_nums.current_row_num as b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-    LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
+    LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
+    LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
     WHERE d.diff_status IN ('added', 'removed', 'modified')
     ORDER BY d.sort_key
     LIMIT ${limit} OFFSET ${offset}
@@ -1246,14 +1247,14 @@ export async function fetchDiffPageWithKeyset(
       // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
       const rows = await query<DiffRow & { sort_key: number }>(`
         WITH page AS (
-          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id
+          SELECT row_id, sort_key, diff_status, a_row_id, b_row_id, a_origin_id, b_origin_id
           FROM "${indexTableName}"
           ${whereClause}
           ORDER BY sort_key ${orderDirection}
           LIMIT ${limit}
         ),
         b_current_rows AS (
-          SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+          SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
           FROM "${targetTableName}"
         )
         SELECT
@@ -1263,9 +1264,9 @@ export async function fetchDiffPageWithKeyset(
           b_nums.current_row_num as b_row_num,
           ${selectCols}
         FROM page
-        LEFT JOIN ${sourceTableExpr} a ON page.a_row_id = a."_cs_id"
-        LEFT JOIN "${targetTableName}" b ON page.b_row_id = b."_cs_id"
-        LEFT JOIN b_current_rows b_nums ON page.b_row_id = b_nums."_cs_id"
+        LEFT JOIN ${sourceTableExpr} a ON page.a_origin_id = a."_cs_origin_id"
+        LEFT JOIN "${targetTableName}" b ON page.b_origin_id = b."_cs_origin_id"
+        LEFT JOIN b_current_rows b_nums ON page.b_origin_id = b_nums."_cs_origin_id"
         ORDER BY page.sort_key ${orderDirection}
       `)
 
@@ -1334,7 +1335,7 @@ export async function fetchDiffPageWithKeyset(
   // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
   const rows = await query<DiffRow & { sort_key: number }>(`
     WITH b_current_rows AS (
-      SELECT "_cs_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+      SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
       FROM "${targetTableName}"
     )
     SELECT
@@ -1344,9 +1345,9 @@ export async function fetchDiffPageWithKeyset(
       b_nums.current_row_num as b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
-    LEFT JOIN b_current_rows b_nums ON d.b_row_id = b_nums."_cs_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
+    LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
+    LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
     WHERE ${whereClause}
     ORDER BY d.sort_key ${orderDirection}
     LIMIT ${limit}
@@ -1574,6 +1575,8 @@ export async function materializeDiffForPagination(
       diff_status,
       a_row_id,
       b_row_id,
+      a_origin_id,
+      b_origin_id,
       b_row_num
     FROM ${parquetExpr}
     WHERE diff_status IN ('added', 'removed', 'modified')
@@ -1581,6 +1584,7 @@ export async function materializeDiffForPagination(
 
   // STEP 2: Create VIEW that JOINs index to source/target for column data
   // Column data is fetched on-demand, only for visible rows
+  // Uses _cs_origin_id for stable row matching (survives row insertions/deletions)
   await execute(`
     CREATE VIEW "${viewTableName}" AS
     SELECT
@@ -1590,8 +1594,8 @@ export async function materializeDiffForPagination(
       idx.b_row_num,
       ${selectCols}
     FROM "${indexTableName}" idx
-    LEFT JOIN ${sourceTableExpr} a ON idx.a_row_id = a."_cs_id"
-    LEFT JOIN "${targetTableName}" b ON idx.b_row_id = b."_cs_id"
+    LEFT JOIN ${sourceTableExpr} a ON idx.a_origin_id = a."_cs_origin_id"
+    LEFT JOIN "${targetTableName}" b ON idx.b_origin_id = b."_cs_origin_id"
   `)
 
   // Track both for cleanup (store as "indexTable|viewTable")
@@ -1755,11 +1759,12 @@ export async function getRowsWithColumnChanges(
   }
 
   // Query for modified rows where this specific column changed
+  // Uses _cs_origin_id for stable row matching (survives row insertions/deletions)
   const rows = await query<{ row_id: string }>(`
     SELECT d.row_id
     FROM ${diffExpr} d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_row_id = a."_cs_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_row_id = b."_cs_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
+    LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
     WHERE d.diff_status = 'modified'
       AND CAST(a."${columnName}" AS VARCHAR) IS DISTINCT FROM CAST(b."${columnName}" AS VARCHAR)
   `)

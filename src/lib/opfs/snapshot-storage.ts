@@ -11,7 +11,7 @@
 
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import * as duckdb from '@duckdb/duckdb-wasm'
-import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
+import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN, initDuckDB } from '@/lib/duckdb'
 import { deleteFileIfExists } from './opfs-helpers'
 
 /**
@@ -661,6 +661,38 @@ export async function importTableFromParquet(
  */
 export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
   try {
+    // CRITICAL: Unregister files from DuckDB BEFORE deleting from OPFS
+    // Without this, the file lock prevents deletion (NoModificationAllowedError)
+    // This fixes: deleting a table and re-importing leaves stale original snapshot
+    try {
+      const db = await initDuckDB()
+
+      // Try to unregister single file
+      try {
+        await db.dropFile(`${snapshotId}.parquet`)
+      } catch {
+        // Ignore - file might not be registered
+      }
+
+      // Try to unregister chunked files
+      let chunkIndex = 0
+      while (chunkIndex < 100) { // Safety limit
+        try {
+          await db.dropFile(`${snapshotId}_part_${chunkIndex}.parquet`)
+          chunkIndex++
+        } catch {
+          break // No more chunks
+        }
+      }
+
+      if (chunkIndex > 0) {
+        console.log(`[Snapshot] Unregistered ${chunkIndex} chunk(s) from DuckDB for ${snapshotId}`)
+      }
+    } catch (err) {
+      // DuckDB not initialized or other error - proceed with OPFS deletion anyway
+      console.log(`[Snapshot] Could not unregister from DuckDB (non-fatal):`, err)
+    }
+
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
