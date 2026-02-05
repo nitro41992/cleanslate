@@ -3,8 +3,8 @@ import { ChevronDown, Check, Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import {
-  TRANSFORMATIONS,
-  TRANSFORMATION_GROUPS,
+  VISIBLE_TRANSFORMATIONS,
+  VISIBLE_TRANSFORMATION_GROUPS,
   TransformationDefinition,
   TransformationGroupColor,
 } from '@/lib/transformations'
@@ -84,8 +84,8 @@ const colorClasses: Record<TransformationGroupColor, {
 }
 
 // Build a map of transform ID to group for quick lookup
-const transformToGroup = new Map<string, typeof TRANSFORMATION_GROUPS[number]>()
-TRANSFORMATION_GROUPS.forEach(group => {
+const transformToGroup = new Map<string, typeof VISIBLE_TRANSFORMATION_GROUPS[number]>()
+VISIBLE_TRANSFORMATION_GROUPS.forEach(group => {
   group.transforms.forEach(id => {
     transformToGroup.set(id, group)
   })
@@ -146,7 +146,7 @@ export const GroupedTransformationPicker = forwardRef<
 }, ref) {
   // Start with all groups expanded
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
-    new Set(TRANSFORMATION_GROUPS.map(g => g.id))
+    new Set(VISIBLE_TRANSFORMATION_GROUPS.map(g => g.id))
   )
   // Search query state
   const [searchQuery, setSearchQuery] = useState('')
@@ -170,14 +170,14 @@ export const GroupedTransformationPicker = forwardRef<
   }
 
   const getTransformDef = (id: string): TransformationDefinition | undefined => {
-    return TRANSFORMATIONS.find(t => t.id === id)
+    return VISIBLE_TRANSFORMATIONS.find(t => t.id === id)
   }
 
   // Compute search results when query is active
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return null
 
-    const scored = TRANSFORMATIONS.map(t => ({
+    const scored = VISIBLE_TRANSFORMATIONS.map(t => ({
       transform: t,
       score: scoreTransform(t, searchQuery),
     }))
@@ -196,7 +196,7 @@ export const GroupedTransformationPicker = forwardRef<
 
     // Otherwise, return grouped transforms
     const result: TransformationDefinition[] = []
-    TRANSFORMATION_GROUPS.forEach(group => {
+    VISIBLE_TRANSFORMATION_GROUPS.forEach(group => {
       if (expandedGroups.has(group.id)) {
         group.transforms.forEach(id => {
           const t = getTransformDef(id)
@@ -437,7 +437,7 @@ export const GroupedTransformationPicker = forwardRef<
       )}
 
       {/* Grouped View (when not searching) */}
-      {searchResults === null && TRANSFORMATION_GROUPS.map(group => {
+      {searchResults === null && VISIBLE_TRANSFORMATION_GROUPS.map(group => {
         const isExpanded = expandedGroups.has(group.id)
         const colors = colorClasses[group.color]
         const groupTransforms = group.transforms

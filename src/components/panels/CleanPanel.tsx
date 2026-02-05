@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ColumnCombobox } from '@/components/ui/combobox'
 import { MultiColumnCombobox } from '@/components/ui/multi-column-combobox'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -31,6 +32,7 @@ import { usePreviewStore } from '@/stores/previewStore'
 import { toast } from 'sonner'
 import type { RecipeStep } from '@/types'
 import {
+  TRANSFORMATIONS,
   TransformationDefinition,
   validateCastType,
   CastTypeValidation,
@@ -55,6 +57,7 @@ import { extractColumnRefs } from '@/lib/formula'
 import { AddToRecipeButton } from '@/components/recipe/AddToRecipeButton'
 
 export function CleanPanel() {
+  const [activeTab, setActiveTab] = useState<'transforms' | 'formula'>('transforms')
   const [isApplying, setIsApplying] = useState(false)
   const [selectedTransform, setSelectedTransform] = useState<TransformationDefinition | null>(null)
   const [selectedColumn, setSelectedColumn] = useState<string>('')
@@ -67,6 +70,9 @@ export function CleanPanel() {
   const [executionProgress, setExecutionProgress] = useState<ExecutorProgress | null>(null)
   // Live preview state for validation (disable Apply if no matching rows)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
+
+  // Formula tab state (separate from transforms tab)
+  const [formulaParams, setFormulaParams] = useState<Record<string, string>>({})
 
   // Keyboard navigation state
   const [columnComboboxOpen, setColumnComboboxOpen] = useState(false)
@@ -179,27 +185,21 @@ export function CleanPanel() {
     setPreviewState(null)
   }
 
+  const resetFormulaForm = () => {
+    setFormulaParams({})
+    setLastApplied(null)
+  }
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab as 'transforms' | 'formula')
+    // Reset transforms tab state when switching away
+    if (tab === 'formula') {
+      resetForm()
+    }
+  }
+
   const isValid = () => {
     if (!selectedTransform) return false
-
-    // Special validation for excel_formula (Formula Builder)
-    if (selectedTransform.id === 'excel_formula') {
-      // Formula is required
-      if (!params.formula || params.formula.trim() === '') return false
-
-      // Output mode validation
-      const outputMode = params.outputMode || 'new'
-      if (outputMode === 'new') {
-        // New column name is required
-        if (!params.outputColumn || params.outputColumn.trim() === '') return false
-      } else if (outputMode === 'replace') {
-        // Target column is required
-        if (!params.targetColumn || params.targetColumn.trim() === '') return false
-      }
-
-      return true
-    }
-
     if (selectedTransform.requiresColumn && !selectedColumn) return false
     if (selectedTransform.params) {
       for (const param of selectedTransform.params) {
@@ -356,39 +356,6 @@ export function CleanPanel() {
   const buildStepFromCurrentForm = (): Omit<RecipeStep, 'id'> | null => {
     if (!selectedTransform) return null
 
-    // Special handling for excel_formula (Formula Builder)
-    if (selectedTransform.id === 'excel_formula') {
-      const formula = params.formula || ''
-      const outputMode = params.outputMode || 'new'
-      const referencedColumns = extractColumnRefs(formula)
-
-      const stepParams: Record<string, unknown> = {
-        formula,
-        outputMode,
-        referencedColumns,
-      }
-
-      // Add output-specific params
-      if (outputMode === 'new') {
-        stepParams.outputColumn = params.outputColumn || ''
-      } else {
-        stepParams.targetColumn = params.targetColumn || ''
-      }
-
-      // Build appropriate label
-      const outputLabel = outputMode === 'new'
-        ? params.outputColumn
-        : params.targetColumn
-
-      return {
-        type: 'transform:excel_formula',
-        label: `Formula Builder → ${outputLabel}`,
-        column: undefined, // Formula doesn't use the standard column field
-        params: stepParams,
-        enabled: true,
-      }
-    }
-
     // Build step params from current form state
     // IMPORTANT: Store ALL parameters including empty strings to preserve user intent
     const stepParams: Record<string, unknown> = {}
@@ -458,6 +425,104 @@ export function CleanPanel() {
     return true
   }
 
+  // ===== Formula Tab Logic =====
+  const excelFormulaDef = TRANSFORMATIONS.find((t) => t.id === 'excel_formula')!
+
+  const isFormulaValid = () => {
+    if (!formulaParams.formula || formulaParams.formula.trim() === '') return false
+    const outputMode = formulaParams.outputMode || 'new'
+    if (outputMode === 'new') {
+      if (!formulaParams.outputColumn || formulaParams.outputColumn.trim() === '') return false
+    } else if (outputMode === 'replace') {
+      if (!formulaParams.targetColumn || formulaParams.targetColumn.trim() === '') return false
+    }
+    return true
+  }
+
+  const handleFormulaApply = async () => {
+    if (!activeTable) return
+
+    setIsApplying(true)
+    try {
+      await initializeTimeline(activeTable.id, activeTable.name)
+
+      const commandType = getCommandTypeFromTransform('excel_formula')
+      if (!commandType) {
+        throw new Error('Unknown transformation type: excel_formula')
+      }
+
+      const commandParams = {
+        tableId: activeTable.id,
+        ...formulaParams,
+      }
+
+      const command = createCommand(commandType, commandParams)
+      const result = await executeWithConfirmation(command, activeTable.id, {
+        onProgress: (progress: ExecutorProgress) => {
+          setExecutionProgress(progress)
+        },
+      })
+
+      if (!result) return
+
+      if (!result.success && result.validationResult) {
+        const errors = result.validationResult.errors.map((e) => e.message).join(', ')
+        toast.error('Validation Failed', { description: errors })
+        return
+      }
+
+      if (!result.success) {
+        throw new Error(result.error || 'Formula failed')
+      }
+
+      const affected = result.executionResult?.affected ?? 0
+      setLastApplied('excel_formula')
+      toast.success('Formula Applied', {
+        description: `${getCommandLabel(commandType)} completed. ${affected} rows affected.`,
+      })
+
+      setTimeout(resetFormulaForm, 1500)
+    } catch (error) {
+      console.error('Formula failed:', error)
+      toast.error('Formula Failed', {
+        description: error instanceof Error ? error.message : 'An error occurred',
+      })
+    } finally {
+      setIsApplying(false)
+      setExecutionProgress(null)
+    }
+  }
+
+  const buildFormulaStep = (): Omit<RecipeStep, 'id'> | null => {
+    const formula = formulaParams.formula || ''
+    const outputMode = formulaParams.outputMode || 'new'
+    const referencedColumns = extractColumnRefs(formula)
+
+    const stepParams: Record<string, unknown> = {
+      formula,
+      outputMode,
+      referencedColumns,
+    }
+
+    if (outputMode === 'new') {
+      stepParams.outputColumn = formulaParams.outputColumn || ''
+    } else {
+      stepParams.targetColumn = formulaParams.targetColumn || ''
+    }
+
+    const outputLabel = outputMode === 'new'
+      ? formulaParams.outputColumn
+      : formulaParams.targetColumn
+
+    return {
+      type: 'transform:excel_formula',
+      label: `Formula Builder → ${outputLabel}`,
+      column: undefined,
+      params: stepParams,
+      enabled: true,
+    }
+  }
+
   return (
     <>
       {/* Cast Type Warning Dialog */}
@@ -517,359 +582,316 @@ export function CleanPanel() {
       {/* Confirm Discard Undone Operations Dialog */}
       <ConfirmDiscardDialog {...confirmDialogProps} />
 
-      <div className="flex h-full">
-        {/* Left Column: Picker (scrollable) */}
-        <div className="w-[340px] border-r border-border/50 flex flex-col">
-          <ScrollArea className="flex-1">
-            <div className="p-4">
-              <GroupedTransformationPicker
-                ref={pickerRef}
-                selectedTransform={selectedTransform}
-                lastApplied={lastApplied}
-                disabled={!activeTable || isApplying}
-                onSelect={handleSelectTransform}
-                onNavigateNext={handlePickerNavigateNext}
-              />
-
-              {/* No table state - show in picker column */}
-              {!activeTable && (
-                <div className="text-center py-8 text-muted-foreground">
-                  <p className="text-sm">No table selected</p>
-                  <p className="text-xs mt-1">
-                    Upload a CSV file to start transforming data
-                  </p>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col h-full">
+        <div className="border-b border-border/50 px-4 pt-2">
+          <TabsList className="w-full">
+            <TabsTrigger value="transforms" className="flex-1">Quick Transforms</TabsTrigger>
+            <TabsTrigger value="formula" className="flex-1">Formula Builder</TabsTrigger>
+          </TabsList>
         </div>
 
-        {/* Right Column: Configuration (vertically centered, scrollable if needed) */}
-        <div className="flex-1 flex flex-col overflow-y-auto">
-          {/* Privacy Sub-Panel - renders in right column when privacy_batch is selected */}
-          {selectedTransform?.id === 'privacy_batch' ? (
-            <PrivacySubPanel
-              onCancel={resetForm}
-              onApplySuccess={() => {
-                setLastApplied('privacy_batch')
-                setTimeout(resetForm, 1500)
-              }}
-            />
-          ) : selectedTransform?.id === 'excel_formula' ? (
-            /* Formula Builder Sub-Panel */
-            <div className="flex-1 flex flex-col p-4 overflow-y-auto">
-              <FormulaEditor
-                value={params.formula || ''}
-                onChange={(formula) => setParams({ ...params, formula })}
-                columns={columnsWithTypes}
-                outputMode={(params.outputMode as OutputMode) || 'new'}
-                onOutputModeChange={(mode) => setParams({ ...params, outputMode: mode })}
-                outputColumn={params.outputColumn || ''}
-                onOutputColumnChange={(col) => setParams({ ...params, outputColumn: col })}
-                targetColumn={params.targetColumn || ''}
-                onTargetColumnChange={(col) => setParams({ ...params, targetColumn: col })}
-                disabled={isApplying}
-              />
-
-              {/* Action Buttons for Formula Builder */}
-              <div className="mt-4 space-y-2 pt-4 border-t border-border/50">
-                <div className="flex gap-2">
-                  <Button
-                    ref={applyButtonRef}
-                    className="flex-1 transition-all duration-150"
-                    onClick={handleApply}
-                    disabled={isApplying || !isValid()}
-                    data-testid="apply-transformation-btn"
-                  >
-                    {isApplying ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Applying...
-                      </>
-                    ) : (
-                      <>
-                        <Wand2 className="w-4 h-4 mr-2" />
-                        Apply Formula
-                      </>
-                    )}
-                  </Button>
-
-                  {/* Add to Recipe */}
-                  <AddToRecipeButton
-                    buildStep={buildStepFromCurrentForm}
-                    canAdd={canAddToRecipe()}
-                    isProcessing={isApplying}
-                    stepLabel={selectedTransform?.label || 'Formula'}
+        {/* Quick Transforms Tab */}
+        <TabsContent value="transforms" className="flex-1 mt-0 overflow-hidden">
+          <div className="flex h-full">
+            {/* Left Column: Picker (scrollable) */}
+            <div className="w-[340px] border-r border-border/50 flex flex-col">
+              <ScrollArea className="flex-1">
+                <div className="p-4">
+                  <GroupedTransformationPicker
+                    ref={pickerRef}
+                    selectedTransform={selectedTransform}
+                    lastApplied={lastApplied}
+                    disabled={!activeTable || isApplying}
+                    onSelect={handleSelectTransform}
+                    onNavigateNext={handlePickerNavigateNext}
                   />
-                </div>
 
-                {/* Execution Progress */}
-                {executionProgress && (
-                  <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>{executionProgress.message}</span>
-                      <span>{Math.round(executionProgress.progress)}%</span>
-                    </div>
-                    <Progress value={executionProgress.progress} className="h-2" />
-                  </div>
-                )}
-
-                <Button
-                  variant="ghost"
-                  className="w-full"
-                  onClick={resetForm}
-                  disabled={isApplying}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-          <div className="flex-1 flex flex-col justify-center p-4">
-            {selectedTransform ? (
-                <div className="space-y-4 animate-in fade-in duration-200">
-                  {/* Enhanced Transform Info */}
-                  <div className="bg-muted rounded-lg p-3 space-y-3">
-                    {/* Header */}
-                    <div>
-                      <h3 className="font-medium flex items-center gap-2">
-                        <selectedTransform.icon className="w-5 h-5" />
-                        {selectedTransform.label}
-                      </h3>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {selectedTransform.description}
+                  {/* No table state - show in picker column */}
+                  {!activeTable && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p className="text-sm">No table selected</p>
+                      <p className="text-xs mt-1">
+                        Upload a CSV file to start transforming data
                       </p>
                     </div>
-
-                    {/* Examples */}
-                    {selectedTransform.examples && selectedTransform.examples.length > 0 && (
-                      <div className="border-t border-border/50 pt-2">
-                        <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
-                        <div className="space-y-1">
-                          {selectedTransform.examples.slice(0, 2).map((ex, i) => (
-                            <div key={i} className="flex items-center gap-2 text-xs font-mono">
-                              <span className="text-red-400/80">{ex.before}</span>
-                              <span className="text-muted-foreground">→</span>
-                              <span className="text-green-400/80">{ex.after}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Hints */}
-                    {selectedTransform.hints && selectedTransform.hints.length > 0 && (
-                      <div className="border-t border-border/50 pt-2">
-                        <ul className="text-xs text-muted-foreground space-y-0.5">
-                          {selectedTransform.hints.map((hint, i) => (
-                            <li key={i} className="flex items-start gap-1.5">
-                              <span className="text-blue-400">•</span>
-                              {hint}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Custom SQL Context Helper */}
-                  {selectedTransform.id === 'custom_sql' && activeTable && (
-                    <div className="bg-slate-900 border border-slate-700/50 rounded-lg p-3 space-y-3">
-                      {/* Table Info */}
-                      <div>
-                        <p className="text-xs font-medium text-slate-400 mb-1">Table</p>
-                        <code className="text-sm text-cyan-400 font-mono">&quot;{activeTable.name}&quot;</code>
-                        <span className="text-xs text-muted-foreground ml-2">
-                          ({activeTable.rowCount?.toLocaleString() || 0} rows)
-                        </span>
-                      </div>
-
-                      {/* Available Columns */}
-                      <div>
-                        <p className="text-xs font-medium text-slate-400 mb-1">
-                          Columns ({columns.length})
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {columns.slice(0, 10).map((col) => (
-                            <button
-                              key={col}
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(`"${col}"`)
-                                toast.success(`Copied "${col}" to clipboard`)
-                              }}
-                              className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800
-                                         text-amber-400 hover:bg-slate-700 transition-colors"
-                            >
-                              &quot;{col}&quot;
-                            </button>
-                          ))}
-                          {columns.length > 10 && (
-                            <span className="text-xs text-muted-foreground self-center">
-                              +{columns.length - 10} more
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Quick Templates */}
-                      <div>
-                        <p className="text-xs font-medium text-slate-400 mb-1">Quick Templates</p>
-                        <div className="space-y-1">
-                          {[
-                            { label: 'Update column', sql: `UPDATE "${activeTable.name}" SET "column" = value` },
-                            { label: 'Add column', sql: `ALTER TABLE "${activeTable.name}" ADD COLUMN new_col VARCHAR` },
-                            { label: 'Delete rows', sql: `DELETE FROM "${activeTable.name}" WHERE condition` },
-                          ].map((template) => (
-                            <button
-                              key={template.label}
-                              type="button"
-                              onClick={() => setParams({ ...params, sql: template.sql })}
-                              className="w-full text-left text-xs px-2 py-1.5 rounded
-                                         bg-slate-800/50 hover:bg-slate-800 transition-colors"
-                            >
-                              <span className="text-slate-300">{template.label}</span>
-                              <code className="block text-[10px] text-slate-500 font-mono truncate">
-                                {template.sql}
-                              </code>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
                   )}
+                </div>
+              </ScrollArea>
+            </div>
 
-                  {/* Live Preview */}
-                  {activeTable && selectedTransform.id !== 'custom_sql' && (
-                    <TransformPreview
-                      tableName={activeTable.name}
-                      column={selectedColumn || undefined}
-                      transformType={selectedTransform.id}
-                      params={params}
-                      sampleCount={10}
-                      onPreviewStateChange={setPreviewState}
-                    />
-                  )}
-
-                  {/* Column Selector */}
-                  {selectedTransform.requiresColumn && (
-                    <div className="space-y-2">
-                      <Label>Target Column</Label>
-                      <ColumnCombobox
-                        columns={columns}
-                        value={selectedColumn}
-                        onValueChange={handleColumnChange}
-                        disabled={isApplying}
-                        open={columnComboboxOpen}
-                        onOpenChange={setColumnComboboxOpen}
-                        autoFocus
-                      />
-                    </div>
-                  )}
-
-                  {/* Additional Params */}
-                  {selectedTransform.params
-                    ?.filter((param) => {
-                      // For split_column, only show relevant params based on splitMode
-                      if (selectedTransform.id === 'split_column') {
-                        const splitMode = params.splitMode || 'delimiter'
-                        if (param.name === 'delimiter') return splitMode === 'delimiter'
-                        if (param.name === 'position') return splitMode === 'position'
-                        if (param.name === 'length') return splitMode === 'length'
-                      }
-                      return true
-                    })
-                    .map((param, paramIndex) => {
-                    const isFirstParam = paramIndex === 0
-
-                    return (
-                    <div key={param.name} className="space-y-2">
-                      <Label>{param.label}</Label>
-                      {param.type === 'select' && param.options ? (
-                        <Select
-                          value={params[param.name] || ''}
-                          onValueChange={(v) =>
-                            setParams({ ...params, [param.name]: v })
-                          }
-                        >
-                          <SelectTrigger
-                            ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
-                          >
-                            <SelectValue placeholder={`Select ${param.label}`} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {param.options.map((opt) => (
-                              <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : selectedTransform.id === 'custom_sql' && param.name === 'sql' ? (
-                        /* Enhanced SQL textarea */
-                        <div className="space-y-1">
-                          <textarea
-                            ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
-                            value={params[param.name] || ''}
-                            onChange={(e) =>
-                              setParams({ ...params, [param.name]: e.target.value })
-                            }
-                            placeholder={`UPDATE "${activeTable?.name || 'table'}" SET "column" = value WHERE condition`}
-                            className="w-full h-24 px-3 py-2 text-sm font-mono rounded-md
-                                       bg-slate-900 border border-slate-700
-                                       text-cyan-300 placeholder:text-slate-600
-                                       focus:outline-none focus:ring-2 focus:ring-primary/50
-                                       resize-y min-h-[80px]"
-                            spellCheck={false}
-                          />
-                          <p className="text-[10px] text-muted-foreground">
-                            Use DuckDB SQL syntax. Column names must be double-quoted.
+            {/* Right Column: Configuration (vertically centered, scrollable if needed) */}
+            <div className="flex-1 flex flex-col overflow-y-auto">
+              {/* Privacy Sub-Panel - renders in right column when privacy_batch is selected */}
+              {selectedTransform?.id === 'privacy_batch' ? (
+                <PrivacySubPanel
+                  onCancel={resetForm}
+                  onApplySuccess={() => {
+                    setLastApplied('privacy_batch')
+                    setTimeout(resetForm, 1500)
+                  }}
+                />
+              ) : (
+              <div className="flex-1 flex flex-col justify-center p-4">
+                {selectedTransform ? (
+                    <div className="space-y-4 animate-in fade-in duration-200">
+                      {/* Enhanced Transform Info */}
+                      <div className="bg-muted rounded-lg p-3 space-y-3">
+                        {/* Header */}
+                        <div>
+                          <h3 className="font-medium flex items-center gap-2">
+                            <selectedTransform.icon className="w-5 h-5" />
+                            {selectedTransform.label}
+                          </h3>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {selectedTransform.description}
                           </p>
                         </div>
-                      ) : selectedTransform.id === 'combine_columns' && param.name === 'columns' ? (
-                        /* Multi-select column picker for combine_columns */
-                        <MultiColumnCombobox
-                          columns={columns}
-                          value={(params[param.name] || '').split(',').filter(Boolean)}
-                          onValueChange={(vals) =>
-                            setParams({ ...params, [param.name]: vals.join(',') })
-                          }
-                          placeholder="Select columns to combine..."
-                          disabled={isApplying}
-                          minColumns={2}
-                          open={multiColumnComboboxOpen}
-                          onOpenChange={setMultiColumnComboboxOpen}
-                        />
-                      ) : (
-                        <Input
-                          ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
-                          value={params[param.name] || ''}
-                          onChange={(e) =>
-                            setParams({ ...params, [param.name]: e.target.value })
-                          }
-                          placeholder={param.label}
+
+                        {/* Examples */}
+                        {selectedTransform.examples && selectedTransform.examples.length > 0 && (
+                          <div className="border-t border-border/50 pt-2">
+                            <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
+                            <div className="space-y-1">
+                              {selectedTransform.examples.slice(0, 2).map((ex, i) => (
+                                <div key={i} className="flex items-center gap-2 text-xs font-mono">
+                                  <span className="text-red-400/80">{ex.before}</span>
+                                  <span className="text-muted-foreground">→</span>
+                                  <span className="text-green-400/80">{ex.after}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Hints */}
+                        {selectedTransform.hints && selectedTransform.hints.length > 0 && (
+                          <div className="border-t border-border/50 pt-2">
+                            <ul className="text-xs text-muted-foreground space-y-0.5">
+                              {selectedTransform.hints.map((hint, i) => (
+                                <li key={i} className="flex items-start gap-1.5">
+                                  <span className="text-blue-400">•</span>
+                                  {hint}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Live Preview */}
+                      {activeTable && (
+                        <TransformPreview
+                          tableName={activeTable.name}
+                          column={selectedColumn || undefined}
+                          transformType={selectedTransform.id}
+                          params={params}
+                          sampleCount={10}
+                          onPreviewStateChange={setPreviewState}
                         />
                       )}
+
+                      {/* Column Selector */}
+                      {selectedTransform.requiresColumn && (
+                        <div className="space-y-2">
+                          <Label>Target Column</Label>
+                          <ColumnCombobox
+                            columns={columns}
+                            value={selectedColumn}
+                            onValueChange={handleColumnChange}
+                            disabled={isApplying}
+                            open={columnComboboxOpen}
+                            onOpenChange={setColumnComboboxOpen}
+                            autoFocus
+                          />
+                        </div>
+                      )}
+
+                      {/* Additional Params */}
+                      {selectedTransform.params
+                        ?.filter((param) => {
+                          // For split_column, only show relevant params based on splitMode
+                          if (selectedTransform.id === 'split_column') {
+                            const splitMode = params.splitMode || 'delimiter'
+                            if (param.name === 'delimiter') return splitMode === 'delimiter'
+                            if (param.name === 'position') return splitMode === 'position'
+                            if (param.name === 'length') return splitMode === 'length'
+                          }
+                          return true
+                        })
+                        .map((param, paramIndex) => {
+                        const isFirstParam = paramIndex === 0
+
+                        return (
+                        <div key={param.name} className="space-y-2">
+                          <Label>{param.label}</Label>
+                          {param.type === 'select' && param.options ? (
+                            <Select
+                              value={params[param.name] || ''}
+                              onValueChange={(v) =>
+                                setParams({ ...params, [param.name]: v })
+                              }
+                            >
+                              <SelectTrigger
+                                ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
+                              >
+                                <SelectValue placeholder={`Select ${param.label}`} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {param.options.map((opt) => (
+                                  <SelectItem key={opt.value} value={opt.value}>
+                                    {opt.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : selectedTransform.id === 'combine_columns' && param.name === 'columns' ? (
+                            /* Multi-select column picker for combine_columns */
+                            <MultiColumnCombobox
+                              columns={columns}
+                              value={(params[param.name] || '').split(',').filter(Boolean)}
+                              onValueChange={(vals) =>
+                                setParams({ ...params, [param.name]: vals.join(',') })
+                              }
+                              placeholder="Select columns to combine..."
+                              disabled={isApplying}
+                              minColumns={2}
+                              open={multiColumnComboboxOpen}
+                              onOpenChange={setMultiColumnComboboxOpen}
+                            />
+                          ) : (
+                            <Input
+                              ref={isFirstParam ? (el) => { firstParamElementRef.current = el } : undefined}
+                              value={params[param.name] || ''}
+                              onChange={(e) =>
+                                setParams({ ...params, [param.name]: e.target.value })
+                              }
+                              placeholder={param.label}
+                            />
+                          )}
+                        </div>
+                        )
+                      })}
+
+                      {/* Validation Message */}
+                      {validationResult.status !== 'valid' &&
+                       validationResult.status !== 'skipped' &&
+                       validationResult.status !== 'pending' && (
+                        <ValidationMessage result={validationResult} />
+                      )}
+
+                      {/* Action Buttons Row */}
+                      <div className="flex gap-2">
+                        {/* Apply Button */}
+                        <Button
+                          ref={applyButtonRef}
+                          className="flex-1 transition-all duration-150"
+                          onClick={handleApply}
+                          disabled={isApplying || !isValid()}
+                          data-testid="apply-transformation-btn"
+                        >
+                          {isApplying ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Applying...
+                            </>
+                          ) : (
+                            <>
+                              <Wand2 className="w-4 h-4 mr-2" />
+                              Apply
+                            </>
+                          )}
+                        </Button>
+
+                        {/* Add to Recipe */}
+                        <AddToRecipeButton
+                          buildStep={buildStepFromCurrentForm}
+                          canAdd={canAddToRecipe()}
+                          isProcessing={isApplying}
+                          stepLabel={selectedTransform?.label}
+                        />
+                      </div>
+
+                      {/* Execution Progress (for batched operations) */}
+                      {executionProgress && (
+                        <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>{executionProgress.message}</span>
+                            <span>{Math.round(executionProgress.progress)}%</span>
+                          </div>
+                          <Progress value={executionProgress.progress} className="h-2" />
+                        </div>
+                      )}
+
+                      {/* Cancel Button */}
+                      <Button
+                        variant="ghost"
+                        className="w-full"
+                        onClick={resetForm}
+                        disabled={isApplying}
+                      >
+                        Cancel
+                      </Button>
                     </div>
-                    )
-                  })}
+                ) : (
+                  /* Empty State for right column */
+                  <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
+                    <p className="text-lg text-muted-foreground">
+                      Select a transformation from the left to configure it
+                    </p>
 
-                  {/* Validation Message */}
-                  {validationResult.status !== 'valid' &&
-                   validationResult.status !== 'skipped' &&
-                   validationResult.status !== 'pending' && (
-                    <ValidationMessage result={validationResult} />
-                  )}
+                    {/* Save as Recipe shortcut - opens Recipe panel alongside Clean panel */}
+                    {activeCommandCount > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="mt-4 text-muted-foreground hover:text-foreground"
+                        onClick={() => setSecondaryPanel('recipe')}
+                      >
+                        <BookOpen className="w-4 h-4 mr-2" />
+                        Save transforms as recipe
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+              )}
+            </div>
+          </div>
+        </TabsContent>
 
-                  {/* Action Buttons Row */}
+        {/* Formula Builder Tab */}
+        <TabsContent value="formula" className="flex-1 mt-0 overflow-hidden">
+          <div className="flex-1 flex flex-col p-4 overflow-y-auto h-full">
+            {!activeTable ? (
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <p className="text-sm text-muted-foreground">No table selected</p>
+                <p className="text-xs mt-1 text-muted-foreground">
+                  Upload a CSV file to start using formulas
+                </p>
+              </div>
+            ) : (
+              <>
+                <FormulaEditor
+                  value={formulaParams.formula || ''}
+                  onChange={(formula) => setFormulaParams({ ...formulaParams, formula })}
+                  columns={columnsWithTypes}
+                  outputMode={(formulaParams.outputMode as OutputMode) || 'new'}
+                  onOutputModeChange={(mode) => setFormulaParams({ ...formulaParams, outputMode: mode })}
+                  outputColumn={formulaParams.outputColumn || ''}
+                  onOutputColumnChange={(col) => setFormulaParams({ ...formulaParams, outputColumn: col })}
+                  targetColumn={formulaParams.targetColumn || ''}
+                  onTargetColumnChange={(col) => setFormulaParams({ ...formulaParams, targetColumn: col })}
+                  disabled={isApplying}
+                />
+
+                {/* Action Buttons for Formula Builder */}
+                <div className="mt-4 space-y-2 pt-4 border-t border-border/50">
                   <div className="flex gap-2">
-                    {/* Apply Button */}
                     <Button
-                      ref={applyButtonRef}
                       className="flex-1 transition-all duration-150"
-                      onClick={handleApply}
-                      disabled={isApplying || !isValid()}
-                      data-testid="apply-transformation-btn"
+                      onClick={handleFormulaApply}
+                      disabled={isApplying || !isFormulaValid()}
+                      data-testid="apply-formula-btn"
                     >
                       {isApplying ? (
                         <>
@@ -879,21 +901,21 @@ export function CleanPanel() {
                       ) : (
                         <>
                           <Wand2 className="w-4 h-4 mr-2" />
-                          Apply
+                          Apply Formula
                         </>
                       )}
                     </Button>
 
                     {/* Add to Recipe */}
                     <AddToRecipeButton
-                      buildStep={buildStepFromCurrentForm}
-                      canAdd={canAddToRecipe()}
+                      buildStep={buildFormulaStep}
+                      canAdd={isFormulaValid()}
                       isProcessing={isApplying}
-                      stepLabel={selectedTransform?.label}
+                      stepLabel={excelFormulaDef?.label || 'Formula'}
                     />
                   </div>
 
-                  {/* Execution Progress (for batched operations) */}
+                  {/* Execution Progress */}
                   {executionProgress && (
                     <div className="space-y-1 animate-in slide-in-from-top-2 duration-200">
                       <div className="flex justify-between text-xs text-muted-foreground">
@@ -904,41 +926,20 @@ export function CleanPanel() {
                     </div>
                   )}
 
-                  {/* Cancel Button */}
                   <Button
                     variant="ghost"
                     className="w-full"
-                    onClick={resetForm}
+                    onClick={resetFormulaForm}
                     disabled={isApplying}
                   >
                     Cancel
                   </Button>
                 </div>
-            ) : (
-              /* Empty State for right column */
-              <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center p-6">
-                <p className="text-lg text-muted-foreground">
-                  Select a transformation from the left to configure it
-                </p>
-
-                {/* Save as Recipe shortcut - opens Recipe panel alongside Clean panel */}
-                {activeCommandCount > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="mt-4 text-muted-foreground hover:text-foreground"
-                    onClick={() => setSecondaryPanel('recipe')}
-                  >
-                    <BookOpen className="w-4 h-4 mr-2" />
-                    Save transforms as recipe
-                  </Button>
-                )}
-              </div>
+              </>
             )}
           </div>
-          )}
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
     </>
   )
 }

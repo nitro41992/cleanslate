@@ -179,6 +179,16 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
     category: 'text',
     example: 'SPLIT(@full_name, " ", 1)',
   },
+  LPAD: {
+    minArgs: 3,
+    maxArgs: 3,
+    toSQL: (args) => `LPAD(CAST(${args[0]} AS VARCHAR), ${args[1]}, ${args[2]})`,
+    returnsString: true,
+    description: 'LPAD(text, length, pad_char) - Left-pads text to target length',
+    signature: 'LPAD(text, target_length, pad_string)',
+    category: 'text',
+    example: 'LPAD(@id, 9, "0")',
+  },
 
   // ===== NUMERIC FUNCTIONS =====
   ROUND: {
@@ -385,6 +395,16 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
     signature: 'REGEXEXTRACT(text, pattern)',
     category: 'comparison',
     example: 'REGEXEXTRACT(@email, "^[^@]+")',
+  },
+  REGEXREPLACE: {
+    minArgs: 3,
+    maxArgs: 3,
+    toSQL: (args) => `REGEXP_REPLACE(CAST(${args[0]} AS VARCHAR), ${args[1]}, ${args[2]}, 'g')`,
+    returnsString: true,
+    description: 'REGEXREPLACE(text, pattern, replacement) - Replaces regex matches globally',
+    signature: 'REGEXREPLACE(text, pattern, replacement)',
+    category: 'text',
+    example: 'REGEXREPLACE(@phone, "\\\\D", "")',
   },
   BETWEEN: {
     minArgs: 3,

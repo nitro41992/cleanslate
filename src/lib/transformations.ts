@@ -8,6 +8,7 @@ import {
   ROW_DETAIL_THRESHOLD,
   type DbConnection,
 } from '@/lib/commands/audit-capture'
+import { HIDDEN_TRANSFORMS } from '@/lib/feature-flags'
 import type { LucideIcon } from 'lucide-react'
 import {
   Scissors,
@@ -608,6 +609,24 @@ export const TRANSFORMATION_GROUPS = [
 ] as const
 
 export type TransformationGroupColor = typeof TRANSFORMATION_GROUPS[number]['color']
+
+/**
+ * Filtered transforms for the picker UI.
+ * Excludes feature-flagged transforms and excel_formula (promoted to its own tab).
+ * Original arrays are preserved for command system, recipes, and replay.
+ */
+export const VISIBLE_TRANSFORMATIONS = TRANSFORMATIONS.filter(
+  (t) => !HIDDEN_TRANSFORMS.has(t.id) && t.id !== 'excel_formula'
+)
+
+export const VISIBLE_TRANSFORMATION_GROUPS = TRANSFORMATION_GROUPS
+  .map((group) => ({
+    ...group,
+    transforms: group.transforms.filter(
+      (id) => !HIDDEN_TRANSFORMS.has(id) && id !== 'excel_formula'
+    ),
+  }))
+  .filter((group) => group.transforms.length > 0)
 
 /**
  * Query count of rows that will be affected by a transformation BEFORE execution

@@ -67,6 +67,7 @@ export type FunctionName =
   | 'SUBSTITUTE'
   | 'PROPER'
   | 'SPLIT'
+  | 'LPAD'
   // Numeric functions
   | 'ROUND'
   | 'ABS'
@@ -91,6 +92,7 @@ export type FunctionName =
   | 'ILIKE'
   | 'REGEX'
   | 'REGEXEXTRACT'
+  | 'REGEXREPLACE'
   | 'BETWEEN'
   // Date functions
   | 'YEAR'
