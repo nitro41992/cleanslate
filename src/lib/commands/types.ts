@@ -191,6 +191,8 @@ export interface ExecutionResult {
     /** 0-based row index where the row was inserted */
     rowIndex: number
   }
+  /** If true, this operation was journaled to OPFS changelog — skip priority Parquet save */
+  journaled?: boolean
 }
 
 // ===== AUDIT =====

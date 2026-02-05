@@ -194,16 +194,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
             if (currentStorageType === 'parquet') {
               await cleanupMaterializedDiffView(currentDiffTableName)
             }
+            // cleanupDiffTable now always VACUUMs internally
             await cleanupDiffTable(currentDiffTableName, currentStorageType || 'memory')
-            // VACUUM to reclaim RAM from dropped diff table (non-blocking)
-            if (currentStorageType === 'memory') {
-              try {
-                const { execute } = await import('@/lib/duckdb')
-                await execute('VACUUM')
-              } catch (err) {
-                console.warn('[DiffView] VACUUM failed (non-fatal):', err)
-              }
-            }
           }
           if (currentSourceTableName) {
             await cleanupDiffSourceFiles(currentSourceTableName)
@@ -223,24 +215,19 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     if (mode === 'compare-tables' && keyColumns.length === 0) return
 
     // Clean up any existing diff table BEFORE creating a new one
-    // This prevents orphaned diff tables from accumulating
+    // AWAIT cleanup to prevent race conditions — new diff must not start while old tables exist
     if (diffTableName) {
       console.log(`[Diff] Cleaning up previous diff table: ${diffTableName}`)
-      // Fire-and-forget cleanup (non-blocking to keep UI responsive)
-      // Cleanup materialized view first (if Parquet-backed)
-      if (storageType === 'parquet') {
-        cleanupMaterializedDiffView(diffTableName).catch(err => {
-          console.warn('[Diff] Previous materialized view cleanup failed (non-fatal):', err)
-        })
-      }
-      cleanupDiffTable(diffTableName, storageType || 'memory').catch(err => {
-        console.warn('[Diff] Previous diff cleanup failed (non-fatal):', err)
-      })
-      // Also cleanup source files if Parquet-backed
-      if (sourceTableName) {
-        cleanupDiffSourceFiles(sourceTableName).catch(err => {
-          console.warn('[Diff] Previous source cleanup failed (non-fatal):', err)
-        })
+      try {
+        if (storageType === 'parquet') {
+          await cleanupMaterializedDiffView(diffTableName)
+        }
+        await cleanupDiffTable(diffTableName, storageType || 'memory')
+        if (sourceTableName) {
+          await cleanupDiffSourceFiles(sourceTableName)
+        }
+      } catch (err) {
+        console.warn('[Diff] Previous cleanup failed (non-fatal):', err)
       }
     }
 

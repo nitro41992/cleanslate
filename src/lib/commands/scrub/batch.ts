@@ -307,11 +307,11 @@ export class ScrubBatchCommand extends Tier3TransformCommand<ScrubBatchParams> {
       `)
     }
 
-    // Create final table with _cs_id column for DataGrid compatibility
+    // Create final table with gap-based _cs_id for DataGrid compatibility
     await ctx.db.execute(`
       CREATE TABLE "${keyMapTableName}" AS
       SELECT
-        ROW_NUMBER() OVER () AS ${CS_ID_COLUMN},
+        ROW_NUMBER() OVER () * 100 AS ${CS_ID_COLUMN},
         column_name,
         original,
         obfuscated

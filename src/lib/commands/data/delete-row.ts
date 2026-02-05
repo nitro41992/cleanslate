@@ -2,7 +2,8 @@
  * Delete Row Command
  *
  * Deletes one or more rows from a table.
- * Tier 3 - Requires snapshot for undo (row data is lost).
+ * Tier 2 (≤500 rows) - Captures row data before delete, undo = INSERT back.
+ * Tier 3 (>500 rows) - Falls back to snapshot restore for undo.
  */
 
 import type {
@@ -16,7 +17,11 @@ import type {
   TransformAuditDetails,
 } from '../types'
 import { generateId } from '@/lib/utils'
-import { quoteTable } from '../utils/sql'
+import { quoteColumn, quoteTable } from '../utils/sql'
+import { saveDeleteRowToChangelog } from '@/hooks/usePersistence'
+
+/** Threshold: above this many rows, fall back to Tier 3 snapshot */
+const TIER_2_DELETE_THRESHOLD = 500
 
 export interface DeleteRowParams {
   tableId: string
@@ -25,15 +30,31 @@ export interface DeleteRowParams {
   csIds: string[]
 }
 
+/** Captured row data for Tier 2 undo (INSERT back) */
+interface CapturedRow {
+  /** Column name → value pairs (including _cs_id and _cs_origin_id) */
+  [columnName: string]: unknown
+}
+
 export class DeleteRowCommand implements Command<DeleteRowParams> {
   readonly id: string
   readonly type: CommandType = 'data:delete_row'
   readonly label: string = 'Delete Row'
   readonly params: DeleteRowParams
 
+  /** Captured row data for Tier 2 undo. Only populated when ≤ TIER_2_DELETE_THRESHOLD rows. */
+  private capturedRows: CapturedRow[] | null = null
+  /** All column names in table order (for INSERT) */
+  private allColumnNames: string[] | null = null
+
   constructor(id: string | undefined, params: DeleteRowParams) {
     this.id = id || generateId()
     this.params = params
+  }
+
+  /** Whether this delete is small enough for Tier 2 */
+  private get isTier2(): boolean {
+    return this.params.csIds.length <= TIER_2_DELETE_THRESHOLD
   }
 
   async validate(ctx: CommandContext): Promise<ValidationResult> {
@@ -99,8 +120,22 @@ export class DeleteRowCommand implements Command<DeleteRowParams> {
     const tableName = ctx.table.name
 
     try {
-      // Build IN clause for deletion
       const idList = this.params.csIds.map((id) => `'${id}'`).join(', ')
+
+      // Tier 2: Capture row data BEFORE deleting (for undo via INSERT)
+      if (this.isTier2) {
+        // Get all column names (including internal) for faithful restoration
+        const colsResult = await ctx.db.query<{ column_name: string }>(
+          `SELECT column_name FROM (DESCRIBE ${quoteTable(tableName)})`
+        )
+        this.allColumnNames = colsResult.map(c => c.column_name)
+
+        // Capture the rows about to be deleted
+        this.capturedRows = await ctx.db.query<CapturedRow>(
+          `SELECT * FROM ${quoteTable(tableName)} WHERE "_cs_id" IN (${idList})`
+        )
+        console.log(`[DeleteRow] Tier 2: Captured ${this.capturedRows.length} row(s) for undo`)
+      }
 
       // Delete the rows
       await ctx.db.execute(
@@ -113,6 +148,22 @@ export class DeleteRowCommand implements Command<DeleteRowParams> {
       )
       const rowCount = Number(countResult[0]?.count ?? 0)
 
+      // Tier 2: Journal the delete to OPFS changelog (fast path, ~2-3ms)
+      let journaled = false
+      if (this.isTier2 && this.capturedRows && this.allColumnNames) {
+        try {
+          await saveDeleteRowToChangelog(
+            this.params.tableId,
+            this.params.csIds,
+            this.capturedRows,
+            this.allColumnNames
+          )
+          journaled = true
+        } catch (err) {
+          console.warn('[DeleteRow] Failed to journal delete to changelog:', err)
+        }
+      }
+
       return {
         success: true,
         rowCount,
@@ -120,6 +171,7 @@ export class DeleteRowCommand implements Command<DeleteRowParams> {
         affected: this.params.csIds.length,
         newColumnNames: [],
         droppedColumnNames: [],
+        journaled,
       }
     } catch (error) {
       return {
@@ -135,10 +187,41 @@ export class DeleteRowCommand implements Command<DeleteRowParams> {
   }
 
   getInvertibility(): InvertibilityInfo {
+    if (this.isTier2) {
+      return {
+        tier: 2,
+        undoStrategy: 'Inverse SQL - INSERT deleted rows back on undo',
+      }
+    }
     return {
       tier: 3,
       undoStrategy: 'Snapshot restore - deleted rows will be recovered on undo',
     }
+  }
+
+  getInverseSql(ctx: CommandContext): string {
+    if (!this.capturedRows || this.capturedRows.length === 0 || !this.allColumnNames) {
+      throw new Error('Cannot generate inverse SQL: no captured row data (Tier 3 fallback)')
+    }
+
+    const tableName = quoteTable(ctx.table.name)
+    const columns = this.allColumnNames.map(quoteColumn).join(', ')
+
+    // Build VALUES clause for each captured row
+    const valueRows = this.capturedRows.map(row => {
+      const values = this.allColumnNames!.map(col => {
+        const val = row[col]
+        if (val === null || val === undefined) return 'NULL'
+        if (typeof val === 'number' || typeof val === 'bigint') return String(val)
+        if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE'
+        // String value - escape single quotes
+        const escaped = String(val).replace(/'/g, "''")
+        return `'${escaped}'`
+      })
+      return `(${values.join(', ')})`
+    })
+
+    return `INSERT INTO ${tableName} (${columns}) VALUES ${valueRows.join(', ')}`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string | null> {

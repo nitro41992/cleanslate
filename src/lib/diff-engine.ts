@@ -26,16 +26,20 @@ const materializedDiffViews = new Map<string, string>()
  * - resolvedExpressionCache: Map of snapshot ID → SQL expressions
  * - materializedDiffViews: Map of diff table → materialized view table
  *
- * NOTE: Does NOT clear registeredDiffTables as those are cleaned up by cleanupDiffTable()
+ * Clears ALL module-level state to prevent memory leaks across repeated diff runs.
  */
 export function clearDiffCaches(): void {
   const snapshotCount = registeredParquetSnapshots.size
   const cacheCount = resolvedExpressionCache.size
   const viewCount = materializedDiffViews.size
+  const diffTableCount = registeredDiffTables.size
+  const pendingCount = pendingDiffRegistrations.size
   registeredParquetSnapshots.clear()
   resolvedExpressionCache.clear()
   materializedDiffViews.clear()
-  console.log(`[Diff] Cleared caches: ${snapshotCount} snapshots, ${cacheCount} expressions, ${viewCount} views`)
+  registeredDiffTables.clear()
+  pendingDiffRegistrations.clear()
+  console.log(`[Diff] Cleared caches: ${snapshotCount} snapshots, ${cacheCount} expressions, ${viewCount} views, ${diffTableCount} diff tables, ${pendingCount} pending`)
 }
 
 // Register with memory manager so caches are cleared on memory pressure
@@ -1502,12 +1506,20 @@ export async function cleanupDiffTable(
       // Delete from OPFS (deleteParquetSnapshot handles both single and chunked)
       await deleteParquetSnapshot(tableName)
 
-      // Remove from registered set
-      registeredDiffTables.delete(tableName)
-      console.log(`[Diff] Cleaned up Parquet file(s) and cleared registration: ${tableName}`)
+      console.log(`[Diff] Cleaned up Parquet file(s): ${tableName}`)
+    }
+
+    // Always VACUUM after dropping tables to reclaim DuckDB memory
+    try {
+      await execute('VACUUM')
+    } catch {
+      // VACUUM can fail if another operation is in progress — non-fatal
     }
   } catch (error) {
     console.warn('[Diff] Cleanup failed (non-fatal):', error)
+  } finally {
+    // Always remove from registered set, even if cleanup partially failed
+    registeredDiffTables.delete(tableName)
   }
 }
 
@@ -1702,9 +1714,11 @@ export async function cleanupMaterializedDiffView(diffTableName: string): Promis
         await execute(`DROP VIEW IF EXISTS "${storedValue}"`)
         console.log(`[Diff] Dropped view ${storedValue}`)
       }
-      materializedDiffViews.delete(diffTableName)
     } catch (e) {
-      console.warn(`[Diff] Failed to cleanup:`, e)
+      console.warn(`[Diff] Failed to cleanup materialized view:`, e)
+    } finally {
+      // Always remove from map, even if DROP fails — prevents stale entries accumulating
+      materializedDiffViews.delete(diffTableName)
     }
   }
 }

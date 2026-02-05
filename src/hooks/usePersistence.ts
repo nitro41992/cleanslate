@@ -20,7 +20,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTableStore } from '@/stores/tableStore'
 import { useUIStore } from '@/stores/uiStore'
-import { initDuckDB, getConnection, getTableColumns, CS_ID_COLUMN } from '@/lib/duckdb'
+import { initDuckDB, getConnection, getTableColumns, CS_ID_COLUMN, migrateToGapBasedCsId } from '@/lib/duckdb'
 import {
   listParquetSnapshots,
   importTableFromParquet,
@@ -32,7 +32,9 @@ import {
 } from '@/lib/opfs/snapshot-storage'
 import {
   getChangelogStorage,
-  type ChangelogEntry,
+  type CellEditEntry,
+  type InsertRowEntry,
+  type DeleteRowEntry,
 } from '@/lib/opfs/changelog-storage'
 import { toast } from 'sonner'
 
@@ -102,25 +104,48 @@ async function replayChangelogEntries(
     }
 
     try {
-      // Escape value for SQL
-      let escapedValue: string
-      if (entry.newValue === null || entry.newValue === undefined) {
-        escapedValue = 'NULL'
-      } else if (typeof entry.newValue === 'string') {
-        escapedValue = `'${entry.newValue.replace(/'/g, "''")}'`
-      } else if (typeof entry.newValue === 'boolean') {
-        escapedValue = entry.newValue ? 'true' : 'false'
-      } else {
-        escapedValue = String(entry.newValue)
+      const entryType = entry.type ?? 'cell_edit' // Legacy entries lack 'type'
+
+      if (entryType === 'cell_edit') {
+        const cellEntry = entry as CellEditEntry
+        // Escape value for SQL
+        let escapedValue: string
+        if (cellEntry.newValue === null || cellEntry.newValue === undefined) {
+          escapedValue = 'NULL'
+        } else if (typeof cellEntry.newValue === 'string') {
+          escapedValue = `'${cellEntry.newValue.replace(/'/g, "''")}'`
+        } else if (typeof cellEntry.newValue === 'boolean') {
+          escapedValue = cellEntry.newValue ? 'true' : 'false'
+        } else {
+          escapedValue = String(cellEntry.newValue)
+        }
+
+        const sql = `
+          UPDATE "${tableName}"
+          SET "${cellEntry.column}" = ${escapedValue}
+          WHERE "${CS_ID_COLUMN}" = ${cellEntry.rowId}
+        `
+        await conn.query(sql)
+
+      } else if (entryType === 'insert_row') {
+        const insertEntry = entry as InsertRowEntry
+        // Replay: INSERT a new row with the stored _cs_id and _cs_origin_id
+        const columnNames = insertEntry.columnNames.map(c => `"${c}"`).join(', ')
+        const values = insertEntry.columnNames.map(col => {
+          if (col === '_cs_id') return `'${insertEntry.csId}'`
+          if (col === '_cs_origin_id') return `'${insertEntry.originId}'`
+          return 'NULL'
+        }).join(', ')
+
+        await conn.query(`INSERT INTO "${tableName}" (${columnNames}) VALUES (${values})`)
+
+      } else if (entryType === 'delete_row') {
+        const deleteEntry = entry as DeleteRowEntry
+        // Replay: DELETE the specified rows
+        const idList = deleteEntry.csIds.map(id => `'${id}'`).join(', ')
+        await conn.query(`DELETE FROM "${tableName}" WHERE "_cs_id" IN (${idList})`)
       }
 
-      const sql = `
-        UPDATE "${tableName}"
-        SET "${entry.column}" = ${escapedValue}
-        WHERE "${CS_ID_COLUMN}" = ${entry.rowId}
-      `
-
-      await conn.query(sql)
       replayedCount++
     } catch (err) {
       console.error(`[Persistence] Failed to replay entry:`, entry, err)
@@ -294,6 +319,9 @@ export async function performHydration(isRehydration = false): Promise<void> {
         // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
         await importTableFromParquet(db, conn, snapshotName, tableName)
 
+        // Auto-migrate sequential _cs_id to gap-based (one-time migration)
+        await migrateToGapBasedCsId(tableName)
+
         // Get metadata from DuckDB
         const cols = await getTableColumns(tableName)
         const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
@@ -400,7 +428,8 @@ export async function saveCellEditToChangelog(
 ): Promise<void> {
   touchActivity()
 
-  const entry: ChangelogEntry = {
+  const entry: CellEditEntry = {
+    type: 'cell_edit',
     tableId,
     ts: Date.now(),
     rowId,
@@ -431,7 +460,8 @@ export async function saveCellEditsToChangelog(
 
   touchActivity()
 
-  const changelogEntries: ChangelogEntry[] = entries.map((e) => ({
+  const changelogEntries: CellEditEntry[] = entries.map((e) => ({
+    type: 'cell_edit' as const,
     tableId: e.tableId,
     ts: Date.now(),
     rowId: e.rowId,
@@ -442,6 +472,58 @@ export async function saveCellEditsToChangelog(
 
   const changelog = getChangelogStorage()
   await changelog.appendEdits(changelogEntries)
+}
+
+/**
+ * Save a row insert to the changelog (instant, non-blocking).
+ * This is the fast path for row inserts — avoids full Parquet export.
+ */
+export async function saveInsertRowToChangelog(
+  tableId: string,
+  csId: string,
+  originId: string,
+  insertAfterCsId: string | null,
+  columnNames: string[]
+): Promise<void> {
+  touchActivity()
+
+  const entry: InsertRowEntry = {
+    type: 'insert_row',
+    tableId,
+    ts: Date.now(),
+    csId,
+    originId,
+    insertAfterCsId,
+    columnNames,
+  }
+
+  const changelog = getChangelogStorage()
+  await changelog.appendEdit(entry)
+}
+
+/**
+ * Save a row delete to the changelog (instant, non-blocking).
+ * This is the fast path for row deletes — avoids full Parquet export.
+ */
+export async function saveDeleteRowToChangelog(
+  tableId: string,
+  csIds: string[],
+  deletedRows: Record<string, unknown>[],
+  columnNames: string[]
+): Promise<void> {
+  touchActivity()
+
+  const entry: DeleteRowEntry = {
+    type: 'delete_row',
+    tableId,
+    ts: Date.now(),
+    csIds,
+    deletedRows,
+    columnNames,
+  }
+
+  const changelog = getChangelogStorage()
+  await changelog.appendEdit(entry)
 }
 
 /**
@@ -892,6 +974,9 @@ export function usePersistence() {
               // THAW: Import from Parquet into DuckDB (full hydration)
               // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
               await importTableFromParquet(db, conn, snapshotName, tableName)
+
+              // Auto-migrate sequential _cs_id to gap-based (one-time migration)
+              await migrateToGapBasedCsId(tableName)
 
               // Get metadata from DuckDB
               const cols = await getTableColumns(tableName)

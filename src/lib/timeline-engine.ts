@@ -807,24 +807,16 @@ async function applyDataCommand(
   tableName: string,
   params: DataParams
 ): Promise<void> {
-  const conn = await getConnection()
-
   if (params.dataOperation === 'insert_row') {
-    const { insertAfterCsId, newCsId } = params
+    const { newCsId } = params
 
     if (!newCsId) {
       console.error('[REPLAY] insert_row missing newCsId, cannot replay')
       return
     }
 
-    if (insertAfterCsId === null || insertAfterCsId === undefined) {
-      // Insert at beginning: shift all rows
-      await conn.query(`UPDATE "${tableName}" SET "_cs_id" = CAST(CAST("_cs_id" AS INTEGER) + 1 AS VARCHAR)`)
-    } else {
-      // Insert after specified row
-      const afterIdNum = parseInt(insertAfterCsId, 10)
-      await conn.query(`UPDATE "${tableName}" SET "_cs_id" = CAST(CAST("_cs_id" AS INTEGER) + 1 AS VARCHAR) WHERE CAST("_cs_id" AS INTEGER) > ${afterIdNum}`)
-    }
+    // Gap-based insert: use stored newCsId directly — no shift of other rows needed.
+    // The newCsId was captured on first execution and is deterministic for replay.
 
     // Get columns from table schema
     const cols = await query<{ column_name: string }>(`SELECT column_name FROM (DESCRIBE "${tableName}")`)
@@ -846,7 +838,7 @@ async function applyDataCommand(
 
     await execute(`INSERT INTO "${tableName}" (${columnNames.map(c => `"${c}"`).join(', ')}) VALUES (${columnValues.join(', ')})`)
 
-    console.log('[REPLAY] insert_row applied:', { tableName, newCsId, insertAfterCsId })
+    console.log('[REPLAY] insert_row applied:', { tableName, newCsId })
 
   } else if (params.dataOperation === 'delete_row') {
     const { csIds } = params

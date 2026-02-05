@@ -83,11 +83,11 @@ export async function stackTables(
       .join(', ')
 
     // Execute UNION ALL with regenerated _cs_id and _cs_origin_id
-    // New UUIDs are generated for all rows since they now form a new combined entity
+    // Gap-based _cs_id for O(1) row insert (gaps of 100)
     await execute(`
       CREATE OR REPLACE TABLE "${resultName}" AS
       SELECT
-        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}",
         gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
         ${allColNames.map((c) => `"${c}"`).join(', ')}
       FROM (
@@ -254,11 +254,11 @@ export async function joinTables(
     const sqlJoinType = joinTypeMap[joinType]
 
     // Execute join with regenerated _cs_id and _cs_origin_id
-    // New UUIDs are generated since join creates new row combinations
+    // Gap-based _cs_id for O(1) row insert (gaps of 100)
     await execute(`
       CREATE OR REPLACE TABLE "${resultName}" AS
       SELECT
-        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}",
         gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
         *
       FROM (

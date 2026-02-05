@@ -22,7 +22,8 @@
 /**
  * A single cell edit entry in the changelog
  */
-export interface ChangelogEntry {
+export interface CellEditEntry {
+  type: 'cell_edit'
   tableId: string    // Which table (matches tableStore.id)
   ts: number         // Timestamp in milliseconds
   rowId: number      // _cs_id of the edited row
@@ -32,15 +33,79 @@ export interface ChangelogEntry {
 }
 
 /**
+ * A row insert entry in the changelog
+ */
+export interface InsertRowEntry {
+  type: 'insert_row'
+  tableId: string
+  ts: number
+  csId: string              // The _cs_id assigned to the new row
+  originId: string          // The _cs_origin_id assigned to the new row
+  insertAfterCsId: string | null  // Insert after this _cs_id (null = beginning)
+  columnNames: string[]     // All column names (for INSERT statement)
+}
+
+/**
+ * A row delete entry in the changelog
+ */
+export interface DeleteRowEntry {
+  type: 'delete_row'
+  tableId: string
+  ts: number
+  csIds: string[]           // _cs_ids of deleted rows
+  /** Captured row data for replay. Each row is a Record<columnName, value>. */
+  deletedRows: Record<string, unknown>[]
+  columnNames: string[]     // All column names (for INSERT on replay)
+}
+
+/**
+ * Discriminated union of all changelog entry types.
+ * Legacy entries without 'type' field are treated as 'cell_edit'.
+ */
+export type ChangelogEntry = CellEditEntry | InsertRowEntry | DeleteRowEntry
+
+/**
+ * Legacy cell edit entry (no 'type' field) — for backwards compatibility.
+ * Entries written before this change don't have the type discriminator.
+ */
+export interface LegacyCellEditEntry {
+  tableId: string
+  ts: number
+  rowId: number
+  column: string
+  oldValue: unknown
+  newValue: unknown
+}
+
+/**
+ * Normalize a parsed changelog entry, handling legacy entries without 'type' field.
+ */
+export function normalizeChangelogEntry(raw: Record<string, unknown>): ChangelogEntry {
+  if (raw.type === 'insert_row' || raw.type === 'delete_row' || raw.type === 'cell_edit') {
+    return raw as unknown as ChangelogEntry
+  }
+  // Legacy entry: no 'type' field, treat as cell_edit
+  return {
+    type: 'cell_edit',
+    tableId: raw.tableId as string,
+    ts: raw.ts as number,
+    rowId: raw.rowId as number,
+    column: raw.column as string,
+    oldValue: raw.oldValue,
+    newValue: raw.newValue,
+  }
+}
+
+/**
  * Abstraction layer for changelog storage.
  * Default implementation uses OPFS JSONL.
  * Can be swapped to IndexedDB if performance proves insufficient.
  */
 export interface ChangelogStorage {
-  /** Append a cell edit to the changelog (instant, durable) */
+  /** Append a single changelog entry (instant, durable) */
   appendEdit(entry: ChangelogEntry): Promise<void>
 
-  /** Append multiple cell edits atomically */
+  /** Append multiple changelog entries atomically */
   appendEdits(entries: ChangelogEntry[]): Promise<void>
 
   /** Get all changelog entries for a table (for replay on restore) */
@@ -153,7 +218,8 @@ class OPFSChangelogStorage implements ChangelogStorage {
       for (const line of lines) {
         if (!line.trim()) continue
         try {
-          const entry = JSON.parse(line) as ChangelogEntry
+          const raw = JSON.parse(line) as Record<string, unknown>
+          const entry = normalizeChangelogEntry(raw)
           if (entry.tableId === tableId) {
             entries.push(entry)
           }
@@ -191,7 +257,8 @@ class OPFSChangelogStorage implements ChangelogStorage {
       for (const line of lines) {
         if (!line.trim()) continue
         try {
-          entries.push(JSON.parse(line) as ChangelogEntry)
+          const raw = JSON.parse(line) as Record<string, unknown>
+          entries.push(normalizeChangelogEntry(raw))
         } catch (parseErr) {
           console.warn('[Changelog] Skipping malformed line:', line, parseErr)
         }

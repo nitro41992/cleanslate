@@ -143,6 +143,7 @@ export const TIER_2_COMMANDS: Set<CommandType> = new Set([
   'edit:batch',
   'combine:stack',
   'combine:join',
+  'data:insert_row',
 ])
 
 /**
@@ -170,7 +171,6 @@ export const TIER_3_COMMANDS: Set<CommandType> = new Set([
   'schema:add_column',
   'schema:delete_column',
   // Data commands (row operations)
-  'data:insert_row',
   'data:delete_row',
 ])
 

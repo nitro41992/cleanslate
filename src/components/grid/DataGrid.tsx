@@ -1158,25 +1158,15 @@ export function DataGrid({
     })
 
     // Update csId to row index mapping
-    // CRITICAL: The database shifts _cs_id values for rows >= newCsId.
-    // e.g., if inserting csId "5" at index 4, old row with csId "5" becomes csId "6".
-    // We must update BOTH the csId keys AND the indices.
+    // Gap-based _cs_id: no other rows' _cs_id values change on insert.
+    // Only positional indices shift for rows at or after the insertion point.
     setCsIdToRowIndex(prevMap => {
       const newMap = new Map<string, number>()
-      const newCsIdNum = parseInt(csId, 10)
 
       prevMap.forEach((idx, existingCsId) => {
-        const existingCsIdNum = parseInt(existingCsId, 10)
-
-        // Rows with csId >= newCsId had their csId shifted up in the database
-        const updatedCsIdNum = existingCsIdNum >= newCsIdNum
-          ? existingCsIdNum + 1
-          : existingCsIdNum
-
-        // Rows at or after rowIndex had their index shifted up
+        // Rows at or after rowIndex had their positional index shifted up
         const updatedIdx = idx >= rowIndex ? idx + 1 : idx
-
-        newMap.set(String(updatedCsIdNum), updatedIdx)
+        newMap.set(existingCsId, updatedIdx)
       })
 
       // Add the new row
@@ -1682,7 +1672,7 @@ export function DataGrid({
             }
 
             const pageStartRow = pageIdx * PAGE_SIZE
-            const targetCsId = pageStartRow > 0 ? estimateCsIdForRow(pageStartRow - 1) : null
+            const targetCsId = pageStartRow > 0 ? await estimateCsIdForRow(tableName, pageStartRow - 1) : null
 
             // Build filter/sort clauses from viewState
             const filters = viewState?.filters ?? []

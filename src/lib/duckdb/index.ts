@@ -23,7 +23,10 @@ import { toast as sonnerToast } from 'sonner'
  * This column is injected on table creation and used for UPDATE/DELETE operations.
  * It should be hidden from the UI.
  *
- * NOTE: _cs_id can change when rows are inserted (subsequent rows shift).
+ * Gap-based assignment: _cs_id values have gaps of 100 between rows (e.g., 100, 200, 300).
+ * This allows O(1) row inserts by picking a midpoint between adjacent IDs.
+ * Display order uses ROW_NUMBER() OVER (ORDER BY _cs_id) — users always see 1, 2, 3...
+ *
  * For stable identity across mutations, use _cs_origin_id instead.
  */
 export const CS_ID_COLUMN = '_cs_id'
@@ -581,14 +584,13 @@ export async function loadCSV(
       : `read_csv_auto('${file.name}')`
 
     // Create table from CSV with:
-    // - _cs_id: Sequential ID for ordering (BIGINT, can change on row insert)
+    // - _cs_id: Gap-based ID for ordering (BIGINT, gaps of 100 for O(1) row insert)
     // - _cs_origin_id: Stable UUID for row identity (never changes after import)
-    // CRITICAL: Use ROW_NUMBER() for _cs_id to preserve insertion order
-    // Use gen_random_uuid() for _cs_origin_id for stable identity across mutations
+    // Gap-based: ROW_NUMBER() * 100 allows ~99 inserts between any two rows before rebalance
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
       SELECT
-        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}",
         gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
         *
       FROM ${readCsvQuery}
@@ -623,12 +625,12 @@ export async function loadJSON(
     await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
     // Create table from JSON with:
-    // - _cs_id: Sequential ID for ordering (BIGINT, can change on row insert)
+    // - _cs_id: Gap-based ID for ordering (BIGINT, gaps of 100 for O(1) row insert)
     // - _cs_origin_id: Stable UUID for row identity (never changes after import)
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
       SELECT
-        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}",
         gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
         *
       FROM read_json_auto('${file.name}')
@@ -661,12 +663,12 @@ export async function loadParquet(
     await db.registerFileHandle(file.name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true)
 
     // Create table from Parquet with:
-    // - _cs_id: Sequential ID for ordering (BIGINT, can change on row insert)
+    // - _cs_id: Gap-based ID for ordering (BIGINT, gaps of 100 for O(1) row insert)
     // - _cs_origin_id: Stable UUID for row identity (never changes after import)
     await connection.query(`
       CREATE OR REPLACE TABLE "${tableName}" AS
       SELECT
-        ROW_NUMBER() OVER () as "${CS_ID_COLUMN}",
+        ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}",
         gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
         *
       FROM read_parquet('${file.name}')
@@ -732,8 +734,8 @@ export async function loadXLSX(
       const batch = jsonData.slice(i, i + batchSize)
       const values = batch
         .map((row, idx) => {
-          // Use sequential ID based on position in jsonData array
-          const rowId = i + idx + 1 // 1-indexed to match ROW_NUMBER()
+          // Use gap-based ID for O(1) row insert (gaps of 100)
+          const rowId = (i + idx + 1) * 100
           // Generate a UUID for origin ID
           const originId = crypto.randomUUID()
           const vals = [
@@ -952,20 +954,23 @@ export async function getTableDataWithKeyset(
 }
 
 /**
- * Estimate the _cs_id for a given row index.
+ * Get the _cs_id for a given 0-based row index.
  *
- * Since _cs_id is sequential starting from 1 (ROW_NUMBER()),
- * row N approximately maps to _cs_id = N + 1.
+ * Queries the actual _cs_id at the given offset position in the table,
+ * ordered by _cs_id. This is accurate even after gap-based inserts/deletes.
  *
- * This is approximate if rows were deleted mid-session (gaps in sequence),
- * but is acceptable for data exploration and jump-to-row functionality.
- *
- * @param rowIndex - 0-based row index to estimate
- * @returns Estimated _cs_id value as string
+ * @param tableName - Table to query
+ * @param rowIndex - 0-based row index
+ * @returns _cs_id value as string, or null if index is out of range
  */
-export function estimateCsIdForRow(rowIndex: number): string {
-  // _cs_id uses ROW_NUMBER() which is 1-indexed
-  return String(rowIndex + 1)
+export async function estimateCsIdForRow(tableName: string, rowIndex: number): Promise<string | null> {
+  const connection = await getConnection()
+  const result = await connection.query(
+    `SELECT "${CS_ID_COLUMN}" FROM "${tableName}" ORDER BY CAST("${CS_ID_COLUMN}" AS BIGINT) LIMIT 1 OFFSET ${rowIndex}`
+  )
+  const rows = result.toArray()
+  if (rows.length === 0) return null
+  return String(rows[0]?.toJSON()?.[CS_ID_COLUMN] ?? null)
 }
 
 /**
@@ -1309,17 +1314,130 @@ export async function addCsIdToTable(tableName: string): Promise<void> {
 
   const connection = await getConnection()
 
-  // Rebuild table with sequential _cs_id to preserve row order
+  // Rebuild table with gap-based _cs_id for O(1) row insert
   const tempTable = `${tableName}_csid_temp_${Date.now()}`
   await connection.query(`
     CREATE TABLE "${tempTable}" AS
-    SELECT ROW_NUMBER() OVER () as "${CS_ID_COLUMN}", *
+    SELECT ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}", *
     FROM "${tableName}"
   `)
 
   // Swap tables
   await connection.query(`DROP TABLE "${tableName}"`)
   await connection.query(`ALTER TABLE "${tempTable}" RENAME TO "${tableName}"`)
+}
+
+/**
+ * Migrate existing tables with sequential _cs_id (1, 2, 3...) to gap-based (100, 200, 300...).
+ * Detects sequential pattern: MAX(_cs_id) == COUNT(*) means no gaps exist.
+ * One-time migration, runs automatically on first open after this change.
+ */
+export async function migrateToGapBasedCsId(tableName: string): Promise<boolean> {
+  const connection = await getConnection()
+
+  // Check if _cs_id is sequential (no gaps — likely pre-gap-based)
+  const check = await connection.query(`
+    SELECT
+      MAX(CAST("${CS_ID_COLUMN}" AS BIGINT)) as max_id,
+      COUNT(*) as row_count
+    FROM "${tableName}"
+  `)
+  const row = check.toArray()[0]?.toJSON()
+  const maxId = Number(row?.max_id ?? 0)
+  const rowCount = Number(row?.row_count ?? 0)
+
+  // Sequential pattern: max equals count (1, 2, 3 ... N where N = count)
+  if (rowCount === 0 || maxId !== rowCount) {
+    return false // Already gap-based or has gaps from deletes
+  }
+
+  // Migrate: multiply all _cs_id by 100
+  await connection.query(`
+    UPDATE "${tableName}"
+    SET "${CS_ID_COLUMN}" = CAST(CAST("${CS_ID_COLUMN}" AS BIGINT) * 100 AS VARCHAR)
+  `)
+
+  console.log(`[Migration] Migrated ${tableName} to gap-based _cs_id (${rowCount} rows)`)
+  return true
+}
+
+/**
+ * Rebalance _cs_id values in a local range around a center point.
+ * Called when gaps are exhausted (99+ inserts at same position).
+ *
+ * This is a "hard commit" operation:
+ * 1. Reassigns _cs_id with uniform gaps of 100 in the affected range
+ * 2. Caller is responsible for flushing changelog and snapshotting
+ *    (since rebalance changes _cs_id values that pending changelog entries reference)
+ *
+ * @param tableName - Table to rebalance
+ * @param centerCsId - The _cs_id around which to rebalance
+ * @param rangeSize - Number of rows on each side to include (default 500, so ~1000 rows total)
+ * @returns true if rebalance was performed
+ */
+export async function rebalanceCsIdRange(
+  tableName: string,
+  centerCsId: number,
+  rangeSize = 500
+): Promise<boolean> {
+  const connection = await getConnection()
+
+  // Find the range of _cs_id values to rebalance
+  // Get rangeSize rows before and after the center
+  const rangeResult = await connection.query(`
+    WITH ordered AS (
+      SELECT "${CS_ID_COLUMN}", ROW_NUMBER() OVER (ORDER BY CAST("${CS_ID_COLUMN}" AS BIGINT)) as rn
+      FROM "${tableName}"
+    ),
+    center_row AS (
+      SELECT rn FROM ordered WHERE "${CS_ID_COLUMN}" = '${centerCsId}'
+    )
+    SELECT MIN(CAST(o."${CS_ID_COLUMN}" AS BIGINT)) as range_min,
+           MAX(CAST(o."${CS_ID_COLUMN}" AS BIGINT)) as range_max,
+           COUNT(*) as range_count
+    FROM ordered o, center_row c
+    WHERE o.rn BETWEEN GREATEST(1, c.rn - ${rangeSize}) AND c.rn + ${rangeSize}
+  `)
+
+  const rangeRow = rangeResult.toArray()[0]?.toJSON()
+  const rangeMin = Number(rangeRow?.range_min ?? 0)
+  const rangeMax = Number(rangeRow?.range_max ?? 0)
+  const rangeCount = Number(rangeRow?.range_count ?? 0)
+
+  if (rangeCount === 0) return false
+
+  // Get the _cs_id just before our range (to compute new starting ID)
+  const beforeResult = await connection.query(`
+    SELECT MAX(CAST("${CS_ID_COLUMN}" AS BIGINT)) as prev_id
+    FROM "${tableName}"
+    WHERE CAST("${CS_ID_COLUMN}" AS BIGINT) < ${rangeMin}
+  `)
+  const prevId = Number(beforeResult.toArray()[0]?.toJSON()?.prev_id ?? 0)
+  const newStartId = prevId + 100
+
+  // Create mapping table: old_id → new_id
+  const tempTable = `_temp_rebalance_${Date.now()}`
+  await execute(`
+    CREATE TEMP TABLE "${tempTable}" AS
+    SELECT
+      "${CS_ID_COLUMN}" as old_id,
+      CAST(${newStartId} + (ROW_NUMBER() OVER (ORDER BY CAST("${CS_ID_COLUMN}" AS BIGINT)) - 1) * 100 AS VARCHAR) as new_id
+    FROM "${tableName}"
+    WHERE CAST("${CS_ID_COLUMN}" AS BIGINT) BETWEEN ${rangeMin} AND ${rangeMax}
+  `)
+
+  // Apply the mapping
+  await execute(`
+    UPDATE "${tableName}"
+    SET "${CS_ID_COLUMN}" = t.new_id
+    FROM "${tempTable}" t
+    WHERE "${tableName}"."${CS_ID_COLUMN}" = t.old_id
+  `)
+
+  await execute(`DROP TABLE IF EXISTS "${tempTable}"`)
+
+  console.log(`[Rebalance] Rebalanced ${rangeCount} rows around _cs_id ${centerCsId} in ${tableName}`)
+  return true
 }
 
 /**
@@ -1366,14 +1484,14 @@ export async function duplicateTable(
       .filter(c => c.name !== CS_ID_COLUMN && c.name !== CS_ORIGIN_ID_COLUMN)
       .map(c => `"${c.name}"`)
 
-    // CRITICAL: Use ROW_NUMBER() for _cs_id to preserve row order
+    // Gap-based _cs_id for O(1) row insert (gaps of 100)
     // Use gen_random_uuid() for _cs_origin_id for new stable identities
     // Order by source _cs_id (if exists) to maintain original ordering
     const orderClause = hasCsId ? `ORDER BY "${CS_ID_COLUMN}"` : ''
     await connection.query(`
       CREATE TABLE "${targetName}" AS
       SELECT
-        ROW_NUMBER() OVER (${orderClause}) as "${CS_ID_COLUMN}",
+        ROW_NUMBER() OVER (${orderClause}) * 100 as "${CS_ID_COLUMN}",
         gen_random_uuid()::VARCHAR as "${CS_ORIGIN_ID_COLUMN}",
         ${userCols.join(', ')}
       FROM "${sourceName}"

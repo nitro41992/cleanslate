@@ -112,7 +112,7 @@ async function ensureIdentityColumns(
   const selectParts: string[] = []
 
   if (!hasCsId) {
-    selectParts.push(`ROW_NUMBER() OVER () as "${CS_ID_COLUMN}"`)
+    selectParts.push(`ROW_NUMBER() OVER () * 100 as "${CS_ID_COLUMN}"`)
   } else {
     selectParts.push(`"${CS_ID_COLUMN}"`)
   }

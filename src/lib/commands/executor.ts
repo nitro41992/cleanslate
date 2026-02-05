@@ -242,8 +242,10 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // Step 2: Determine undo tier
-      const tier = getUndoTier(command.type)
-      const needsSnapshot = requiresSnapshot(command.type)
+      // Use command's own getInvertibility() when available (supports dynamic tier, e.g., delete_row ≤500 = Tier 2)
+      const commandTier = command.getInvertibility?.()?.tier
+      const tier = commandTier ?? getUndoTier(command.type)
+      const needsSnapshot = commandTier ? commandTier === 3 : requiresSnapshot(command.type)
 
       // Step 2.1: Detect if this is a chained Tier 1 transform (existing expression stack)
       // For chained Tier 1 transforms, we need to capture pre-execution state differently
@@ -764,26 +766,28 @@ export class CommandExecutor implements ICommandExecutor {
           silentUpdates.columns = executionResult.columns
         }
 
-        // CRITICAL: Row insertions/deletions need priority save for Parquet export
-        // Must set priority flag BEFORE updateTableSilent because the persistence
-        // subscription fires immediately on store update. If we set it after,
-        // the subscription won't see it and the table won't be added to tablesToSave.
-        //
-        // ALSO: Add to savingTables IMMEDIATELY here (not just in saveTable())
-        // because the persistence subscription callback is async with awaits before
-        // saveTable() is called. If we only set savingTables in saveTable(), tests
-        // can poll and see savingTables.size === 0 during that async gap.
+        // Row insertions/deletions and column additions need persistence.
+        // If the operation was journaled to OPFS changelog, skip the expensive priority
+        // Parquet save — the next compaction cycle (every 30s idle) will merge it.
+        // Otherwise, request immediate Parquet export.
         if (
           command.type === 'data:insert_row' ||
           command.type === 'data:delete_row' ||
           command.type === 'schema:add_column'
         ) {
-          const currentTable = useTableStore.getState().tables.find(t => t.id === tableId)
-          if (currentTable) {
-            uiStoreModule.useUIStore.getState().addSavingTable(currentTable.name)
+          if (executionResult.journaled) {
+            // Journaled to OPFS changelog — mark clean immediately (data is durable)
+            uiStoreModule.useUIStore.getState().markTableClean(tableId)
+            console.log('[Executor] Operation journaled to changelog, skipping priority Parquet save:', command.type)
+          } else {
+            // Not journaled (schema:add_column, or Tier 3 delete_row) — need Parquet save
+            const currentTable = useTableStore.getState().tables.find(t => t.id === tableId)
+            if (currentTable) {
+              uiStoreModule.useUIStore.getState().addSavingTable(currentTable.name)
+            }
+            uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
+            console.log('[Executor] Priority save requested for data mutation:', command.type)
           }
-          uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
-          console.log('[Executor] Priority save requested for data mutation:', command.type)
         }
 
         // Apply silent update if anything changed
@@ -818,11 +822,18 @@ export class CommandExecutor implements ICommandExecutor {
         // The UI handler (CombinePanel) adds the new table separately via addTable()
         const createsNewTable = command.type === 'combine:stack' || command.type === 'combine:join'
         if (!createsNewTable) {
-          // CRITICAL: Request priority save BEFORE updateTableStore to avoid race condition.
-          // The persistence subscription fires immediately when dataVersion changes.
-          // If we set the priority flag after, the subscription won't see it and will use
-          // debounced save instead of immediate save, causing data loss on quick refresh.
-          uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
+          // If operation was journaled to OPFS changelog, skip priority Parquet save.
+          // The data is already durable in the changelog; compaction will merge it later.
+          if (executionResult.journaled) {
+            uiStoreModule.useUIStore.getState().markTableClean(tableId)
+            console.log('[Executor] Non-local journaled operation, skipping priority save:', command.type)
+          } else {
+            // CRITICAL: Request priority save BEFORE updateTableStore to avoid race condition.
+            // The persistence subscription fires immediately when dataVersion changes.
+            // If we set the priority flag after, the subscription won't see it and will use
+            // debounced save instead of immediate save, causing data loss on quick refresh.
+            uiStoreModule.useUIStore.getState().requestPrioritySave(tableId)
+          }
 
           this.updateTableStore(ctx.table.id, {
             ...executionResult,
