@@ -304,7 +304,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
           <div className="h-6 w-px bg-border" />
 
           <h1 className="font-semibold tracking-tight">
-            SMART REPLACE
+            Smart Replace
           </h1>
 
           {hasResults && (

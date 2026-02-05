@@ -405,7 +405,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           <div className="h-6 w-px bg-border" />
 
           <h1 className="font-semibold tracking-tight">
-            MERGE
+            Merge
           </h1>
 
           {hasResults && (

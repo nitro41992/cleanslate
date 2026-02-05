@@ -492,7 +492,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           <div className="h-6 w-px bg-border" />
 
           <h1 className="font-semibold tracking-tight">
-            DELTA INSPECTOR
+            Diff
           </h1>
 
           {hasResults && (
