@@ -104,12 +104,12 @@ function CellChangeRow({
         {change.columnName}
       </td>
       <td className="py-2 px-3">
-        <span className={`inline-block px-2 py-0.5 rounded bg-red-500/10 text-red-400 font-mono text-xs max-w-[200px] truncate ${isDeleted || isLegacy ? 'opacity-50' : ''}`}>
+        <span className={`inline-block px-2 py-0.5 rounded bg-red-500/10 text-red-600 dark:text-red-400 font-mono text-xs max-w-[200px] truncate ${isDeleted || isLegacy ? 'opacity-50' : ''}`}>
           {formatValue(change.previousValue)}
         </span>
       </td>
       <td className="py-2 px-3">
-        <span className={`inline-block px-2 py-0.5 rounded bg-green-500/10 text-green-400 font-mono text-xs max-w-[200px] truncate ${isDeleted || isLegacy ? 'opacity-50' : ''}`}>
+        <span className={`inline-block px-2 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 font-mono text-xs max-w-[200px] truncate ${isDeleted || isLegacy ? 'opacity-50' : ''}`}>
           {formatValue(change.newValue)}
         </span>
       </td>
@@ -190,7 +190,7 @@ export function ManualEditDetailView({ entry }: ManualEditDetailViewProps) {
   if (!tableExists) {
     return (
       <div className="flex flex-col h-full" data-testid="manual-edit-detail-view">
-        <div className="text-sm text-amber-400 mb-2">
+        <div className="text-sm text-amber-600 dark:text-amber-400 mb-2">
           Table no longer exists. Showing stored edit details.
         </div>
         <ScrollArea className="h-[400px] border rounded-lg">

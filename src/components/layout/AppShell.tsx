@@ -322,7 +322,7 @@ export function AppShell({ children }: AppShellProps) {
                               <span className="ml-1 text-[10px] text-muted-foreground">(checkpoint)</span>
                             )}
                             {isFrozen && activeTableId !== table.id && (
-                              <span className="ml-1 text-[10px] text-blue-400">(on disk)</span>
+                              <span className="ml-1 text-[10px] text-blue-600 dark:text-blue-400">(on disk)</span>
                             )}
                           </p>
                           <p className="text-xs text-muted-foreground">
@@ -415,8 +415,8 @@ export function AppShell({ children }: AppShellProps) {
                 <div className="flex items-center gap-2 text-xs">
                   {persistenceStatus === 'dirty' && (
                     <>
-                      <Circle className="w-3.5 h-3.5 fill-amber-500 text-amber-500 animate-pulse" />
-                      <span className="text-amber-500">Unsaved changes</span>
+                      <Circle className="w-3.5 h-3.5 fill-amber-500 text-amber-600 dark:text-amber-500 animate-pulse" />
+                      <span className="text-amber-600 dark:text-amber-500">Unsaved changes</span>
                     </>
                   )}
                   {persistenceStatus === 'saving' && (

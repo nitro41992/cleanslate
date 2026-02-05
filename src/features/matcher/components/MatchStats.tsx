@@ -27,19 +27,19 @@ export function MatchStats({ stats }: MatchStatsProps) {
       label: 'Merged',
       value: stats.merged,
       icon: Check,
-      color: 'text-green-400',
+      color: 'text-green-600 dark:text-green-400',
     },
     {
       label: 'Kept Separate',
       value: stats.keptSeparate,
       icon: X,
-      color: 'text-red-400',
+      color: 'text-red-600 dark:text-red-400',
     },
     {
       label: 'Pending',
       value: stats.pending,
       icon: Clock,
-      color: 'text-yellow-400',
+      color: 'text-yellow-600 dark:text-yellow-400',
     },
   ]
 

@@ -234,7 +234,7 @@ export function RecordPreviewDrawer({ open, onClose }: RecordPreviewDrawerProps)
                       className={cn(
                         'border-b border-border/50',
                         group.isMaster
-                          ? 'bg-amber-950/30 hover:bg-amber-950/40'
+                          ? 'bg-amber-100 dark:bg-amber-950/30 hover:bg-amber-200 dark:hover:bg-amber-950/40'
                           : 'hover:bg-muted/50',
                         isFirstInGroup && 'border-t-2 border-t-border'
                       )}

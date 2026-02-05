@@ -16,7 +16,7 @@ export function formatRecipeValue(value: unknown, key?: string): ReactNode {
     // Format referencedColumns as @column references
     if (key === 'referencedColumns' && value.every((v) => typeof v === 'string')) {
       return (
-        <span className="font-mono text-amber-400">
+        <span className="font-mono text-amber-600 dark:text-amber-400">
           {value.map((col, idx) => (
             <span key={col}>
               {idx > 0 && ', '}@{col}

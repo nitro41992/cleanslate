@@ -115,11 +115,11 @@ export function DiffGrid({ results, columns, keyColumns, blindMode = false }: Di
                       className={cn(
                         'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
                         result.status === 'added' &&
-                          'bg-green-500/20 text-green-400',
+                          'bg-green-500/20 text-green-600 dark:text-green-400',
                         result.status === 'removed' &&
-                          'bg-red-500/20 text-red-400',
+                          'bg-red-500/20 text-red-600 dark:text-red-400',
                         result.status === 'modified' &&
-                          'bg-yellow-500/20 text-yellow-400'
+                          'bg-yellow-500/20 text-yellow-600 dark:text-yellow-400'
                       )}
                     >
                       {result.status}

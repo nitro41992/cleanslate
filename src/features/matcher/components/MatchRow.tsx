@@ -20,15 +20,15 @@ interface MatchRowProps {
 }
 
 const classStyles = {
-  definite: 'border border-green-800/40 bg-green-950/30',
-  maybe: 'border border-yellow-800/40 bg-yellow-950/30',
-  not_match: 'border border-red-800/40 bg-red-950/30',
+  definite: 'border border-green-300 dark:border-green-800/40 bg-green-50 dark:bg-green-950/30',
+  maybe: 'border border-yellow-300 dark:border-yellow-800/40 bg-yellow-50 dark:bg-yellow-950/30',
+  not_match: 'border border-red-300 dark:border-red-800/40 bg-red-50 dark:bg-red-950/30',
 }
 
 const similarityBadgeStyles = {
-  definite: 'bg-green-950/50 text-green-400 border border-green-700/50',
-  maybe: 'bg-yellow-950/50 text-yellow-400 border border-yellow-700/50',
-  not_match: 'bg-red-950/50 text-red-400 border border-red-700/50',
+  definite: 'bg-green-100 dark:bg-green-950/50 text-green-600 dark:text-green-400 border border-green-300 dark:border-green-700/50',
+  maybe: 'bg-yellow-100 dark:bg-yellow-950/50 text-yellow-600 dark:text-yellow-400 border border-yellow-300 dark:border-yellow-700/50',
+  not_match: 'bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700/50',
 }
 
 // Color-coded border styles for field comparison
@@ -151,7 +151,7 @@ export const MatchRow = memo(function MatchRow({
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-lg hover:bg-green-900/40 transition-all"
+            className="h-8 w-8 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/40 transition-all"
             onClick={onMerge}
             title="Merge (M)"
           >
@@ -160,7 +160,7 @@ export const MatchRow = memo(function MatchRow({
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-lg hover:bg-red-900/40 transition-all"
+            className="h-8 w-8 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-all"
             onClick={onKeepSeparate}
             title="Keep Separate (K)"
           >
@@ -180,19 +180,19 @@ export const MatchRow = memo(function MatchRow({
                 className={cn(
                   'rounded-lg p-3 border transition-all',
                   pair.keepRow === 'A'
-                    ? 'bg-green-950/40 border-green-800/30'
-                    : 'bg-red-950/40 border-red-800/30'
+                    ? 'bg-green-50 dark:bg-green-950/40 border-green-300 dark:border-green-800/30'
+                    : 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800/30'
                 )}
               >
                 <div className={cn(
                   'text-xs font-semibold mb-3 flex items-center gap-1.5 pb-2 border-b',
                   pair.keepRow === 'A'
-                    ? 'text-green-400 border-green-800/30'
-                    : 'text-red-400 border-red-800/30'
+                    ? 'text-green-600 dark:text-green-400 border-green-300 dark:border-green-800/30'
+                    : 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-800/30'
                 )}>
                   <div className={cn(
                     'p-1 rounded',
-                    pair.keepRow === 'A' ? 'bg-green-900/50' : 'bg-red-900/50'
+                    pair.keepRow === 'A' ? 'bg-green-100 dark:bg-green-900/50' : 'bg-red-100 dark:bg-red-900/50'
                   )}>
                     {pair.keepRow === 'A' ? (
                       <Check className="w-3 h-3" />
@@ -251,19 +251,19 @@ export const MatchRow = memo(function MatchRow({
                 className={cn(
                   'rounded-lg p-3 border transition-all',
                   pair.keepRow === 'B'
-                    ? 'bg-green-950/40 border-green-800/30'
-                    : 'bg-red-950/40 border-red-800/30'
+                    ? 'bg-green-50 dark:bg-green-950/40 border-green-300 dark:border-green-800/30'
+                    : 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800/30'
                 )}
               >
                 <div className={cn(
                   'text-xs font-semibold mb-3 flex items-center gap-1.5 pb-2 border-b',
                   pair.keepRow === 'B'
-                    ? 'text-green-400 border-green-800/30'
-                    : 'text-red-400 border-red-800/30'
+                    ? 'text-green-600 dark:text-green-400 border-green-300 dark:border-green-800/30'
+                    : 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-800/30'
                 )}>
                   <div className={cn(
                     'p-1 rounded',
-                    pair.keepRow === 'B' ? 'bg-green-900/50' : 'bg-red-900/50'
+                    pair.keepRow === 'B' ? 'bg-green-100 dark:bg-green-900/50' : 'bg-red-100 dark:bg-red-900/50'
                   )}>
                     {pair.keepRow === 'B' ? (
                       <Check className="w-3 h-3" />

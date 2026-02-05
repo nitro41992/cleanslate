@@ -514,7 +514,7 @@ export function CombinePanel() {
                   </div>
                   <div className="flex items-center gap-2 text-xs font-mono mt-1">
                     <span className="text-muted-foreground">→</span>
-                    <span className="text-green-400/80">
+                    <span className="text-green-700 dark:text-green-400/80">
                       {(selectedTables[0]?.rowCount || 0) + (selectedTables[1]?.rowCount || 0)} rows
                     </span>
                   </div>
@@ -523,11 +523,11 @@ export function CombinePanel() {
                 <div className="border-t border-border/50 pt-2">
                   <ul className="text-xs text-muted-foreground space-y-0.5">
                     <li className="flex items-start gap-1.5">
-                      <span className="text-blue-400">•</span>
+                      <span className="text-blue-600 dark:text-blue-400">•</span>
                       Tables can have different columns - missing values become NULL
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-blue-400">•</span>
+                      <span className="text-blue-600 dark:text-blue-400">•</span>
                       Reorder tables above to control row order in result
                     </li>
                   </ul>
@@ -604,9 +604,9 @@ export function CombinePanel() {
                 <div className="border-t border-border/50 pt-2">
                   <p className="text-xs font-medium text-muted-foreground mb-1.5">Example</p>
                   <div className="flex items-center gap-2 text-xs font-mono">
-                    <span className="text-red-400/80">orders.customer_id</span>
+                    <span className="text-red-600 dark:text-red-400/80">orders.customer_id</span>
                     <span className="text-muted-foreground">=</span>
-                    <span className="text-green-400/80">customers.customer_id</span>
+                    <span className="text-green-700 dark:text-green-400/80">customers.customer_id</span>
                   </div>
                 </div>
               </div>

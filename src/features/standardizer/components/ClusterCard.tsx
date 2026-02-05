@@ -388,7 +388,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
         'group px-4 py-2.5 flex items-center gap-3 transition-colors',
         'animate-in fade-in-0 slide-in-from-left-1 duration-75',
         value.isMaster
-          ? 'bg-amber-950/40'
+          ? 'bg-amber-100 dark:bg-amber-950/40'
           : 'hover:bg-muted'
       )}
       style={{ animationDelay: `${animationDelay}ms` }}
@@ -424,7 +424,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: C
       {value.isMaster ? (
         <Badge
           variant="outline"
-          className="shrink-0 gap-1 bg-transparent border-amber-700/50 text-amber-600 dark:text-amber-500 hover:bg-amber-900/40"
+          className="shrink-0 gap-1 bg-transparent border-amber-300 dark:border-amber-700/50 text-amber-600 dark:text-amber-500 hover:bg-amber-100 dark:hover:bg-amber-900/40"
         >
           <Star className="h-3 w-3 fill-amber-500/30" />
           Master

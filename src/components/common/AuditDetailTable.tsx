@@ -96,12 +96,12 @@ export function AuditDetailTable({ auditEntryId }: AuditDetailTableProps) {
                     {row.columnName}
                   </td>
                   <td className="py-2 px-3">
-                    <span className="inline-block px-2 py-0.5 rounded bg-red-500/10 text-red-400 font-mono text-xs">
+                    <span className="inline-block px-2 py-0.5 rounded bg-red-500/10 text-red-600 dark:text-red-400 font-mono text-xs">
                       {row.previousValue ?? '<null>'}
                     </span>
                   </td>
                   <td className="py-2 px-3">
-                    <span className="inline-block px-2 py-0.5 rounded bg-green-500/10 text-green-400 font-mono text-xs">
+                    <span className="inline-block px-2 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 font-mono text-xs">
                       {row.newValue ?? '<null>'}
                     </span>
                   </td>

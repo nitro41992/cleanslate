@@ -164,20 +164,20 @@ function tokenize(formula: string): Token[] {
 function getTokenClass(type: TokenType): string {
   switch (type) {
     case 'function':
-      return 'text-amber-400 font-medium'
+      return 'text-amber-700 dark:text-amber-400 font-medium'
     case 'column':
       // NO padding/margin - must not affect text width or caret will misalign
-      return 'text-cyan-400'
+      return 'text-cyan-700 dark:text-cyan-400'
     case 'string':
-      return 'text-emerald-400'
+      return 'text-emerald-700 dark:text-emerald-400'
     case 'number':
-      return 'text-purple-400'
+      return 'text-purple-700 dark:text-purple-400'
     case 'operator':
-      return 'text-slate-400'
+      return 'text-slate-500 dark:text-slate-400'
     case 'boolean':
-      return 'text-orange-400 font-medium'
+      return 'text-orange-700 dark:text-orange-400 font-medium'
     case 'paren':
-      return 'text-slate-500'
+      return 'text-slate-600 dark:text-slate-500'
     default:
       return ''
   }
@@ -510,12 +510,12 @@ export function FormulaInput({
           spellCheck={false}
           className={cn(
             'w-full min-h-[100px] px-3 py-2 text-sm font-mono',
-            'bg-slate-900/80 border border-slate-700 rounded-md',
+            'bg-muted border border-border rounded-md',
             'resize-y',
             'focus:outline-none focus:ring-2 focus:ring-primary/50',
-            'placeholder:text-slate-600',
-            'text-transparent caret-slate-300',
-            'selection:bg-cyan-500/30',
+            'placeholder:text-muted-foreground',
+            'text-transparent caret-foreground',
+            'selection:bg-primary/30',
             disabled && 'opacity-50 cursor-not-allowed'
           )}
           style={{ WebkitTextFillColor: 'transparent' }}
@@ -530,7 +530,7 @@ export function FormulaInput({
           onOpenAutoFocus={(e) => e.preventDefault()}
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
-          <div className="bg-slate-800 border-slate-700 rounded-md overflow-hidden">
+          <div className="bg-popover border-border rounded-md overflow-hidden">
             <div className="max-h-[300px] overflow-y-auto overflow-x-hidden overscroll-contain p-1">
               {suggestions.map((suggestion, index) => (
                 <div
@@ -550,26 +550,26 @@ export function FormulaInput({
                   }}
                 >
                   {suggestion.type === 'column' ? (
-                    <AtSign className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <AtSign className="w-3.5 h-3.5 text-cyan-700 dark:text-cyan-400 shrink-0" />
                   ) : (
-                    <FunctionSquare className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <FunctionSquare className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400 shrink-0" />
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className={cn(
                         'font-mono text-sm',
-                        suggestion.type === 'column' ? 'text-cyan-300' : 'text-amber-300'
+                        suggestion.type === 'column' ? 'text-cyan-700 dark:text-cyan-300' : 'text-amber-700 dark:text-amber-300'
                       )}>
                         {suggestion.label}
                       </span>
                       {suggestion.columnType && (
-                        <span className="text-[10px] italic text-slate-500">
+                        <span className="text-[10px] italic text-muted-foreground">
                           {getTypeLabel(suggestion.columnType)}
                         </span>
                       )}
                     </div>
                     {suggestion.description && (
-                      <div className="text-[10px] text-slate-400 truncate">
+                      <div className="text-[10px] text-muted-foreground truncate">
                         {suggestion.description}
                       </div>
                     )}
@@ -578,10 +578,10 @@ export function FormulaInput({
               ))}
             </div>
             {/* Keyboard hints */}
-            <div className="px-2 py-1.5 text-[10px] text-slate-500 border-t border-slate-700 flex items-center gap-3">
-              <span><kbd className="px-1 py-0.5 bg-slate-700 rounded text-[9px]">↑↓</kbd> navigate</span>
-              <span><kbd className="px-1 py-0.5 bg-slate-700 rounded text-[9px]">Enter</kbd> select</span>
-              <span><kbd className="px-1 py-0.5 bg-slate-700 rounded text-[9px]">Esc</kbd> close</span>
+            <div className="px-2 py-1.5 text-[10px] text-muted-foreground border-t border-border flex items-center gap-3">
+              <span><kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">↑↓</kbd> navigate</span>
+              <span><kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">Enter</kbd> select</span>
+              <span><kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">Esc</kbd> close</span>
             </div>
           </div>
         </PopoverContent>

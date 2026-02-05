@@ -148,7 +148,7 @@ export function PersistenceIndicator() {
     <div
       className={cn(
         'flex items-center gap-2 text-xs transition-opacity duration-200',
-        persistenceStatus === 'dirty' && 'text-amber-400',
+        persistenceStatus === 'dirty' && 'text-amber-600 dark:text-amber-400',
         persistenceStatus === 'saving' && 'text-amber-500',
         persistenceStatus === 'saved' && 'text-green-500',
         persistenceStatus === 'error' && 'text-destructive'

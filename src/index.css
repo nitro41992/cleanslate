@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    /* Notion-inspired Light Mode (unused, keeping dark) */
+    /* Notion-inspired Light Mode */
     --background: 40 30% 98%;
     --foreground: 220 15% 15%;
     --card: 0 0% 100%;
@@ -26,10 +26,24 @@
     --ring: 35 90% 50%;
     --radius: 0.75rem;
 
-    /* Diff colors */
+    /* Diff colors - light mode */
     --diff-added: 142 76% 36%;
+    --diff-added-bg: 142 60% 94%;
+    --diff-added-text: 142 60% 25%;
+    --diff-added-border: 142 50% 50%;
+
     --diff-removed: 0 72% 51%;
+    --diff-removed-bg: 0 60% 95%;
+    --diff-removed-text: 0 60% 35%;
+    --diff-removed-border: 0 50% 55%;
+
     --diff-modified: 45 93% 47%;
+    --diff-modified-bg: 40 70% 94%;
+    --diff-modified-text: 40 70% 30%;
+    --diff-modified-border: 40 60% 55%;
+
+    --diff-unchanged-bg: 220 12% 96%;
+    --diff-unchanged-text: 220 10% 55%;
   }
 
   .dark {
@@ -251,9 +265,9 @@
     @apply h-full w-full !important;
   }
 
-  /* Force dark background on grid canvas */
+  /* Grid canvas background - uses theme token */
   .dvn-scroller {
-    background-color: #18191c !important;
+    background-color: hsl(var(--card)) !important;
   }
 
   /* Portal styling for overlays */

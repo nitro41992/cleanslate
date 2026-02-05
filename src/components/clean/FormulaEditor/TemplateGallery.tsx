@@ -116,11 +116,11 @@ const CATEGORY_STYLES: Record<FormulaTemplate['category'], {
   text: string
   label: string
 }> = {
-  conditional: { text: 'text-blue-400', label: 'Logic' },
-  comparison: { text: 'text-rose-400', label: 'Compare' },
-  text: { text: 'text-emerald-400', label: 'Text' },
-  math: { text: 'text-purple-400', label: 'Math' },
-  null: { text: 'text-amber-400', label: 'Null' },
+  conditional: { text: 'text-blue-600 dark:text-blue-400', label: 'Logic' },
+  comparison: { text: 'text-rose-600 dark:text-rose-400', label: 'Compare' },
+  text: { text: 'text-emerald-600 dark:text-emerald-400', label: 'Text' },
+  math: { text: 'text-purple-600 dark:text-purple-400', label: 'Math' },
+  null: { text: 'text-amber-600 dark:text-amber-400', label: 'Null' },
 }
 
 const CATEGORY_ORDER: FormulaTemplate['category'][] = ['conditional', 'comparison', 'text', 'math', 'null']
@@ -139,7 +139,7 @@ export function TemplateGallery({ onInsert, disabled }: TemplateGalleryProps) {
         <Button
           variant="ghost"
           size="sm"
-          className="w-full justify-between text-slate-400 hover:text-slate-200"
+          className="w-full justify-between text-muted-foreground hover:text-foreground"
           disabled={disabled}
         >
           <span className="flex items-center gap-2">
@@ -170,7 +170,7 @@ export function TemplateGallery({ onInsert, disabled }: TemplateGalleryProps) {
                 </div>
 
                 {/* Template list */}
-                <div className="divide-y divide-slate-700/40">
+                <div className="divide-y divide-border/40">
                   {templates.map(template => (
                     <button
                       key={template.id}
@@ -179,21 +179,21 @@ export function TemplateGallery({ onInsert, disabled }: TemplateGalleryProps) {
                       disabled={disabled}
                       className={cn(
                         'w-full text-left px-2.5 py-2.5 transition-colors',
-                        'hover:bg-slate-800/50 focus:outline-none focus:bg-slate-800/50',
+                        'hover:bg-muted/50 focus:outline-none focus:bg-muted/50',
                         disabled && 'opacity-50 cursor-not-allowed'
                       )}
                     >
                       {/* Title + Description on same line */}
                       <div className="flex items-baseline gap-2 mb-1">
-                        <span className="text-sm font-medium text-slate-200">
+                        <span className="text-sm font-medium text-foreground">
                           {template.label}
                         </span>
-                        <span className="text-xs text-slate-500">
+                        <span className="text-xs text-muted-foreground">
                           {template.description}
                         </span>
                       </div>
                       {/* Formula */}
-                      <code className="text-[11px] font-mono text-amber-400/90">
+                      <code className="text-[11px] font-mono text-amber-700 dark:text-amber-400/90">
                         {template.formula}
                       </code>
                     </button>

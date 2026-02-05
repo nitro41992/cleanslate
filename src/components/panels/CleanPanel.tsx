@@ -661,9 +661,9 @@ export function CleanPanel() {
                             <div className="space-y-1">
                               {selectedTransform.examples.slice(0, 2).map((ex, i) => (
                                 <div key={i} className="flex items-center gap-2 text-xs font-mono">
-                                  <span className="text-red-400/80">{ex.before}</span>
+                                  <span className="text-red-600 dark:text-red-400/80">{ex.before}</span>
                                   <span className="text-muted-foreground">→</span>
-                                  <span className="text-green-400/80">{ex.after}</span>
+                                  <span className="text-green-700 dark:text-green-400/80">{ex.after}</span>
                                 </div>
                               ))}
                             </div>
@@ -676,7 +676,7 @@ export function CleanPanel() {
                             <ul className="text-xs text-muted-foreground space-y-0.5">
                               {selectedTransform.hints.map((hint, i) => (
                                 <li key={i} className="flex items-start gap-1.5">
-                                  <span className="text-blue-400">•</span>
+                                  <span className="text-blue-600 dark:text-blue-400">•</span>
                                   {hint}
                                 </li>
                               ))}

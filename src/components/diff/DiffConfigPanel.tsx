@@ -245,8 +245,8 @@ export function DiffConfigPanel({
                     </div>
                   ) : hasSnapshot ? (
                     <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                      <p className="text-sm text-green-400 flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-green-400" />
+                      <p className="text-sm text-green-600 dark:text-green-400 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-green-500" />
                         Original snapshot available
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">
@@ -255,7 +255,7 @@ export function DiffConfigPanel({
                     </div>
                   ) : (
                     <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-                      <p className="text-sm text-amber-400 flex items-center gap-2">
+                      <p className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4" />
                         No transformations applied yet
                       </p>

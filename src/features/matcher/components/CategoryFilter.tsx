@@ -19,9 +19,9 @@ export function CategoryFilter({
 }: CategoryFilterProps) {
   const filters: { value: MatchFilter; label: string; count: number; color: string }[] = [
     { value: 'all', label: 'All', count: counts.all, color: '' },
-    { value: 'definite', label: 'Definite', count: counts.definite, color: 'bg-green-950/40 data-[active=true]:bg-green-900/50' },
-    { value: 'maybe', label: 'Maybe', count: counts.maybe, color: 'bg-yellow-950/40 data-[active=true]:bg-yellow-900/50' },
-    { value: 'not_match', label: 'Not Match', count: counts.notMatch, color: 'bg-red-950/40 data-[active=true]:bg-red-900/50' },
+    { value: 'definite', label: 'Definite', count: counts.definite, color: 'bg-green-100 dark:bg-green-950/40 data-[active=true]:bg-green-200 dark:data-[active=true]:bg-green-900/50' },
+    { value: 'maybe', label: 'Maybe', count: counts.maybe, color: 'bg-yellow-100 dark:bg-yellow-950/40 data-[active=true]:bg-yellow-200 dark:data-[active=true]:bg-yellow-900/50' },
+    { value: 'not_match', label: 'Not Match', count: counts.notMatch, color: 'bg-red-100 dark:bg-red-950/40 data-[active=true]:bg-red-200 dark:data-[active=true]:bg-red-900/50' },
   ]
 
   return (

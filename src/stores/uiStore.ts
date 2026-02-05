@@ -13,6 +13,7 @@ let lastCleanupAttempt = 0
 let cleanupInProgress = false
 const CLEANUP_DEBOUNCE_MS = 30_000
 
+export type ThemeMode = 'light' | 'dark'
 export type MemoryLevel = 'normal' | 'warning' | 'critical'
 export type CompactionStatus = 'idle' | 'running'
 
@@ -54,6 +55,7 @@ export interface PendingRowInsertion {
 }
 
 interface UIState {
+  themeMode: ThemeMode
   sidebarCollapsed: boolean
   persistenceStatus: PersistenceStatus
   lastSavedAt: Date | null
@@ -91,6 +93,7 @@ interface UIState {
 }
 
 interface UIActions {
+  setThemeMode: (mode: ThemeMode) => void
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setPersistenceStatus: (status: PersistenceStatus) => void
@@ -152,7 +155,14 @@ interface UIActions {
   clearLastEditForTable: (tableId: string) => void
 }
 
+function getInitialTheme(): ThemeMode {
+  if (typeof window === 'undefined') return 'dark'
+  const stored = localStorage.getItem('cleanslate-theme')
+  return stored === 'light' ? 'light' : 'dark'
+}
+
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
+  themeMode: getInitialTheme(),
   sidebarCollapsed: false,
   persistenceStatus: 'idle',
   lastSavedAt: null,
@@ -195,6 +205,16 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   },
   // Last edit location initial state
   lastEdit: null,
+
+  setThemeMode: (mode) => {
+    set({ themeMode: mode })
+    if (mode === 'dark') {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+    localStorage.setItem('cleanslate-theme', mode)
+  },
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))

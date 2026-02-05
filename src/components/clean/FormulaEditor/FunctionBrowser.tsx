@@ -21,13 +21,13 @@ import type { FunctionBrowserProps } from './types'
 
 // Category metadata
 const CATEGORY_INFO: Record<FunctionCategory, { label: string; color: string }> = {
-  conditional: { label: 'Conditional', color: 'text-blue-400' },
-  text: { label: 'Text', color: 'text-emerald-400' },
-  numeric: { label: 'Numeric', color: 'text-purple-400' },
-  logical: { label: 'Logical', color: 'text-orange-400' },
-  null: { label: 'Null Handling', color: 'text-cyan-400' },
-  comparison: { label: 'Comparison', color: 'text-rose-400' },
-  date: { label: 'Date', color: 'text-sky-400' },
+  conditional: { label: 'Conditional', color: 'text-blue-600 dark:text-blue-400' },
+  text: { label: 'Text', color: 'text-emerald-600 dark:text-emerald-400' },
+  numeric: { label: 'Numeric', color: 'text-purple-600 dark:text-purple-400' },
+  logical: { label: 'Logical', color: 'text-orange-600 dark:text-orange-400' },
+  null: { label: 'Null Handling', color: 'text-cyan-600 dark:text-cyan-400' },
+  comparison: { label: 'Comparison', color: 'text-rose-600 dark:text-rose-400' },
+  date: { label: 'Date', color: 'text-sky-600 dark:text-sky-400' },
 }
 
 // Order of categories
@@ -65,7 +65,7 @@ export function FunctionBrowser({ onInsert, disabled }: FunctionBrowserProps) {
         <Button
           variant="ghost"
           size="sm"
-          className="w-full justify-between text-slate-400 hover:text-slate-200"
+          className="w-full justify-between text-muted-foreground hover:text-foreground"
           disabled={disabled}
         >
           <span className="flex items-center gap-2">
@@ -80,7 +80,7 @@ export function FunctionBrowser({ onInsert, disabled }: FunctionBrowserProps) {
       </CollapsibleTrigger>
 
       <CollapsibleContent className="mt-2">
-        <div className="border border-slate-700 rounded-lg bg-slate-900/50 overflow-hidden">
+        <div className="border border-border rounded-lg bg-muted/50 overflow-hidden">
           <ScrollArea className="h-[250px]">
             <div className="p-2 space-y-1">
               {CATEGORY_ORDER.map(category => {
@@ -98,7 +98,7 @@ export function FunctionBrowser({ onInsert, disabled }: FunctionBrowserProps) {
                       className={cn(
                         'w-full flex items-center gap-2 px-2 py-1.5 rounded',
                         'text-sm font-medium',
-                        'hover:bg-slate-800/50 transition-colors',
+                        'hover:bg-accent/50 transition-colors',
                         color
                       )}
                       onClick={() => toggleCategory(category)}
@@ -109,7 +109,7 @@ export function FunctionBrowser({ onInsert, disabled }: FunctionBrowserProps) {
                         <ChevronRight className="w-3.5 h-3.5" />
                       )}
                       {label}
-                      <span className="text-[10px] text-slate-500 ml-auto">
+                      <span className="text-[10px] text-muted-foreground ml-auto">
                         {categoryFunctions.length}
                       </span>
                     </button>
@@ -125,18 +125,18 @@ export function FunctionBrowser({ onInsert, disabled }: FunctionBrowserProps) {
                               type="button"
                               className={cn(
                                 'w-full text-left px-2 py-1.5 rounded',
-                                'hover:bg-slate-800 transition-colors',
+                                'hover:bg-accent transition-colors',
                                 'group'
                               )}
                               onClick={() => onInsert(fn)}
                               disabled={disabled}
                             >
                               <div className="flex items-center justify-between">
-                                <span className="font-mono text-xs text-amber-400 group-hover:text-amber-300">
+                                <span className="font-mono text-xs text-amber-700 dark:text-amber-400 group-hover:text-amber-600 dark:group-hover:text-amber-300">
                                   {fn}
                                 </span>
                               </div>
-                              <div className="text-[10px] text-slate-500 mt-0.5 truncate">
+                              <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
                                 {spec.signature || spec.description}
                               </div>
                             </button>

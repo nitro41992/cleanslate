@@ -11,6 +11,7 @@ import '@glideapps/glide-data-grid/dist/index.css'
 import { Skeleton } from '@/components/ui/skeleton'
 import { fetchDiffPageWithKeyset, getRowsWithColumnChanges, type DiffRow } from '@/lib/diff-engine'
 import { useDiffStore } from '@/stores/diffStore'
+import { useUIStore } from '@/stores/uiStore'
 
 // Column sizing constants (same as DataGrid)
 const GLOBAL_MIN_COLUMN_WIDTH = 50
@@ -115,6 +116,38 @@ export function VirtualizedDiffGrid({
   const wordWrapEnabled = useDiffStore((s) => s.wordWrapEnabled)
   const statusFilter = useDiffStore((s) => s.statusFilter)
   const columnFilter = useDiffStore((s) => s.columnFilter)
+  const themeMode = useUIStore((s) => s.themeMode)
+
+  // GDG renders on <canvas> so it can't read CSS variables — we resolve them here
+  const gridTheme = useMemo(() => {
+    const style = getComputedStyle(document.documentElement)
+    const hsl = (v: string) => {
+      const val = style.getPropertyValue(v).trim()
+      return val ? `hsl(${val.split(' ').join(', ')})` : undefined
+    }
+    return {
+      bgCell: hsl('--card'),
+      bgCellMedium: hsl('--muted'),
+      bgHeader: hsl('--muted'),
+      bgHeaderHasFocus: hsl('--accent'),
+      bgHeaderHovered: hsl('--muted'),
+      textDark: hsl('--foreground'),
+      textMedium: hsl('--muted-foreground'),
+      textLight: hsl('--muted-foreground'),
+      textHeader: hsl('--foreground'),
+      borderColor: hsl('--border'),
+      accentColor: hsl('--primary'),
+      accentFg: hsl('--primary-foreground'),
+      accentLight: hsl('--accent'),
+      linkColor: hsl('--primary'),
+      bgIconHeader: hsl('--muted'),
+      fgIconHeader: hsl('--muted-foreground'),
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      baseFontStyle: '13px',
+      headerFontStyle: '600 13px',
+      editorFontSize: '13px',
+    }
+  }, [themeMode])
 
   // Track row IDs with changes in the selected column (for column filtering)
   const [columnFilterRowIds, setColumnFilterRowIds] = useState<Set<string> | null>(null)
@@ -629,6 +662,7 @@ export function VirtualizedDiffGrid({
   const drawCell: DrawCellCallback = useCallback(
     (args, draw) => {
       const { col, row, rect, ctx } = args
+      const isLight = themeMode === 'light'
       // When filtering, use filteredData instead of raw data
       const dataSource = hasActiveFilter ? filteredData : data
       const adjustedRow = hasActiveFilter ? row : row - loadedRange.start
@@ -646,12 +680,12 @@ export function VirtualizedDiffGrid({
 
         // Subtle muted styling for row number column
         ctx.save()
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.03)'
+        ctx.fillStyle = isLight ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.03)'
         ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
 
         ctx.font = '13px ui-sans-serif, system-ui, sans-serif'
         ctx.textBaseline = 'middle'
-        ctx.fillStyle = '#6b7280'  // Muted gray
+        ctx.fillStyle = isLight ? '#4b5563' : '#9ca3af'
         ctx.fillText(displayValue, rect.x + 8, rect.y + rect.height / 2)
         ctx.restore()
         return
@@ -664,9 +698,9 @@ export function VirtualizedDiffGrid({
         // Add color indicator to status cell
         const status = rowData.diff_status
         ctx.save()
-        ctx.fillStyle = status === 'added' ? '#22c55e' :
-                        status === 'removed' ? '#ef4444' :
-                        status === 'modified' ? '#eab308' : '#6b7280'
+        ctx.fillStyle = status === 'added' ? (isLight ? '#16a34a' : '#22c55e') :
+                        status === 'removed' ? (isLight ? '#dc2626' : '#ef4444') :
+                        status === 'modified' ? (isLight ? '#ca8a04' : '#eab308') : (isLight ? '#4b5563' : '#6b7280')
         ctx.fillRect(rect.x, rect.y, 4, rect.height)
         ctx.restore()
         return
@@ -694,13 +728,13 @@ export function VirtualizedDiffGrid({
 
         // Clear background with green highlight (added data)
         ctx.save()
-        ctx.fillStyle = 'rgba(34, 197, 94, 0.15)'
+        ctx.fillStyle = isLight ? 'rgba(22, 163, 74, 0.1)' : 'rgba(34, 197, 94, 0.15)'
         ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
 
         // Draw text
         ctx.font = '13px ui-sans-serif, system-ui, sans-serif'
         ctx.textBaseline = 'middle'
-        ctx.fillStyle = '#22c55e'  // Green text for new data
+        ctx.fillStyle = isLight ? '#16a34a' : '#22c55e'
         ctx.fillText(strB, rect.x + 8, rect.y + rect.height / 2)
 
         ctx.restore()
@@ -715,19 +749,19 @@ export function VirtualizedDiffGrid({
 
         // Clear background with red highlight (removed data)
         ctx.save()
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.15)'
+        ctx.fillStyle = isLight ? 'rgba(220, 38, 38, 0.1)' : 'rgba(239, 68, 68, 0.15)'
         ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
 
         // Draw text with strikethrough
         ctx.font = '13px ui-sans-serif, system-ui, sans-serif'
         ctx.textBaseline = 'middle'
-        ctx.fillStyle = '#ef4444'  // Red text for removed data
+        ctx.fillStyle = isLight ? '#dc2626' : '#ef4444'
         const y = rect.y + rect.height / 2
         ctx.fillText(strA, rect.x + 8, y)
 
         // Strikethrough line
         const textWidth = ctx.measureText(strA).width
-        ctx.strokeStyle = '#ef4444'
+        ctx.strokeStyle = isLight ? '#dc2626' : '#ef4444'
         ctx.lineWidth = 1
         ctx.beginPath()
         ctx.moveTo(rect.x + 8, y)
@@ -748,7 +782,7 @@ export function VirtualizedDiffGrid({
 
         // Clear background with modified highlight
         ctx.save()
-        ctx.fillStyle = 'rgba(234, 179, 8, 0.1)'
+        ctx.fillStyle = isLight ? 'rgba(202, 138, 4, 0.08)' : 'rgba(234, 179, 8, 0.1)'
         ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
 
         // Draw text
@@ -757,13 +791,13 @@ export function VirtualizedDiffGrid({
         const y = rect.y + rect.height / 2
         let x = rect.x + 8
 
-        // Old value (with strikethrough)
-        ctx.fillStyle = 'rgba(232, 230, 227, 0.5)'
+        // Old value (with strikethrough) - muted/crossed out
+        ctx.fillStyle = isLight ? 'rgba(107, 114, 128, 0.6)' : 'rgba(232, 230, 227, 0.5)'
         ctx.fillText(strA, x, y)
         const oldWidth = ctx.measureText(strA).width
 
         // Strikethrough line
-        ctx.strokeStyle = 'rgba(232, 230, 227, 0.5)'
+        ctx.strokeStyle = isLight ? 'rgba(107, 114, 128, 0.6)' : 'rgba(232, 230, 227, 0.5)'
         ctx.lineWidth = 1
         ctx.beginPath()
         ctx.moveTo(x, y)
@@ -773,12 +807,12 @@ export function VirtualizedDiffGrid({
         x += oldWidth + 4
 
         // Arrow
-        ctx.fillStyle = '#8b8d93'
+        ctx.fillStyle = isLight ? '#6b7280' : '#8b8d93'
         ctx.fillText('→', x, y)
         x += ctx.measureText('→').width + 4
 
         // New value (highlighted)
-        ctx.fillStyle = '#eab308'
+        ctx.fillStyle = isLight ? '#ca8a04' : '#eab308'
         ctx.fillText(strB, x, y)
 
         ctx.restore()
@@ -786,7 +820,7 @@ export function VirtualizedDiffGrid({
         draw()
       }
     },
-    [data, filteredData, hasActiveFilter, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache]
+    [data, filteredData, hasActiveFilter, allColumns, userNewColumnsSet, userRemovedColumnsSet, loadedRange.start, blindMode, modifiedColumnsCache, themeMode]
   )
 
   // Row theme based on diff status
@@ -907,26 +941,7 @@ export function VirtualizedDiffGrid({
           height={gridHeight}
           smoothScrollX
           smoothScrollY
-          theme={{
-            bgCell: '#18191c',
-            bgCellMedium: '#28292d',
-            bgHeader: '#1f2024',
-            bgHeaderHasFocus: '#3d3020',
-            bgHeaderHovered: '#252629',
-            textDark: '#e8e6e3',
-            textMedium: '#8b8d93',
-            textLight: '#8b8d93',
-            textHeader: '#e8e6e3',
-            borderColor: '#2d2e33',
-            accentColor: '#e09520',
-            accentFg: '#141517',
-            accentLight: '#3d3020',
-            linkColor: '#e09520',
-            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-            baseFontStyle: '13px',
-            headerFontStyle: '600 13px',
-            editorFontSize: '13px',
-          }}
+          theme={gridTheme}
           experimental={{ hyperWrapping: true }}
         />
       )}

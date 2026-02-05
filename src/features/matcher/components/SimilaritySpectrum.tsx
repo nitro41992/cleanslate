@@ -125,27 +125,27 @@ export function SimilaritySpectrum({
 
       {/* Zone Legend */}
       <div className="flex justify-between text-xs pt-3 border-t border-border">
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-950/40 border border-red-800/40">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-100 dark:bg-red-950/40 border border-red-300 dark:border-red-800/40">
           <div className="w-2 h-2 rounded-full bg-red-500" />
-          <span className="text-red-400/80">Not Match</span>
-          <span className="font-medium text-red-400 tabular-nums">({zoneCounts.notMatch})</span>
+          <span className="text-red-600 dark:text-red-400/80">Not Match</span>
+          <span className="font-medium text-red-600 dark:text-red-400 tabular-nums">({zoneCounts.notMatch})</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-950/40 border border-yellow-800/40">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-100 dark:bg-yellow-950/40 border border-yellow-300 dark:border-yellow-800/40">
           <div className="w-2 h-2 rounded-full bg-yellow-500" />
-          <span className="text-yellow-400/80">Maybe</span>
-          <span className="font-medium text-yellow-400 tabular-nums">({zoneCounts.maybe})</span>
+          <span className="text-yellow-600 dark:text-yellow-400/80">Maybe</span>
+          <span className="font-medium text-yellow-600 dark:text-yellow-400 tabular-nums">({zoneCounts.maybe})</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-950/40 border border-green-800/40">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-100 dark:bg-green-950/40 border border-green-300 dark:border-green-800/40">
           <div className="w-2 h-2 rounded-full bg-green-500" />
-          <span className="text-green-400/80">Definite</span>
-          <span className="font-medium text-green-400 tabular-nums">({zoneCounts.definite})</span>
+          <span className="text-green-600 dark:text-green-400/80">Definite</span>
+          <span className="font-medium text-green-600 dark:text-green-400 tabular-nums">({zoneCounts.definite})</span>
         </div>
       </div>
 
       {/* Threshold Values - Enhanced */}
       <div className="flex justify-between text-xs text-muted-foreground/80">
-        <span className="tabular-nums">Maybe cutoff: <span className="text-yellow-400">{maybeThreshold}%</span></span>
-        <span className="tabular-nums">Definite cutoff: <span className="text-green-400">{definiteThreshold}%</span></span>
+        <span className="tabular-nums">Maybe cutoff: <span className="text-yellow-600 dark:text-yellow-400">{maybeThreshold}%</span></span>
+        <span className="tabular-nums">Definite cutoff: <span className="text-green-600 dark:text-green-400">{definiteThreshold}%</span></span>
       </div>
     </div>
   )

@@ -110,7 +110,7 @@ export function ColumnHeaderMenu({
           <div className="font-medium text-sm text-foreground">{columnName}</div>
           {columnTypeDisplay && (
             <div className="text-xs text-muted-foreground mt-0.5">
-              Type: <span className="text-amber-500">{columnTypeDisplay}</span>
+              Type: <span className="text-amber-600 dark:text-amber-500">{columnTypeDisplay}</span>
             </div>
           )}
           {columnTypeDescription && (

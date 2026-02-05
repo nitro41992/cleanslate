@@ -29,9 +29,10 @@ import {
   type FilePreviewResult,
 } from '@/lib/fileUtils'
 import type { CSVIngestionSettings } from '@/types'
+import { useUIStore } from '@/stores/uiStore'
 
-// Rainbow color spectrum for column visualization
-const rainbowColors = [
+// Rainbow color palettes — dark uses bright/saturated, light uses deeper shades
+const darkRainbowColors = [
   'rgb(255, 71, 87)',   // Coral Red
   'rgb(255, 168, 0)',   // Orange
   'rgb(255, 214, 0)',   // Gold
@@ -44,6 +45,21 @@ const rainbowColors = [
   'rgb(255, 0, 214)',   // Magenta
   'rgb(255, 0, 87)',    // Hot Pink
   'rgb(255, 102, 0)',   // Tangerine
+]
+
+const lightRainbowColors = [
+  'rgb(200, 30, 45)',   // Coral Red
+  'rgb(190, 120, 0)',   // Orange
+  'rgb(160, 135, 0)',   // Gold
+  'rgb(80, 140, 0)',    // Lime
+  'rgb(0, 140, 90)',    // Mint
+  'rgb(0, 140, 170)',   // Cyan
+  'rgb(0, 110, 190)',   // Sky Blue
+  'rgb(50, 60, 200)',   // Blue
+  'rgb(120, 0, 200)',   // Purple
+  'rgb(185, 0, 155)',   // Magenta
+  'rgb(200, 0, 60)',    // Hot Pink
+  'rgb(195, 75, 0)',    // Tangerine
 ]
 
 interface IngestionWizardProps {
@@ -61,6 +77,9 @@ export function IngestionWizard({
   preloadedBuffer,
   onConfirm,
 }: IngestionWizardProps) {
+  const themeMode = useUIStore((s) => s.themeMode)
+  const rainbowColors = themeMode === 'dark' ? darkRainbowColors : lightRainbowColors
+
   const [preview, setPreview] = useState<FilePreviewResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 

@@ -405,7 +405,7 @@ function App() {
                         variant="ghost"
                         size="sm"
                         onClick={() => toggleWordWrap(activeTable.id)}
-                        className={`h-7 px-2 ${isWordWrapEnabled(activeTable.id) ? 'bg-amber-500/20 text-amber-400' : 'text-muted-foreground hover:text-foreground'}`}
+                        className={`h-7 px-2 ${isWordWrapEnabled(activeTable.id) ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'text-muted-foreground hover:text-foreground'}`}
                       >
                         <WrapText className="w-4 h-4" />
                       </Button>

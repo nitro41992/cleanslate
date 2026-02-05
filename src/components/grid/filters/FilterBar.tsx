@@ -217,7 +217,7 @@ function FilterChip({ icon, label, colorClass, onClick, onRemove }: FilterChipPr
       <span className="opacity-70">{icon}</span>
       <span className="font-mono text-[11px] max-w-[200px] truncate">{label}</span>
       <button
-        className="ml-0.5 p-0.5 rounded hover:bg-white/10 transition-colors"
+        className="ml-0.5 p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
         onClick={(e) => {
           e.stopPropagation()
           onRemove()

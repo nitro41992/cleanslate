@@ -178,7 +178,7 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
                         {entry.snapshotStatus === 'hot' && (
                           <Badge
                             variant="outline"
-                            className="text-xs bg-amber-500/20 text-amber-400 border-amber-500/30"
+                            className="text-xs bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/30"
                             data-testid="snapshot-hot-badge"
                           >
                             <Zap className="w-3 h-3 mr-1" />
@@ -210,9 +210,9 @@ export function AuditLogPanel({ tableId }: AuditLogPanelProps) {
                   {/* Inline details for Type B (manual edit) entries */}
                   {entry.entryType === 'B' && entry.previousValue !== undefined && (
                     <div className="mt-2 text-xs font-mono bg-muted/50 rounded p-2">
-                      <span className="text-red-400">{formatValue(entry.previousValue)}</span>
+                      <span className="text-red-600 dark:text-red-400">{formatValue(entry.previousValue)}</span>
                       <span className="mx-2 text-muted-foreground">→</span>
-                      <span className="text-green-400">{formatValue(entry.newValue)}</span>
+                      <span className="text-green-600 dark:text-green-400">{formatValue(entry.newValue)}</span>
                     </div>
                   )}
                   {!tableId && (

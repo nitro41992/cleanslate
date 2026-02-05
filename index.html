@@ -1,6 +1,13 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
+    <script>
+      // Anti-FOUC: apply theme class before first paint (default: dark)
+      (function() {
+        var t = localStorage.getItem('cleanslate-theme');
+        if (!t || t === 'dark') document.documentElement.classList.add('dark');
+      })();
+    </script>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

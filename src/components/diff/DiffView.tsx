@@ -610,7 +610,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                 <div className="px-4 py-3 border-b border-border/50 bg-emerald-500/10 flex items-center gap-3 flex-wrap">
                   {/* removedColumns = columns in B (current) not in A (original) = USER's NEW columns */}
                   {removedColumns.length > 0 && (
-                    <div className="flex items-center gap-2 text-emerald-400">
+                    <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
                       <span className="text-xs font-medium uppercase tracking-wider">
                         {removedColumns.length} column{removedColumns.length !== 1 ? 's' : ''} added:
                       </span>
@@ -621,7 +621,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                   )}
                   {/* newColumns = columns in A (original) not in B (current) = USER's REMOVED columns */}
                   {newColumns.length > 0 && (
-                    <div className="flex items-center gap-2 text-red-400">
+                    <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
                       <span className="text-xs font-medium uppercase tracking-wider">
                         {newColumns.length} column{newColumns.length !== 1 ? 's' : ''} removed:
                       </span>
@@ -661,7 +661,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                         variant="ghost"
                         size="sm"
                         onClick={toggleWordWrap}
-                        className={`h-8 px-3 gap-2 ${wordWrapEnabled ? 'bg-amber-500/20 text-amber-400' : 'text-muted-foreground hover:text-foreground'}`}
+                        className={`h-8 px-3 gap-2 ${wordWrapEnabled ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'text-muted-foreground hover:text-foreground'}`}
                       >
                         <WrapText className="w-4 h-4" />
                         <span className="text-xs">Wrap</span>
@@ -724,7 +724,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                     </>
                   )}
                 </span>
-                <div className="flex items-center gap-2 text-amber-500">
+                <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
                   <span>
                     This is a comparison view. Results cannot be saved as a table.

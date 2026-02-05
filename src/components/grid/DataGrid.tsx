@@ -1067,28 +1067,40 @@ export function DataGrid({
     [columns, columnTypeMap, columnPreferences, viewState]
   )
 
+  // Read theme mode so grid colors update on toggle
+  const themeMode = useUIStore((s) => s.themeMode)
+
   // Memoize theme to prevent unnecessary re-renders
-  // Note: Matching VirtualizedDiffGrid theme (no lineHeight/padding overrides)
-  const gridTheme = useMemo(() => ({
-    bgCell: '#18191c',
-    bgCellMedium: '#28292d',
-    bgHeader: '#1f2024',
-    bgHeaderHasFocus: '#3d3020',
-    bgHeaderHovered: '#252629',
-    textDark: '#e8e6e3',
-    textMedium: '#8b8d93',
-    textLight: '#8b8d93',
-    textHeader: '#e8e6e3',
-    borderColor: '#2d2e33',
-    accentColor: '#e09520',
-    accentFg: '#141517',
-    accentLight: '#3d3020',
-    linkColor: '#e09520',
-    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-    baseFontStyle: '13px',
-    headerFontStyle: '600 13px',
-    editorFontSize: '13px',
-  }), [])
+  // GDG renders on <canvas> so it can't read CSS variables — we resolve them here
+  const gridTheme = useMemo(() => {
+    const style = getComputedStyle(document.documentElement)
+    const hsl = (v: string) => {
+      const val = style.getPropertyValue(v).trim()
+      return val ? `hsl(${val.split(' ').join(', ')})` : undefined
+    }
+    return {
+      bgCell: hsl('--card'),
+      bgCellMedium: hsl('--muted'),
+      bgHeader: hsl('--muted'),
+      bgHeaderHasFocus: hsl('--accent'),
+      bgHeaderHovered: hsl('--muted'),
+      textDark: hsl('--foreground'),
+      textMedium: hsl('--muted-foreground'),
+      textLight: hsl('--muted-foreground'),
+      textHeader: hsl('--foreground'),
+      borderColor: hsl('--border'),
+      accentColor: hsl('--primary'),
+      accentFg: hsl('--primary-foreground'),
+      accentLight: hsl('--accent'),
+      linkColor: hsl('--primary'),
+      bgIconHeader: hsl('--muted'),
+      fgIconHeader: hsl('--muted-foreground'),
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      baseFontStyle: '13px',
+      headerFontStyle: '600 13px',
+      editorFontSize: '13px',
+    }
+  }, [themeMode])
 
   // Capture scroll position BEFORE main effect runs when dataVersion changes
   // useLayoutEffect runs synchronously before paint, catching the position before grid resets
@@ -2516,7 +2528,7 @@ export function DataGrid({
       {/* Fallback type tooltip for non-editable grids (no menu, just info) */}
       {columnMenu && !tableId && (
         <div
-          className="fixed z-50 px-3 py-2 text-xs bg-zinc-800 text-zinc-200 rounded-lg shadow-lg border border-zinc-600"
+          className="fixed z-50 px-3 py-2 text-xs bg-popover text-popover-foreground rounded-lg shadow-lg border border-border"
           style={{
             left: columnMenu.x,
             top: columnMenu.y + 6,
@@ -2524,11 +2536,11 @@ export function DataGrid({
           }}
           onClick={() => setColumnMenu(null)}
         >
-          <div className="font-medium text-zinc-100">{columnMenu.column}</div>
-          <div className="text-zinc-400 mt-0.5">
-            Type: <span className="text-amber-400">{columnMenu.typeDisplay}</span>
+          <div className="font-medium">{columnMenu.column}</div>
+          <div className="text-muted-foreground mt-0.5">
+            Type: <span className="text-amber-600 dark:text-amber-400">{columnMenu.typeDisplay}</span>
           </div>
-          <div className="text-zinc-500 mt-1 text-[10px]">
+          <div className="text-muted-foreground/70 mt-1 text-[10px]">
             {columnMenu.description}
           </div>
         </div>

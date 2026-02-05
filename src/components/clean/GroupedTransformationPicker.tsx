@@ -33,50 +33,50 @@ const colorClasses: Record<TransformationGroupColor, {
   iconBg: string
 }> = {
   emerald: {
-    badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    header: 'text-emerald-400',
+    badge: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20',
+    header: 'text-emerald-600 dark:text-emerald-400',
     headerHover: 'hover:bg-emerald-500/5',
     selected: 'border-l-2 border-emerald-500 bg-emerald-500/5',
     iconBg: 'bg-emerald-500/10',
   },
   blue: {
-    badge: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    header: 'text-blue-400',
+    badge: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
+    header: 'text-blue-600 dark:text-blue-400',
     headerHover: 'hover:bg-blue-500/5',
     selected: 'border-l-2 border-blue-500 bg-blue-500/5',
     iconBg: 'bg-blue-500/10',
   },
   violet: {
-    badge: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
-    header: 'text-violet-400',
+    badge: 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20',
+    header: 'text-violet-600 dark:text-violet-400',
     headerHover: 'hover:bg-violet-500/5',
     selected: 'border-l-2 border-violet-500 bg-violet-500/5',
     iconBg: 'bg-violet-500/10',
   },
   amber: {
-    badge: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    header: 'text-amber-400',
+    badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
+    header: 'text-amber-600 dark:text-amber-400',
     headerHover: 'hover:bg-amber-500/5',
     selected: 'border-l-2 border-amber-500 bg-amber-500/5',
     iconBg: 'bg-amber-500/10',
   },
   rose: {
-    badge: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
-    header: 'text-rose-400',
+    badge: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20',
+    header: 'text-rose-600 dark:text-rose-400',
     headerHover: 'hover:bg-rose-500/5',
     selected: 'border-l-2 border-rose-500 bg-rose-500/5',
     iconBg: 'bg-rose-500/10',
   },
   teal: {
-    badge: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
-    header: 'text-teal-400',
+    badge: 'bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-500/20',
+    header: 'text-teal-600 dark:text-teal-400',
     headerHover: 'hover:bg-teal-500/5',
     selected: 'border-l-2 border-teal-500 bg-teal-500/5',
     iconBg: 'bg-teal-500/10',
   },
   slate: {
-    badge: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-    header: 'text-slate-400',
+    badge: 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border-slate-500/20',
+    header: 'text-slate-600 dark:text-slate-400',
     headerHover: 'hover:bg-slate-500/5',
     selected: 'border-l-2 border-slate-500 bg-slate-500/5',
     iconBg: 'bg-slate-500/10',
@@ -313,7 +313,7 @@ export const GroupedTransformationPicker = forwardRef<
     return (
       <>
         {text.slice(0, index)}
-        <span className="bg-yellow-500/30 text-yellow-200 rounded px-0.5">
+        <span className="bg-yellow-500/30 text-yellow-900 dark:text-yellow-200 rounded px-0.5">
           {text.slice(index, index + query.length)}
         </span>
         {text.slice(index + query.length)}

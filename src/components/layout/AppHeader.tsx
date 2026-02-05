@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Layers, Download, History, Save } from 'lucide-react'
+import { Layers, Download, History, Save, Sun, Moon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -15,6 +15,7 @@ import { useAuditStore } from '@/stores/auditStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { getAuditEntriesForTable } from '@/lib/audit-from-timeline'
 import { useDuckDB } from '@/hooks/useDuckDB'
+import { useUIStore } from '@/stores/uiStore'
 
 interface AppHeaderProps {
   onNewTable?: () => void
@@ -29,6 +30,9 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
 
   const auditSidebarOpen = usePreviewStore((s) => s.auditSidebarOpen)
   const toggleAuditSidebar = usePreviewStore((s) => s.toggleAuditSidebar)
+
+  const themeMode = useUIStore((s) => s.themeMode)
+  const setThemeMode = useUIStore((s) => s.setThemeMode)
 
   const { exportTable } = useDuckDB()
 
@@ -85,6 +89,27 @@ export function AppHeader({ onNewTable, onPersist, isPersisting = false }: AppHe
 
       {/* Right section: Actions */}
       <div className="flex items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
+              className="h-8 w-8"
+              data-testid="theme-toggle"
+            >
+              {themeMode === 'dark' ? (
+                <Sun className="w-4 h-4" />
+              ) : (
+                <Moon className="w-4 h-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          </TooltipContent>
+        </Tooltip>
+
         {activeTable && (
           <>
             {/* Timeline-based Undo/Redo */}

@@ -185,9 +185,9 @@ export function StandardizeConfigPanel({
             <div className="space-y-1">
               {algorithmExamples.slice(0, 2).map((ex, i) => (
                 <div key={i} className="flex items-center gap-2 text-xs font-mono">
-                  <span className="text-red-400/80">{ex.before}</span>
+                  <span className="text-red-600 dark:text-red-400/80">{ex.before}</span>
                   <span className="text-muted-foreground">→</span>
-                  <span className="text-green-400/80">{ex.after}</span>
+                  <span className="text-green-700 dark:text-green-400/80">{ex.after}</span>
                 </div>
               ))}
             </div>
@@ -198,7 +198,7 @@ export function StandardizeConfigPanel({
             <ul className="text-xs text-muted-foreground space-y-0.5">
               {algorithmInfo.hints.map((hint, i) => (
                 <li key={i} className="flex items-start gap-1.5">
-                  <span className="text-blue-400">•</span>
+                  <span className="text-blue-600 dark:text-blue-400">•</span>
                   {hint}
                 </li>
               ))}
@@ -239,23 +239,23 @@ export function StandardizeConfigPanel({
         <p className="text-xs font-medium text-muted-foreground mb-2">How it works</p>
         <ul className="text-xs text-muted-foreground space-y-1">
           <li className="flex items-start gap-1.5">
-            <span className="text-blue-400">1.</span>
+            <span className="text-blue-600 dark:text-blue-400">1.</span>
             Select a table and text column
           </li>
           <li className="flex items-start gap-1.5">
-            <span className="text-blue-400">2.</span>
+            <span className="text-blue-600 dark:text-blue-400">2.</span>
             Choose a clustering algorithm
           </li>
           <li className="flex items-start gap-1.5">
-            <span className="text-blue-400">3.</span>
+            <span className="text-blue-600 dark:text-blue-400">3.</span>
             Click &quot;Analyze Values&quot; to find clusters
           </li>
           <li className="flex items-start gap-1.5">
-            <span className="text-blue-400">4.</span>
+            <span className="text-blue-600 dark:text-blue-400">4.</span>
             Review clusters and select values to replace
           </li>
           <li className="flex items-start gap-1.5">
-            <span className="text-blue-400">5.</span>
+            <span className="text-blue-600 dark:text-blue-400">5.</span>
             Click &quot;Apply&quot; to update the data
           </li>
         </ul>

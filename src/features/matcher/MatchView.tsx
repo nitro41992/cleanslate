@@ -463,8 +463,8 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               {/* Stats */}
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
                 <span>{stats.pending} pending</span>
-                <span className="text-green-400">{stats.merged} merged</span>
-                <span className="text-red-400">{stats.keptSeparate} kept</span>
+                <span className="text-green-600 dark:text-green-400">{stats.merged} merged</span>
+                <span className="text-red-600 dark:text-red-400">{stats.keptSeparate} kept</span>
               </div>
 
               <div className="h-6 w-px bg-border" />
@@ -647,7 +647,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               {hasReviewed && selectedIds.size === 0 && (
                 <>
                   <Separator />
-                  <div className="p-4 flex items-center gap-3 bg-green-950/30">
+                  <div className="p-4 flex items-center gap-3 bg-green-50 dark:bg-green-950/30">
                     <span className="text-sm">
                       Ready to apply {stats.merged} merge{stats.merged !== 1 ? 's' : ''}
                     </span>

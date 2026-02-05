@@ -28,9 +28,9 @@ function formatValue(value: unknown): string {
 }
 
 function getSimilarityClass(similarity: number): string {
-  if (similarity >= 85) return 'bg-green-500/20 text-green-400'
-  if (similarity >= 60) return 'bg-yellow-500/20 text-yellow-400'
-  return 'bg-red-500/20 text-red-400'
+  if (similarity >= 85) return 'bg-green-500/20 text-green-600 dark:text-green-400'
+  if (similarity >= 60) return 'bg-yellow-500/20 text-yellow-600 dark:text-yellow-400'
+  return 'bg-red-500/20 text-red-600 dark:text-red-400'
 }
 
 export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
@@ -124,7 +124,7 @@ export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
                       {detail.similarity}% Similar
                     </span>
                   </div>
-                  <div className="text-amber-400 text-sm">
+                  <div className="text-amber-600 dark:text-amber-400 text-sm">
                     <p>Unable to display row data - parsing failed</p>
                     {'_rawData' in detail.keptRowData && detail.keptRowData._rawData ? (
                       <p className="mt-1 text-xs text-muted-foreground font-mono truncate">
@@ -161,7 +161,7 @@ export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
                 <div className="grid grid-cols-2 divide-x divide-border/50">
                   {/* Kept Row */}
                   <div className="p-3">
-                    <div className="flex items-center gap-1 text-xs font-semibold text-green-400 mb-2">
+                    <div className="flex items-center gap-1 text-xs font-semibold text-green-600 dark:text-green-400 mb-2">
                       <Check className="w-3 h-3" />
                       KEPT
                     </div>
@@ -183,7 +183,7 @@ export function MergeDetailTable({ auditEntryId }: MergeDetailTableProps) {
 
                   {/* Deleted Row */}
                   <div className="p-3">
-                    <div className="flex items-center gap-1 text-xs font-semibold text-red-400 mb-2">
+                    <div className="flex items-center gap-1 text-xs font-semibold text-red-600 dark:text-red-400 mb-2">
                       <X className="w-3 h-3" />
                       DELETED
                     </div>

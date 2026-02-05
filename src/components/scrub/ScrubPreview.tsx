@@ -144,7 +144,7 @@ export function ScrubPreview({
     <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2 animate-in fade-in duration-200">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs font-medium text-amber-400">
+        <div className="flex items-center gap-2 text-xs font-medium text-amber-600 dark:text-amber-400">
           <Eye className="w-3.5 h-3.5" />
           Live Preview
           {isUsingDefaultSecret && (
@@ -205,7 +205,7 @@ export function ScrubPreview({
                 </span>
                 <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
                 <span
-                  className="text-green-400/90 min-w-[120px] max-w-[140px] truncate"
+                  className="text-green-700 dark:text-green-400/90 min-w-[120px] max-w-[140px] truncate"
                   title={row.result ?? '(null)'}
                 >
                   {formatPreviewValue(row.result)}

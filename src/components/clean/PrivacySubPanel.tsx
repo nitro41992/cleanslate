@@ -454,9 +454,9 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
                             className={cn((!secret || secret.length < MIN_SECRET_LENGTH) && 'border-amber-500/50')}
                           />
                           {!secret ? (
-                            <p className="text-xs text-amber-500">Enter a secret phrase (min 5 chars)</p>
+                            <p className="text-xs text-amber-600 dark:text-amber-500">Enter a secret phrase (min 5 chars)</p>
                           ) : secret.length < MIN_SECRET_LENGTH && (
-                            <p className="text-xs text-amber-500">
+                            <p className="text-xs text-amber-600 dark:text-amber-500">
                               {MIN_SECRET_LENGTH - secret.length} more character{MIN_SECRET_LENGTH - secret.length !== 1 ? 's' : ''} needed
                             </p>
                           )}
@@ -477,9 +477,9 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
                     <div className="bg-muted/30 rounded-lg p-3 space-y-2">
                       <p className="text-xs font-medium text-muted-foreground">Example</p>
                       <div className="flex items-center gap-2 text-xs font-mono">
-                        <span className="text-red-400/80">{METHOD_EXAMPLES[currentRule.method].before}</span>
+                        <span className="text-red-600 dark:text-red-400/80">{METHOD_EXAMPLES[currentRule.method].before}</span>
                         <span className="text-muted-foreground">→</span>
-                        <span className="text-green-400/80">{METHOD_EXAMPLES[currentRule.method].after}</span>
+                        <span className="text-green-700 dark:text-green-400/80">{METHOD_EXAMPLES[currentRule.method].after}</span>
                       </div>
                     </div>
 
@@ -518,7 +518,7 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
                                 </span>
                                 <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
                                 <span
-                                  className="text-green-400/90 min-w-[100px] max-w-[120px] truncate"
+                                  className="text-green-700 dark:text-green-400/90 min-w-[100px] max-w-[120px] truncate"
                                   title={row.result ?? '(null)'}
                                 >
                                   {row.result === null ? '(null)' : row.result === '' ? '(empty)' : row.result}
@@ -574,15 +574,15 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
                         </p>
                         <ul className="text-muted-foreground space-y-1 mt-2">
                           <li className="flex items-start gap-1.5">
-                            <span className="text-teal-400">•</span>
+                            <span className="text-teal-600 dark:text-teal-400">•</span>
                             Enables lookup of original values
                           </li>
                           <li className="flex items-start gap-1.5">
-                            <span className="text-teal-400">•</span>
+                            <span className="text-teal-600 dark:text-teal-400">•</span>
                             Works with recipes (auto-generated on replay)
                           </li>
                           <li className="flex items-start gap-1.5">
-                            <span className="text-amber-400">•</span>
+                            <span className="text-amber-600 dark:text-amber-400">•</span>
                             Contains sensitive data - handle securely
                           </li>
                         </ul>

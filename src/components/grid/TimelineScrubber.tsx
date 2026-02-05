@@ -279,7 +279,7 @@ export function TimelineScrubber({ tableId, className, compact = false }: Timeli
                               ? 'border-primary/70 bg-primary/30'
                               : 'border-muted-foreground/50 hover:border-primary',
                           // Hot snapshot: amber glow (LRU cache - Phase 3)
-                          hasSnapshot && isHotSnapshot && !isCurrentStep && 'border-amber-400 bg-amber-400/30 shadow-[0_0_4px_rgba(251,191,36,0.5)]'
+                          hasSnapshot && isHotSnapshot && !isCurrentStep && 'border-amber-400 bg-amber-400/30 shadow-[0_0_4px_rgba(217,119,6,0.5)] dark:shadow-[0_0_4px_rgba(251,191,36,0.5)]'
                         )}
                         aria-label={`Step ${index + 1}: ${cmd.label}`}
                         data-testid={hasSnapshot ? (isHotSnapshot ? 'snapshot-hot' : 'snapshot-cold') : undefined}

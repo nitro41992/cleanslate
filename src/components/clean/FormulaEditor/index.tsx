@@ -80,7 +80,7 @@ export function FormulaEditor({
       {/* Header with inline columns */}
       <div className="bg-muted rounded-lg p-3">
         <div className="flex items-center gap-2">
-          <FunctionSquare className="w-5 h-5 text-amber-400" />
+          <FunctionSquare className="w-5 h-5 text-amber-600 dark:text-amber-400" />
           <h3 className="font-medium">Formula Builder</h3>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
@@ -117,9 +117,8 @@ export function FormulaEditor({
             }}
             className={cn(
               'text-[11px] font-mono px-2 py-1 rounded-md',
-              'bg-cyan-950/40 text-cyan-400 border border-cyan-500/20',
-              'hover:bg-cyan-900/50 hover:border-cyan-400/40 transition-all',
-              'shadow-sm shadow-cyan-950/30',
+              'bg-cyan-100 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-400 border border-cyan-300/50 dark:border-cyan-500/20',
+              'hover:bg-cyan-200 dark:hover:bg-cyan-900/50 hover:border-cyan-400/60 dark:hover:border-cyan-400/40 transition-all',
               disabled && 'opacity-50 cursor-not-allowed'
             )}
             disabled={disabled}
@@ -179,7 +178,7 @@ export function FormulaEditor({
             onChange={(e) => onOutputColumnChange(e.target.value)}
             placeholder="e.g., result, category, score"
             disabled={disabled}
-            className="bg-slate-900/50"
+            className="bg-muted"
           />
         </div>
       ) : (
