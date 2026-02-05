@@ -226,6 +226,8 @@ export interface DiffConfig {
   removedColumns: string[]
   /** Storage type: 'memory' for in-memory temp table, 'parquet' for OPFS-backed diff */
   storageType: 'memory' | 'parquet'
+  /** Whether target table (B) had _cs_origin_id column at diff creation time */
+  hasOriginIdB: boolean
 }
 
 /**
@@ -957,6 +959,8 @@ export async function runDiff(
       newColumns,
       removedColumns,
       storageType,
+      // Store origin ID availability at creation time to ensure consistent fetching
+      hasOriginIdB,
     }
     } finally {
       // CRITICAL: Always clear interval, even on error
@@ -992,20 +996,18 @@ export async function fetchDiffPage(
   offset: number,
   limit: number = 500,
   _keyOrderBy: string,
-  storageType: 'memory' | 'parquet' = 'memory'
+  storageType: 'memory' | 'parquet' = 'memory',
+  hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<DiffRow[]> {
   // Use robust resolver to handle Parquet sources with file existence checks and registration
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
-  // FIX: Handle tables that lack _cs_origin_id column
-  // Some tables may not have _cs_origin_id due to:
-  // - Legacy tables created before this feature was added
-  // - Formula Builder bug that dropped internal columns (fixed in excel-formula.ts)
-  //
+  // Use the hasOriginIdB from diff creation for consistency
+  // Falls back to runtime check for backward compatibility
   // When _cs_origin_id is missing:
   // - Use _cs_id for row number computation in b_current_rows CTE
   // - Use d.b_row_id (which stores _cs_id) instead of d.b_origin_id for JOINs
-  const targetHasOriginId = await tableHasOriginId(targetTableName)
+  const targetHasOriginId = hasOriginIdB !== undefined ? hasOriginIdB : await tableHasOriginId(targetTableName)
 
   // Build row matching expressions based on column availability
   const bRowsCteCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
@@ -1223,10 +1225,11 @@ export async function fetchDiffPageWithKeyset(
   removedColumns: string[],
   cursor: { sortKey: number | null; direction: 'forward' | 'backward' },
   limit: number = 500,
-  storageType: 'memory' | 'parquet' = 'memory'
+  storageType: 'memory' | 'parquet' = 'memory',
+  hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<KeysetDiffPageResult> {
-  // FIX: Handle tables that lack _cs_origin_id column (see fetchDiffPage for details)
-  const targetHasOriginId = await tableHasOriginId(targetTableName)
+  // Use the hasOriginIdB from diff creation for consistency (see fetchDiffPage for details)
+  const targetHasOriginId = hasOriginIdB !== undefined ? hasOriginIdB : await tableHasOriginId(targetTableName)
 
   // Build row matching expressions based on column availability
   const bRowsCteCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
@@ -1539,7 +1542,8 @@ export async function materializeDiffForPagination(
   targetTableName: string,
   allColumns: string[],
   newColumns: string[],
-  removedColumns: string[]
+  removedColumns: string[],
+  hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<string> {
   const startTime = performance.now()
   const indexTableName = `_diff_idx_${Date.now()}`
@@ -1548,8 +1552,8 @@ export async function materializeDiffForPagination(
   // Get source table expression (handles Parquet sources)
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
-  // FIX: Handle tables that lack _cs_origin_id column (see fetchDiffPage for details)
-  const targetHasOriginId = await tableHasOriginId(targetTableName)
+  // Use the hasOriginIdB from diff creation for consistency (see fetchDiffPage for details)
+  const targetHasOriginId = hasOriginIdB !== undefined ? hasOriginIdB : await tableHasOriginId(targetTableName)
 
   // Build row matching expressions based on column availability
   const idxJoinCol = targetHasOriginId ? `idx.b_origin_id` : `idx.b_row_id`
@@ -1756,12 +1760,13 @@ export async function getRowsWithColumnChanges(
   sourceTableName: string,
   targetTableName: string,
   columnName: string,
-  storageType: 'memory' | 'parquet' = 'memory'
+  storageType: 'memory' | 'parquet' = 'memory',
+  hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<Set<string>> {
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
-  // FIX: Handle tables that lack _cs_origin_id column (see fetchDiffPage for details)
-  const targetHasOriginId = await tableHasOriginId(targetTableName)
+  // Use the hasOriginIdB from diff creation for consistency (see fetchDiffPage for details)
+  const targetHasOriginId = hasOriginIdB !== undefined ? hasOriginIdB : await tableHasOriginId(targetTableName)
 
   // Build row matching expressions based on column availability
   const bRowsJoinCol = targetHasOriginId ? `d.b_origin_id` : `d.b_row_id`

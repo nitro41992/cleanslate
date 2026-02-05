@@ -122,8 +122,13 @@ export class InsertRowCommand implements Command<InsertRowParams> {
         c.name !== '_cs_id' && c.name !== CS_ORIGIN_ID_COLUMN
       )
 
-      // Check if table has _cs_origin_id column (older tables may not have it)
-      const hasOriginId = ctx.table.columns.some((c) => c.name === CS_ORIGIN_ID_COLUMN)
+      // Check if table has _cs_origin_id column by querying the database directly
+      // (ctx.table.columns excludes internal columns, so we can't rely on it)
+      const originIdCheck = await ctx.db.query<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM information_schema.columns
+         WHERE table_name = '${tableName}' AND column_name = '${CS_ORIGIN_ID_COLUMN}'`
+      )
+      const hasOriginId = Number(originIdCheck[0]?.cnt ?? 0) > 0
 
       const columnNames = hasOriginId
         ? ['_cs_id', CS_ORIGIN_ID_COLUMN, ...userColumns.map((c) => c.name)]

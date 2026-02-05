@@ -132,6 +132,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     newColumns,
     removedColumns,
     storageType,
+    hasOriginIdB,
     isComparing,
     blindMode,
     wordWrapEnabled,
@@ -375,7 +376,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           config.targetTableName,
           orderedColumns,
           config.newColumns,
-          config.removedColumns
+          config.removedColumns,
+          config.hasOriginIdB
         )
       }
 
@@ -390,6 +392,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         newColumns: config.newColumns,
         removedColumns: config.removedColumns,
         storageType: config.storageType,
+        hasOriginIdB: config.hasOriginIdB,
       })
 
       toast.success('Comparison Complete', {
@@ -701,6 +704,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
                   newColumns={newColumns}
                   removedColumns={removedColumns}
                   storageType={storageType || 'memory'}
+                  hasOriginIdB={hasOriginIdB}
                 />
               </div>
 

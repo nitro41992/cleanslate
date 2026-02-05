@@ -29,6 +29,7 @@ interface DiffState {
   newColumns: string[]           // Columns added (in A but not B)
   removedColumns: string[]       // Columns removed (in B but not A)
   storageType: 'memory' | 'parquet' | null  // Storage type for diff results
+  hasOriginIdB: boolean          // Whether target table had _cs_origin_id at diff creation (for consistent fetch)
   // UI state
   isComparing: boolean
   blindMode: boolean
@@ -59,6 +60,7 @@ interface DiffActions {
     newColumns: string[]
     removedColumns: string[]
     storageType: 'memory' | 'parquet'
+    hasOriginIdB: boolean
   }) => void
   setSummary: (summary: DiffState['summary']) => void
   setIsComparing: (comparing: boolean) => void
@@ -92,6 +94,7 @@ const initialState: DiffState = {
   newColumns: [],
   removedColumns: [],
   storageType: null,
+  hasOriginIdB: true,  // Default to true for safety
   isComparing: false,
   blindMode: false,
   // Grid customization
@@ -124,6 +127,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     newColumns: [],
     removedColumns: [],
     storageType: null,
+    hasOriginIdB: true,
     keyColumns: [],
   }),
   setTableA: (tableId) => set({ tableA: tableId }),
@@ -141,6 +145,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     newColumns: config.newColumns,
     removedColumns: config.removedColumns,
     storageType: config.storageType,
+    hasOriginIdB: config.hasOriginIdB,
   }),
   setSummary: (summary) => set({ summary }),
   setIsComparing: (comparing) => set({ isComparing: comparing }),
@@ -156,6 +161,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     newColumns: [],
     removedColumns: [],
     storageType: null,
+    hasOriginIdB: true,
     // Clear grid customization and filters on new comparison
     columnWidths: {},
     statusFilter: null,

@@ -66,6 +66,8 @@ interface VirtualizedDiffGridProps {
   /** Columns in B (current) but not A (original) - from diff engine's perspective */
   removedColumns?: string[]
   storageType?: 'memory' | 'parquet'
+  /** Whether target table had _cs_origin_id at diff creation */
+  hasOriginIdB?: boolean
 }
 
 const PAGE_SIZE = 500
@@ -97,6 +99,7 @@ export function VirtualizedDiffGrid({
   newColumns = [],
   removedColumns = [],
   storageType = 'memory',
+  hasOriginIdB,
 }: VirtualizedDiffGridProps) {
   const [data, setData] = useState<DiffRow[]>([])
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
@@ -130,7 +133,8 @@ export function VirtualizedDiffGrid({
       sourceTableName,
       targetTableName,
       columnFilter,
-      storageType
+      storageType,
+      hasOriginIdB
     )
       .then((rowIds) => {
         setColumnFilterRowIds(rowIds)
@@ -141,7 +145,7 @@ export function VirtualizedDiffGrid({
         setColumnFilterRowIds(null)
         setIsLoadingColumnFilter(false)
       })
-  }, [columnFilter, diffTableName, sourceTableName, targetTableName, storageType])
+  }, [columnFilter, diffTableName, sourceTableName, targetTableName, storageType, hasOriginIdB])
 
   // Track word wrap changes to force grid remount (same pattern as DataGrid)
   const [gridKey, setGridKey] = useState(0)
@@ -279,7 +283,7 @@ export function VirtualizedDiffGrid({
       diffTableName, sourceTableName, targetTableName,
       allColumns, newColumns, removedColumns,
       { sortKey: null, direction: 'forward' },  // null cursor = start from beginning
-      PAGE_SIZE, storageType
+      PAGE_SIZE, storageType, hasOriginIdB
     )
       .then(({ rows, firstSortKey, lastSortKey }) => {
         setData(rows)
@@ -299,7 +303,7 @@ export function VirtualizedDiffGrid({
         console.error('Error loading diff data:', err)
         setIsLoading(false)
       })
-  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, storageType])
+  }, [diffTableName, sourceTableName, targetTableName, allColumns, newColumns, removedColumns, totalRows, storageType, hasOriginIdB])
 
   // Debounce delay for scroll handling (ms) - shorter for responsive feel
   const SCROLL_DEBOUNCE_MS = 50
@@ -406,7 +410,7 @@ export function VirtualizedDiffGrid({
                 diffTableName, sourceTableName, targetTableName,
                 allColumns, newColumns, removedColumns,
                 { sortKey: prevCached.lastSortKey, direction: 'forward' },
-                PAGE_SIZE, storageType
+                PAGE_SIZE, storageType, hasOriginIdB
               )
               newData = result.rows
               firstSortKey = result.firstSortKey
@@ -418,7 +422,7 @@ export function VirtualizedDiffGrid({
                 diffTableName, sourceTableName, targetTableName,
                 allColumns, newColumns, removedColumns,
                 { sortKey: nextCached.firstSortKey, direction: 'backward' },
-                PAGE_SIZE, storageType
+                PAGE_SIZE, storageType, hasOriginIdB
               )
               newData = result.rows
               firstSortKey = result.firstSortKey
@@ -433,7 +437,7 @@ export function VirtualizedDiffGrid({
                 diffTableName, sourceTableName, targetTableName,
                 allColumns, newColumns, removedColumns,
                 { sortKey: estimatedSortKey, direction: 'forward' },
-                PAGE_SIZE, storageType
+                PAGE_SIZE, storageType, hasOriginIdB
               )
               newData = result.rows
               firstSortKey = result.firstSortKey
