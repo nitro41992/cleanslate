@@ -139,6 +139,90 @@ test.describe('Diff View Filtering', () => {
     expect(gridRowCount).toBe(5)
   })
 
+  test('should show rows with new formula column values in diff (Formula Builder)', async () => {
+    /**
+     * Scenario: Apply Formula Builder to create a new column
+     * Expected: All rows should appear in diff as "modified" because they have new column values
+     *
+     * This tests that Formula Builder preserves _cs_origin_id for proper diff matching.
+     * Bug: Formula Builder was dropping _cs_origin_id, causing diff to fail with:
+     *   "Binder Error: Values list "b" does not have a column named "_cs_origin_id""
+     */
+
+    // Load test data
+    await inspector.runQuery('DROP TABLE IF EXISTS basic_data')
+    await laundromat.uploadFile(getFixturePath('basic-data.csv'))
+    await wizard.waitForOpen()
+    await wizard.import()
+    await inspector.waitForTableLoaded('basic_data', 5)
+
+    const tableId = await inspector.getActiveTableId()
+    expect(tableId).not.toBeNull()
+
+    // Apply Formula Builder to create a new column (LEN of name column)
+    await laundromat.openCleanPanel()
+    await picker.waitForOpen()
+
+    // Select Formula Builder transformation
+    await picker.selectTransformation('Formula Builder')
+
+    // Fill in the formula (LEN(@name) to calculate name length)
+    await picker.fillParam('Formula', 'LEN(@name)')
+
+    // Fill in the output column name
+    // The "New Column Name" input has placeholder "e.g., result, category, score"
+    await page.locator('#new-column-name').fill('name_length')
+
+    // Apply the transformation
+    await picker.apply()
+    await inspector.waitForTransformComplete(tableId!)
+
+    // Verify the column was added
+    const columnsAfter = await inspector.getTableColumns('basic_data')
+    expect(columnsAfter.map(c => c.name)).toContain('name_length')
+
+    // Verify the formula calculation is correct (John Doe = 8 chars)
+    // Note: DuckDB's LEN() returns BigInt, so we convert to Number for comparison
+    const rows = await inspector.runQuery('SELECT name, name_length FROM basic_data ORDER BY name')
+    expect(Number(rows.find((r: { name: string }) => r.name === 'Alice Brown')?.name_length)).toBe(11)
+    expect(Number(rows.find((r: { name: string }) => r.name === 'John Doe')?.name_length)).toBe(8)
+
+    // Open Diff View
+    await laundromat.openDiffView()
+    await diffView.waitForOpen()
+    await diffView.runComparison()
+
+    // Wait for diff to complete
+    await expect.poll(async () => {
+      const state = await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        const diffStore = stores?.diffStore as {
+          getState: () => { summary: { added: number; removed: number; modified: number } | null }
+        } | undefined
+        return diffStore?.getState()?.summary
+      })
+      return state
+    }, { timeout: 10000 }).not.toBeNull()
+
+    const diffState = await inspector.getDiffState()
+    const summary = diffState.summary!
+
+    // CRITICAL: All rows should be modified because they have new column values
+    // Before fix: diff would fail with "_cs_origin_id not found" error
+    // After fix: summary.modified should be 5 (all rows have non-NULL name_length values)
+    expect(summary.modified).toBe(5)
+    expect(summary.added).toBe(0)
+    expect(summary.removed).toBe(0)
+
+    // The grid should have rows visible (totalDiffRows > 0)
+    const gridRowCount = await page.evaluate(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+      const diffStore = stores?.diffStore as { getState: () => { totalDiffRows: number } } | undefined
+      return diffStore?.getState()?.totalDiffRows ?? 0
+    })
+    expect(gridRowCount).toBe(5)
+  })
+
   test('should filter by status when clicking summary pills', async () => {
     /**
      * Scenario: Load two tables with known differences, run diff, click status pills

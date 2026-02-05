@@ -779,6 +779,15 @@ export async function runDiff(
       diffCaseLogicFirstLine: diffCaseLogic.trim().split('\n')[0]
     })
 
+    // Build conditional _cs_origin_id selects based on column existence
+    // This prevents "column not found" errors when a table lacks the column
+    const aOriginIdSelect = hasOriginIdA
+      ? `a."${CS_ORIGIN_ID_COLUMN}" as a_origin_id`
+      : 'NULL as a_origin_id'
+    const bOriginIdSelect = hasOriginIdB
+      ? `b."${CS_ORIGIN_ID_COLUMN}" as b_origin_id`
+      : 'NULL as b_origin_id'
+
     const createTempTableQuery = `
       CREATE TEMP TABLE "${diffTableName}" AS
       WITH
@@ -792,8 +801,8 @@ export async function runDiff(
         COALESCE(a."_cs_id", b."_cs_id") as row_id,
         a."_cs_id" as a_row_id,
         b."_cs_id" as b_row_id,
-        a."_cs_origin_id" as a_origin_id,
-        b."_cs_origin_id" as b_origin_id,
+        ${aOriginIdSelect},
+        ${bOriginIdSelect},
         b._row_num as b_row_num,
         COALESCE(b._row_num, a._row_num + 1000000000) as sort_key,
         ${diffCaseLogic}

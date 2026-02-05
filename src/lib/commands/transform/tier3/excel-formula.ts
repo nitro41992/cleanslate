@@ -11,7 +11,6 @@ import type { CommandContext, CommandType, ValidationResult, ExecutionResult } f
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
 import { transpileFormula, validateFormula, extractColumnRefs } from '@/lib/formula'
-import { tableHasCsId } from '@/lib/duckdb'
 
 export type OutputMode = 'new' | 'replace'
 
@@ -117,24 +116,18 @@ export class ExcelFormulaCommand extends Tier3TransformCommand<ExcelFormulaParam
     const tempTable = `${tableName}_temp_${Date.now()}`
 
     try {
-      const hasCsId = await tableHasCsId(tableName)
-      const csIdSelect = hasCsId ? '"_cs_id", ' : ''
-
       if (outputMode === 'new') {
         // Create new column with formula result
-        const existingColumns = ctx.table.columns
-          .filter((c) => c.name !== '_cs_id')
-          .map((c) => quoteColumn(c.name))
-          .join(', ')
-
+        // Use SELECT * to preserve ALL columns including internal ones (_cs_origin_id)
         const newColName = outputColumn!
 
-        // Create temp table with new column
-        const selectQuery = hasCsId
-          ? `SELECT ${csIdSelect}${existingColumns}, (${sqlExpr}) AS ${quoteColumn(newColName)} FROM ${quoteTable(tableName)}`
-          : `SELECT ${existingColumns}, (${sqlExpr}) AS ${quoteColumn(newColName)} FROM ${quoteTable(tableName)}`
-
-        await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
+        const sql = `
+          CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
+          SELECT *,
+                 (${sqlExpr}) AS ${quoteColumn(newColName)}
+          FROM ${quoteTable(tableName)}
+        `
+        await ctx.db.execute(sql)
 
         // Swap tables
         await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
@@ -157,25 +150,16 @@ export class ExcelFormulaCommand extends Tier3TransformCommand<ExcelFormulaParam
         }
       } else {
         // Replace existing column
+        // Use SELECT * EXCLUDE to preserve internal columns (_cs_origin_id)
         const targetCol = targetColumn!
 
-        // Build column list with replacement
-        const columnSelects = ctx.table.columns
-          .filter((c) => c.name !== '_cs_id')
-          .map((c) => {
-            if (c.name === targetCol) {
-              return `(${sqlExpr}) AS ${quoteColumn(c.name)}`
-            }
-            return quoteColumn(c.name)
-          })
-          .join(', ')
-
-        // Create temp table with modified column
-        const selectQuery = hasCsId
-          ? `SELECT ${csIdSelect}${columnSelects} FROM ${quoteTable(tableName)}`
-          : `SELECT ${columnSelects} FROM ${quoteTable(tableName)}`
-
-        await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
+        const sql = `
+          CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS
+          SELECT * EXCLUDE (${quoteColumn(targetCol)}),
+                 (${sqlExpr}) AS ${quoteColumn(targetCol)}
+          FROM ${quoteTable(tableName)}
+        `
+        await ctx.db.execute(sql)
 
         // Swap tables
         await ctx.db.execute(`DROP TABLE ${quoteTable(tableName)}`)
