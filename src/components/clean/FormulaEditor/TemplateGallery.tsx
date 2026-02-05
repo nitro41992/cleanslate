@@ -1,8 +1,8 @@
 /**
  * TemplateGallery Component
  *
- * Compact quick-start formula templates organized by category.
- * Uses a space-efficient grid layout with hover tooltips for formula preview.
+ * Clean list-based formula templates organized by category.
+ * Shows all template information inline without heavy nesting.
  */
 
 import { useState } from 'react'
@@ -13,12 +13,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { FormulaTemplate, TemplateGalleryProps } from './types'
 
@@ -117,52 +111,23 @@ const TEMPLATES: FormulaTemplate[] = [
   },
 ]
 
-// Category styling - compact pill format
+// Category styling
 const CATEGORY_STYLES: Record<FormulaTemplate['category'], {
-  bg: string
   text: string
-  border: string
   label: string
 }> = {
-  conditional: {
-    bg: 'bg-blue-500/10 hover:bg-blue-500/20',
-    text: 'text-blue-400',
-    border: 'border-blue-500/25 hover:border-blue-400/50',
-    label: 'Logic'
-  },
-  comparison: {
-    bg: 'bg-rose-500/10 hover:bg-rose-500/20',
-    text: 'text-rose-400',
-    border: 'border-rose-500/25 hover:border-rose-400/50',
-    label: 'Compare'
-  },
-  text: {
-    bg: 'bg-emerald-500/10 hover:bg-emerald-500/20',
-    text: 'text-emerald-400',
-    border: 'border-emerald-500/25 hover:border-emerald-400/50',
-    label: 'Text'
-  },
-  math: {
-    bg: 'bg-purple-500/10 hover:bg-purple-500/20',
-    text: 'text-purple-400',
-    border: 'border-purple-500/25 hover:border-purple-400/50',
-    label: 'Math'
-  },
-  null: {
-    bg: 'bg-amber-500/10 hover:bg-amber-500/20',
-    text: 'text-amber-400',
-    border: 'border-amber-500/25 hover:border-amber-400/50',
-    label: 'Null'
-  },
+  conditional: { text: 'text-blue-400', label: 'Logic' },
+  comparison: { text: 'text-rose-400', label: 'Compare' },
+  text: { text: 'text-emerald-400', label: 'Text' },
+  math: { text: 'text-purple-400', label: 'Math' },
+  null: { text: 'text-amber-400', label: 'Null' },
 }
 
-// Group templates by category for organized display
 const CATEGORY_ORDER: FormulaTemplate['category'][] = ['conditional', 'comparison', 'text', 'math', 'null']
 
 export function TemplateGallery({ onInsert, disabled }: TemplateGalleryProps) {
   const [isOpen, setIsOpen] = useState(false)
 
-  // Group templates
   const templatesByCategory = CATEGORY_ORDER.reduce((acc, cat) => {
     acc[cat] = TEMPLATES.filter(t => t.category === cat)
     return acc
@@ -182,66 +147,62 @@ export function TemplateGallery({ onInsert, disabled }: TemplateGalleryProps) {
             Quick Start Templates
           </span>
           <ChevronDown className={cn(
-            'w-4 h-4 transition-transform',
+            'w-4 h-4 transition-transform duration-200',
             isOpen && 'rotate-180'
           )} />
         </Button>
       </CollapsibleTrigger>
 
       <CollapsibleContent className="mt-2">
-        <TooltipProvider delayDuration={200}>
-          <div className="space-y-2.5 p-2 rounded-lg bg-slate-900/30 border border-slate-700/50">
-            {CATEGORY_ORDER.map(category => {
-              const templates = templatesByCategory[category]
-              const style = CATEGORY_STYLES[category]
+        <div className="space-y-3">
+          {CATEGORY_ORDER.map(category => {
+            const templates = templatesByCategory[category]
+            const style = CATEGORY_STYLES[category]
 
-              return (
-                <div key={category} className="space-y-1.5">
-                  {/* Category label */}
-                  <div className={cn('text-[10px] font-medium uppercase tracking-wider', style.text)}>
-                    {style.label}
-                  </div>
-                  {/* Template pills */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {templates.map(template => (
-                      <Tooltip key={template.id}>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            className={cn(
-                              'px-2.5 py-1 rounded-md text-xs font-medium border',
-                              'transition-all duration-150',
-                              'focus:outline-none focus:ring-2 focus:ring-primary/50',
-                              style.bg,
-                              style.text,
-                              style.border,
-                              disabled && 'opacity-50 cursor-not-allowed'
-                            )}
-                            onClick={() => onInsert(template.formula)}
-                            disabled={disabled}
-                          >
-                            {template.label}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent
-                          side="top"
-                          className="max-w-[280px] bg-slate-800 border-slate-700"
-                        >
-                          <div className="space-y-1">
-                            <p className="text-xs text-slate-300">{template.description}</p>
-                            <code className="block text-[11px] font-mono text-amber-400 bg-slate-900/50 px-2 py-1 rounded">
-                              {template.formula}
-                            </code>
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
-                    ))}
-                  </div>
+            return (
+              <div key={category}>
+                {/* Category header */}
+                <div className={cn(
+                  'text-[10px] font-semibold uppercase tracking-wider mb-1.5 px-1',
+                  style.text
+                )}>
+                  {style.label}
                 </div>
-              )
-            })}
-          </div>
-        </TooltipProvider>
+
+                {/* Template list */}
+                <div className="divide-y divide-slate-700/40">
+                  {templates.map(template => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      onClick={() => onInsert(template.formula)}
+                      disabled={disabled}
+                      className={cn(
+                        'w-full text-left px-2.5 py-2.5 transition-colors',
+                        'hover:bg-slate-800/50 focus:outline-none focus:bg-slate-800/50',
+                        disabled && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      {/* Title + Description on same line */}
+                      <div className="flex items-baseline gap-2 mb-1">
+                        <span className="text-sm font-medium text-slate-200">
+                          {template.label}
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          {template.description}
+                        </span>
+                      </div>
+                      {/* Formula */}
+                      <code className="text-[11px] font-mono text-amber-400/90">
+                        {template.formula}
+                      </code>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </CollapsibleContent>
     </Collapsible>
   )
