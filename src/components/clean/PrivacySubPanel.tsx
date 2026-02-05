@@ -19,8 +19,6 @@ import {
   Calendar,
   Shuffle,
   ArrowRight,
-  BookOpen,
-  Plus,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,26 +38,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { ColumnCombobox } from '@/components/ui/combobox'
+import { AddToRecipeButton } from '@/components/recipe/AddToRecipeButton'
 import { useTableStore } from '@/stores/tableStore'
-import { useRecipeStore } from '@/stores/recipeStore'
-import { usePreviewStore } from '@/stores/previewStore'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { createCommand } from '@/lib/commands'
 import { getTableColumns, query } from '@/lib/duckdb'
@@ -131,18 +112,6 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
   const { getData } = useDuckDB()
 
-  // Recipe store access
-  const recipes = useRecipeStore((s) => s.recipes)
-  const selectedRecipeId = useRecipeStore((s) => s.selectedRecipeId)
-  const addRecipe = useRecipeStore((s) => s.addRecipe)
-  const addStep = useRecipeStore((s) => s.addStep)
-  const setSelectedRecipe = useRecipeStore((s) => s.setSelectedRecipe)
-  const setSecondaryPanel = usePreviewStore((s) => s.setSecondaryPanel)
-  const secondaryPanel = usePreviewStore((s) => s.secondaryPanel)
-
-  // Get the selected recipe for button display
-  const selectedRecipe = recipes.find((r) => r.id === selectedRecipeId)
-
   // Local state
   const [rules, setRules] = useState<PrivacyRule[]>([])
   const [secret, setSecret] = useState('')
@@ -151,11 +120,6 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
   const [selectedRule, setSelectedRule] = useState<string | null>(null)
   const [secretInfoOpen, setSecretInfoOpen] = useState(false)
   const [keyMapInfoOpen, setKeyMapInfoOpen] = useState(false)
-
-  // Recipe dialog state
-  const [showNewRecipeDialog, setShowNewRecipeDialog] = useState(false)
-  const [newRecipeName, setNewRecipeName] = useState('')
-  const [pendingStep, setPendingStep] = useState<Omit<RecipeStep, 'id'> | null>(null)
 
   // Preview state
   const [preview, setPreview] = useState<PreviewRow[]>([])
@@ -349,82 +313,6 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
     if (rules.length === 0) return false
     // Don't require secret for recipe (will be provided at execution time)
     return true
-  }
-
-  // Handle "Add to New Recipe" action
-  const handleAddToNewRecipe = () => {
-    const step = buildStepFromCurrentForm()
-    if (!step) return
-
-    setPendingStep(step)
-    setNewRecipeName('')
-    setShowNewRecipeDialog(true)
-  }
-
-  // Handle creating recipe with the pending step
-  const handleCreateRecipeWithStep = () => {
-    if (!newRecipeName.trim()) {
-      toast.error('Please enter a recipe name')
-      return
-    }
-
-    if (!pendingStep) return
-
-    // Create the recipe first
-    const recipeId = addRecipe({
-      name: newRecipeName.trim(),
-      description: '',
-      version: '1.0',
-      requiredColumns: rules.map((r) => r.column),
-      steps: [],
-    })
-
-    // Add the pending step to it
-    addStep(recipeId, pendingStep)
-
-    // Open Recipe panel if not already open
-    if (secondaryPanel !== 'recipe') {
-      setSecondaryPanel('recipe')
-    }
-    setSelectedRecipe(recipeId)
-
-    setShowNewRecipeDialog(false)
-    setPendingStep(null)
-    toast.success('Recipe created', {
-      description: `Added Privacy Transforms to "${newRecipeName.trim()}"`,
-    })
-  }
-
-  // Handle "Add to Existing Recipe" action
-  const handleAddToExistingRecipe = (recipeId: string) => {
-    const step = buildStepFromCurrentForm()
-    if (!step) return
-
-    const recipe = recipes.find((r) => r.id === recipeId)
-    const added = addStep(recipeId, step)
-
-    if (!added) {
-      toast.info('Step already exists in recipe', {
-        description: 'This exact step is already in the recipe',
-      })
-      return
-    }
-
-    // Open Recipe panel if not already open and select the recipe
-    if (secondaryPanel !== 'recipe') {
-      setSecondaryPanel('recipe')
-    }
-    setSelectedRecipe(recipeId)
-
-    toast.success('Step added to recipe', {
-      description: `Added Privacy Transforms to "${recipe?.name}"`,
-    })
-  }
-
-  // Handle direct add to selected recipe (when recipe panel is open with a selection)
-  const handleAddToSelectedRecipe = () => {
-    if (!selectedRecipeId) return
-    handleAddToExistingRecipe(selectedRecipeId)
   }
 
   const currentRule = rules.find((r) => r.column === selectedRule)
@@ -733,66 +621,15 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
               )}
             </Button>
 
-            {/* Add to Recipe - always rendered but hidden when recipe panel closed */}
-            <div
-              className={`transition-all duration-150 overflow-hidden ${
-                secondaryPanel === 'recipe'
-                  ? 'flex-1 opacity-100'
-                  : 'w-0 opacity-0'
-              }`}
-            >
-              {selectedRecipeId && selectedRecipe ? (
-                // Direct add to selected recipe
-                <Button
-                  variant="outline"
-                  className="w-full whitespace-nowrap"
-                  disabled={!canAddToRecipe() || isProcessing}
-                  onClick={handleAddToSelectedRecipe}
-                  data-testid="privacy-add-to-recipe-btn"
-                >
-                  <BookOpen className="w-4 h-4 mr-2" />
-                  Add to {selectedRecipe.name}
-                </Button>
-              ) : (
-                // Dropdown when no recipe selected
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className="w-full whitespace-nowrap"
-                      disabled={!canAddToRecipe() || isProcessing}
-                      data-testid="privacy-add-to-recipe-btn"
-                    >
-                      <BookOpen className="w-4 h-4 mr-2" />
-                      Add to Recipe
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuItem onClick={handleAddToNewRecipe}>
-                      <Plus className="w-4 h-4 mr-2" />
-                      Create New Recipe...
-                    </DropdownMenuItem>
-                    {recipes.length > 0 && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuLabel>Add to Existing</DropdownMenuLabel>
-                        {recipes.map((recipe) => (
-                          <DropdownMenuItem
-                            key={recipe.id}
-                            onClick={() => handleAddToExistingRecipe(recipe.id)}
-                          >
-                            {recipe.name}
-                            <span className="ml-auto text-xs text-muted-foreground">
-                              {recipe.steps.length} steps
-                            </span>
-                          </DropdownMenuItem>
-                        ))}
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </div>
+            {/* Add to Recipe */}
+            <AddToRecipeButton
+              buildStep={buildStepFromCurrentForm}
+              canAdd={canAddToRecipe()}
+              isProcessing={isProcessing}
+              stepLabel="Privacy Transforms"
+              testId="privacy-add-to-recipe-btn"
+              requiredColumns={rules.map((r) => r.column)}
+            />
           </div>
           <Button
             variant="ghost"
@@ -807,37 +644,6 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
 
       {/* Confirm Discard Undone Operations Dialog */}
       <ConfirmDiscardDialog {...confirmDialogProps} />
-
-      {/* New Recipe Dialog */}
-      <Dialog open={showNewRecipeDialog} onOpenChange={setShowNewRecipeDialog}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Create New Recipe</DialogTitle>
-            <DialogDescription>
-              The privacy transforms will be added as the first step.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-4">
-            <Label htmlFor="new-recipe-name">Recipe Name</Label>
-            <Input
-              id="new-recipe-name"
-              value={newRecipeName}
-              onChange={(e) => setNewRecipeName(e.target.value)}
-              placeholder="e.g., PII Scrubbing"
-              className="mt-2"
-              autoFocus
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowNewRecipeDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleCreateRecipeWithStep}>
-              Create & Add Step
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }
