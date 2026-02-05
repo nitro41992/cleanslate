@@ -37,6 +37,7 @@ export class EditCellCommand implements Command<EditCellParams> {
   readonly type: CommandType = 'edit:cell'
   readonly label: string
   readonly params: EditCellParams
+  private csOriginId: string | null = null
 
   constructor(id: string | undefined, params: EditCellParams) {
     this.id = id || generateId()
@@ -89,6 +90,12 @@ export class EditCellCommand implements Command<EditCellParams> {
     const newValue = toSqlValue(this.params.newValue)
 
     try {
+      // Capture _cs_origin_id before the update (stable identity for audit drill-down)
+      const originIdResult = await ctx.db.query<{ _cs_origin_id: string }>(
+        `SELECT "_cs_origin_id" FROM ${tableName} WHERE "_cs_id" = '${this.params.csId}'`
+      )
+      this.csOriginId = originIdResult[0]?._cs_origin_id ?? null
+
       // Execute the update
       await ctx.db.execute(
         `UPDATE ${tableName} SET ${columnName} = ${newValue} WHERE "_cs_id" = '${this.params.csId}'`
@@ -166,6 +173,7 @@ export class EditCellCommand implements Command<EditCellParams> {
     return [
       {
         csId: this.params.csId,
+        csOriginId: this.csOriginId ?? undefined,
         columnName: this.params.columnName,
         previousValue: this.params.previousValue,
         newValue: this.params.newValue,

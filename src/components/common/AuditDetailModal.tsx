@@ -53,6 +53,13 @@ export function AuditDetailModal({ entry, open, onOpenChange }: AuditDetailModal
     entry.action === 'Manual Edit' ||
     parsedDetails?.type === 'edit'
 
+  // Only allow drill-down for manual edits, merge, and standardize actions
+  // Other transforms (trim, lowercase, etc.) should not open this modal
+  const isAllowedDrillDown = isManualEdit || isMergeAction || isStandardizeAction
+  if (!isAllowedDrillDown) {
+    return null
+  }
+
   const handleExportCSV = async () => {
     try {
       if (isMergeAction) {

@@ -41,6 +41,7 @@ export class BatchEditCommand implements Command<BatchEditParams> {
   readonly type: CommandType = 'edit:batch'
   readonly label: string
   readonly params: BatchEditParams
+  private csOriginIdMap: Map<string, string> = new Map()
 
   constructor(id: string | undefined, params: BatchEditParams) {
     this.id = id || generateId()
@@ -100,6 +101,16 @@ export class BatchEditCommand implements Command<BatchEditParams> {
     const tableName = quoteTable(ctx.table.name)
 
     try {
+      // Capture _cs_origin_id for all affected rows before updates (stable identity for audit drill-down)
+      const uniqueCsIds = [...new Set(this.params.changes.map(c => c.csId))]
+      const csIdList = uniqueCsIds.map(id => `'${id}'`).join(', ')
+      const originIdResults = await ctx.db.query<{ _cs_id: string; _cs_origin_id: string }>(
+        `SELECT CAST("_cs_id" AS VARCHAR) as "_cs_id", "_cs_origin_id" FROM ${tableName} WHERE "_cs_id" IN (${csIdList})`
+      )
+      for (const row of originIdResults) {
+        this.csOriginIdMap.set(String(row._cs_id), row._cs_origin_id)
+      }
+
       // Execute all updates
       let affected = 0
       for (const change of this.params.changes) {
@@ -192,6 +203,7 @@ export class BatchEditCommand implements Command<BatchEditParams> {
   getCellChanges(): CellChange[] {
     return this.params.changes.map((c) => ({
       csId: c.csId,
+      csOriginId: this.csOriginIdMap.get(c.csId),
       columnName: c.columnName,
       previousValue: c.previousValue,
       newValue: c.newValue,

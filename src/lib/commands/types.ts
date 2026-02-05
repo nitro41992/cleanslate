@@ -382,8 +382,10 @@ export interface ICommandExecutor {
  * Represents a single cell change for tracking dirty cells
  */
 export interface CellChange {
-  /** Row identifier (_cs_id) */
+  /** Row identifier (_cs_id) - positional, can change when rows are inserted/deleted */
   csId: string
+  /** Stable row identifier (_cs_origin_id) - UUID that never changes */
+  csOriginId?: string
   /** Column name */
   columnName: string
   /** Value before the change (for undo) */

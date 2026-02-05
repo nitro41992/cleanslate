@@ -348,7 +348,8 @@ export interface TimelineCommand {
  * Cell-level change record for manual edits
  */
 export interface CellChange {
-  csId: string                       // _cs_id of the row
+  csId: string                       // _cs_id of the row (positional, can change on insert/delete)
+  csOriginId?: string                // _cs_origin_id of the row (stable UUID, never changes)
   columnName: string
   previousValue: unknown
   newValue: unknown
