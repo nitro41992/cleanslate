@@ -10,7 +10,7 @@ import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
 import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
-import { tableHasCsId } from '@/lib/duckdb'
+import { tableHasCsId, tableHasOriginId } from '@/lib/duckdb'
 
 export interface UnformatCurrencyParams extends BaseTransformParams {
   column: string
@@ -56,7 +56,8 @@ export class UnformatCurrencyCommand extends Tier3TransformCommand<UnformatCurre
     const tempTable = `${tableName}_temp_${Date.now()}`
     const columnOrder = getColumnOrderForTable(ctx)
     const hasCsId = await tableHasCsId(tableName)
-    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: unformatExpr }, hasCsId)
+    const hasOriginId = await tableHasOriginId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: unformatExpr }, hasCsId, hasOriginId)
 
     try {
       await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)

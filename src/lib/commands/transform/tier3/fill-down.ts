@@ -10,7 +10,7 @@ import type { CommandContext, CommandType, ExecutionResult } from '../../types'
 import { Tier3TransformCommand, type BaseTransformParams } from '../base'
 import { quoteColumn, quoteTable } from '../../utils/sql'
 import { buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
-import { tableHasCsId } from '@/lib/duckdb'
+import { tableHasCsId, tableHasOriginId } from '@/lib/duckdb'
 
 export interface FillDownParams extends BaseTransformParams {
   column: string
@@ -27,8 +27,9 @@ export class FillDownCommand extends Tier3TransformCommand<FillDownParams> {
     const quotedCol = quoteColumn(col)
 
     try {
-      // Check if _cs_id column exists (for ordering and preservation)
+      // Check if internal identity columns exist
       const hasCsId = await tableHasCsId(tableName)
+      const hasOriginId = await tableHasOriginId(tableName)
       const orderCol = hasCsId ? '"_cs_id"' : 'ROWID'
 
       // Fill down expression using LAST_VALUE with IGNORE NULLS
@@ -44,7 +45,7 @@ export class FillDownCommand extends Tier3TransformCommand<FillDownParams> {
 
       // Use column-ordered SELECT to preserve column order
       const columnOrder = getColumnOrderForTable(ctx)
-      const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: fillExpr }, hasCsId)
+      const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: fillExpr }, hasCsId, hasOriginId)
 
       await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)
 

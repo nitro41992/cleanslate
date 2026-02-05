@@ -21,6 +21,7 @@ import type {
 } from '../types'
 import { generateId } from '@/lib/utils'
 import { toSqlValue, quoteColumn, quoteTable } from '../utils/sql'
+import { tableHasOriginId } from '@/lib/duckdb'
 
 export interface BatchEditChange {
   csId: string
@@ -104,11 +105,14 @@ export class BatchEditCommand implements Command<BatchEditParams> {
       // Capture _cs_origin_id for all affected rows before updates (stable identity for audit drill-down)
       const uniqueCsIds = [...new Set(this.params.changes.map(c => c.csId))]
       const csIdList = uniqueCsIds.map(id => `'${id}'`).join(', ')
-      const originIdResults = await ctx.db.query<{ _cs_id: string; _cs_origin_id: string }>(
-        `SELECT CAST("_cs_id" AS VARCHAR) as "_cs_id", "_cs_origin_id" FROM ${tableName} WHERE "_cs_id" IN (${csIdList})`
-      )
-      for (const row of originIdResults) {
-        this.csOriginIdMap.set(String(row._cs_id), row._cs_origin_id)
+      const hasOriginId = await tableHasOriginId(ctx.table.name)
+      if (hasOriginId) {
+        const originIdResults = await ctx.db.query<{ _cs_id: string; _cs_origin_id: string }>(
+          `SELECT CAST("_cs_id" AS VARCHAR) as "_cs_id", "_cs_origin_id" FROM ${tableName} WHERE "_cs_id" IN (${csIdList})`
+        )
+        for (const row of originIdResults) {
+          this.csOriginIdMap.set(String(row._cs_id), row._cs_origin_id)
+        }
       }
 
       // Execute all updates

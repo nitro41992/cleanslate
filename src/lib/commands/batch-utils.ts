@@ -5,7 +5,7 @@
 
 import type { CommandContext, ExecutionResult } from './types'
 import { batchExecute, swapStagingTable, cleanupStagingTable } from './batch-executor'
-import { getConnection, tableHasCsId, CS_ID_COLUMN } from '@/lib/duckdb'
+import { getConnection, tableHasCsId, tableHasOriginId, CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { useTableStore } from '@/stores/tableStore'
 import { isInternalColumn } from './utils/column-ordering'
 
@@ -36,7 +36,7 @@ export function getColumnOrderForTable(ctx: CommandContext): string[] {
  * This function explicitly lists all columns in the user-defined order,
  * applying transformations to specific columns in-place.
  *
- * Internal columns (_cs_id) are included at the end to preserve row identity for editing.
+ * Internal columns (_cs_id, _cs_origin_id) are included at the end to preserve row identity.
  *
  * Exported for use by Tier 3 commands that need column ordering for non-batch SQL.
  *
@@ -44,13 +44,15 @@ export function getColumnOrderForTable(ctx: CommandContext): string[] {
  * @param columnOrder - User-defined column order (from getColumnOrderForTable)
  * @param columnTransforms - Map of column name -> SQL expression for transformation
  * @param includeCsId - Whether to include _cs_id column (should be true if source table has it)
+ * @param includeCsOriginId - Whether to include _cs_origin_id column (should be true if source table has it)
  * @returns SQL SELECT query with columns in correct order
  */
 export function buildColumnOrderedSelect(
   tableName: string,
   columnOrder: string[],
   columnTransforms: Record<string, string>,
-  includeCsId = false
+  includeCsId = false,
+  includeCsOriginId = false
 ): string {
   // Build select parts for user-visible columns in order
   const selectParts = columnOrder
@@ -63,10 +65,12 @@ export function buildColumnOrderedSelect(
       return `"${col}"`
     })
 
-  // Include _cs_id at the end if it exists in the source table
-  // This is needed for row identity during cell editing
+  // Include internal identity columns at the end if they exist in the source table
   if (includeCsId) {
     selectParts.push(`"${CS_ID_COLUMN}"`)
+  }
+  if (includeCsOriginId) {
+    selectParts.push(`"${CS_ORIGIN_ID_COLUMN}"`)
   }
 
   return `SELECT ${selectParts.join(', ')} FROM "${tableName}"`
@@ -98,14 +102,16 @@ export async function runBatchedColumnTransform(
 ): Promise<ExecutionResult> {
   const columnOrder = getColumnOrderForTable(ctx)
 
-  // Check if source table has _cs_id (needed for row identity during cell editing)
+  // Check if source table has internal identity columns
   const hasCsId = await tableHasCsId(ctx.table.name)
+  const hasOriginId = await tableHasOriginId(ctx.table.name)
 
   const selectQuery = buildColumnOrderedSelect(
     ctx.table.name,
     columnOrder,
     { [column]: transformExpr },
-    hasCsId
+    hasCsId,
+    hasOriginId
   )
 
   // Build sample query if predicate provided

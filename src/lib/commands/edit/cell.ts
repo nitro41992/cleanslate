@@ -18,6 +18,7 @@ import type {
 } from '../types'
 import { generateId } from '@/lib/utils'
 import { toSqlValue, quoteColumn, quoteTable } from '../utils/sql'
+import { tableHasOriginId } from '@/lib/duckdb'
 
 export interface EditCellParams {
   tableId: string
@@ -91,10 +92,13 @@ export class EditCellCommand implements Command<EditCellParams> {
 
     try {
       // Capture _cs_origin_id before the update (stable identity for audit drill-down)
-      const originIdResult = await ctx.db.query<{ _cs_origin_id: string }>(
-        `SELECT "_cs_origin_id" FROM ${tableName} WHERE "_cs_id" = '${this.params.csId}'`
-      )
-      this.csOriginId = originIdResult[0]?._cs_origin_id ?? null
+      const hasOriginId = await tableHasOriginId(ctx.table.name)
+      if (hasOriginId) {
+        const originIdResult = await ctx.db.query<{ _cs_origin_id: string }>(
+          `SELECT "_cs_origin_id" FROM ${tableName} WHERE "_cs_id" = '${this.params.csId}'`
+        )
+        this.csOriginId = originIdResult[0]?._cs_origin_id ?? null
+      }
 
       // Execute the update
       await ctx.db.execute(

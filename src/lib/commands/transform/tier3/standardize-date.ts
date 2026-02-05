@@ -18,7 +18,7 @@ import {
   type UnixTimestampType,
 } from '../../utils/date'
 import { runBatchedColumnTransform, buildColumnOrderedSelect, getColumnOrderForTable } from '../../batch-utils'
-import { tableHasCsId } from '@/lib/duckdb'
+import { tableHasCsId, tableHasOriginId } from '@/lib/duckdb'
 
 export interface StandardizeDateParams extends BaseTransformParams {
   column: string
@@ -141,7 +141,8 @@ export class StandardizeDateCommand extends Tier3TransformCommand<StandardizeDat
     const tempTable = `${tableName}_temp_${Date.now()}`
     const columnOrder = getColumnOrderForTable(ctx)
     const hasCsId = await tableHasCsId(tableName)
-    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: dateExpr }, hasCsId)
+    const hasOriginId = await tableHasOriginId(tableName)
+    const selectQuery = buildColumnOrderedSelect(tableName, columnOrder, { [col]: dateExpr }, hasCsId, hasOriginId)
 
     try {
       await ctx.db.execute(`CREATE OR REPLACE TABLE ${quoteTable(tempTable)} AS ${selectQuery}`)

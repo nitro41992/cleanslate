@@ -528,9 +528,10 @@ export async function registerFileWithRetry(
   db: AsyncDuckDB,
   fileHandle: FileSystemFileHandle,
   fileName: string,
-  maxRetries = 3
+  maxRetries = 5
 ): Promise<'handle' | 'buffer'> {
   // Try file handle registration first (zero-copy, preferred)
+  // Uses longer backoff (200ms base) to allow concurrent exports to finish
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       await db.registerFileHandle(
@@ -544,12 +545,22 @@ export async function registerFileWithRetry(
       const isLockError = String(err).includes('Access Handle')
       if (!isLockError || attempt === maxRetries) {
         // Not a lock error or last attempt - fall back to buffer
-        console.warn(`[Snapshot] File handle registration failed for ${fileName}, using buffer fallback`)
+        console.warn(`[Snapshot] File handle registration failed for ${fileName} (attempt ${attempt}/${maxRetries}), using buffer fallback`)
         break
       }
-      // Wait before retry (exponential backoff: 50ms, 100ms, 200ms)
-      await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt - 1)))
+      // Wait before retry (exponential backoff: 200ms, 400ms, 800ms, 1600ms)
+      await new Promise(resolve => setTimeout(resolve, 200 * Math.pow(2, attempt - 1)))
     }
+  }
+
+  // CRITICAL: Drop any stale/partial file registration before buffer fallback
+  // A failed registerFileHandle may leave a virtual file entry in DuckDB.
+  // Without cleanup, registerFileBuffer creates a second entry for the same name,
+  // causing TProtocolException when read_parquet glob reads the stale entry.
+  try {
+    await db.dropFile(fileName)
+  } catch {
+    // Ignore - file may not be registered
   }
 
   // Fallback: Read file into memory buffer
