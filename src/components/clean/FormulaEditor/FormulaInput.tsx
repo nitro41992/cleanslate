@@ -9,12 +9,6 @@ import { useRef, useCallback, useEffect, useState } from 'react'
 import { AtSign, FunctionSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
-  Command,
-  CommandGroup,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command'
-import {
   Popover,
   PopoverAnchor,
   PopoverContent,
@@ -50,31 +44,6 @@ function getTypeLabel(type: string): string {
   return typeMap[baseType] || type.toLowerCase().slice(0, 4)
 }
 
-/**
- * Get badge color based on type
- */
-function getTypeBadgeClass(type: string): string {
-  const baseType = type.split('(')[0].toUpperCase()
-  switch (baseType) {
-    case 'VARCHAR':
-    case 'TEXT':
-      return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-    case 'INTEGER':
-    case 'BIGINT':
-    case 'DOUBLE':
-    case 'FLOAT':
-    case 'DECIMAL':
-      return 'bg-purple-500/20 text-purple-400 border-purple-500/30'
-    case 'BOOLEAN':
-      return 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-    case 'DATE':
-    case 'TIMESTAMP':
-    case 'TIME':
-      return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-    default:
-      return 'bg-slate-500/20 text-slate-400 border-slate-500/30'
-  }
-}
 
 /**
  * Tokenize a formula string for syntax highlighting.
@@ -552,7 +521,7 @@ export function FormulaInput({
           style={{ WebkitTextFillColor: 'transparent' }}
         />
 
-        {/* Autocomplete dropdown using shadcn Command */}
+        {/* Autocomplete dropdown */}
         <PopoverContent
           className="w-64 p-0 shadow-lg"
           side="bottom"
@@ -561,58 +530,60 @@ export function FormulaInput({
           onOpenAutoFocus={(e) => e.preventDefault()}
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
-          <Command className="bg-slate-800 border-slate-700" shouldFilter={false}>
-            <CommandList>
-              <CommandGroup>
-                {suggestions.map((suggestion, index) => (
-                  <CommandItem
-                    key={`${suggestion.type}-${suggestion.value}`}
-                    value={suggestion.value}
-                    onSelect={() => handleSelect(suggestion)}
-                    onMouseEnter={() => updateSelectedIndex(index)}
-                    data-selected={index === selectedIndex}
-                    className="flex items-center gap-2 cursor-pointer"
-                  >
-                    {suggestion.type === 'column' ? (
-                      <AtSign className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                    ) : (
-                      <FunctionSquare className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={cn(
-                          'font-mono text-sm',
-                          suggestion.type === 'column' ? 'text-cyan-300' : 'text-amber-300'
-                        )}>
-                          {suggestion.label}
+          <div className="bg-slate-800 border-slate-700 rounded-md overflow-hidden">
+            <div className="max-h-[300px] overflow-y-auto overflow-x-hidden overscroll-contain p-1">
+              {suggestions.map((suggestion, index) => (
+                <div
+                  key={`${suggestion.type}-${suggestion.value}`}
+                  onClick={() => handleSelect(suggestion)}
+                  onMouseEnter={() => updateSelectedIndex(index)}
+                  className={cn(
+                    'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none',
+                    index === selectedIndex
+                      ? 'bg-accent text-accent-foreground'
+                      : 'text-popover-foreground'
+                  )}
+                  ref={(el) => {
+                    if (index === selectedIndex && el) {
+                      el.scrollIntoView({ block: 'nearest' })
+                    }
+                  }}
+                >
+                  {suggestion.type === 'column' ? (
+                    <AtSign className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  ) : (
+                    <FunctionSquare className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={cn(
+                        'font-mono text-sm',
+                        suggestion.type === 'column' ? 'text-cyan-300' : 'text-amber-300'
+                      )}>
+                        {suggestion.label}
+                      </span>
+                      {suggestion.columnType && (
+                        <span className="text-[10px] italic text-slate-500">
+                          {getTypeLabel(suggestion.columnType)}
                         </span>
-                        {/* Type badge for columns */}
-                        {suggestion.columnType && (
-                          <span className={cn(
-                            'text-[9px] px-1.5 py-0.5 rounded border font-medium',
-                            getTypeBadgeClass(suggestion.columnType)
-                          )}>
-                            {getTypeLabel(suggestion.columnType)}
-                          </span>
-                        )}
-                      </div>
-                      {suggestion.description && (
-                        <div className="text-[10px] text-slate-400 truncate">
-                          {suggestion.description}
-                        </div>
                       )}
                     </div>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
+                    {suggestion.description && (
+                      <div className="text-[10px] text-slate-400 truncate">
+                        {suggestion.description}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
             {/* Keyboard hints */}
             <div className="px-2 py-1.5 text-[10px] text-slate-500 border-t border-slate-700 flex items-center gap-3">
               <span><kbd className="px-1 py-0.5 bg-slate-700 rounded text-[9px]">↑↓</kbd> navigate</span>
               <span><kbd className="px-1 py-0.5 bg-slate-700 rounded text-[9px]">Enter</kbd> select</span>
               <span><kbd className="px-1 py-0.5 bg-slate-700 rounded text-[9px]">Esc</kbd> close</span>
             </div>
-          </Command>
+          </div>
         </PopoverContent>
       </Popover>
     </div>
