@@ -1,4 +1,4 @@
-import { query, execute, tableExists, isInternalColumn, getConnection, initDuckDB, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
+import { query, execute, tableExists, isInternalColumn, getConnection, initDuckDB, CS_ORIGIN_ID_COLUMN, tableHasOriginId } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { formatBytes } from './duckdb/storage-info'
@@ -997,6 +997,21 @@ export async function fetchDiffPage(
   // Use robust resolver to handle Parquet sources with file existence checks and registration
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
+  // FIX: Handle tables that lack _cs_origin_id column
+  // Some tables may not have _cs_origin_id due to:
+  // - Legacy tables created before this feature was added
+  // - Formula Builder bug that dropped internal columns (fixed in excel-formula.ts)
+  //
+  // When _cs_origin_id is missing:
+  // - Use _cs_id for row number computation in b_current_rows CTE
+  // - Use d.b_row_id (which stores _cs_id) instead of d.b_origin_id for JOINs
+  const targetHasOriginId = await tableHasOriginId(targetTableName)
+
+  // Build row matching expressions based on column availability
+  const bRowsCteCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
+  const bRowsJoinCol = targetHasOriginId ? `d.b_origin_id` : `d.b_row_id`
+  const bTableJoinCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
+
   // Build select columns: a_col and b_col for each column
   // CRITICAL: Handle new/removed columns by selecting NULL for missing sides
   // - If column only in A (newColumns): select a."col" and NULL for b_col
@@ -1078,7 +1093,7 @@ export async function fetchDiffPage(
         // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
         const result = await query<DiffRow>(`
           WITH b_current_rows AS (
-            SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+            SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
             FROM "${targetTableName}"
           )
           SELECT
@@ -1087,9 +1102,9 @@ export async function fetchDiffPage(
             b_nums.current_row_num as b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}_part_*.parquet') d
-          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
-          LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
-          LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
+          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+          LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
+          LEFT JOIN b_current_rows b_nums ON ${bRowsJoinCol} = b_nums.${bRowsCteCol}
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
@@ -1124,7 +1139,7 @@ export async function fetchDiffPage(
         // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
         const result = await query<DiffRow>(`
           WITH b_current_rows AS (
-            SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+            SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
             FROM "${targetTableName}"
           )
           SELECT
@@ -1133,9 +1148,9 @@ export async function fetchDiffPage(
             b_nums.current_row_num as b_row_num,
             ${selectCols}
           FROM read_parquet('${tempTableName}.parquet') d
-          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
-          LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
-          LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
+          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+          LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
+          LEFT JOIN b_current_rows b_nums ON ${bRowsJoinCol} = b_nums.${bRowsCteCol}
           WHERE d.diff_status IN ('added', 'removed', 'modified')
           ORDER BY d.sort_key
           LIMIT ${limit} OFFSET ${offset}
@@ -1156,7 +1171,7 @@ export async function fetchDiffPage(
   // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
   return query<DiffRow>(`
     WITH b_current_rows AS (
-      SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+      SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
       FROM "${targetTableName}"
     )
     SELECT
@@ -1165,9 +1180,9 @@ export async function fetchDiffPage(
       b_nums.current_row_num as b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
-    LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+    LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
+    LEFT JOIN b_current_rows b_nums ON ${bRowsJoinCol} = b_nums.${bRowsCteCol}
     WHERE d.diff_status IN ('added', 'removed', 'modified')
     ORDER BY d.sort_key
     LIMIT ${limit} OFFSET ${offset}
@@ -1210,6 +1225,16 @@ export async function fetchDiffPageWithKeyset(
   limit: number = 500,
   storageType: 'memory' | 'parquet' = 'memory'
 ): Promise<KeysetDiffPageResult> {
+  // FIX: Handle tables that lack _cs_origin_id column (see fetchDiffPage for details)
+  const targetHasOriginId = await tableHasOriginId(targetTableName)
+
+  // Build row matching expressions based on column availability
+  const bRowsCteCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
+  const bRowsJoinCol = targetHasOriginId ? `d.b_origin_id` : `d.b_row_id`
+  const bTableJoinCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
+  // For index table queries, use page.* prefix instead of d.*
+  const pageRowsJoinCol = targetHasOriginId ? `page.b_origin_id` : `page.b_row_id`
+
   // For Parquet storage, check if we have a materialized index table available
   // Use two-phase approach: fast index lookup, then targeted JOIN
   if (storageType === 'parquet') {
@@ -1263,7 +1288,7 @@ export async function fetchDiffPageWithKeyset(
           LIMIT ${limit}
         ),
         b_current_rows AS (
-          SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+          SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
           FROM "${targetTableName}"
         )
         SELECT
@@ -1273,9 +1298,9 @@ export async function fetchDiffPageWithKeyset(
           b_nums.current_row_num as b_row_num,
           ${selectCols}
         FROM page
-        LEFT JOIN ${sourceTableExpr} a ON page.a_origin_id = a."_cs_origin_id"
-        LEFT JOIN "${targetTableName}" b ON page.b_origin_id = b."_cs_origin_id"
-        LEFT JOIN b_current_rows b_nums ON page.b_origin_id = b_nums."_cs_origin_id"
+        LEFT JOIN ${sourceTableExpr} a ON page.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+        LEFT JOIN "${targetTableName}" b ON ${pageRowsJoinCol} = b.${bTableJoinCol}
+        LEFT JOIN b_current_rows b_nums ON ${pageRowsJoinCol} = b_nums.${bRowsCteCol}
         ORDER BY page.sort_key ${orderDirection}
       `)
 
@@ -1344,7 +1369,7 @@ export async function fetchDiffPageWithKeyset(
   // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
   const rows = await query<DiffRow & { sort_key: number }>(`
     WITH b_current_rows AS (
-      SELECT "_cs_origin_id", ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
+      SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
       FROM "${targetTableName}"
     )
     SELECT
@@ -1354,9 +1379,9 @@ export async function fetchDiffPageWithKeyset(
       b_nums.current_row_num as b_row_num,
       ${selectCols}
     FROM "${tempTableName}" d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
-    LEFT JOIN b_current_rows b_nums ON d.b_origin_id = b_nums."_cs_origin_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+    LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
+    LEFT JOIN b_current_rows b_nums ON ${bRowsJoinCol} = b_nums.${bRowsCteCol}
     WHERE ${whereClause}
     ORDER BY d.sort_key ${orderDirection}
     LIMIT ${limit}
@@ -1523,6 +1548,13 @@ export async function materializeDiffForPagination(
   // Get source table expression (handles Parquet sources)
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
+  // FIX: Handle tables that lack _cs_origin_id column (see fetchDiffPage for details)
+  const targetHasOriginId = await tableHasOriginId(targetTableName)
+
+  // Build row matching expressions based on column availability
+  const idxJoinCol = targetHasOriginId ? `idx.b_origin_id` : `idx.b_row_id`
+  const bTableJoinCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
+
   // Build select columns: a_col and b_col for each column
   // Handle new/removed columns by selecting NULL for missing sides
   const selectCols = allColumns
@@ -1593,7 +1625,7 @@ export async function materializeDiffForPagination(
 
   // STEP 2: Create VIEW that JOINs index to source/target for column data
   // Column data is fetched on-demand, only for visible rows
-  // Uses _cs_origin_id for stable row matching (survives row insertions/deletions)
+  // Uses _cs_origin_id for stable row matching when available, falls back to _cs_id
   await execute(`
     CREATE VIEW "${viewTableName}" AS
     SELECT
@@ -1603,8 +1635,8 @@ export async function materializeDiffForPagination(
       idx.b_row_num,
       ${selectCols}
     FROM "${indexTableName}" idx
-    LEFT JOIN ${sourceTableExpr} a ON idx.a_origin_id = a."_cs_origin_id"
-    LEFT JOIN "${targetTableName}" b ON idx.b_origin_id = b."_cs_origin_id"
+    LEFT JOIN ${sourceTableExpr} a ON idx.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+    LEFT JOIN "${targetTableName}" b ON ${idxJoinCol} = b.${bTableJoinCol}
   `)
 
   // Track both for cleanup (store as "indexTable|viewTable")
@@ -1728,6 +1760,13 @@ export async function getRowsWithColumnChanges(
 ): Promise<Set<string>> {
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
+  // FIX: Handle tables that lack _cs_origin_id column (see fetchDiffPage for details)
+  const targetHasOriginId = await tableHasOriginId(targetTableName)
+
+  // Build row matching expressions based on column availability
+  const bRowsJoinCol = targetHasOriginId ? `d.b_origin_id` : `d.b_row_id`
+  const bTableJoinCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
+
   // Handle Parquet-backed diffs
   let diffExpr: string
   if (storageType === 'parquet') {
@@ -1768,12 +1807,12 @@ export async function getRowsWithColumnChanges(
   }
 
   // Query for modified rows where this specific column changed
-  // Uses _cs_origin_id for stable row matching (survives row insertions/deletions)
+  // Uses _cs_origin_id for stable row matching when available, falls back to _cs_id
   const rows = await query<{ row_id: string }>(`
     SELECT d.row_id
     FROM ${diffExpr} d
-    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."_cs_origin_id"
-    LEFT JOIN "${targetTableName}" b ON d.b_origin_id = b."_cs_origin_id"
+    LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
+    LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
     WHERE d.diff_status = 'modified'
       AND CAST(a."${columnName}" AS VARCHAR) IS DISTINCT FROM CAST(b."${columnName}" AS VARCHAR)
   `)
