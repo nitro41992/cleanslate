@@ -41,7 +41,7 @@ async function checkOPFSSupport(page: Page): Promise<boolean> {
 }
 
 /**
- * Clean up OPFS test data (Parquet snapshots)
+ * Clean up OPFS test data (Arrow IPC snapshots)
  */
 async function cleanupOPFSTestData(page: Page): Promise<void> {
   await page.evaluate(async () => {
@@ -439,7 +439,7 @@ test.describe('Application State Persistence', () => {
     }, { timeout: 15000 }).toBe('JOHN DOE')
 
     // Make another cell edit AFTER undo to force re-materialization
-    // This ensures the undone state gets persisted to Parquet
+    // This ensures the undone state gets persisted to the snapshot
     // Note: The test originally made an email edit before the Lowercase transform, which
     // clears redo states. So after undoing Lowercase, there may or may not be redo states.
     // We just need to verify the cell edit works - dialog handling is tested separately.
@@ -464,10 +464,10 @@ test.describe('Application State Persistence', () => {
     }, { timeout: 10000 }).toBe('Edited City')
 
     // Flush to OPFS before reload (same pattern as other persistence tests)
-    // This ensures the Parquet file is written with the undone state
+    // This ensures the snapshot file is written with the undone state
     await inspector.flushToOPFS()
 
-    // Wait for Parquet persistence to complete with proper two-phase wait
+    // Wait for snapshot persistence to complete with proper two-phase wait
     // Phase 1: Subscription fires and marks table dirty
     // Phase 2: Save completes (status becomes idle with no dirty tables)
     await inspector.waitForPersistenceComplete()

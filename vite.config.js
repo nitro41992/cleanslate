@@ -1,19 +1,40 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-// NOTE: OPFS persistence is currently disabled due to DuckDB-WASM bug #2096
-// https://github.com/duckdb/duckdb-wasm/issues/2096
-// The COI bundle crashes with DataCloneError when using OPFS.
-// The EH bundle only supports read-only OPFS without COI headers.
-// Using in-memory mode until upstream fixes the issue.
+// Cross-Origin Isolation (COI) is now ENABLED.
+// Snapshot persistence migrated from Parquet to Arrow IPC, removing the Parquet extension
+// dependency that previously blocked the COI bundle (LinkError: SharedArrayBuffer memory mismatch).
+// The COI bundle provides pthreads + SIMD for 2-5x query performance via multi-threading.
 //
-// COI bundle (pthreads + SIMD) was tested but cannot be used because:
-// Dynamic extension loading (Parquet) fails in pthread workers due to
-// SharedArrayBuffer memory mismatch (LinkError: declared=0, imported=1).
-// Parquet is required for CleanSlate's snapshot persistence layer.
-// Revisit when DuckDB-WASM ships statically-linked Parquet in the COI bundle.
+// PRODUCTION DEPLOYMENT: These COOP/COEP headers must also be set at the server/CDN level
+// (e.g., Cloudflare Workers, Netlify _headers, Vercel vercel.json) since the Vite plugin
+// only applies to dev and preview servers.
+/**
+ * Vite plugin that sets Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers.
+ * Required for `crossOriginIsolated === true` which enables SharedArrayBuffer for pthreads.
+ */
+function crossOriginIsolationPlugin() {
+    return {
+        name: 'cross-origin-isolation',
+        configureServer: function (server) {
+            server.middlewares.use(function (_req, res, next) {
+                res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+                res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+                next();
+            });
+        },
+        configurePreviewServer: function (server) {
+            server.middlewares.use(function (_req, res, next) {
+                res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+                res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+                next();
+            });
+        },
+    };
+}
 export default defineConfig({
     plugins: [
+        crossOriginIsolationPlugin(),
         react(),
     ],
     resolve: {

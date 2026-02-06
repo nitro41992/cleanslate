@@ -67,7 +67,7 @@ interface VirtualizedDiffGridProps {
   newColumns?: string[]
   /** Columns in B (current) but not A (original) - from diff engine's perspective */
   removedColumns?: string[]
-  storageType?: 'memory' | 'parquet'
+  storageType?: 'memory' | 'snapshot'
   /** Whether target table had _cs_origin_id at diff creation */
   hasOriginIdB?: boolean
 }

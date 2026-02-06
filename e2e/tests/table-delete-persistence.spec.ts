@@ -8,12 +8,12 @@ import { getFixturePath } from '../helpers/file-upload'
  * Table Delete Persistence Tests (FR-PERSIST-DELETE)
  *
  * Validates that when a table is deleted:
- * 1. The Parquet snapshot file is deleted with correct normalized name
+ * 1. The Arrow IPC snapshot file is deleted with correct normalized name
  * 2. app-state.json is updated immediately (not waiting for debounce)
  * 3. The table does NOT reappear after a single page refresh
  *
  * Bug Context:
- * - Parquet files are saved with normalized names (lowercase, underscores)
+ * - Snapshot files are saved with normalized names (lowercase, underscores)
  * - Deletion was attempting to delete the original name (causing mismatch)
  * - app-state.json relied on debounced save (500ms delay could be missed on quick refresh)
  */
@@ -41,7 +41,7 @@ async function checkOPFSSupport(page: Page): Promise<boolean> {
 }
 
 /**
- * Clean up OPFS test data (Parquet snapshots)
+ * Clean up OPFS test data (Arrow IPC snapshots)
  */
 async function cleanupOPFSTestData(page: Page): Promise<void> {
   await page.evaluate(async () => {
@@ -67,7 +67,7 @@ async function waitForAppReady(page: Page, inspector: StoreInspector): Promise<v
 }
 
 /**
- * Get list of Parquet snapshot files in OPFS
+ * Get list of snapshot files in OPFS
  */
 async function getSnapshotFiles(page: Page, pattern?: string): Promise<string[]> {
   return page.evaluate(async (filterPattern) => {
@@ -77,7 +77,7 @@ async function getSnapshotFiles(page: Page, pattern?: string): Promise<string[]>
       const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
       const files: string[] = []
       for await (const entry of snapshotsDir.values()) {
-        if (entry.kind === 'file' && entry.name.endsWith('.parquet')) {
+        if (entry.kind === 'file' && entry.name.endsWith('.arrow')) {
           if (!filterPattern || entry.name.includes(filterPattern)) {
             files.push(entry.name)
           }
@@ -160,10 +160,10 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     await inspector.flushToOPFS()
     await inspector.saveAppState()
 
-    // Verify Parquet file exists before deletion
+    // Verify snapshot file exists before deletion
     const snapshotsBefore = await getSnapshotFiles(page, 'basic_data')
     expect(snapshotsBefore.length).toBeGreaterThan(0)
-    console.log('[Test] Parquet files before delete:', snapshotsBefore)
+    console.log('[Test] Snapshot files before delete:', snapshotsBefore)
 
     // 4. Delete the table via UI
     // Open table selector dropdown
@@ -202,9 +202,9 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
       { timeout: 500 }
     ).catch(() => {})
 
-    // 6. Verify Parquet file was deleted (checking normalized name)
+    // 6. Verify snapshot file was deleted (checking normalized name)
     const snapshotsAfterDelete = await getSnapshotFiles(page, 'basic_data')
-    console.log('[Test] Parquet files after delete:', snapshotsAfterDelete)
+    console.log('[Test] Snapshot files after delete:', snapshotsAfterDelete)
     // Filter out timeline/snapshot files, only check the main table file
     const mainTableSnapshots = snapshotsAfterDelete.filter(f =>
       !f.startsWith('original_') &&
@@ -221,7 +221,7 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     const tablesAfterRefresh = await inspector.getTableList()
     expect(tablesAfterRefresh.map(t => t.name)).not.toContain('basic_data')
 
-    // 9. Double-check no orphaned Parquet files remain
+    // 9. Double-check no orphaned snapshot files remain
     const orphanedFiles = await getSnapshotFiles(page, 'basic_data')
     const orphanedMainFiles = orphanedFiles.filter(f =>
       !f.startsWith('original_') &&

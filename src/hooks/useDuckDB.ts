@@ -490,17 +490,17 @@ export function useDuckDB() {
       // CRITICAL: Normalize table name to match how snapshots are saved (lowercase, underscores)
       // Without this, deletion of "My_Table" would look for "My_Table.parquet" but file is "my_table.parquet"
       try {
-        const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+        const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
         const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
         // Delete persistence copy (tablename.parquet)
-        await deleteParquetSnapshot(normalizedSnapshotId)
+        await deleteSnapshot(normalizedSnapshotId)
         console.log(`[DuckDB] Deleted OPFS Parquet for: ${tableName} (normalized: ${normalizedSnapshotId})`)
 
         // Delete original snapshot (original_tablename.parquet)
         // This is the timeline baseline used for diff comparisons
         // MUST be deleted to prevent stale UUID mismatches on re-import
-        await deleteParquetSnapshot(`original_${normalizedSnapshotId}`)
+        await deleteSnapshot(`original_${normalizedSnapshotId}`)
         console.log(`[DuckDB] Deleted original snapshot: original_${normalizedSnapshotId}`)
       } catch {
         // Expected if table was never persisted to OPFS

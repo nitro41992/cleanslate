@@ -3,38 +3,38 @@ import { withDuckDBLock } from './duckdb/lock'
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { formatBytes } from './duckdb/storage-info'
 import { getMemoryStatus } from './duckdb/memory'
-import { exportTableToParquet, deleteParquetSnapshot, registerFileWithRetry } from '@/lib/opfs/snapshot-storage'
+import { exportTableToSnapshot, importTableFromSnapshot, deleteSnapshot } from '@/lib/opfs/snapshot-storage'
 import { registerMemoryCleanup } from './memory-manager'
 
-// Track which Parquet snapshots are currently registered to prevent re-registration
-const registeredParquetSnapshots = new Set<string>()
+// Track which snapshots are materialized as temp DuckDB tables to prevent re-loading
+const materializedSnapshots = new Set<string>()
 // Track which diff tables are currently registered (for chunked diff results)
 const registeredDiffTables = new Set<string>()
 // Track in-progress registrations to prevent concurrent registration attempts
 const pendingDiffRegistrations = new Map<string, Promise<void>>()
-// Cache resolved Parquet expressions to avoid OPFS access on every scroll
-// Key: snapshotId, Value: SQL expression (e.g., "read_parquet('snapshot.parquet')")
+// Cache resolved table expressions to avoid OPFS access on every scroll
+// Key: snapshotId, Value: SQL expression (quoted temp table name)
 const resolvedExpressionCache = new Map<string, string>()
-// Track materialized diff views for Parquet-backed diffs (enables keyset pagination)
+// Track materialized diff views for snapshot-backed diffs (enables keyset pagination)
 // Key: diffTableName, Value: viewTableName (temp table)
 const materializedDiffViews = new Map<string, string>()
 
 /**
  * Clear all diff caches. Call when diff view closes to free memory.
  * Clears:
- * - registeredParquetSnapshots: Set of registered Parquet snapshot IDs
+ * - materializedSnapshots: Set of materialized snapshot IDs
  * - resolvedExpressionCache: Map of snapshot ID → SQL expressions
  * - materializedDiffViews: Map of diff table → materialized view table
  *
  * Clears ALL module-level state to prevent memory leaks across repeated diff runs.
  */
 export function clearDiffCaches(): void {
-  const snapshotCount = registeredParquetSnapshots.size
+  const snapshotCount = materializedSnapshots.size
   const cacheCount = resolvedExpressionCache.size
   const viewCount = materializedDiffViews.size
   const diffTableCount = registeredDiffTables.size
   const pendingCount = pendingDiffRegistrations.size
-  registeredParquetSnapshots.clear()
+  materializedSnapshots.clear()
   resolvedExpressionCache.clear()
   materializedDiffViews.clear()
   registeredDiffTables.clear()
@@ -46,11 +46,11 @@ export function clearDiffCaches(): void {
 registerMemoryCleanup('diff-engine', clearDiffCaches)
 
 /**
- * Resolve a table reference to a SQL expression, with robust Parquet handling.
- * Checks OPFS file existence before using read_parquet to avoid IO errors.
+ * Resolve a table reference to a SQL expression, with robust snapshot handling.
+ * For snapshot references, materializes Arrow IPC data from OPFS into a DuckDB temp table.
  *
  * @param tableName - Table name or "parquet:snapshot_id" reference
- * @returns SQL expression (quoted table name or read_parquet(...))
+ * @returns SQL expression (quoted table name)
  */
 async function resolveTableRef(tableName: string): Promise<string> {
   // 1. Normal table - return quoted name
@@ -58,102 +58,44 @@ async function resolveTableRef(tableName: string): Promise<string> {
     return `"${tableName}"`
   }
 
-  // 2. Parquet snapshot - verify file exists before using read_parquet
+  // 2. Snapshot reference - materialize from Arrow IPC
   const snapshotId = tableName.replace('parquet:', '')
 
-  // Skip registration if already done (prevents OPFS file locking errors)
-  if (registeredParquetSnapshots.has(snapshotId)) {
-    // CRITICAL FIX: Return cached expression instead of re-checking OPFS
-    // This eliminates ~50ms+ OPFS latency per scroll page that caused stalling
+  // Skip materialization if already done
+  if (materializedSnapshots.has(snapshotId)) {
     const cachedExpr = resolvedExpressionCache.get(snapshotId)
     if (cachedExpr) {
       console.log(`[Diff] Using cached expression for ${snapshotId}`)
       return cachedExpr
     }
-    // This shouldn't happen normally, but log if it does
-    console.warn(`[Diff] Snapshot ${snapshotId} registered but no cached expression, re-resolving...`)
+    console.warn(`[Diff] Snapshot ${snapshotId} materialized but no cached expression, re-materializing...`)
   }
 
-  // Helper to check OPFS file existence
-  async function fileExistsInOpfs(filename: string): Promise<boolean> {
-    try {
-      const root = await navigator.storage.getDirectory()
-      const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-      const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
-      await snapshots.getFileHandle(filename, { create: false })
-      return true
-    } catch {
-      return false
-    }
+  // Materialize Arrow IPC file(s) from OPFS into a DuckDB table
+  const tempTableName = `__diff_src_${snapshotId.replace(/[^a-zA-Z0-9_]/g, '_')}`
+  const db = await initDuckDB()
+  const conn = await getConnection()
+
+  try {
+    await importTableFromSnapshot(db, conn, snapshotId, tempTableName)
+  } catch (err) {
+    console.error(`[Diff] Failed to materialize snapshot ${snapshotId}:`, err)
+    throw new Error(
+      `Snapshot file not found: ${snapshotId}. The original snapshot may have been deleted. ` +
+      `Please reload the table or run a transform to recreate the snapshot.`
+    )
   }
 
-  // CHECK 1: Try exact match first (single file export)
-  const exactFile = `${snapshotId}.parquet`
-  const exactExists = await fileExistsInOpfs(exactFile)
+  // Cache the quoted table name for fast lookups during scroll
+  const expr = `"${tempTableName}"`
+  materializedSnapshots.add(snapshotId)
+  resolvedExpressionCache.set(snapshotId, expr)
 
-  if (exactExists) {
-    // Register single file with DuckDB
-    const db = await initDuckDB()
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
-    const fileHandle = await snapshots.getFileHandle(exactFile, { create: false })
-
-    await registerFileWithRetry(db, fileHandle, exactFile)
-
-    // Mark as registered and cache the expression for fast lookups during scroll
-    const expr = `read_parquet('${exactFile}')`
-    registeredParquetSnapshots.add(snapshotId)
-    resolvedExpressionCache.set(snapshotId, expr)
-
-    console.log(`[Diff] Resolved ${tableName} to ${expr} (cached)`)
-    return expr
-  }
-
-  // CHECK 2: Try chunked pattern (for large tables >250k rows)
-  // Verify at least part_0 exists to avoid "IO Error: No files found"
-  const part0 = `${snapshotId}_part_0.parquet`
-  const part0Exists = await fileExistsInOpfs(part0)
-
-  if (part0Exists) {
-    // Register all chunks
-    const db = await initDuckDB()
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshots = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-    let partIndex = 0
-    while (true) {
-      try {
-        const fileName = `${snapshotId}_part_${partIndex}.parquet`
-        const fileHandle = await snapshots.getFileHandle(fileName, { create: false })
-
-        await registerFileWithRetry(db, fileHandle, fileName)
-
-        partIndex++
-      } catch {
-        break // No more chunks
-      }
-    }
-
-    // Mark as registered and cache the expression for fast lookups during scroll
-    const chunkExpr = `read_parquet('${snapshotId}_part_*.parquet')`
-    registeredParquetSnapshots.add(snapshotId)
-    resolvedExpressionCache.set(snapshotId, chunkExpr)
-
-    console.log(`[Diff] Resolved ${tableName} to ${chunkExpr} with ${partIndex} chunks (cached)`)
-    return chunkExpr
-  }
-
-  // CHECK 3: Snapshot file missing (deleted or corrupted)
-  console.error(`[Diff] Snapshot file missing: ${tableName}`)
-  throw new Error(
-    `Snapshot file not found: ${snapshotId}. The original snapshot may have been deleted. ` +
-    `Please reload the table or run a transform to recreate the snapshot.`
-  )
+  console.log(`[Diff] Materialized ${tableName} into temp table ${tempTableName} (cached)`)
+  return expr
 }
 
-// Tiered diff storage: <100k in-memory, ≥100k OPFS Parquet
+// Tiered diff storage: <100k in-memory, ≥100k OPFS Arrow IPC
 export const DIFF_TIER2_THRESHOLD = 100_000
 
 // Memory polling during diff creation (2-second intervals)
@@ -228,8 +170,8 @@ export interface DiffConfig {
   newColumns: string[]
   /** Columns that exist in table B (target/current) but not in table A (source/original) */
   removedColumns: string[]
-  /** Storage type: 'memory' for in-memory temp table, 'parquet' for OPFS-backed diff */
-  storageType: 'memory' | 'parquet'
+  /** Storage type: 'memory' for in-memory temp table, 'snapshot' for OPFS-backed diff */
+  storageType: 'memory' | 'snapshot'
   /** Whether target table (B) had _cs_origin_id column at diff creation time */
   hasOriginIdB: boolean
 }
@@ -338,20 +280,20 @@ export async function runDiff(
     }, DIFF_MEMORY_POLL_INTERVAL_MS)
 
     try {
-    // Check if source is a Parquet snapshot
+    // Check if source is a snapshot reference
     const isParquetSource = tableA.startsWith('parquet:')
 
-    // 🟢 NEW: Register Parquet files IMMEDIATELY (before schema query)
+    // Materialize snapshot IMMEDIATELY (before schema query)
     let sourceTableExpr: string
     if (isParquetSource) {
-      // Register files and get SQL expression (e.g., "read_parquet('original_abc.parquet')")
+      // Materialize Arrow IPC data and get SQL expression (quoted temp table name)
       sourceTableExpr = await resolveTableRef(tableA)
-      console.log(`[Diff] Pre-registered Parquet source: ${sourceTableExpr}`)
+      console.log(`[Diff] Pre-materialized snapshot source: ${sourceTableExpr}`)
     } else {
       sourceTableExpr = `"${tableA}"`
     }
 
-    // Validate tables exist (skip Parquet sources since they're already validated)
+    // Validate tables exist (skip snapshot sources since they're already validated)
     if (!isParquetSource) {
       const tableAExists = await tableExists(tableA)
       if (!tableAExists) {
@@ -363,7 +305,7 @@ export async function runDiff(
       throw new Error(`Table "${tableB}" does not exist`)
     }
 
-    // PRE-FLIGHT CHECK: Validate memory availability (skip for Parquet sources)
+    // PRE-FLIGHT CHECK: Validate memory availability (skip for snapshot sources)
     const conn = await getConnection()
     if (!isParquetSource) {
       await validateDiffMemoryAvailability(conn, tableA, tableB)
@@ -372,38 +314,12 @@ export async function runDiff(
     // Get columns AND types from both tables
     let colsAAll: { column_name: string; data_type: string }[]
     if (isParquetSource) {
-      // CRITICAL: Use the EXACT same expression as resolveTableRef() to ensure consistency
-      // Previously used a loose glob pattern which could match extra files with different schemas
-      // Example bug: glob 'original_foo*.parquet' could match timeline snapshots, causing
-      // parquet_schema() to return columns that don't exist in the actual source file
-      //
-      // sourceTableExpr is already resolved above (line 341) and contains the precise expression:
-      // - Single file: "read_parquet('original_foo.parquet')"
-      // - Chunked: "read_parquet('original_foo_part_*.parquet')"
-      //
-      // Extract the file pattern from sourceTableExpr for parquet_schema()
-      const filePatternMatch = sourceTableExpr.match(/read_parquet\('([^']+)'\)/)
-      if (!filePatternMatch) {
-        throw new Error(`[Diff] Could not parse file pattern from sourceTableExpr: ${sourceTableExpr}`)
-      }
-      const filePattern = filePatternMatch[1]
-
-      const parquetColumns = await query<{ column_name: string; column_type: string }>(
-        `SELECT name AS column_name, type AS column_type FROM parquet_schema('${filePattern}')`
+      // sourceTableExpr is now a quoted temp table name (materialized from Arrow IPC)
+      // Use information_schema.columns instead of parquet_schema()
+      const tempTableName = sourceTableExpr.replace(/"/g, '')
+      colsAAll = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tempTableName}' ORDER BY ordinal_position`
       )
-      // Deduplicate columns by name for chunked Parquet files
-      // parquet_schema() with glob returns all columns from all files, creating duplicates
-      // Example: 5 chunks × 30 columns = 150 duplicate columns
-      const uniqueColumns = new Map<string, string>()
-      for (const col of parquetColumns) {
-        if (!uniqueColumns.has(col.column_name)) {
-          uniqueColumns.set(col.column_name, col.column_type)
-        }
-      }
-      colsAAll = Array.from(uniqueColumns.entries()).map(([column_name, data_type]) => ({
-        column_name,
-        data_type
-      }))
     } else {
       colsAAll = await query<{ column_name: string; data_type: string }>(
         `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tableA}' ORDER BY ordinal_position`
@@ -605,7 +521,7 @@ export async function runDiff(
         sampleB: sampleB[0]
       })
 
-      // DIAGNOSTIC: Count total rows from Parquet source
+      // DIAGNOSTIC: Count total rows from snapshot source
       const countA = await query<{ count: number }>(`
         SELECT COUNT(*) as count FROM ${sourceTableExpr}
       `)
@@ -613,7 +529,7 @@ export async function runDiff(
         SELECT COUNT(*) as count FROM "${tableB}"
       `)
       console.log('[Diff] Row counts:', {
-        parquetRows: Number(countA[0].count),
+        snapshotRows: Number(countA[0].count),
         currentTableRows: Number(countB[0].count)
       })
 
@@ -626,10 +542,10 @@ export async function runDiff(
         SELECT * FROM "${tableB}" WHERE "_cs_id" = '${csId}' LIMIT 1
       `)
       console.log('[Diff] Same row comparison (_cs_id: ' + csId + '):', {
-        parquetRow: sameRowA[0],
+        snapshotRow: sameRowA[0],
         currentRow: sameRowB[0],
         submissionDateMatch: sameRowA[0]?.SubmissionDate === sameRowB[0]?.SubmissionDate,
-        submissionDateParquet: sameRowA[0]?.SubmissionDate,
+        submissionDateSnapshot: sameRowA[0]?.SubmissionDate,
         submissionDateCurrent: sameRowB[0]?.SubmissionDate
       })
     } catch (err) {
@@ -933,7 +849,7 @@ export async function runDiff(
     }
 
     // Phase 4: Tiered storage - export large diffs to OPFS
-    let storageType: 'memory' | 'parquet' = 'memory'
+    let storageType: 'memory' | 'snapshot' = 'memory'
 
     if (totalDiffRows >= DIFF_TIER2_THRESHOLD) {
       console.log(`[Diff] Large diff (${totalDiffRows.toLocaleString()} rows), exporting to OPFS...`)
@@ -941,13 +857,13 @@ export async function runDiff(
       const db = await initDuckDB()
       const conn = await getConnection()
 
-      // Export narrow temp table to Parquet (file handles are dropped inside exportTableToParquet)
-      await exportTableToParquet(db, conn, diffTableName, diffTableName)
+      // Export narrow temp table to Arrow IPC snapshot
+      await exportTableToSnapshot(db, conn, diffTableName, diffTableName)
 
       // Drop in-memory temp table (free RAM immediately)
       await execute(`DROP TABLE "${diffTableName}"`)
 
-      storageType = 'parquet'
+      storageType = 'snapshot'
       console.log(`[Diff] Exported to OPFS, freed ~${formatBytes(totalDiffRows * 58)} RAM`)
     }
 
@@ -1000,10 +916,10 @@ export async function fetchDiffPage(
   offset: number,
   limit: number = 500,
   _keyOrderBy: string,
-  storageType: 'memory' | 'parquet' = 'memory',
+  storageType: 'memory' | 'snapshot' = 'memory',
   hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<DiffRow[]> {
-  // Use robust resolver to handle Parquet sources with file existence checks and registration
+  // Use robust resolver to handle snapshot sources with materialization
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
   // Use the hasOriginIdB from diff creation for consistency
@@ -1033,142 +949,27 @@ export async function fetchDiffPage(
     })
     .join(', ')
 
-  // Handle Parquet-backed diffs
-  if (storageType === 'parquet') {
-    const db = await initDuckDB()
-
-    // Get OPFS snapshots directory
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-    // Check if this is a chunked snapshot (multiple _part_N files) or single file
-    let isChunked = false
-    try {
-      await snapshotsDir.getFileHandle(`${tempTableName}_part_0.parquet`, { create: false })
-      isChunked = true
-    } catch {
-      // Not chunked, try single file
-      isChunked = false
-    }
-
-    // Wait for any pending registration to complete (prevents concurrent registration)
-    if (pendingDiffRegistrations.has(tempTableName)) {
-      await pendingDiffRegistrations.get(tempTableName)
-    }
-
-    // Skip registration if already done (prevents OPFS file locking errors on pagination)
-    const needsRegistration = !registeredDiffTables.has(tempTableName)
-
-    try {
-      if (isChunked) {
-        // Register all chunk files (only if not already registered)
-        let partIndex = 0
-        const fileHandles: FileSystemFileHandle[] = []
-
-        if (needsRegistration) {
-          // Create registration promise to block concurrent attempts
-          const registrationPromise = (async () => {
-            while (true) {
-              try {
-                const fileName = `${tempTableName}_part_${partIndex}.parquet`
-                const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-                fileHandles.push(fileHandle)
-
-                await registerFileWithRetry(db, fileHandle, fileName)
-
-                partIndex++
-              } catch {
-                break // No more chunks
-              }
-            }
-
-            // Mark as registered after successful registration
-            registeredDiffTables.add(tempTableName)
-            console.log(`[Diff] Registered ${partIndex} diff table chunks: ${tempTableName}`)
-          })()
-
-          // Track and wait for registration
-          pendingDiffRegistrations.set(tempTableName, registrationPromise)
-          await registrationPromise
-          pendingDiffRegistrations.delete(tempTableName)
-        }
-
-        // Query all chunks with glob pattern
-        // DYNAMIC ROW NUMBERS: Compute current row positions at query time
-        // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
-        const result = await query<DiffRow>(`
-          WITH b_current_rows AS (
-            SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
-            FROM "${targetTableName}"
-          )
-          SELECT
-            d.diff_status,
-            d.row_id,
-            b_nums.current_row_num as b_row_num,
-            ${selectCols}
-          FROM read_parquet('${tempTableName}_part_*.parquet') d
-          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
-          LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
-          LEFT JOIN b_current_rows b_nums ON ${bRowsJoinCol} = b_nums.${bRowsCteCol}
-          WHERE d.diff_status IN ('added', 'removed', 'modified')
-          ORDER BY d.sort_key
-          LIMIT ${limit} OFFSET ${offset}
-        `)
-
-        // NOTE: Do NOT unregister files here - they're needed for subsequent pagination
-        // Files are cleaned up in cleanupDiffTable() when diff view closes
-
-        return result
-      } else {
-        // Single file - register only once
-        if (needsRegistration) {
-          // Create registration promise to block concurrent attempts
-          const registrationPromise = (async () => {
-            const fileHandle = await snapshotsDir.getFileHandle(`${tempTableName}.parquet`, { create: false })
-
-            await registerFileWithRetry(db, fileHandle, `${tempTableName}.parquet`)
-
-            // Mark as registered after successful registration
-            registeredDiffTables.add(tempTableName)
-            console.log(`[Diff] Registered diff table: ${tempTableName}`)
-          })()
-
-          // Track and wait for registration
-          pendingDiffRegistrations.set(tempTableName, registrationPromise)
-          await registrationPromise
-          pendingDiffRegistrations.delete(tempTableName)
-        }
-
-        // Query Parquet file directly with pagination
-        // DYNAMIC ROW NUMBERS: Compute current row positions at query time
-        // ORDER BY CAST("_cs_id" AS INTEGER) matches the grid's display order (see insert-row.ts)
-        const result = await query<DiffRow>(`
-          WITH b_current_rows AS (
-            SELECT ${bRowsCteCol}, ROW_NUMBER() OVER (ORDER BY CAST("_cs_id" AS INTEGER)) as current_row_num
-            FROM "${targetTableName}"
-          )
-          SELECT
-            d.diff_status,
-            d.row_id,
-            b_nums.current_row_num as b_row_num,
-            ${selectCols}
-          FROM read_parquet('${tempTableName}.parquet') d
-          LEFT JOIN ${sourceTableExpr} a ON d.a_origin_id = a."${CS_ORIGIN_ID_COLUMN}"
-          LEFT JOIN "${targetTableName}" b ON ${bRowsJoinCol} = b.${bTableJoinCol}
-          LEFT JOIN b_current_rows b_nums ON ${bRowsJoinCol} = b_nums.${bRowsCteCol}
-          WHERE d.diff_status IN ('added', 'removed', 'modified')
-          ORDER BY d.sort_key
-          LIMIT ${limit} OFFSET ${offset}
-        `)
-
-        return result
+  // For snapshot-backed diffs, materialize from Arrow IPC into DuckDB table on first access
+  if (storageType === 'snapshot') {
+    if (!registeredDiffTables.has(tempTableName)) {
+      // Wait for any pending materialization to complete
+      if (pendingDiffRegistrations.has(tempTableName)) {
+        await pendingDiffRegistrations.get(tempTableName)
       }
-    } catch (error) {
-      // No cleanup needed - files stay registered for next pagination call
-      // Cleanup only happens in cleanupDiffTable() when diff view is closed
-      throw error
+
+      const materializationPromise = (async () => {
+        const db = await initDuckDB()
+        const connLocal = await getConnection()
+        await importTableFromSnapshot(db, connLocal, tempTableName, tempTableName)
+        registeredDiffTables.add(tempTableName)
+        console.log(`[Diff] Materialized diff table from Arrow IPC: ${tempTableName}`)
+      })()
+
+      pendingDiffRegistrations.set(tempTableName, materializationPromise)
+      await materializationPromise
+      pendingDiffRegistrations.delete(tempTableName)
     }
+    // Fall through to the same query as in-memory path below
   }
 
   // Original in-memory path
@@ -1211,8 +1012,8 @@ export interface KeysetDiffPageResult {
  * - OFFSET 500000 requires scanning and discarding 500,000 rows
  * - Keyset uses B-tree index lookup: WHERE sort_key > cursor directly
  *
- * For Parquet-backed diffs, requires prior call to materializeDiffForPagination()
- * to create a temp table from Parquet files. Without materialization, falls back
+ * For snapshot-backed diffs, requires prior call to materializeDiffForPagination()
+ * to create an index table from Arrow IPC files. Without materialization, falls back
  * to slower OFFSET pagination.
  *
  * See: https://use-the-index-luke.com/no-offset
@@ -1229,7 +1030,7 @@ export async function fetchDiffPageWithKeyset(
   removedColumns: string[],
   cursor: { sortKey: number | null; direction: 'forward' | 'backward' },
   limit: number = 500,
-  storageType: 'memory' | 'parquet' = 'memory',
+  storageType: 'memory' | 'snapshot' = 'memory',
   hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<KeysetDiffPageResult> {
   // Use the hasOriginIdB from diff creation for consistency (see fetchDiffPage for details)
@@ -1242,9 +1043,9 @@ export async function fetchDiffPageWithKeyset(
   // For index table queries, use page.* prefix instead of d.*
   const pageRowsJoinCol = targetHasOriginId ? `page.b_origin_id` : `page.b_row_id`
 
-  // For Parquet storage, check if we have a materialized index table available
+  // For snapshot storage, check if we have a materialized index table available
   // Use two-phase approach: fast index lookup, then targeted JOIN
-  if (storageType === 'parquet') {
+  if (storageType === 'snapshot') {
     const indexTableName = getMaterializedDiffIndex(tempTableName)
 
     if (indexTableName) {
@@ -1330,7 +1131,7 @@ export async function fetchDiffPageWithKeyset(
       }
     } else {
       // Slow path: No index table, fall back to OFFSET pagination
-      console.log('[Diff] Keyset pagination not supported for Parquet storage (no index), using OFFSET')
+      console.log('[Diff] Keyset pagination not supported for snapshot storage (no index), using OFFSET')
       const offset = cursor.sortKey !== null ? 0 : 0
       const rows = await fetchDiffPage(
         tempTableName, sourceTableName, targetTableName,
@@ -1418,15 +1219,15 @@ export async function fetchDiffPageWithKeyset(
  * Note: If user crashes/reloads, temp table dies automatically (DuckDB WASM memory is volatile).
  */
 /**
- * Unregister source snapshot files from DuckDB after diff completes.
- * This cleans up file handles registered by resolveTableRef.
+ * Clean up materialized source snapshot temp tables from DuckDB after diff completes.
+ * This drops temp tables created by resolveTableRef.
  *
- * CRITICAL: Original snapshots (original_*) should NEVER be unregistered.
+ * CRITICAL: Original snapshots (original_*) should NEVER be cleaned up.
  * They are permanent and needed for future diffs. Only temp snapshots should be cleaned.
  */
 export async function cleanupDiffSourceFiles(sourceTableName: string): Promise<void> {
   if (!sourceTableName.startsWith('parquet:')) {
-    return // Not a Parquet source, nothing to cleanup
+    return // Not a snapshot source, nothing to cleanup
   }
 
   const snapshotId = sourceTableName.replace('parquet:', '')
@@ -1437,76 +1238,33 @@ export async function cleanupDiffSourceFiles(sourceTableName: string): Promise<v
     return
   }
 
-  // Only cleanup temp snapshots (snapshot_*, etc.)
+  // Drop the materialized temp table
   try {
-    const db = await initDuckDB()
-
-    // Try to unregister single file
-    try {
-      await db.dropFile(`${snapshotId}.parquet`)
-      console.log(`[Diff] Unregistered temp source file: ${snapshotId}.parquet`)
-    } catch {
-      // Might be chunked, try chunks
-    }
-
-    // Try to unregister chunked files
-    let partIndex = 0
-    while (true) {
-      try {
-        await db.dropFile(`${snapshotId}_part_${partIndex}.parquet`)
-        partIndex++
-      } catch {
-        break // No more chunks
-      }
-    }
-
-    if (partIndex > 0) {
-      console.log(`[Diff] Unregistered ${partIndex} temp source file chunks for: ${snapshotId}`)
-    }
-
-    // Remove from registered set and expression cache
-    registeredParquetSnapshots.delete(snapshotId)
-    resolvedExpressionCache.delete(snapshotId)
-    console.log(`[Diff] Cleared registration state and cache for ${snapshotId}`)
+    const tempTableName = `__diff_src_${snapshotId.replace(/[^a-zA-Z0-9_]/g, '_')}`
+    await execute(`DROP TABLE IF EXISTS "${tempTableName}"`)
+    console.log(`[Diff] Dropped materialized source table: ${tempTableName}`)
   } catch (error) {
-    console.warn('[Diff] Source file cleanup failed (non-fatal):', error)
+    console.warn('[Diff] Source table cleanup failed (non-fatal):', error)
   }
+
+  // Remove from tracking sets and cache
+  materializedSnapshots.delete(snapshotId)
+  resolvedExpressionCache.delete(snapshotId)
+  console.log(`[Diff] Cleared materialization state for ${snapshotId}`)
 }
 
 export async function cleanupDiffTable(
   tableName: string,
-  storageType: 'memory' | 'parquet' = 'memory'
+  storageType: 'memory' | 'snapshot' = 'memory'
 ): Promise<void> {
   try {
-    // Always try to drop in-memory table
+    // Always try to drop in-memory/materialized table
     await execute(`DROP TABLE IF EXISTS "${tableName}"`)
 
-    // If Parquet-backed, delete OPFS file (handles both single and chunked files)
-    if (storageType === 'parquet') {
-      const db = await initDuckDB()
-
-      // Try to unregister both single and chunked files (one will fail silently)
-      try {
-        await db.dropFile(`${tableName}.parquet`)  // Unregister single file if active
-      } catch {
-        // Ignore - file might not be registered or might be chunked
-      }
-
-      // Try to unregister chunked files
-      let partIndex = 0
-      while (true) {
-        try {
-          await db.dropFile(`${tableName}_part_${partIndex}.parquet`)
-          partIndex++
-        } catch {
-          break  // No more chunks
-        }
-      }
-
-      // Delete from OPFS (deleteParquetSnapshot handles both single and chunked)
-      await deleteParquetSnapshot(tableName)
-
-      console.log(`[Diff] Cleaned up Parquet file(s): ${tableName}`)
+    // If snapshot-backed, delete Arrow IPC file(s) from OPFS
+    if (storageType === 'snapshot') {
+      await deleteSnapshot(tableName)
+      console.log(`[Diff] Cleaned up snapshot file(s): ${tableName}`)
     }
 
     // Always VACUUM after dropping tables to reclaim DuckDB memory
@@ -1540,7 +1298,7 @@ export async function cleanupDiffTable(
  * 2. Create VIEW that JOINs index → source → target for column data
  * 3. Pagination queries use index for fast OFFSET, then JOIN for visible rows only
  *
- * @param diffTableName - Name of the Parquet-backed diff table
+ * @param diffTableName - Name of the snapshot-backed diff table
  * @param sourceTableName - Source table (may be "parquet:snapshot_id")
  * @param targetTableName - Target table name
  * @param allColumns - All columns to include in the view
@@ -1561,7 +1319,7 @@ export async function materializeDiffForPagination(
   const indexTableName = `_diff_idx_${Date.now()}`
   const viewTableName = `_diff_view_${Date.now()}`
 
-  // Get source table expression (handles Parquet sources)
+  // Get source table expression (handles snapshot sources)
   const sourceTableExpr = await resolveTableRef(sourceTableName)
 
   // Use the hasOriginIdB from diff creation for consistency (see fetchDiffPage for details)
@@ -1583,43 +1341,13 @@ export async function materializeDiffForPagination(
     })
     .join(', ')
 
-  // Register Parquet files if not already registered
-  const db = await initDuckDB()
-  const root = await navigator.storage.getDirectory()
-  const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-  // Check if chunked or single file
-  let isChunked = false
-  try {
-    await snapshotsDir.getFileHandle(`${diffTableName}_part_0.parquet`, { create: false })
-    isChunked = true
-  } catch {
-    isChunked = false
-  }
-
-  // Build the Parquet file expression
-  let parquetExpr: string
-  if (isChunked) {
-    // Register all chunk files
-    let partIndex = 0
-    while (true) {
-      try {
-        const fileName = `${diffTableName}_part_${partIndex}.parquet`
-        const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-        await registerFileWithRetry(db, fileHandle, fileName)
-        partIndex++
-      } catch {
-        break
-      }
-    }
-    parquetExpr = `read_parquet('${diffTableName}_part_*.parquet')`
-    console.log(`[Diff] Registered ${partIndex} chunks for materialization`)
-  } else {
-    // Single file
-    const fileHandle = await snapshotsDir.getFileHandle(`${diffTableName}.parquet`, { create: false })
-    await registerFileWithRetry(db, fileHandle, `${diffTableName}.parquet`)
-    parquetExpr = `read_parquet('${diffTableName}.parquet')`
+  // Materialize diff table from Arrow IPC if not already in DuckDB
+  if (!registeredDiffTables.has(diffTableName)) {
+    const db = await initDuckDB()
+    const connLocal = await getConnection()
+    await importTableFromSnapshot(db, connLocal, diffTableName, diffTableName)
+    registeredDiffTables.add(diffTableName)
+    console.log(`[Diff] Materialized diff table from Arrow IPC for pagination: ${diffTableName}`)
   }
 
   // STEP 1: Create tiny index table with just metadata (~24 MB for 1M rows)
@@ -1635,7 +1363,7 @@ export async function materializeDiffForPagination(
       a_origin_id,
       b_origin_id,
       b_row_num
-    FROM ${parquetExpr}
+    FROM "${diffTableName}"
     WHERE diff_status IN ('added', 'removed', 'modified')
   `)
 
@@ -1665,7 +1393,7 @@ export async function materializeDiffForPagination(
 }
 
 /**
- * Get the materialized view table name for a Parquet-backed diff.
+ * Get the materialized view table name for a snapshot-backed diff.
  * Returns null if not materialized.
  */
 export function getMaterializedDiffView(diffTableName: string): string | null {
@@ -1680,7 +1408,7 @@ export function getMaterializedDiffView(diffTableName: string): string | null {
 }
 
 /**
- * Get the index table name for a Parquet-backed diff.
+ * Get the index table name for a snapshot-backed diff.
  * Returns null if not using hybrid approach.
  */
 export function getMaterializedDiffIndex(diffTableName: string): string | null {
@@ -1736,7 +1464,7 @@ export async function* streamDiffResults(
   removedColumns: string[],
   keyOrderBy: string,
   chunkSize: number = 10000,
-  storageType: 'memory' | 'parquet' = 'memory'
+  storageType: 'memory' | 'snapshot' = 'memory'
 ): AsyncGenerator<DiffRow[], void, unknown> {
   let offset = 0
   while (true) {
@@ -1766,7 +1494,7 @@ export async function* streamDiffResults(
  * @param sourceTableName - Source table (may be "parquet:snapshot_id")
  * @param targetTableName - Target table name
  * @param columnName - The column to check for changes
- * @param storageType - 'memory' or 'parquet'
+ * @param storageType - 'memory' or 'snapshot'
  * @returns Set of row_ids that have changes in the specified column
  */
 export async function getRowsWithColumnChanges(
@@ -1774,7 +1502,7 @@ export async function getRowsWithColumnChanges(
   sourceTableName: string,
   targetTableName: string,
   columnName: string,
-  storageType: 'memory' | 'parquet' = 'memory',
+  storageType: 'memory' | 'snapshot' = 'memory',
   hasOriginIdB?: boolean  // Whether target table had _cs_origin_id at diff creation
 ): Promise<Set<string>> {
   const sourceTableExpr = await resolveTableRef(sourceTableName)
@@ -1786,13 +1514,12 @@ export async function getRowsWithColumnChanges(
   const bRowsJoinCol = targetHasOriginId ? `d.b_origin_id` : `d.b_row_id`
   const bTableJoinCol = targetHasOriginId ? `"${CS_ORIGIN_ID_COLUMN}"` : '"_cs_id"'
 
-  // Handle Parquet-backed diffs
+  // Handle snapshot-backed diffs
   let diffExpr: string
-  if (storageType === 'parquet') {
-    // Check if materialized view exists
+  if (storageType === 'snapshot') {
+    // Check if materialized view exists (use it for faster query)
     const viewTableName = getMaterializedDiffView(diffTableName)
     if (viewTableName) {
-      // Use materialized view - it already has a_col and b_col joined
       const rows = await query<{ row_id: string }>(`
         SELECT row_id
         FROM "${viewTableName}"
@@ -1802,25 +1529,15 @@ export async function getRowsWithColumnChanges(
       return new Set(rows.map(r => r.row_id))
     }
 
-    // No materialized view - need to use Parquet files
-    // Check if chunked or single file
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-    let isChunked = false
-    try {
-      await snapshotsDir.getFileHandle(`${diffTableName}_part_0.parquet`, { create: false })
-      isChunked = true
-    } catch {
-      isChunked = false
+    // Materialize diff table from Arrow IPC if not already done
+    if (!registeredDiffTables.has(diffTableName)) {
+      const db = await initDuckDB()
+      const connLocal = await getConnection()
+      await importTableFromSnapshot(db, connLocal, diffTableName, diffTableName)
+      registeredDiffTables.add(diffTableName)
     }
 
-    if (isChunked) {
-      diffExpr = `read_parquet('${diffTableName}_part_*.parquet')`
-    } else {
-      diffExpr = `read_parquet('${diffTableName}.parquet')`
-    }
+    diffExpr = `"${diffTableName}"`
   } else {
     diffExpr = `"${diffTableName}"`
   }

@@ -28,7 +28,7 @@ interface DiffState {
   summary: DiffSummary | null    // Summary counts (small, keep in memory)
   newColumns: string[]           // Columns added (in A but not B)
   removedColumns: string[]       // Columns removed (in B but not A)
-  storageType: 'memory' | 'parquet' | null  // Storage type for diff results
+  storageType: 'memory' | 'snapshot' | null  // Storage type for diff results
   hasOriginIdB: boolean          // Whether target table had _cs_origin_id at diff creation (for consistent fetch)
   // UI state
   isComparing: boolean
@@ -59,7 +59,7 @@ interface DiffActions {
     summary: DiffSummary
     newColumns: string[]
     removedColumns: string[]
-    storageType: 'memory' | 'parquet'
+    storageType: 'memory' | 'snapshot'
     hasOriginIdB: boolean
   }) => void
   setSummary: (summary: DiffState['summary']) => void

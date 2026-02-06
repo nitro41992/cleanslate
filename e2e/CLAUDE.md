@@ -135,7 +135,7 @@ await expect.poll(async () => {
 
 **OPFS Persistence Race Condition:**
 
-When testing row/column operations that persist to Parquet files, polling for `savingTables.size === 0` is **NOT sufficient**. The async priority save may not have started yet when this check passes.
+When testing row/column operations that persist to Arrow IPC files, polling for `savingTables.size === 0` is **NOT sufficient**. The async priority save may not have started yet when this check passes.
 
 **The Problem:**
 ```typescript
@@ -151,7 +151,7 @@ await expect.poll(async () => {
 await page.reload()  // Data may not be persisted yet!
 ```
 
-**The Solution:** Also verify the Parquet file size has changed (proves the save actually completed):
+**The Solution:** Also verify the snapshot file size has changed (proves the save actually completed):
 
 ```typescript
 // ✅ Good: Wait for file size change as proof of persistence
@@ -160,7 +160,7 @@ const originalSize = await page.evaluate(async () => {
   const root = await navigator.storage.getDirectory()
   const dir = await root.getDirectoryHandle('cleanslate')
   const snapshots = await dir.getDirectoryHandle('snapshots')
-  const file = await (await snapshots.getFileHandle('table.parquet')).getFile()
+  const file = await (await snapshots.getFileHandle('table.arrow')).getFile()
   return file.size
 })
 
@@ -179,7 +179,7 @@ await expect.poll(async () => {
       .then(d => d.getDirectoryHandle('snapshots'))
     for await (const entry of snapshots.values()) {
       if (entry.name.endsWith('.tmp')) hasTmpFiles = true
-      if (entry.name === 'table.parquet') {
+      if (entry.name === 'table.arrow') {
         currentSize = (await entry.getFile()).size
       }
     }

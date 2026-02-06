@@ -8,12 +8,12 @@ import { getFixturePath } from '../helpers/file-upload'
 /**
  * OPFS Persistence Tests
  *
- * Validates that Parquet-based OPFS persistence correctly persists data across page refreshes.
- * The app uses a Parquet export/import strategy as a workaround for DuckDB-WASM bug #2096.
+ * Validates that Arrow IPC-based OPFS persistence correctly persists data across page refreshes.
+ * The app uses an Arrow IPC export/import strategy as a workaround for DuckDB-WASM bug #2096.
  *
  * Persistence Mechanism:
- * - Tables are exported as Parquet files to OPFS (cleanslate/snapshots/*.parquet)
- * - On page load, Parquet files are hydrated into DuckDB in-memory
+ * - Tables are exported as Arrow IPC files to OPFS (cleanslate/snapshots/*.arrow)
+ * - On page load, Arrow IPC files are hydrated into DuckDB in-memory
  * - Uses File System Access API (createWritable), NOT DuckDB's native OPFS
  *
  * Note: These tests use fresh browser contexts per test for WASM isolation.
@@ -42,7 +42,7 @@ async function checkOPFSSupport(page: Page): Promise<boolean> {
 }
 
 /**
- * Clean up OPFS test data (Parquet snapshots)
+ * Clean up OPFS test data (Arrow IPC snapshots)
  */
 async function cleanupOPFSTestData(page: Page): Promise<void> {
   await page.evaluate(async () => {

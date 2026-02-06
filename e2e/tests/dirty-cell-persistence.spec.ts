@@ -136,7 +136,7 @@ test.describe('Dirty Cell Indicator Persistence', () => {
     expect(rowsAfter[0].name).toBe('EDITED_VALUE')
 
     // 9. Verify the EXACT cell key persists across reload
-    // The csId should be identical before/after (Parquet preserves _cs_id values)
+    // The csId should be identical before/after (Arrow IPC snapshot preserves _cs_id values)
     // and the dirty cell tracking should find the same key
     const csIdAfterReload = rowsAfter[0]._cs_id
     expect(csIdAfterReload).toBe(firstCsId)

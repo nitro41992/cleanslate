@@ -22,10 +22,10 @@ import { useTableStore } from '@/stores/tableStore'
 import { useUIStore } from '@/stores/uiStore'
 import { initDuckDB, getConnection, getTableColumns, CS_ID_COLUMN, migrateToGapBasedCsId } from '@/lib/duckdb'
 import {
-  listParquetSnapshots,
-  importTableFromParquet,
-  exportTableToParquet,
-  deleteParquetSnapshot,
+  listSnapshots,
+  importTableFromSnapshot,
+  exportTableToSnapshot,
+  deleteSnapshot,
   cleanupCorruptSnapshots,
   cleanupOrphanedDiffFiles,
   cleanupDuplicateCaseSnapshots,
@@ -212,7 +212,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
   await cleanupDuplicateCaseSnapshots()
 
   // List all saved Parquet files
-  const snapshots = await listParquetSnapshots()
+  const snapshots = await listSnapshots()
 
   if (snapshots.length === 0) {
     console.log('[Persistence] No saved snapshots found.')
@@ -317,7 +317,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
       if (shouldThaw) {
         // THAW: Import from Parquet into DuckDB (full hydration)
         // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
-        await importTableFromParquet(db, conn, snapshotName, tableName)
+        await importTableFromSnapshot(db, conn, snapshotName, tableName)
 
         // Auto-migrate sequential _cs_id to gap-based (one-time migration)
         await migrateToGapBasedCsId(tableName)
@@ -351,7 +351,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
           // Fallback: Read Parquet metadata directly
           // We need to briefly import to get accurate metadata, then drop
           console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from Parquet header...`)
-          await importTableFromParquet(db, conn, snapshotName, tableName)
+          await importTableFromSnapshot(db, conn, snapshotName, tableName)
           const cols = await getTableColumns(tableName)
           const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
           const rowCount = Number(countResult.toArray()[0].toJSON().count)
@@ -610,7 +610,7 @@ export async function compactChangelog(force = false): Promise<number> {
           // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
           const normalizedSnapshotId = table.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
-          await exportTableToParquet(db, conn, table.name, normalizedSnapshotId, {
+          await exportTableToSnapshot(db, conn, table.name, normalizedSnapshotId, {
             onChunkProgress: (current, total, tableName) => {
               useUIStore.getState().setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
             },
@@ -721,7 +721,7 @@ export async function forceSaveAll(): Promise<void> {
       const normalizedSnapshotId = table.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
       // Export to Parquet
-      await exportTableToParquet(db, conn, table.name, normalizedSnapshotId, {
+      await exportTableToSnapshot(db, conn, table.name, normalizedSnapshotId, {
         onChunkProgress: (current, total, tableName) => {
           uiState.setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
         },
@@ -860,7 +860,7 @@ export function usePersistence() {
         await cleanupDuplicateCaseSnapshots()
 
         // List all saved Parquet files
-        const snapshots = await listParquetSnapshots()
+        const snapshots = await listSnapshots()
 
         if (snapshots.length === 0) {
           console.log('[Persistence] No saved snapshots found.')
@@ -973,7 +973,7 @@ export function usePersistence() {
             if (shouldThaw) {
               // THAW: Import from Parquet into DuckDB (full hydration)
               // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
-              await importTableFromParquet(db, conn, snapshotName, tableName)
+              await importTableFromSnapshot(db, conn, snapshotName, tableName)
 
               // Auto-migrate sequential _cs_id to gap-based (one-time migration)
               await migrateToGapBasedCsId(tableName)
@@ -1006,7 +1006,7 @@ export function usePersistence() {
               } else {
                 // Fallback: Read Parquet metadata directly (requires brief import)
                 console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from Parquet header...`)
-                await importTableFromParquet(db, conn, snapshotName, tableName)
+                await importTableFromSnapshot(db, conn, snapshotName, tableName)
                 const cols = await getTableColumns(tableName)
                 const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
                 const rowCount = Number(countResult.toArray()[0].toJSON().count)
@@ -1140,7 +1140,7 @@ export function usePersistence() {
 
         // Export table to Parquet (overwrites existing snapshot)
         // Pass chunk progress callback for large table UI feedback
-        await exportTableToParquet(db, conn, tableName, normalizedSnapshotId, {
+        await exportTableToSnapshot(db, conn, tableName, normalizedSnapshotId, {
           onChunkProgress: (current, total, table) => {
             useUIStore.getState().setChunkProgress({ tableName: table, currentChunk: current, totalChunks: total })
           },
@@ -1226,7 +1226,7 @@ export function usePersistence() {
       // CRITICAL: Normalize table name to match how snapshots are saved (lowercase, underscores)
       // Without this, deletion of "My_Table" would look for "My_Table.parquet" but file is "my_table.parquet"
       const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
-      await deleteParquetSnapshot(normalizedSnapshotId)
+      await deleteSnapshot(normalizedSnapshotId)
       console.log(`[Persistence] Deleted snapshot for ${tableName} (normalized: ${normalizedSnapshotId})`)
     } catch (err) {
       console.error(`[Persistence] Failed to delete snapshot for ${tableName}:`, err)
@@ -1248,13 +1248,13 @@ export function usePersistence() {
   // 5. CLEAR: Remove all Parquet files from OPFS
   const clearStorage = useCallback(async () => {
     try {
-      const snapshots = await listParquetSnapshots()
+      const snapshots = await listSnapshots()
       const uniqueTables = [...new Set(
         snapshots.map(name => name.replace(/_part_\d+$/, ''))
       )]
 
       for (const tableName of uniqueTables) {
-        await deleteParquetSnapshot(tableName)
+        await deleteSnapshot(tableName)
       }
 
       console.log(`[Persistence] Cleared ${uniqueTables.length} table snapshots`)

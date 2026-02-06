@@ -25,8 +25,8 @@ import { applyStandardization } from '@/lib/standardizer-engine'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
 import {
-  exportTableToParquet,
-  importTableFromParquet,
+  exportTableToSnapshot,
+  importTableFromSnapshot,
   checkSnapshotFileExists,
 } from '@/lib/opfs/snapshot-storage'
 import type {
@@ -111,64 +111,11 @@ export async function listSnapshotTables(): Promise<string[]> {
  *
  * Uses file registration approach (like diff-engine) to work even when OPFS is disabled.
  */
-async function snapshotHasOriginId(snapshotId: string): Promise<boolean> {
-  try {
-    const db = await initDuckDB()
-    const root = await navigator.storage.getDirectory()
-    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
-    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-
-    // Check for single file or chunked files
-    let filePattern: string
-    const filesToRegister: string[] = []
-
-    try {
-      const fileName = `${snapshotId}.parquet`
-      await snapshotsDir.getFileHandle(fileName, { create: false })
-      filePattern = fileName
-      filesToRegister.push(fileName)
-    } catch {
-      // Try chunked pattern
-      const { listFiles } = await import('@/lib/opfs/opfs-helpers')
-      const chunks = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
-      if (chunks.length === 0) {
-        console.log(`[Timeline] No Parquet files found for snapshot: ${snapshotId}`)
-        return false
-      }
-      filePattern = `${snapshotId}_part_*.parquet`
-      filesToRegister.push(...chunks)
-    }
-
-    // Register files with DuckDB before querying schema
-    // This is required because opfs:// path may not work when OPFS is disabled
-    const { registerFileWithRetry } = await import('@/lib/opfs/snapshot-storage')
-    for (const fileName of filesToRegister) {
-      const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
-      await registerFileWithRetry(db, fileHandle, fileName)
-    }
-
-    // Query Parquet schema using registered filename (no opfs:// prefix)
-    const columns = await query<{ name: string }>(
-      `SELECT DISTINCT name FROM parquet_schema('${filePattern}')`
-    )
-    const columnNames = columns.map(c => c.name)
-    const hasOriginId = columnNames.includes(CS_ORIGIN_ID_COLUMN)
-
-    // Cleanup registered files
-    for (const fileName of filesToRegister) {
-      try {
-        await db.dropFile(fileName)
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    console.log(`[Timeline] Snapshot ${snapshotId} has _cs_origin_id: ${hasOriginId}`)
-    return hasOriginId
-  } catch (error) {
-    console.warn(`[Timeline] Error checking snapshot schema:`, error)
-    return false
-  }
+async function snapshotHasOriginId(_snapshotId: string): Promise<boolean> {
+  // All snapshots created with Arrow IPC include _cs_origin_id.
+  // This was a backward-compat check for legacy Parquet snapshots,
+  // but since we're pre-prod with no migration needed, always return true.
+  return true
 }
 
 /**
@@ -244,7 +191,7 @@ export async function createTimelineOriginalSnapshot(
     const conn = await getConnection()
 
     // Export to OPFS Parquet using direct call (no wrapper needed)
-    await exportTableToParquet(db, conn, tableName, snapshotId)
+    await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     // Create persistence copy via file copy (instant, no re-export needed)
     // This eliminates the "double tax" where import exports data twice
@@ -258,15 +205,15 @@ export async function createTimelineOriginalSnapshot(
       const chunkFiles = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
 
       if (chunkFiles.length > 0) {
-        // Copy chunked files: original_foo_part_0.parquet → foo_part_0.parquet
+        // Copy chunked files: original_foo_part_0.arrow → foo_part_0.arrow
         for (const chunkFile of chunkFiles) {
           const destFile = chunkFile.replace(`${snapshotId}_`, `${sanitizedTableName}_`)
           await copyFile(snapshotsDir, chunkFile, destFile)
         }
         console.log(`[Timeline] Created persistence copy via file copy (${chunkFiles.length} chunks)`)
       } else {
-        // Copy single file: original_foo.parquet → foo.parquet
-        await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+        // Copy single file: original_foo.arrow → foo.arrow
+        await copyFile(snapshotsDir, `${snapshotId}.arrow`, `${sanitizedTableName}.arrow`)
         console.log(`[Timeline] Created persistence copy via file copy`)
       }
 
@@ -295,7 +242,7 @@ export async function createTimelineOriginalSnapshot(
     // 3. No temporary RAM allocation needed (saves ~150MB for small tables)
     const db = await initDuckDB()
     const conn = await getConnection()
-    await exportTableToParquet(db, conn, tableName, snapshotId)
+    await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     console.log(`[Timeline] Exported original snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
 
@@ -306,8 +253,8 @@ export async function createTimelineOriginalSnapshot(
       const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
       const { copyFile } = await import('@/lib/opfs/opfs-helpers')
 
-      // Copy single file: original_foo.parquet → foo.parquet
-      await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+      // Copy single file: original_foo.arrow → foo.arrow
+      await copyFile(snapshotsDir, `${snapshotId}.arrow`, `${sanitizedTableName}.arrow`)
       console.log(`[Timeline] Created persistence copy via file copy`)
 
       // Mark as recently saved to suppress auto-save
@@ -363,7 +310,7 @@ export async function restoreTimelineOriginalSnapshot(
 
     // Import from OPFS - wrapped in try-catch with detailed error
     try {
-      await importTableFromParquet(db, conn, snapshotId, tableName)
+      await importTableFromSnapshot(db, conn, snapshotId, tableName)
       console.log(`[Timeline] Successfully restored table ${tableName} from Parquet snapshot`)
     } catch (importError) {
       // CRITICAL: Table was dropped but import failed - try to create empty table to prevent crashes
@@ -475,12 +422,12 @@ export async function createStepSnapshot(
     const conn = await getConnection()
     const snapshotId = `snapshot_${timelineId}_${stepIndex}`
 
-    // Export to OPFS Parquet (file handles are dropped inside exportTableToParquet)
-    await exportTableToParquet(db, conn, tableName, snapshotId)
+    // Export to OPFS Parquet (file handles are dropped inside exportTableToSnapshot)
+    await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     // OPTIMIZATION: Copy snapshot files to persistence location (instant, no re-export!)
     // This eliminates the "double tax" where transform exports + auto-save re-exports
-    // Pattern: snapshot_<id>_<step>.parquet → <tableName>.parquet
+    // Pattern: snapshot_<id>_<step>.arrow → <tableName>.arrow
     try {
       const root = await navigator.storage.getDirectory()
       const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
@@ -494,18 +441,18 @@ export async function createStepSnapshot(
       const chunkFiles = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
 
       if (chunkFiles.length > 0) {
-        // Copy chunked files: snapshot_xxx_0_part_0.parquet → tablename_part_0.parquet
+        // Copy chunked files: snapshot_xxx_0_part_0.arrow → tablename_part_0.arrow
         for (const chunkFile of chunkFiles) {
-          const partMatch = chunkFile.match(/_part_(\d+)\.parquet$/)
+          const partMatch = chunkFile.match(/_part_(\d+)\.arrow$/)
           if (partMatch) {
-            const destFile = `${sanitizedTableName}_part_${partMatch[1]}.parquet`
+            const destFile = `${sanitizedTableName}_part_${partMatch[1]}.arrow`
             await copyFile(snapshotsDir, chunkFile, destFile)
           }
         }
         console.log(`[Snapshot] Created persistence copy via file copy (${chunkFiles.length} chunks) - saved ~35MB I/O`)
       } else {
-        // Copy single file: snapshot_xxx_0.parquet → tablename.parquet
-        await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+        // Copy single file: snapshot_xxx_0.arrow → tablename.arrow
+        await copyFile(snapshotsDir, `${snapshotId}.arrow`, `${sanitizedTableName}.arrow`)
         console.log(`[Snapshot] Created persistence copy via file copy - saved ~35MB I/O`)
       }
     } catch (copyError) {
@@ -549,7 +496,7 @@ export async function createStepSnapshot(
   try {
     // Export active table directly to OPFS Parquet
     // Safe due to DuckDB MVCC - reads from consistent snapshot
-    await exportTableToParquet(db, conn, tableName, snapshotId)
+    await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     console.log(`[Timeline] Exported step ${stepIndex} snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
 
@@ -564,8 +511,8 @@ export async function createStepSnapshot(
       // Use sanitized table name for persistence (matches persistence system naming)
       const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
-      // Copy single file: snapshot_xxx_0.parquet → tablename.parquet
-      await copyFile(snapshotsDir, `${snapshotId}.parquet`, `${sanitizedTableName}.parquet`)
+      // Copy single file: snapshot_xxx_0.arrow → tablename.arrow
+      await copyFile(snapshotsDir, `${snapshotId}.arrow`, `${sanitizedTableName}.arrow`)
       console.log(`[Snapshot] Created persistence copy via file copy - saved I/O`)
     } catch (copyError) {
       console.warn('[Snapshot] Failed to create persistence copy (will rely on auto-save):', copyError)
@@ -1414,7 +1361,7 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
   const store = useTimelineStore.getState()
   const timeline = store.getTimeline(tableId)
 
-  const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
+  const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
 
   // Determine the table name from timeline or parameter
   // This ensures cleanup works even if timeline doesn't exist
@@ -1425,7 +1372,7 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
   if (effectiveTableName) {
     try {
       const sanitizedTableName = effectiveTableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
-      await deleteParquetSnapshot(`original_${sanitizedTableName}`)
+      await deleteSnapshot(`original_${sanitizedTableName}`)
       console.log(`[Timeline] Deleted Parquet snapshot by tableName: original_${sanitizedTableName}`)
     } catch (e) {
       // Expected if file doesn't exist
@@ -1441,7 +1388,7 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
       const sanitizedTableName = timeline.tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       // Skip if it's the tableName-based snapshot (already deleted above)
       if (snapshotId !== `original_${sanitizedTableName}`) {
-        await deleteParquetSnapshot(snapshotId)
+        await deleteSnapshot(snapshotId)
         console.log(`[Timeline] Deleted Parquet original snapshot: ${snapshotId}`)
       }
     } else if (timeline.originalSnapshotName) {
@@ -1457,7 +1404,7 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
       // Drop cold (Parquet) snapshot
       if (snapshotInfo.parquetId.startsWith('parquet:')) {
         const snapshotId = snapshotInfo.parquetId.replace('parquet:', '')
-        await deleteParquetSnapshot(snapshotId)
+        await deleteSnapshot(snapshotId)
         console.log(`[Timeline] Deleted Parquet step snapshot: ${snapshotId}`)
       } else {
         await dropTable(snapshotInfo.parquetId)
@@ -1653,8 +1600,8 @@ async function initializeTimelineInternal(
     // This could happen if app-state.json was cleared but OPFS files remain
     // Delete the stale snapshot and create fresh
     console.log('[INIT_TIMELINE] Found stale Parquet snapshot (no timeline), deleting:', potentialSnapshotId)
-    const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
-    await deleteParquetSnapshot(potentialSnapshotId)
+    const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
+    await deleteSnapshot(potentialSnapshotId)
     // Fall through to create new snapshot below
   }
 

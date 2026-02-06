@@ -4,13 +4,13 @@
  *
  * The incremental persistence system uses a hybrid approach:
  * - Cell edits → OPFS JSONL changelog (instant, ~2-3ms)
- * - Transforms → Full Parquet snapshot (blocking)
- * - Compaction → Merges changelog into Parquet periodically
+ * - Transforms → Full Arrow IPC snapshot (blocking)
+ * - Compaction → Merges changelog into Arrow IPC snapshot periodically
  *
  * This test verifies:
- * 1. Cell edits are persisted to changelog (not Parquet)
+ * 1. Cell edits are persisted to changelog (not snapshot)
  * 2. Cell edits survive page refresh via changelog replay
- * 3. Compaction merges changelog into Parquet
+ * 3. Compaction merges changelog into Arrow IPC snapshot
  * 4. Multiple rapid edits are batched correctly
  *
  * Uses Tier 3 isolation (fresh browser context per test) since it involves

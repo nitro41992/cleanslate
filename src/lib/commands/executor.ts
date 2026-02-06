@@ -59,8 +59,8 @@ import {
   getEstimatedTableSizes,
 } from '@/lib/duckdb/memory'
 import {
-  importTableFromParquet,
-  deleteParquetSnapshot,
+  importTableFromSnapshot,
+  deleteSnapshot,
 } from '@/lib/opfs/snapshot-storage'
 
 // ===== TIMELINE STORAGE =====
@@ -125,14 +125,14 @@ export function clearCommandTimeline(tableId: string): void {
           // Ignore errors during cleanup
         })
       } else if (snapshot.storageType === 'parquet') {
-        deleteParquetSnapshot(snapshot.id).catch(() => {})
+        deleteSnapshot(snapshot.id).catch(() => {})
       }
     }
     if (timeline.originalSnapshot) {
       if (timeline.originalSnapshot.storageType === 'table' && timeline.originalSnapshot.tableName) {
         dropTable(timeline.originalSnapshot.tableName).catch(() => {})
       } else if (timeline.originalSnapshot.storageType === 'parquet') {
-        deleteParquetSnapshot(timeline.originalSnapshot.id).catch(() => {})
+        deleteSnapshot(timeline.originalSnapshot.id).catch(() => {})
       }
     }
     tableTimelines.delete(tableId)
@@ -427,7 +427,7 @@ export class CommandExecutor implements ICommandExecutor {
             await dropTable(snapshotMetadata.tableName)
             console.log(`[Executor] Cleaned up orphaned snapshot (idempotent): ${snapshotMetadata.tableName}`)
           } else if (snapshotMetadata.storageType === 'parquet') {
-            await deleteParquetSnapshot(snapshotMetadata.id)
+            await deleteSnapshot(snapshotMetadata.id)
             console.log(`[Executor] Cleaned up orphaned Parquet snapshot (idempotent): ${snapshotMetadata.id}`)
           }
           snapshotMetadata = undefined
@@ -1304,7 +1304,7 @@ export class CommandExecutor implements ICommandExecutor {
       const db = await initDuckDB()
       const conn = await getConnection()
       await dropTable(tableName)
-      await importTableFromParquet(db, conn, snapshot.id, tableName)
+      await importTableFromSnapshot(db, conn, snapshot.id, tableName)
 
       console.log(`[Snapshot] Restored ${tableName} from cold storage`)
     } else {
@@ -1379,7 +1379,7 @@ export class CommandExecutor implements ICommandExecutor {
           if (snapshotMeta.storageType === 'table' && snapshotMeta.tableName) {
             dropTable(snapshotMeta.tableName).catch(() => {})
           } else if (snapshotMeta.storageType === 'parquet') {
-            deleteParquetSnapshot(snapshotMeta.id).catch(() => {})
+            deleteSnapshot(snapshotMeta.id).catch(() => {})
           }
           timeline.snapshots.delete(pos)
           timeline.snapshotTimestamps.delete(pos)

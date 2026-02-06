@@ -41,7 +41,7 @@ async function checkOPFSSupport(page: Page): Promise<boolean> {
 }
 
 /**
- * Clean up OPFS test data (Parquet snapshots)
+ * Clean up OPFS test data (Arrow IPC snapshots)
  */
 async function cleanupOPFSTestData(page: Page): Promise<void> {
   await page.evaluate(async () => {
@@ -190,20 +190,20 @@ test.describe('Row and Column Persistence', () => {
       return !uiState.saving
     }, { timeout: 15000 }).toBe(true)
 
-    // Get the original Parquet file size BEFORE row insert
+    // Get the original snapshot file size BEFORE row insert
     const originalSize = await page.evaluate(async () => {
       try {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
         return 0
       }
     })
-    console.log('[Test FR-ROW-PERSIST-1] Original Parquet size:', originalSize)
+    console.log('[Test FR-ROW-PERSIST-1] Original snapshot size:', originalSize)
 
     // Verify initial row count
     const rowsBefore = await inspector.runQuery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM basic_data')
@@ -274,10 +274,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.parquet.tmp') {
+            if (entry.name === 'basic_data.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -300,8 +300,8 @@ test.describe('Row and Column Persistence', () => {
     // Save app state (timelines, UI prefs)
     await inspector.saveAppState()
 
-    // Verify the Parquet file exists in OPFS before refresh
-    const parquetFiles = await page.evaluate(async () => {
+    // Verify the snapshot file exists in OPFS before refresh
+    const snapshotFiles = await page.evaluate(async () => {
       try {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
@@ -318,7 +318,7 @@ test.describe('Row and Column Persistence', () => {
         return [{ name: 'error', size: -1 }]
       }
     })
-    console.log('[Test] Parquet files in OPFS before refresh:', parquetFiles)
+    console.log('[Test] Snapshot files in OPFS before refresh:', snapshotFiles)
 
     // Refresh page
     await page.reload()
@@ -385,25 +385,25 @@ test.describe('Row and Column Persistence', () => {
       return Number(rows[0].cnt)
     }, { timeout: 10000 }).toBe(6)
 
-    // Get the original Parquet file size before the priority save completes
+    // Get the original snapshot file size before the priority save completes
     const originalSize = await page.evaluate(async () => {
       try {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
         return 0
       }
     })
-    console.log('[Test FR-ROW-PERSIST-2] Original Parquet size:', originalSize)
+    console.log('[Test FR-ROW-PERSIST-2] Original snapshot size:', originalSize)
 
     // Wait for the priority save to complete by checking that:
     // 1. No saves in progress
     // 2. No .tmp files (atomic rename complete)
-    // 3. Parquet file size has INCREASED (new row was actually saved)
+    // 3. Snapshot file size has INCREASED (new row was actually saved)
     await expect.poll(async () => {
       const state = await page.evaluate(async ({ origSize }) => {
         const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
@@ -419,10 +419,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.parquet.tmp') {
+            if (entry.name === 'basic_data.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -443,8 +443,8 @@ test.describe('Row and Column Persistence', () => {
     await inspector.flushToOPFS()
     await inspector.saveAppState()
 
-    // Debug: Check Parquet files before refresh
-    const parquetFiles = await page.evaluate(async () => {
+    // Debug: Check snapshot files before refresh
+    const snapshotFiles = await page.evaluate(async () => {
       try {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
@@ -461,7 +461,7 @@ test.describe('Row and Column Persistence', () => {
         return [{ name: 'error', size: -1 }]
       }
     })
-    console.log('[Test FR-ROW-PERSIST-2] Parquet files before refresh:', parquetFiles)
+    console.log('[Test FR-ROW-PERSIST-2] Snapshot files before refresh:', snapshotFiles)
 
     // Refresh page
     await page.reload()
@@ -516,7 +516,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -540,10 +540,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.parquet.tmp') {
+            if (entry.name === 'basic_data.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -568,7 +568,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -603,10 +603,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.parquet.tmp') {
+            if (entry.name === 'basic_data.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -660,20 +660,20 @@ test.describe('Row and Column Persistence', () => {
       return !uiState.saving
     }, { timeout: 15000 }).toBe(true)
 
-    // Get the original Parquet file size BEFORE row delete
+    // Get the original snapshot file size BEFORE row delete
     const originalSize = await page.evaluate(async () => {
       try {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.parquet')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
         return 0
       }
     })
-    console.log('[Test FR-ROW-PERSIST-4] Original Parquet size:', originalSize)
+    console.log('[Test FR-ROW-PERSIST-4] Original snapshot size:', originalSize)
 
     // Get the _cs_id of the first row to verify it's deleted
     const initialRows = await inspector.runQuery<{ _cs_id: string; id: number }>('SELECT "_cs_id", id FROM basic_data ORDER BY "_cs_id" LIMIT 1')
@@ -718,10 +718,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.parquet.tmp') {
+            if (entry.name === 'basic_data.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.parquet' && entry.kind === 'file') {
+            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }

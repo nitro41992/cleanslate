@@ -3,7 +3,7 @@
  *
  * These helpers prevent state accumulation in serial test groups by cleaning up:
  * - Audit log entries
- * - DuckDB snapshots (Tier 3 commands)
+ * - DuckDB snapshots / Arrow IPC files (Tier 3 commands)
  * - Timeline state (undo/redo stack)
  * - Internal diff tables
  * - Panel states
@@ -197,7 +197,7 @@ export function categorizeTestTier(testTitle: string): 1 | 2 | 3 {
   // Tier 3 - Heavy operations (snapshot-based)
   const tier3Keywords = [
     'remove_duplicates', 'dedupe', 'cast_type', 'split_column',
-    'match', 'merge', 'fuzzy', 'large', 'parquet', 'snapshot'
+    'match', 'merge', 'fuzzy', 'large', 'arrow', 'snapshot'
   ]
   if (tier3Keywords.some(keyword => lowerTitle.includes(keyword))) {
     return 3

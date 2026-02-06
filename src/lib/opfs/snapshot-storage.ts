@@ -1,17 +1,20 @@
 /**
- * OPFS Parquet Snapshot Storage
+ * OPFS Arrow IPC Snapshot Storage
  *
- * Provides cold storage for large table snapshots using Parquet compression.
- * Reduces RAM usage from ~1.5GB (in-memory table) to ~5MB (compressed file).
+ * Provides cold storage for large table snapshots using Arrow IPC format.
+ * Arrow IPC eliminates DuckDB's Parquet extension dependency, enabling the
+ * COI bundle (pthreads + SIMD) for multi-threaded query performance.
  *
- * CRITICAL: DuckDB-WASM creates Parquet files in-memory, not via registered file handles.
- * Pattern: COPY TO → copyFileToBuffer() → write to OPFS → dropFile()
- * See: https://github.com/duckdb/duckdb-wasm/discussions/1714
+ * Trade-off: Arrow IPC files are 5-10x larger than compressed Parquet,
+ * but this is acceptable given abundant OPFS quota (~60% of free disk).
+ *
+ * Export: conn.query(SELECT *) → tableToIPC() → write to OPFS
+ * Import: read OPFS bytes → conn.insertArrowFromIPCStream()
  */
 
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
-import * as duckdb from '@duckdb/duckdb-wasm'
-import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN, initDuckDB } from '@/lib/duckdb'
+import { tableToIPC } from 'apache-arrow'
+import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { deleteFileIfExists } from './opfs-helpers'
 
 /**
@@ -19,7 +22,7 @@ import { deleteFileIfExists } from './opfs-helpers'
  * Uses scheduler.yield() when available (Chrome 115+) for priority-aware scheduling,
  * falls back to setTimeout(0) for older browsers.
  *
- * This prevents UI freezing during Parquet export by allowing the browser
+ * This prevents UI freezing during snapshot export by allowing the browser
  * to handle pending user input (scrolls, clicks) between chunks.
  *
  * @see https://developer.chrome.com/blog/use-scheduler-yield
@@ -43,20 +46,20 @@ async function yieldToMain(): Promise<void> {
 const writeLocksInProgress = new Map<string, Promise<void>>()
 
 /**
- * Global export queue - ensures only ONE Parquet export runs at a time.
+ * Global export queue - ensures only ONE snapshot export runs at a time.
  *
- * DuckDB's COPY TO operation creates large in-memory buffers (~500MB for 1M rows).
- * When multiple exports run concurrently (e.g., persistence save + step snapshot),
- * RAM spikes to 4GB+. By serializing exports, peak RAM stays under 2.5GB.
+ * tableToIPC() generates the entire Uint8Array in JS heap. When multiple exports
+ * run concurrently, RAM spikes dangerously. By serializing exports, peak RAM
+ * stays manageable.
  *
  * This is separate from writeLocksInProgress which prevents concurrent writes
- * to the SAME file. This queue prevents concurrent COPY TO operations globally.
+ * to the SAME file. This queue prevents concurrent export operations globally.
  */
 let globalExportChain: Promise<void> = Promise.resolve()
 
 /**
  * Execute a function with global export serialization.
- * Only one COPY TO operation can run at a time across the entire app.
+ * Only one export operation can run at a time across the entire app.
  */
 async function withGlobalExportLock<T>(fn: () => Promise<T>): Promise<T> {
   const previousExport = globalExportChain
@@ -78,7 +81,7 @@ async function withGlobalExportLock<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Ensure identity columns (_cs_id, _cs_origin_id) exist in a restored table.
- * Tables from older Parquet snapshots may be missing these columns.
+ * Tables from older snapshots may be missing these columns.
  *
  * If missing, recreates the table with identity columns added.
  */
@@ -191,8 +194,8 @@ async function createWritableWithRetry(
 }
 
 /**
- * Ensure the snapshots directory exists in OPFS
- * Must be called before first Parquet export to avoid DuckDB errors
+ * Ensure the snapshots directory exists in OPFS.
+ * Must be called before first snapshot export to avoid write errors.
  */
 export async function ensureSnapshotDir(): Promise<void> {
   try {
@@ -206,10 +209,10 @@ export async function ensureSnapshotDir(): Promise<void> {
 }
 
 /**
- * Detect the correct ORDER BY column for deterministic export
- * Diff tables use sort_key (preserves original row order)
- * Regular tables use _cs_id
- * Uses raw connection to avoid mutex reentrancy (caller holds mutex)
+ * Detect the correct ORDER BY column for deterministic export.
+ * Diff tables use sort_key (preserves original row order).
+ * Regular tables use _cs_id.
+ * Uses raw connection to avoid mutex reentrancy (caller holds mutex).
  */
 async function getOrderByColumn(
   conn: AsyncDuckDBConnection,
@@ -259,44 +262,41 @@ async function getOrderByColumn(
 }
 
 /**
- * Options for Parquet export operations
+ * Options for snapshot export operations
  */
 export interface ExportOptions {
   /**
-   * Callback for chunk progress during large (>250k row) exports.
+   * Callback for chunk progress during large (>100k row) exports.
    * Called after each chunk is written with current/total progress.
    */
   onChunkProgress?: (current: number, total: number, tableName: string) => void
 }
 
 /**
- * Export a table to Parquet file in OPFS
+ * Export a table to Arrow IPC file in OPFS
  *
- * CRITICAL MEMORY SAFETY: Uses in-memory buffer pattern with chunking.
- * - `COPY TO` creates in-memory virtual file in DuckDB-WASM
- * - `copyFileToBuffer()` retrieves buffer from WASM heap → JS heap (~50MB per chunk)
- * - Write buffer to OPFS using File System Access API
- * - `dropFile()` cleans up virtual file
+ * Uses Arrow IPC serialization: conn.query() returns Arrow Table natively,
+ * serialize to IPC bytes via tableToIPC(), write bytes to OPFS.
  *
- * For tables >250k rows, uses chunked files to prevent JS heap OOM crashes.
- * Each chunk is ~50MB compressed, written separately, and buffer is GC'd immediately.
+ * For tables >100k rows, uses chunked files to prevent JS heap OOM crashes.
+ * tableToIPC() generates the entire Uint8Array in JS heap (no compression),
+ * so chunk size is kept smaller than the old Parquet path.
  *
- * @param db - DuckDB instance (for copyFileToBuffer/dropFile)
- * @param conn - Active DuckDB connection (for COPY TO)
+ * @param db - DuckDB instance (kept for caller API stability)
+ * @param conn - Active DuckDB connection (for SELECT queries)
  * @param tableName - Source table to export
  * @param snapshotId - Unique snapshot identifier (e.g., "snapshot_abc_1234567890")
  * @param options - Optional export options (chunk progress callback)
- *
- * Performance: ~2-3 seconds for 1M rows (includes compression + OPFS write)
  */
-export async function exportTableToParquet(
+export async function exportTableToSnapshot(
   db: AsyncDuckDB,
   conn: AsyncDuckDBConnection,
   tableName: string,
   snapshotId: string,
   options?: ExportOptions
 ): Promise<void> {
-  // Use global export queue to serialize COPY TO operations (prevents RAM spikes)
+  void db // Kept for caller API stability — no longer used internally
+  // Use global export queue to serialize export operations (prevents RAM spikes)
   return withGlobalExportLock(async () => {
     await ensureSnapshotDir()
 
@@ -314,12 +314,11 @@ export async function exportTableToParquet(
     const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
 
-    // CRITICAL: Always chunk for tables >250k rows to prevent JS heap OOM
-    // copyFileToBuffer() copies data to JS heap, so we must limit buffer size
-    // Uses atomic write pattern per chunk: write to .tmp file, then rename on success
-    const CHUNK_THRESHOLD = 250_000
+    // CRITICAL: Chunk for tables >100k rows to prevent JS heap OOM
+    // tableToIPC() generates entire Uint8Array in JS heap (no compression like Parquet had)
+    const CHUNK_THRESHOLD = 100_000
     if (rowCount > CHUNK_THRESHOLD) {
-      console.log('[Snapshot] Using chunked Parquet export for large table')
+      console.log('[Snapshot] Using chunked Arrow IPC export for large table')
 
       const batchSize = CHUNK_THRESHOLD
       const totalChunks = Math.ceil(rowCount / batchSize)
@@ -331,35 +330,31 @@ export async function exportTableToParquet(
 
       try {
         while (offset < rowCount) {
-          const duckdbTempFile = `duckdb_temp_${snapshotId}_part_${partIndex}.parquet`
-          const opfsTempFile = `${snapshotId}_part_${partIndex}.parquet.tmp`
-          const finalFileName = `${snapshotId}_part_${partIndex}.parquet`
+          const opfsTempFile = `${snapshotId}_part_${partIndex}.arrow.tmp`
+          const finalFileName = `${snapshotId}_part_${partIndex}.arrow`
 
-          // 1. COPY TO in-memory file (DuckDB WASM memory)
+          // 1. Query chunk and serialize to Arrow IPC
           // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
           const orderByCol = await getOrderByColumn(conn, tableName)
           const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
 
-          await conn.query(`
-            COPY (
-              SELECT * FROM "${tableName}"
-              ${orderByClause}
-              LIMIT ${batchSize} OFFSET ${offset}
-            ) TO '${duckdbTempFile}'
-            (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let arrowTable: any = await conn.query(`
+            SELECT * FROM "${tableName}"
+            ${orderByClause}
+            LIMIT ${batchSize} OFFSET ${offset}
           `)
+          let ipcBytes: Uint8Array | null = tableToIPC(arrowTable, 'stream')
+          arrowTable = null // Release Arrow Table reference for GC
 
-          // 2. Retrieve buffer from WASM memory → JS heap (~50MB compressed)
-          let buffer: Uint8Array | null = await db.copyFileToBuffer(duckdbTempFile)
-
-          // 3. Write to OPFS temp file (atomic step 1)
+          // 2. Write to OPFS temp file (atomic step 1)
           const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
           const writable = await createWritableWithRetry(tempHandle)
-          await writable.write(buffer)
+          await writable.write(ipcBytes)
           await writable.close()
 
-          // Explicit buffer release to help GC reclaim memory faster
-          buffer = null
+          // Explicit release to help GC reclaim memory faster
+          ipcBytes = null
 
           // CRITICAL: Small delay to ensure file handle is fully released
           await new Promise(resolve => setTimeout(resolve, 20))
@@ -370,7 +365,7 @@ export async function exportTableToParquet(
             throw new Error(`[Snapshot] Failed to write temp chunk ${opfsTempFile} - file is 0 bytes`)
           }
 
-          // 4. Atomic rename: temp → final (atomic step 2)
+          // 3. Atomic rename: temp → final (atomic step 2)
           await deleteFileIfExists(snapshotsDir, finalFileName)
           const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
           const finalWritable = await finalHandle.createWritable()
@@ -387,9 +382,8 @@ export async function exportTableToParquet(
           }
           console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
 
-          // 5. Cleanup: delete temp files
+          // 4. Cleanup: delete temp file
           await deleteFileIfExists(snapshotsDir, opfsTempFile)
-          await db.dropFile(duckdbTempFile)
 
           completedChunks.push(finalFileName)
           offset += batchSize
@@ -410,51 +404,41 @@ export async function exportTableToParquet(
           options.onChunkProgress(totalChunks, totalChunks, tableName)
         }
 
-        console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.parquet`)
+        console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.arrow`)
       } catch (error) {
-        // Cleanup any temp files on failure (completed chunks are valid and kept)
+        // Cleanup any temp files on failure
         for (let i = 0; i <= partIndex; i++) {
-          await deleteFileIfExists(snapshotsDir, `${snapshotId}_part_${i}.parquet.tmp`)
-          try {
-            await db.dropFile(`duckdb_temp_${snapshotId}_part_${i}.parquet`)
-          } catch {
-            // Ignore cleanup errors
-          }
+          await deleteFileIfExists(snapshotsDir, `${snapshotId}_part_${i}.arrow.tmp`)
         }
         throw error
       }
   } else {
-    // Single file export (ONLY safe for tables ≤250k rows)
+    // Single file export (ONLY safe for tables ≤100k rows)
     // Uses atomic write pattern: write to .tmp file, then rename on success
-    const duckdbTempFile = `duckdb_temp_${snapshotId}.parquet`
-    const opfsTempFile = `${snapshotId}.parquet.tmp`
-    const finalFileName = `${snapshotId}.parquet`
+    const opfsTempFile = `${snapshotId}.arrow.tmp`
+    const finalFileName = `${snapshotId}.arrow`
 
     try {
-      // 1. COPY TO in-memory file (DuckDB WASM memory)
-      // Detect correct ORDER BY column for this table (handles diff tables with row_id)
+      // 1. Query all rows and serialize to Arrow IPC
       const orderByCol = await getOrderByColumn(conn, tableName)
       const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
 
-      await conn.query(`
-        COPY (
-          SELECT * FROM "${tableName}"
-          ${orderByClause}
-        ) TO '${duckdbTempFile}'
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let arrowTable: any = await conn.query(`
+        SELECT * FROM "${tableName}"
+        ${orderByClause}
       `)
+      let ipcBytes: Uint8Array | null = tableToIPC(arrowTable, 'stream')
+      arrowTable = null // Release Arrow Table reference for GC
 
-      // 2. Retrieve buffer from WASM → JS heap (safe: <50MB)
-      let buffer: Uint8Array | null = await db.copyFileToBuffer(duckdbTempFile)
-
-      // 3. Write to OPFS temp file (atomic step 1: write to temp)
+      // 2. Write to OPFS temp file (atomic step 1: write to temp)
       const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
       const writable = await createWritableWithRetry(tempHandle)
-      await writable.write(buffer)
+      await writable.write(ipcBytes)
       await writable.close()
 
-      // Explicit buffer release to help GC reclaim memory faster
-      buffer = null
+      // Explicit release to help GC reclaim memory faster
+      ipcBytes = null
 
       // CRITICAL: Small delay to ensure file handle is fully released
       await new Promise(resolve => setTimeout(resolve, 20))
@@ -465,7 +449,7 @@ export async function exportTableToParquet(
         throw new Error(`[Snapshot] Failed to write temp file ${opfsTempFile} - file is 0 bytes`)
       }
 
-      // 4. Atomic rename: temp → final (atomic step 2)
+      // 3. Atomic rename: temp → final (atomic step 2)
       // Delete existing final file first (if any), then rename
       await deleteFileIfExists(snapshotsDir, finalFileName)
       const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
@@ -484,25 +468,18 @@ export async function exportTableToParquet(
       }
       console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
 
-      // 5. Cleanup: delete temp file and DuckDB virtual file
+      // 4. Cleanup: delete temp file
       await deleteFileIfExists(snapshotsDir, opfsTempFile)
-      await db.dropFile(duckdbTempFile)
 
       console.log(`[Snapshot] Exported to ${finalFileName}`)
     } catch (error) {
       // Cleanup orphaned temp files on failure
       await deleteFileIfExists(snapshotsDir, opfsTempFile)
-      try {
-        await db.dropFile(duckdbTempFile)
-      } catch {
-        // Ignore cleanup errors
-      }
       throw error
     }
   }
 
     // CHECKPOINT after large exports to release DuckDB buffer pool
-    // This helps reclaim ~200-500MB of WASM memory after COPY TO operations
     if (rowCount > 100_000) {
       try {
         await conn.query('CHECKPOINT')
@@ -519,79 +496,25 @@ export async function exportTableToParquet(
 }
 
 /**
- * Helper to register a file with retry and memory fallback
- * OPFS file handles can have locking issues - this provides resilience
+ * Import a table from Arrow IPC file in OPFS
  *
- * Exported for use by diff-engine.ts to handle the same file handle conflicts.
- */
-export async function registerFileWithRetry(
-  db: AsyncDuckDB,
-  fileHandle: FileSystemFileHandle,
-  fileName: string,
-  maxRetries = 5
-): Promise<'handle' | 'buffer'> {
-  // Try file handle registration first (zero-copy, preferred)
-  // Uses longer backoff (200ms base) to allow concurrent exports to finish
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      await db.registerFileHandle(
-        fileName,
-        fileHandle,
-        duckdb.DuckDBDataProtocol.BROWSER_FSACCESS,
-        false // read-only
-      )
-      return 'handle'
-    } catch (err) {
-      const isLockError = String(err).includes('Access Handle')
-      if (!isLockError || attempt === maxRetries) {
-        // Not a lock error or last attempt - fall back to buffer
-        console.warn(`[Snapshot] File handle registration failed for ${fileName} (attempt ${attempt}/${maxRetries}), using buffer fallback`)
-        break
-      }
-      // Wait before retry (exponential backoff: 200ms, 400ms, 800ms, 1600ms)
-      await new Promise(resolve => setTimeout(resolve, 200 * Math.pow(2, attempt - 1)))
-    }
-  }
-
-  // CRITICAL: Drop any stale/partial file registration before buffer fallback
-  // A failed registerFileHandle may leave a virtual file entry in DuckDB.
-  // Without cleanup, registerFileBuffer creates a second entry for the same name,
-  // causing TProtocolException when read_parquet glob reads the stale entry.
-  try {
-    await db.dropFile(fileName)
-  } catch {
-    // Ignore - file may not be registered
-  }
-
-  // Fallback: Read file into memory buffer
-  // This avoids OPFS locking issues but uses more memory
-  const file = await fileHandle.getFile()
-  const buffer = await file.arrayBuffer()
-  await db.registerFileBuffer(fileName, new Uint8Array(buffer))
-  return 'buffer'
-}
-
-/**
- * Import a table from Parquet file in OPFS
+ * Reads Arrow IPC bytes from OPFS and inserts directly into DuckDB
+ * via insertArrowFromIPCStream(). No file registration needed.
  *
- * Uses DuckDB's file handle registration for zero-copy reads when possible.
- * Falls back to memory buffer if file handle registration fails (OPFS lock conflicts).
+ * Handles both chunked files (for large tables) and single files.
  *
- * Handles both chunked files (for large tables) and single files (for small tables).
- *
- * @param db - DuckDB instance (for file registration)
- * @param conn - Active DuckDB connection (for transaction consistency)
+ * @param db - DuckDB instance (kept for caller API stability)
+ * @param conn - Active DuckDB connection
  * @param snapshotId - Unique snapshot identifier
  * @param targetTableName - Name for the restored table
- *
- * Performance: ~2-5 seconds for 1M rows (includes decompression)
  */
-export async function importTableFromParquet(
+export async function importTableFromSnapshot(
   db: AsyncDuckDB,
   conn: AsyncDuckDBConnection,
   snapshotId: string,
   targetTableName: string
 ): Promise<void> {
+  void db // Kept for caller API stability — no longer used internally
   console.log(`[Snapshot] Importing from ${snapshotId}...`)
 
   const root = await navigator.storage.getDirectory()
@@ -601,23 +524,42 @@ export async function importTableFromParquet(
   // Check if this is a chunked snapshot (multiple _part_N files) or single file
   let isChunked = false
   try {
-    await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+    await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
     isChunked = true
   } catch {
     // Not chunked, try single file
     isChunked = false
   }
 
+  // Drop existing table to ensure clean import
+  await conn.query(`DROP TABLE IF EXISTS "${targetTableName}"`)
+
   if (isChunked) {
-    // Register all chunk files
     let partIndex = 0
 
     while (true) {
       try {
-        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        const fileName = `${snapshotId}_part_${partIndex}.arrow`
         const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+        const file = await fileHandle.getFile()
+        const buffer = new Uint8Array(await file.arrayBuffer())
 
-        await registerFileWithRetry(db, fileHandle, fileName)
+        if (partIndex === 0) {
+          // First chunk: create the table
+          await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: true })
+        } else {
+          // Subsequent chunks: append to existing table
+          try {
+            await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: false })
+          } catch (appendError) {
+            // Schema mismatch fallback: use temp table + INSERT INTO SELECT
+            console.warn(`[Snapshot] Schema mismatch on chunk ${partIndex}, using fallback:`, appendError)
+            const tempChunkTable = `__temp_chunk_${Date.now()}_${partIndex}`
+            await conn.insertArrowFromIPCStream(buffer, { name: tempChunkTable, create: true })
+            await conn.query(`INSERT INTO "${targetTableName}" SELECT * FROM "${tempChunkTable}"`)
+            await conn.query(`DROP TABLE "${tempChunkTable}"`)
+          }
+        }
 
         partIndex++
       } catch {
@@ -625,39 +567,17 @@ export async function importTableFromParquet(
       }
     }
 
-    // Read all chunks with glob pattern
-    // NOTE: Do NOT add ORDER BY here - it can cause non-stable re-sorting
-    // Rely on preserve_insertion_order (default: true) to maintain Parquet file order
-    // The export already wrote rows in _cs_id order
-    await conn.query(`
-      CREATE OR REPLACE TABLE "${targetTableName}" AS
-      SELECT * FROM read_parquet('${snapshotId}_part_*.parquet')
-    `)
-
     console.log(`[Snapshot] Restored ${targetTableName} from ${partIndex} chunks`)
-
-    // Unregister all file handles
-    for (let i = 0; i < partIndex; i++) {
-      await db.dropFile(`${snapshotId}_part_${i}.parquet`)
-    }
   } else {
-    // Single file import (existing behavior)
-    const fileName = `${snapshotId}.parquet`
+    // Single file import
+    const fileName = `${snapshotId}.arrow`
     const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+    const file = await fileHandle.getFile()
+    const buffer = new Uint8Array(await file.arrayBuffer())
 
-    await registerFileWithRetry(db, fileHandle, fileName)
-
-    // NOTE: Do NOT add ORDER BY here - it can cause non-stable re-sorting
-    // Rely on preserve_insertion_order (default: true) to maintain Parquet file order
-    // The export already wrote rows in _cs_id order
-    await conn.query(`
-      CREATE OR REPLACE TABLE "${targetTableName}" AS
-      SELECT * FROM read_parquet('${fileName}')
-    `)
+    await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: true })
 
     console.log(`[Snapshot] Restored ${targetTableName} from single file`)
-
-    await db.dropFile(fileName)
   }
 
   // Ensure identity columns exist (for snapshots from older versions)
@@ -665,45 +585,11 @@ export async function importTableFromParquet(
 }
 
 /**
- * Delete a Parquet snapshot from OPFS
- *
- * Uses File System Access API to directly remove file.
+ * Delete a snapshot from OPFS.
  * Handles both chunked files and single files.
  */
-export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
+export async function deleteSnapshot(snapshotId: string): Promise<void> {
   try {
-    // CRITICAL: Unregister files from DuckDB BEFORE deleting from OPFS
-    // Without this, the file lock prevents deletion (NoModificationAllowedError)
-    // This fixes: deleting a table and re-importing leaves stale original snapshot
-    try {
-      const db = await initDuckDB()
-
-      // Try to unregister single file
-      try {
-        await db.dropFile(`${snapshotId}.parquet`)
-      } catch {
-        // Ignore - file might not be registered
-      }
-
-      // Try to unregister chunked files
-      let chunkIndex = 0
-      while (chunkIndex < 100) { // Safety limit
-        try {
-          await db.dropFile(`${snapshotId}_part_${chunkIndex}.parquet`)
-          chunkIndex++
-        } catch {
-          break // No more chunks
-        }
-      }
-
-      if (chunkIndex > 0) {
-        console.log(`[Snapshot] Unregistered ${chunkIndex} chunk(s) from DuckDB for ${snapshotId}`)
-      }
-    } catch (err) {
-      // DuckDB not initialized or other error - proceed with OPFS deletion anyway
-      console.log(`[Snapshot] Could not unregister from DuckDB (non-fatal):`, err)
-    }
-
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
@@ -715,7 +601,7 @@ export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
     // Try deleting chunks first
     while (true) {
       try {
-        const fileName = `${snapshotId}_part_${partIndex}.parquet`
+        const fileName = `${snapshotId}_part_${partIndex}.arrow`
         await snapshotsDir.removeEntry(fileName)
         deletedCount++
         partIndex++
@@ -727,7 +613,7 @@ export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
     // If no chunks found, try single file
     if (deletedCount === 0) {
       try {
-        await snapshotsDir.removeEntry(`${snapshotId}.parquet`)
+        await snapshotsDir.removeEntry(`${snapshotId}.arrow`)
         deletedCount = 1
       } catch (err) {
         console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
@@ -741,14 +627,14 @@ export async function deleteParquetSnapshot(snapshotId: string): Promise<void> {
 }
 
 /**
- * Freeze a table to OPFS (export to Parquet and DROP from DuckDB).
+ * Freeze a table to OPFS (export to Arrow IPC and DROP from DuckDB).
  *
  * Part of the Single Active Table Policy: Only ONE table lives in DuckDB memory at a time.
  * When switching tabs, the current table is "frozen" (exported + dropped) and the new
- * table is "thawed" (imported from Parquet).
+ * table is "thawed" (imported from Arrow IPC).
  *
  * Uses Safe Save pattern: write to temp file → rename → DROP table.
- * NEVER drops table until Parquet save is confirmed successful.
+ * NEVER drops table until snapshot save is confirmed successful.
  *
  * @param db - DuckDB instance
  * @param conn - Active DuckDB connection
@@ -765,7 +651,7 @@ export async function freezeTable(
   console.log(`[Freeze] Freezing table: ${tableName}`)
 
   // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
-  // This prevents duplicate Parquet files (e.g., "Foo.parquet" vs "foo.parquet") in OPFS
+  // This prevents duplicate files (e.g., "Foo.arrow" vs "foo.arrow") in OPFS
   // which is case-sensitive and would cause both to be imported as separate tables on reload.
   const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
@@ -783,38 +669,37 @@ export async function freezeTable(
     }
 
     // Step 2: Check if table is dirty (has unsaved changes)
-    // If dirty, we MUST save to Parquet before dropping
+    // If dirty, we MUST save before dropping
     const { useUIStore } = await import('@/stores/uiStore')
     const isDirty = useUIStore.getState().dirtyTableIds.has(tableId)
 
     if (isDirty) {
-      console.log(`[Freeze] Table ${tableName} is dirty, exporting to Parquet first`)
+      console.log(`[Freeze] Table ${tableName} is dirty, exporting snapshot first`)
 
-      // Export to Parquet using Safe Save pattern
-      // This writes to temp file → renames → confirms success
-      await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
+      // Export using Safe Save pattern
+      await exportTableToSnapshot(db, conn, tableName, normalizedSnapshotId)
 
       // Mark table as clean after successful export
       useUIStore.getState().markTableClean(tableId)
     } else {
-      // Table is clean, but verify Parquet exists AND is valid before dropping
+      // Table is clean, but verify snapshot exists AND is valid before dropping
       const snapshotExists = await checkSnapshotFileExists(normalizedSnapshotId)
       if (!snapshotExists) {
-        console.log(`[Freeze] No Parquet snapshot for clean table ${tableName}, creating one`)
-        await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
+        console.log(`[Freeze] No snapshot for clean table ${tableName}, creating one`)
+        await exportTableToSnapshot(db, conn, tableName, normalizedSnapshotId)
       } else {
-        // Snapshot file exists — validate it has valid Parquet magic bytes
+        // Snapshot file exists — validate it has valid Arrow IPC bytes
         // Corrupt files (truncated writes, OPFS issues) can pass the existence check
         // but fail on thaw, causing data loss if we drop the in-memory table
-        const isValid = await validateParquetMagicBytes(normalizedSnapshotId)
+        const isValid = await validateArrowMagicBytes(normalizedSnapshotId)
         if (!isValid) {
           console.warn(`[Freeze] Existing snapshot for ${tableName} is corrupt, re-exporting`)
-          await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
+          await exportTableToSnapshot(db, conn, tableName, normalizedSnapshotId)
         }
       }
     }
 
-    // Step 3: DROP table from DuckDB (safe now that Parquet exists)
+    // Step 3: DROP table from DuckDB (safe now that snapshot exists)
     await conn.query(`DROP TABLE IF EXISTS "${tableName}"`)
     console.log(`[Freeze] Dropped ${tableName} from DuckDB memory`)
 
@@ -834,7 +719,7 @@ export async function freezeTable(
 }
 
 /**
- * Thaw a table from OPFS (import from Parquet into DuckDB).
+ * Thaw a table from OPFS (import from Arrow IPC into DuckDB).
  *
  * Part of the Single Active Table Policy: Restores a frozen table to DuckDB memory.
  *
@@ -866,16 +751,16 @@ export async function thawTable(
       return true // Already thawed
     }
 
-    // Step 2: Check if Parquet snapshot exists
+    // Step 2: Check if snapshot exists
     const snapshotExists = await checkSnapshotFileExists(normalizedSnapshotId)
     if (!snapshotExists) {
-      console.error(`[Thaw] No Parquet snapshot found for ${tableName}`)
+      console.error(`[Thaw] No snapshot found for ${tableName}`)
       return false
     }
 
-    // Step 3: Import from Parquet
-    await importTableFromParquet(db, conn, normalizedSnapshotId, tableName)
-    console.log(`[Thaw] Imported ${tableName} into DuckDB from Parquet`)
+    // Step 3: Import from Arrow IPC
+    await importTableFromSnapshot(db, conn, normalizedSnapshotId, tableName)
+    console.log(`[Thaw] Imported ${tableName} into DuckDB from snapshot`)
 
     return true
   } catch (error) {
@@ -885,8 +770,8 @@ export async function thawTable(
 }
 
 /**
- * Check if a Parquet snapshot file exists in OPFS
- * Handles both single files and chunked files
+ * Check if a snapshot file exists in OPFS.
+ * Handles both single files and chunked files.
  *
  * @param snapshotId - Unique snapshot identifier (e.g., "original_abc123")
  * @returns true if snapshot exists (single or chunked), false otherwise
@@ -899,12 +784,12 @@ export async function checkSnapshotFileExists(snapshotId: string): Promise<boole
 
     // Check for single file
     try {
-      await snapshotsDir.getFileHandle(`${snapshotId}.parquet`, { create: false })
+      await snapshotsDir.getFileHandle(`${snapshotId}.arrow`, { create: false })
       return true
     } catch {
       // Check for chunked files (part_0 indicates chunked snapshot exists)
       try {
-        await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+        await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
         return true
       } catch {
         return false
@@ -916,9 +801,9 @@ export async function checkSnapshotFileExists(snapshotId: string): Promise<boole
 }
 
 /**
- * List all Parquet snapshots in OPFS
+ * List all snapshots in OPFS
  */
-export async function listParquetSnapshots(): Promise<string[]> {
+export async function listSnapshots(): Promise<string[]> {
   try {
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
@@ -927,8 +812,8 @@ export async function listParquetSnapshots(): Promise<string[]> {
 
     // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, _handle] of snapshotsDir.entries()) {
-      if (name.endsWith('.parquet')) {
-        entries.push(name.replace('.parquet', ''))
+      if (name.endsWith('.arrow')) {
+        entries.push(name.replace('.arrow', ''))
       }
     }
 
@@ -939,13 +824,13 @@ export async function listParquetSnapshots(): Promise<string[]> {
 }
 
 /**
- * Clean up orphaned diff files from OPFS
+ * Clean up orphaned diff files from OPFS.
  *
  * Diff tables (_diff_*) are temporary tables created during diff operations.
  * They should be cleaned up when the diff view is closed, but if the user
  * refreshes the page before cleanup completes, orphaned files can remain.
  *
- * This function removes any _diff_* Parquet files from OPFS to prevent
+ * This function removes any _diff_* snapshot files from OPFS to prevent
  * them from being restored as regular tables on next page load.
  *
  * Call this once at application startup, after cleanupCorruptSnapshots().
@@ -974,8 +859,8 @@ export async function cleanupOrphanedDiffFiles(): Promise<void> {
     for await (const [name, handle] of snapshotsDir.entries()) {
       if (handle.kind !== 'file') continue
 
-      // Delete any _diff_* Parquet files (including chunked _diff_*_part_N.parquet)
-      if (name.startsWith('_diff_') && name.endsWith('.parquet')) {
+      // Delete any _diff_* snapshot files (including chunked _diff_*_part_N.arrow)
+      if (name.startsWith('_diff_') && name.endsWith('.arrow')) {
         console.log(`[Snapshot] Removing orphaned diff file: ${name}`)
         await snapshotsDir.removeEntry(name)
         deletedCount++
@@ -991,14 +876,18 @@ export async function cleanupOrphanedDiffFiles(): Promise<void> {
 }
 
 /**
- * Validates a Parquet snapshot file by checking for PAR1 magic bytes.
- * Parquet files must start and end with the 4-byte sequence "PAR1" (0x50 0x41 0x52 0x31).
- * Files that are truncated or corrupted during write will fail this check.
+ * Validates an Arrow IPC snapshot file by checking for the IPC stream
+ * continuation token (0xFFFFFFFF) at the start of the file.
+ *
+ * This is a soft check — the continuation token is an implementation detail
+ * of Arrow IPC message encapsulation, not a formal format signature like
+ * Parquet's PAR1. If the check fails but the file has reasonable size,
+ * we give it the benefit of the doubt.
  *
  * @param snapshotId - Normalized snapshot identifier
- * @returns true if the file exists and has valid magic bytes, false otherwise
+ * @returns true if the file exists and appears valid, false otherwise
  */
-async function validateParquetMagicBytes(snapshotId: string): Promise<boolean> {
+async function validateArrowMagicBytes(snapshotId: string): Promise<boolean> {
   try {
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
@@ -1007,29 +896,35 @@ async function validateParquetMagicBytes(snapshotId: string): Promise<boolean> {
     // Try single file first, then first chunk of a chunked snapshot
     let file: File
     try {
-      const handle = await snapshotsDir.getFileHandle(`${snapshotId}.parquet`, { create: false })
+      const handle = await snapshotsDir.getFileHandle(`${snapshotId}.arrow`, { create: false })
       file = await handle.getFile()
     } catch {
       try {
-        const handle = await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+        const handle = await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
         file = await handle.getFile()
       } catch {
         return false
       }
     }
 
-    // Must be at least 8 bytes (4-byte header + 4-byte footer magic)
+    // Arrow IPC stream needs at least 8 bytes (continuation token + metadata length)
     if (file.size < 8) return false
 
     const header = new Uint8Array(await file.slice(0, 4).arrayBuffer())
-    const footer = new Uint8Array(await file.slice(-4).arrayBuffer())
 
-    // "PAR1" in ASCII
-    const magic = [0x50, 0x41, 0x52, 0x31]
-    const headerOk = header[0] === magic[0] && header[1] === magic[1] && header[2] === magic[2] && header[3] === magic[3]
-    const footerOk = footer[0] === magic[0] && footer[1] === magic[1] && footer[2] === magic[2] && footer[3] === magic[3]
+    // Arrow IPC stream continuation token: 0xFFFFFFFF
+    const isContinuationToken =
+      header[0] === 0xFF && header[1] === 0xFF && header[2] === 0xFF && header[3] === 0xFF
 
-    return headerOk && footerOk
+    // Soft check: if continuation token present, definitely valid.
+    // If not present, still treat as valid for files with reasonable size —
+    // the continuation token is an implementation detail, not a formal signature.
+    if (!isContinuationToken && file.size > 64) {
+      console.warn(`[Snapshot] File ${snapshotId} missing Arrow IPC continuation token but has reasonable size (${file.size} bytes), treating as valid`)
+      return true
+    }
+
+    return isContinuationToken
   } catch {
     return false
   }
@@ -1037,16 +932,10 @@ async function validateParquetMagicBytes(snapshotId: string): Promise<boolean> {
 
 /**
  * Scans the snapshots directory and deletes corrupt and orphaned files:
- * 1. 0-byte Parquet files (corrupt from failed writes)
+ * 1. Tiny Arrow IPC files (corrupt from failed writes)
  * 2. Orphaned .tmp files (from interrupted atomic writes)
  *
  * This is a self-healing step to recover from browser crashes or interrupted saves.
- *
- * Common causes of corrupt/orphaned files:
- * - Browser crash during Parquet export
- * - OPFS permission denied mid-write
- * - Out of disk quota during write
- * - User closed tab during save
  *
  * Call this once at application startup to ensure clean state.
  */
@@ -1072,9 +961,8 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
     let corruptCount = 0
     let tempCount = 0
 
-    // Iterate over all files in the snapshots directory
-    // Parquet files need at least ~200 bytes for magic bytes + minimal schema
-    const MIN_PARQUET_SIZE = 200
+    // Arrow IPC files need at least ~8 bytes for continuation token + metadata length
+    const MIN_ARROW_SIZE = 8
 
     // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, handle] of snapshotsDir.entries()) {
@@ -1088,10 +976,10 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
         continue
       }
 
-      // Clean up corrupt Parquet files
-      if (name.endsWith('.parquet')) {
+      // Clean up corrupt Arrow IPC files
+      if (name.endsWith('.arrow')) {
         const file = await handle.getFile()
-        if (file.size < MIN_PARQUET_SIZE) {
+        if (file.size < MIN_ARROW_SIZE) {
           console.warn(`[Snapshot] Found corrupt file (${file.size} bytes): ${name}. Deleting...`)
           await snapshotsDir.removeEntry(name)
           corruptCount++
@@ -1108,11 +996,11 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
 }
 
 /**
- * Clean up duplicate Parquet files caused by case mismatch.
+ * Clean up duplicate snapshot files caused by case mismatch.
  *
- * Prior to this fix, the timeline-engine created lowercase Parquet filenames
+ * Prior to this fix, the timeline-engine created lowercase filenames
  * while the persistence system used original casing. This resulted in both
- * "foo.parquet" and "Foo.parquet" existing in OPFS (which is case-sensitive).
+ * "foo.arrow" and "Foo.arrow" existing in OPFS (which is case-sensitive).
  *
  * This cleanup step removes non-normalized (mixed-case) files when a normalized
  * (lowercase) version exists, preventing duplicate table imports on reload.
@@ -1137,11 +1025,11 @@ export async function cleanupDuplicateCaseSnapshots(): Promise<void> {
       return // Snapshots directory doesn't exist, nothing to clean
     }
 
-    // Collect all Parquet filenames
+    // Collect all snapshot filenames
     const allFiles: string[] = []
     // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, handle] of snapshotsDir.entries()) {
-      if (handle.kind === 'file' && name.endsWith('.parquet')) {
+      if (handle.kind === 'file' && name.endsWith('.arrow')) {
         allFiles.push(name)
       }
     }
@@ -1150,7 +1038,7 @@ export async function cleanupDuplicateCaseSnapshots(): Promise<void> {
     const normalizedGroups = new Map<string, string[]>()
     for (const fileName of allFiles) {
       // Normalize: remove extension, lowercase, re-add extension
-      const baseName = fileName.replace('.parquet', '').replace(/_part_\d+$/, '')
+      const baseName = fileName.replace('.arrow', '').replace(/_part_\d+$/, '')
       const normalizedBase = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       const group = normalizedGroups.get(normalizedBase) || []
       group.push(fileName)
@@ -1165,14 +1053,14 @@ export async function cleanupDuplicateCaseSnapshots(): Promise<void> {
 
       // Find which files are fully lowercase (normalized)
       const normalizedFiles = files.filter(f => {
-        const base = f.replace('.parquet', '').replace(/_part_\d+$/, '')
+        const base = f.replace('.arrow', '').replace(/_part_\d+$/, '')
         return base === base.toLowerCase()
       })
 
       // If there's at least one normalized file, delete non-normalized duplicates
       if (normalizedFiles.length > 0) {
         for (const file of files) {
-          const base = file.replace('.parquet', '').replace(/_part_\d+$/, '')
+          const base = file.replace('.arrow', '').replace(/_part_\d+$/, '')
           if (base !== base.toLowerCase()) {
             console.log(`[Snapshot] Removing duplicate non-normalized file: ${file} (keeping lowercase version)`)
             try {

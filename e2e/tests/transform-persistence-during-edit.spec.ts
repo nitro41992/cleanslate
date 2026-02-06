@@ -7,13 +7,13 @@
  * 2. User makes cell edits during/after the transform
  * 3. User refreshes the page
  * 4. Expected: Both transform AND cell edits survive
- * 5. Actual (bug): Cell edits survive (changelog), but transform is lost (Parquet not written)
+ * 5. Actual (bug): Cell edits survive (changelog), but transform is lost (snapshot not written)
  *
- * Root cause: Transforms are persisted via Parquet (debounced ~2-5s), while cell edits
- * use the changelog (instant ~2-3ms). If the user refreshes before the Parquet export
+ * Root cause: Transforms are persisted via Arrow IPC snapshot (debounced ~2-5s), while cell edits
+ * use the changelog (instant ~2-3ms). If the user refreshes before the snapshot export
  * completes, the transform result is lost.
  *
- * Fix: Trigger immediate (non-debounced) Parquet save after transform completion.
+ * Fix: Trigger immediate (non-debounced) snapshot save after transform completion.
  */
 import { test, expect, Browser, BrowserContext, Page } from '@playwright/test'
 import { LaundromatPage } from '../page-objects/laundromat.page'
@@ -230,7 +230,7 @@ test.describe('Transform Persistence During Cell Edits', () => {
   // Re-enable this test when the feature is implemented.
   test.skip('should persist transform even with immediate refresh (before debounce)', async () => {
     // This test verifies that transforms are persisted IMMEDIATELY, not debounced.
-    // The bug: Parquet save is debounced 2-5s, so refresh during debounce loses transform.
+    // The bug: Snapshot save is debounced 2-5s, so refresh during debounce loses transform.
     // The fix: Transform should trigger immediate (non-debounced) save.
 
     // 1. Load data

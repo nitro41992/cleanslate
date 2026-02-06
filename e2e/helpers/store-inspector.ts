@@ -231,8 +231,8 @@ export interface StoreInspector {
    */
   waitForReplayComplete: (timeout?: number) => Promise<void>
   /**
-   * Wait for Parquet persistence to complete (debounce + save).
-   * The app auto-saves tables as Parquet files with a 2-3 second debounce.
+   * Wait for snapshot persistence to complete (debounce + save).
+   * The app auto-saves tables as Arrow IPC files with a 2-3 second debounce.
    * This helper waits for all pending saves to finish.
    * @param timeout - Optional timeout in milliseconds (default 10000)
    */
@@ -845,7 +845,7 @@ async getTableList(): Promise<TableInfo[]> {
     },
 
     async waitForPersistenceComplete(timeout = 10000): Promise<void> {
-      // Wait for Parquet persistence to complete
+      // Wait for snapshot persistence to complete
       // The app uses a 2-3 second debounce before auto-saving
       //
       // Two-phase wait:

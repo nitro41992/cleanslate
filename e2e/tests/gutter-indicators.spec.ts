@@ -43,7 +43,7 @@ async function checkOPFSSupport(page: Page): Promise<boolean> {
 }
 
 /**
- * Clean up OPFS test data (Parquet snapshots)
+ * Clean up OPFS test data (Arrow IPC snapshots)
  */
 async function cleanupOPFSTestData(page: Page): Promise<void> {
   await page.evaluate(async () => {

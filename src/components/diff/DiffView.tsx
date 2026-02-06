@@ -177,7 +177,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
 
   // Cleanup temp table and source files when component unmounts
   // CRITICAL: Empty deps array - only run on unmount, NOT when values change
-  // If cleanup runs on dep change, it deletes Parquet files while grid is still reading them
+  // If cleanup runs on dep change, it deletes snapshot files while grid is still reading them
   // Use refs to access latest values without triggering cleanup on change
   useEffect(() => {
     return () => {
@@ -190,8 +190,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
       ;(async () => {
         try {
           if (currentDiffTableName) {
-            // Cleanup materialized view first (if Parquet-backed)
-            if (currentStorageType === 'parquet') {
+            // Cleanup materialized view first (if snapshot-backed)
+            if (currentStorageType === 'snapshot') {
               await cleanupMaterializedDiffView(currentDiffTableName)
             }
             // cleanupDiffTable now always VACUUMs internally
@@ -219,7 +219,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     if (diffTableName) {
       console.log(`[Diff] Cleaning up previous diff table: ${diffTableName}`)
       try {
-        if (storageType === 'parquet') {
+        if (storageType === 'snapshot') {
           await cleanupMaterializedDiffView(diffTableName)
         }
         await cleanupDiffTable(diffTableName, storageType || 'memory')
@@ -254,8 +254,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           if (timeline?.originalSnapshotName) {
             let originalSnapshotName = timeline.originalSnapshotName
 
-            // Use the Parquet path directly (don't create temp table)
-            // fetchDiffPage will handle reading from Parquet on-demand
+            // Use the snapshot path directly (don't create temp table)
+            // resolveTableRef will materialize from Arrow IPC on-demand
             if (originalSnapshotName.startsWith('parquet:')) {
               // MIGRATION CHECK: Ensure the snapshot has _cs_origin_id
               // Old snapshots created before this feature will cause diff to fail
@@ -353,10 +353,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         })
       }
 
-      // For Parquet-backed diffs, materialize into temp table for fast keyset pagination
+      // For snapshot-backed diffs, materialize into temp table for fast keyset pagination
       // This converts O(n) OFFSET queries to O(1) keyset queries on scroll
-      if (config.storageType === 'parquet' && config.totalDiffRows > 0) {
-        console.log('[Diff] Materializing Parquet diff for fast pagination...')
+      if (config.storageType === 'snapshot' && config.totalDiffRows > 0) {
+        console.log('[Diff] Materializing snapshot diff for fast pagination...')
         await materializeDiffForPagination(
           config.diffTableName,
           config.sourceTableName,
@@ -410,7 +410,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     setTimeout(async () => {
       if (oldDiffTableName) {
         // Cleanup materialized view first (if Parquet-backed)
-        if (oldStorageType === 'parquet') {
+        if (oldStorageType === 'snapshot') {
           await cleanupMaterializedDiffView(oldDiffTableName)
         }
         await cleanupDiffTable(oldDiffTableName, oldStorageType || 'memory')

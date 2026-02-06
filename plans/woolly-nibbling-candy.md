@@ -1,50 +1,214 @@
-# Phase 0: COI Multi-Threading Investigation
+# Arrow IPC Persistence → COI Multi-Threading
 
-**Goal:** Enable DuckDB-WASM's COI (Cross-Origin Isolated) bundle for 2-5x performance via pthreads + SIMD, while keeping existing Parquet persistence working.
+**Goal:** Replace Parquet persistence with Arrow IPC format to eliminate DuckDB's Parquet extension dependency, unlocking the COI bundle (pthreads + SIMD) for 2-5x query performance.
 
-**Source plan:** `plans/glimmering-enchanting-mccarthy.md` (full performance optimization plan)
+**Why:** The COI bundle can't dynamically load the Parquet extension (`LinkError: SharedArrayBuffer memory mismatch`). Arrow IPC uses APIs built into apache-arrow (v17.0.0) and duckdb-wasm (v1.33.1-dev19.0) — zero extension dependencies.
 
----
-
-## Why COI First
-
-The COI bundle gives DuckDB-WASM multi-threading (pthreads) and SIMD support. Published benchmarks show **2-5x performance improvement** for analytical queries. If this works, it's a bigger win than all Tier 1 quick-win optimizations combined — and it's essentially free (just HTTP headers + validation).
+**Core Trade-off:** We are trading OPFS disk space (abundant, ~60% of free disk) for CPU cycles and extension compatibility. Arrow IPC files will be **5-10x larger** than Snappy-compressed Parquet. This is acceptable for pre-prod. Stream compression (gzip/LZ4 at JS layer) is a known future optimization path if users hit OPFS quotas — not implemented now because it adds latency to every save/load cycle and works against the performance goal.
 
 ---
 
-## Current State (Verified)
-
-| Component | Status | Evidence |
-|-----------|--------|----------|
-| COI bundle imports | Ready | `duckdb/index.ts:3-5` — all 3 bundles imported |
-| Auto-detection | Ready | `duckdb/index.ts:141-154` — `crossOriginIsolated` check selects COI bundle |
-| Pthread init | Ready | `duckdb/index.ts:162-167` — `db.instantiate(mainModule, pthreadWorker)` |
-| OPFS VFS disabled | Forced off | `browser-detection.ts:50` — `supportsAccessHandle = false` (bug #2096 workaround) |
-| DuckDB mode | In-memory | `:memory:` because `supportsAccessHandle = false` |
-| Thread config | `SET threads = 2` | `duckdb/index.ts:362` — silently fails on EH build |
-| COOP/COEP headers | Not set | `vite.config.ts` has no header middleware |
-| Production headers | No `vercel.json` etc. | Only referenced in original plan, no file exists |
-
-**Key architecture insight:** CleanSlate uses TWO separate persistence layers:
-1. **DuckDB's internal OPFS VFS** (`opfs://cleanslate.db`) — **DISABLED** (bug #2096)
-2. **JS File System API** (`navigator.storage.getDirectory()` → `createWritable()`) — **ACTIVE**, used for Parquet snapshots
-
-Bug #2096 only affects layer 1 (DuckDB's VFS + pthreads = `DataCloneError`). Layer 2 (JS API from main thread) should be unaffected by COI headers. Since DuckDB runs in `:memory:` mode, enabling COI should give us pthreads WITHOUT triggering the bug.
-
----
-
-## Implementation Steps
-
-### Step 1: Add COOP/COEP Headers to Vite Dev Server (~10 min)
-
-**File:** `vite.config.ts`
-
-Add a Vite plugin that sets both required headers for the dev and preview servers:
+## Key APIs (already installed, no new deps)
 
 ```typescript
-// Cross-Origin Isolation headers plugin
-// Required for DuckDB-WASM COI bundle (SharedArrayBuffer + pthreads)
-function crossOriginIsolationPlugin() {
+// Export: query returns Arrow Table natively, serialize to IPC bytes
+import { tableToIPC } from 'apache-arrow'
+const arrowTable = await conn.query(`SELECT * FROM "${tableName}"`)
+const ipcBytes: Uint8Array = tableToIPC(arrowTable, 'stream')
+
+// Import: insert IPC bytes directly into DuckDB table
+await conn.insertArrowFromIPCStream(ipcBytes, { name: tableName, create: true })
+// Append subsequent chunks:
+await conn.insertArrowFromIPCStream(chunk2Bytes, { name: tableName, create: false })
+```
+
+---
+
+## Files to Modify
+
+| File | Scope | Change |
+|------|-------|--------|
+| `src/lib/opfs/snapshot-storage.ts` | Heavy | Rewrite export/import internals from Parquet to Arrow IPC |
+| `src/lib/diff-engine.ts` | Heavy | Replace `read_parquet()` + `registerFileWithRetry` with temp table materialization |
+| `src/lib/timeline-engine.ts` | Medium | Update function names + replace `parquet_schema()` call |
+| `src/hooks/usePersistence.ts` | Light | Update function name imports |
+| `src/lib/commands/executor.ts` | Light | Update function name imports |
+| `src/hooks/useDuckDB.ts` | Light | Update imports + guard `loadParquet` under COI |
+| `src/stores/tableStore.ts` | Light | Dynamic import names (freeze/thaw unchanged) |
+| `vite.config.ts` | Light | Re-enable COOP/COEP headers |
+| `src/lib/duckdb/index.ts` | Light | Adaptive thread count + Parquet upload guard |
+| E2E tests (3 files) | Light | `.parquet` → `.arrow` in file checks |
+
+## Files NOT Modified
+
+- All transform commands, grid rendering, merge/combine/standardize logic, recipe system
+- `browser-detection.ts` — `supportsAccessHandle = false` stays (bug #2096 workaround)
+- CSV/JSON/XLSX upload paths — unaffected
+
+---
+
+## Step 1: Rewrite `snapshot-storage.ts` Internals
+
+### 1a. Export — `exportTableToSnapshot` (rename from `exportTableToParquet`)
+
+**Old flow:** `COPY TO FORMAT PARQUET` → `db.copyFileToBuffer()` → write to OPFS → `db.dropFile()`
+**New flow:** `conn.query(SELECT *)` → `tableToIPC()` → write to OPFS
+
+```typescript
+import { tableToIPC } from 'apache-arrow'
+
+// For each chunk:
+const arrowTable = await conn.query(
+  `SELECT * FROM "${tableName}" ${orderByClause} LIMIT ${batchSize} OFFSET ${offset}`
+)
+const ipcBytes = tableToIPC(arrowTable, 'stream')
+// Write ipcBytes to OPFS via atomic .tmp → rename pattern (same as today)
+```
+
+**What stays the same:** Global export lock, per-file write lock, atomic `.tmp` writes, `yieldToMain()` between chunks, `CHECKPOINT` after large exports, `getOrderByColumn()` for deterministic ordering.
+
+**What changes:**
+- File extension: `.parquet` → `.arrow`
+- Remove all `COPY TO FORMAT PARQUET` SQL
+- Remove all `db.copyFileToBuffer()` / `db.dropFile()` calls (no more DuckDB virtual files)
+- **Mandatory:** Reduce chunk threshold from 250k → 100k rows. `tableToIPC` generates the entire Uint8Array in JS heap. A 250k row chunk of wide string data could spike JS memory and crash the tab before hitting OPFS.
+
+**Schema consistency across chunks:** Arrow is extremely strict about schemas. If Chunk 1 has a column as Int32 and Chunk 2 has it as Int64 (or nullable vs non-nullable), the append will fail. The `getOrderByColumn()` logic with `LIMIT/OFFSET` queries the same table, so schema stays consistent. But as a safety measure: if `insertArrowFromIPCStream({ create: false })` throws a schema mismatch error, fall back to creating a temp table per chunk and `INSERT INTO ... SELECT *` to coerce types.
+
+### 1b. Import — `importTableFromSnapshot` (rename from `importTableFromParquet`)
+
+**Old flow:** `registerFileHandle()` → `CREATE TABLE AS SELECT * FROM read_parquet()` → `db.dropFile()`
+**New flow:** read OPFS bytes → `conn.insertArrowFromIPCStream()`
+
+```typescript
+// Read file from OPFS
+const fileHandle = await snapshotsDir.getFileHandle(fileName)
+const file = await fileHandle.getFile()
+const buffer = new Uint8Array(await file.arrayBuffer())
+
+// Insert into DuckDB
+const conn = await db.connect()
+await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: true })
+// For subsequent chunks: { create: false } to append
+await conn.close()
+```
+
+**What stays the same:** Auto-detect chunked vs single (check for `_part_0.arrow`), `ensureIdentityColumns()` after import.
+
+**What's removed:** `registerFileWithRetry()`, `read_parquet()` SQL, `db.dropFile()` for unregistration.
+
+### 1c. Update Helper Functions
+
+| Function | Change |
+|----------|--------|
+| `deleteParquetSnapshot` → `deleteSnapshot` | `.parquet` → `.arrow` in file ops. Remove `db.dropFile()` (no DuckDB file registration) |
+| `listParquetSnapshots` → `listSnapshots` | Filter `.arrow` instead of `.parquet` |
+| `checkSnapshotFileExists` | `.parquet` → `.arrow` in file handle lookups |
+| `freezeTable` | Call `exportTableToSnapshot`. Update magic byte validation |
+| `thawTable` | Call `importTableFromSnapshot` |
+| `cleanupCorruptSnapshots` | Detect `.arrow` files. Min valid size: ~8 bytes (Arrow IPC header) instead of 200 (Parquet) |
+| `cleanupOrphanedDiffFiles` | `.parquet` → `.arrow` |
+| `cleanupDuplicateCaseSnapshots` | `.parquet` → `.arrow` |
+| `validateParquetMagicBytes` → `validateArrowMagicBytes` | **Soft check:** Try `0xFFFFFFFF` (Arrow IPC stream continuation token) first, but if check fails, still attempt to parse before declaring corrupt. The continuation token is an implementation detail of message encapsulation, not a formal format signature like Parquet's `PAR1`. Also use `.arrow` file extension as a secondary hint. |
+| `registerFileWithRetry` | **Remove entirely** — no longer needed |
+
+---
+
+## Step 2: Update diff-engine.ts
+
+The diff engine uses `read_parquet('file')` as inline SQL table expressions in complex JOIN queries. With Arrow IPC, we materialize snapshots into temp DuckDB tables instead.
+
+### 2a. `resolveTableRef()` — Materialize Instead of Register
+
+**Old:** Returns `read_parquet('snapshot.parquet')` SQL expression used inline in queries.
+**New:** Loads Arrow IPC data into a temp DuckDB table, returns quoted table name `"_diff_snap_abc123"`.
+
+```typescript
+// Instead of:
+//   registerFileWithRetry(db, fileHandle, exactFile)
+//   return `read_parquet('${exactFile}')`
+// Do:
+const file = await fileHandle.getFile()
+const buffer = new Uint8Array(await file.arrayBuffer())
+const tempTableName = `_diff_snap_${snapshotId}`
+const conn = await db.connect()
+await conn.insertArrowFromIPCStream(buffer, { name: tempTableName, create: true })
+await conn.close()
+resolvedExpressionCache.set(snapshotId, `"${tempTableName}"`)
+return `"${tempTableName}"`
+```
+
+Same pattern for chunked files — load each chunk with `create: false` to append.
+
+The `resolvedExpressionCache` and `registeredParquetSnapshots` set still work — they now cache table names instead of `read_parquet()` expressions. Rename `registeredParquetSnapshots` → `materializedSnapshots`.
+
+### 2b. Replace `parquet_schema()` (lines 392, ~1110)
+
+**Old:** `SELECT name, type FROM parquet_schema('file.parquet')` to get column info without loading data.
+**New:** After materializing into temp table, query `information_schema.columns`:
+```sql
+SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tempTableName}'
+```
+
+### 2c. Diff result materialization (lines ~1075-1156, ~1600-1622)
+
+The diff engine also stores/reads its own diff result tables via Parquet. Same pattern: replace `registerFileWithRetry` + `read_parquet()` with reading Arrow IPC bytes + `insertArrowFromIPCStream` into temp tables.
+
+### 2d. Memory Safety for Eager Loading
+
+**Risk:** Materializing snapshots into temp tables is eager (loads full data into WASM heap), unlike `read_parquet()` which could stream. Two 500MB snapshots could OOM the WASM instance.
+
+**Mitigations:**
+- **Sequential loading:** When loading "Before" and "After" snapshots for diffing, `await` them sequentially. Do NOT `Promise.all()` — that doubles peak memory during the transfer phase.
+- **Aggressive cleanup:** Before loading new comparison snapshots, DROP any previously materialized temp tables from the prior comparison. The `materializedSnapshots` set tracks what's loaded.
+- **Cleanup on diff close:** Existing cleanup pattern already drops registered files — update to `DROP TABLE IF EXISTS` for each entry in `materializedSnapshots`, then clear the set.
+
+### 2e. Cleanup
+
+- Remove `registerFileWithRetry` import
+- Rename `registeredParquetSnapshots` → `materializedSnapshots`
+- Rename `storageType: 'parquet'` → `storageType: 'snapshot'` in `DiffConfig` type
+- Update cleanup function to DROP temp tables instead of `db.dropFile()`
+
+---
+
+## Step 3: Update timeline-engine.ts
+
+### 3a. Update imports to new function names
+```typescript
+import { exportTableToSnapshot, importTableFromSnapshot, checkSnapshotFileExists } from '@/lib/opfs/snapshot-storage'
+```
+
+### 3b. Replace `parquet_schema()` (line 152)
+Used in `snapshotHasOriginId()` to check if a snapshot has `_cs_origin_id`. Replace with: import into temp table → query `information_schema.columns` → drop temp table. Or simpler: since all snapshots created going forward will have the column, just return `true` (this is a backward-compat check for legacy snapshots, and since we're pre-prod with no migration needed, legacy snapshots don't exist).
+
+### 3c. Update file copy operations (lines 253-270)
+Change `.parquet` → `.arrow` in OPFS file copy logic for snapshot persistence copies.
+
+### 3d. Update all function call sites
+- 5× `exportTableToParquet` → `exportTableToSnapshot`
+- 1× `importTableFromParquet` → `importTableFromSnapshot`
+- 4× `deleteParquetSnapshot` → `deleteSnapshot`
+
+---
+
+## Step 4: Update Remaining Callers
+
+All mechanical find-and-replace within each file:
+
+**`src/hooks/usePersistence.ts`** — Update imports (lines 24-32) and ~15 call sites
+**`src/lib/commands/executor.ts`** — Update imports (lines 61-64) and ~5 call sites
+**`src/hooks/useDuckDB.ts`** — Update dynamic import of `cleanupCorruptSnapshots` (line 66)
+**`src/stores/tableStore.ts`** — `freezeTable`/`thawTable` names unchanged, no changes needed
+
+---
+
+## Step 5: Enable COI Bundle
+
+### 5a. `vite.config.ts` — Add COOP/COEP headers plugin
+
+```typescript
+function crossOriginIsolationPlugin(): PluginOption {
   return {
     name: 'cross-origin-isolation',
     configureServer(server) {
@@ -63,166 +227,112 @@ function crossOriginIsolationPlugin() {
     },
   }
 }
+// plugins: [crossOriginIsolationPlugin(), react()]
 ```
 
-Add to `plugins` array: `plugins: [crossOriginIsolationPlugin(), react()]`
-
-**Order matters:** COI plugin before react() so headers are set before any response.
-
-### Step 2: Update Thread Configuration (~5 min)
-
-**File:** `src/lib/duckdb/index.ts` (line 362)
-
-Change from hardcoded `threads = 2` to adaptive based on COI availability:
+### 5b. `src/lib/duckdb/index.ts` — Adaptive thread count
 
 ```typescript
-try {
-  const isCOI = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
-  const threadCount = isCOI ? Math.min(navigator.hardwareConcurrency || 2, 4) : 1
-  await initConn.query(`SET threads = ${threadCount}`)
-  console.log(`[DuckDB] Thread count set to ${threadCount} (COI: ${isCOI})`)
-} catch (err) {
-  // Silently ignore - WASM build doesn't support thread configuration (expected)
+const threadCount = isCOI ? Math.min(navigator.hardwareConcurrency || 2, 4) : 1
+await initConn.query(`SET threads = ${threadCount}`)
+```
+
+### 5c. `src/lib/duckdb/index.ts` — Guard Parquet upload
+
+In `loadParquet()`, add early exit:
+```typescript
+if (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) {
+  throw new Error('Parquet file upload requires the Parquet extension which is unavailable in multi-threaded mode. Please upload as CSV, JSON, or XLSX instead.')
 }
 ```
 
-Cap at 4 threads to limit per-thread buffer allocation (~125MB each). On most machines this still gives significant parallelism for joins and sorts.
+In `useDuckDB.ts` (line 280), catch this error and show a user-friendly toast.
 
-### Step 3: Add Diagnostic Logging (~5 min)
+### 5d. Compatibility Mode Escape Hatch
 
-**File:** `src/lib/duckdb/index.ts` (after line 399)
+Add URL param support: `?mode=compatibility` disables COI behavior by setting `threads = 1` regardless of `crossOriginIsolated` state. This allows users with mission-critical `.parquet` files to:
+1. Reload app with `?mode=compatibility`
+2. Upload their `.parquet` file (single-threaded mode, extension loads fine)
+3. Save it (which converts to Arrow IPC snapshot)
+4. Return to normal mode (remove URL param, reload)
 
-Add a clear console banner so we can verify COI activation:
+Implementation: Check `new URLSearchParams(window.location.search).get('mode') === 'compatibility'` in `duckdb/index.ts` before setting thread count. If compatibility mode, force `threads = 1` and skip the `loadParquet` guard.
 
+### 5e. Service Worker Cache Consideration
+
+CleanSlate's SW (`public/sw.js`) uses **network-first** for navigation requests, so fresh COOP/COEP headers from Vite dev server come through on normal loads. The stale-cache risk is **low** in dev. In production, the SW's `skipWaiting()` + `clients.claim()` pattern means new versions activate immediately.
+
+**If COI fails to activate after deployment:** Add a one-time detection + forced reload in `main.tsx`:
 ```typescript
-console.log(
-  `[DuckDB] ${bundleType} bundle, ${memoryLimit} limit, compression enabled, ` +
-  `${isPersistent ? 'OPFS' : 'in-memory'}, ` +
-  `COI: ${typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false}, ` +
-  `threads: ${isCOI ? Math.min(navigator.hardwareConcurrency || 2, 4) : 1}`
-)
-```
-
-### Step 4: Manual Verification Checklist (~2-3 hours)
-
-Run `npm run dev` and test in Chrome:
-
-**4a. COI Activation (5 min)**
-- [ ] Open browser console
-- [ ] Verify `crossOriginIsolated === true`
-- [ ] Verify `typeof SharedArrayBuffer !== 'undefined'`
-- [ ] Check DuckDB init log shows "COI bundle"
-- [ ] Check thread count log shows correct value (2-4)
-
-**4b. Basic Functionality (30 min)**
-- [ ] Upload a CSV (any size)
-- [ ] Apply Tier 1 transforms (trim, replace, lowercase)
-- [ ] Apply Tier 3 transform (remove_duplicates or cast_type)
-- [ ] Undo the Tier 3 transform
-- [ ] Verify data integrity after undo
-
-**4c. Parquet Persistence (1 hour) — CRITICAL PATH**
-- [ ] Upload a CSV, apply transforms
-- [ ] Wait for persistence indicator (amber → green)
-- [ ] Page reload — verify data survives
-- [ ] Check OPFS files via DevTools → Application → Storage → File System
-- [ ] Upload a large CSV (100k+ rows if available) — verify chunked export works
-- [ ] Apply transforms to large dataset, reload, verify
-- [ ] Test freeze/thaw cycle (close tab, reopen)
-
-**4d. Multi-Panel Operations (30 min)**
-- [ ] Test Merge panel (fuzzy matcher)
-- [ ] Test Combine panel (stack/join)
-- [ ] Test Diff panel
-- [ ] Test Standardize panel
-
-**4e. Performance Comparison (30 min)**
-
-To compare EH vs COI, temporarily toggle COI off by commenting out the Vite plugin:
-
-| Operation | EH Time | COI Time | Speedup |
-|-----------|---------|----------|---------|
-| Trim 100k rows | | | |
-| Remove duplicates 100k rows | | | |
-| Sort 100k rows | | | |
-| Undo Tier 3 (replay) | | | |
-
-**4f. Memory Check (15 min)**
-- [ ] Open DevTools → Memory tab
-- [ ] Note baseline memory after DuckDB init
-- [ ] Note memory after 5 transforms on 100k rows
-- [ ] Compare COI vs EH memory usage (COI may be ~200-500MB higher due to thread buffers)
-
-### Step 5: Decision Point
-
-| Outcome | Next Action |
-|---------|-------------|
-| **COI works + persistence intact** | Keep headers. Proceed to Tier 1 items (skip 1.3 — already handled). |
-| **COI works but persistence broken** | Keep DuckDB in `:memory:` + COI bundle, investigate JS OPFS API separately. |
-| **COI bundle crashes** | Revert headers. Implement 1.3 as `threads = 1`. Proceed to Tier 1. |
-| **COI works but no measurable speedup** | Keep headers (future-proofing), but prioritize Tier 1 algorithmic wins. |
-
-### Step 6: Production Headers (if COI works, ~15 min)
-
-Determine hosting platform and add appropriate configuration. No `vercel.json` or `netlify.toml` exists yet — will need to create one based on the deployment target.
-
-**Vercel** (`vercel.json`):
-```json
-{
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
-        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
-      ]
-    }
-  ]
+if (!crossOriginIsolated && !new URLSearchParams(location.search).has('mode')) {
+  const reloaded = sessionStorage.getItem('coi-reload')
+  if (!reloaded) {
+    sessionStorage.setItem('coi-reload', '1')
+    const regs = await navigator.serviceWorker?.getRegistrations()
+    await Promise.all(regs?.map(r => r.unregister()) ?? [])
+    location.reload()
+  }
 }
 ```
-
-**Netlify** (`public/_headers`):
-```
-/*
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Embedder-Policy: require-corp
-```
+**Implement only if needed** — don't add this preemptively.
 
 ---
 
-## Risk Assessment
+## Step 6: Update E2E Tests
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| Bug #2096 triggered | **Low** — DuckDB runs in `:memory:`, not OPFS VFS | High | Easy revert: remove Vite plugin |
-| JS OPFS API breaks under COI | **Very Low** — `createWritable()` unaffected by COOP/COEP | High | Revert headers |
-| Thread buffers consume too much memory | **Medium** — 4 threads × ~125MB each | Medium | Cap threads at 2 |
-| 3rd party resource blocked by COEP | **Very Low** — no CDN scripts, fonts, or iframes | Low | Add `crossorigin` attribute if needed |
-| WebWorker lifecycle timing changes | **Low** | Medium | Test DuckDB init thoroughly |
+Three test files reference `.parquet` in OPFS file checks:
 
-**Overall risk: Low.** The change is 100% reversible by removing 2 HTTP headers.
+- `e2e/tests/row-column-persistence.spec.ts` — ~20 references, change `.parquet` → `.arrow`
+- `e2e/tests/opfs-persistence.spec.ts` — Update comments and file checks
+- `e2e/tests/table-delete-persistence.spec.ts` — Line 80: `.endsWith('.parquet')` → `.endsWith('.arrow')`
 
 ---
 
-## Files to Modify
+## Implementation Order
 
-| File | Change | Risk |
-|------|--------|------|
-| `vite.config.ts` | Add COOP/COEP middleware plugin | Low |
-| `src/lib/duckdb/index.ts` (line 362) | Adaptive thread count based on COI | Low |
+| Step | What | Can app work after? |
+|------|------|---------------------|
+| 1 | Rewrite `snapshot-storage.ts` export/import + helpers | Yes (if callers updated simultaneously) |
+| 2 | Update all callers (usePersistence, executor, timeline-engine) | Yes |
+| 3 | Update diff-engine | Yes |
+| 4 | Enable COI headers + adaptive threading | Yes |
+| 5 | Guard `loadParquet` | Yes |
+| 6 | Update E2E tests | Yes |
+| 7 | Remove dead code, update comments | Yes |
 
-**Files NOT modified** (important):
-- `src/lib/duckdb/browser-detection.ts` — `supportsAccessHandle = false` stays. We keep DuckDB in `:memory:` mode. No change to the bug #2096 workaround.
-- `src/lib/opfs/snapshot-storage.ts` — Parquet persistence unchanged.
+Steps 1-3 should be done atomically (single commit) since they're interdependent.
 
 ---
 
 ## Verification
 
-1. `npm run build` — TypeScript check passes
-2. `npm run dev` — App loads, console shows "COI bundle"
-3. `crossOriginIsolated === true` in browser console
-4. Upload CSV → apply transforms → page reload → data persists
-5. `npm run test` — all E2E tests pass (Playwright may need COI headers too — check `playwright.config.ts`)
+1. `npm run build` — TypeScript passes
+2. `npm run dev` — Console shows `COI bundle`, `threads: 4`, `crossOriginIsolated: true`
+3. Upload CSV → apply transforms → wait for green persistence indicator → page reload → data survives
+4. Apply Tier 3 transform → undo → verify data integrity (Arrow IPC snapshot restore path)
+5. Open Diff panel → verify diff works with Arrow IPC materialized snapshots
+6. Freeze/thaw tables → verify cycle works
+7. Try uploading `.parquet` file → verify user-friendly error message
+8. DevTools → Application → OPFS → verify `.arrow` files (not `.parquet`)
+9. `npm run test` — all E2E tests pass
 
-**E2E tests:** Playwright uses `npm run dev` as its web server (`playwright.config.ts:39`), so it inherits the Vite plugin and will automatically test against the COI bundle. This is ideal — any COI regressions will surface in the existing test suite. No Playwright config changes needed.
+---
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| `insertArrowFromIPCStream` with `create: false` doesn't append | Low | High | Test 2-chunk roundtrip early. Fallback: temp table per chunk + `INSERT INTO ... SELECT *` |
+| Schema mismatch across Arrow IPC chunks | Low | High | Same table queried with LIMIT/OFFSET ensures consistent schema. If append fails, fall back to temp-table-per-chunk + INSERT INTO SELECT |
+| Diff engine OOM from eager snapshot loading | Medium | High | Sequential (not parallel) loading of Before/After snapshots. Aggressive cleanup of prior comparison's temp tables before loading new ones |
+| Arrow IPC files too large for OPFS quota | Low | Medium | 100k chunk size. OPFS quota is ~60% of free disk. Future path: gzip at JS layer before OPFS write |
+| Diff engine temp table accumulation | Medium | Low | DROP temp tables on diff close + on new comparison load. Track via `materializedSnapshots` set |
+| COI multi-threading exposes DuckDB-WASM concurrency bug | Low | Medium | All queries go through `withMutex`. Revert to EH by removing headers |
+| Service worker caches stale COOP/COEP headers | Low | Low | Detect `!crossOriginIsolated` + unregister SW + reload (only if SW exists) |
+
+## Future Optimizations (Not Implemented Now)
+
+| Optimization | Trigger Signal | Implementation |
+|-------------|---------------|----------------|
+| Stream compression (gzip/LZ4) | Users hit OPFS quota warnings | `gzip(tableToIPC(...))` before OPFS write, `gunzip(buffer)` before `insertArrowFromIPCStream`. Adds ~1-2s latency per load. |
+| Lazy diff loading | Large datasets cause OOM during diff | Stream Arrow IPC in chunks instead of full materialization. Requires DuckDB-WASM streaming insert API. |

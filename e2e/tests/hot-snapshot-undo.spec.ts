@@ -9,7 +9,7 @@ import { getFixturePath } from '../helpers/file-upload'
  * LRU Undo Cache (Phase 3) Tests
  *
  * These tests verify that the hot snapshot system provides instant undo
- * for the most recent expensive operation, while cold (Parquet) snapshots
+ * for the most recent expensive operation, while cold (Arrow IPC) snapshots
  * provide slower but reliable undo for older operations.
  *
  * Key behaviors:
@@ -130,7 +130,7 @@ test.describe('LRU Hot Snapshot Undo', () => {
       }
     }, { timeout: 10000 }).toBe(rowCountAfterFirstTransform)
 
-    // Step 4: Undo again (should use COLD path - slower, loading from Parquet)
+    // Step 4: Undo again (should use COLD path - slower, loading from Arrow IPC)
     // First, redo to get back to cast state
     await laundromat.redo()
     await expect.poll(async () => {

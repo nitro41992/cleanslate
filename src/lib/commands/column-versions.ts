@@ -180,14 +180,14 @@ async function materializeColumn(
   // This preserves undo functionality while freeing memory
   try {
     const { initDuckDB, getConnection } = await import('@/lib/duckdb')
-    const { exportTableToParquet } = await import('@/lib/opfs/snapshot-storage')
+    const { exportTableToSnapshot } = await import('@/lib/opfs/snapshot-storage')
 
     const duckdb = await initDuckDB()
     const conn = await getConnection()
     const snapshotId = `mat_${tableName}_${column}_${Date.now()}`
 
     // Export to OPFS Parquet
-    await exportTableToParquet(duckdb, conn, snapshotName, snapshotId)
+    await exportTableToSnapshot(duckdb, conn, snapshotName, snapshotId)
 
     // Drop the in-memory duplicate (snapshot now in OPFS)
     await dropTable(snapshotName)
@@ -425,8 +425,8 @@ export function createColumnVersionManager(
             // Handle both Parquet and in-memory snapshots
             if (versionInfo.materializationSnapshot.startsWith('parquet:')) {
               const snapshotId = versionInfo.materializationSnapshot.replace('parquet:', '')
-              const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
-              await deleteParquetSnapshot(snapshotId).catch(() => {})
+              const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
+              await deleteSnapshot(snapshotId).catch(() => {})
             } else {
               await dropTable(versionInfo.materializationSnapshot).catch(() => {})
             }
@@ -474,8 +474,8 @@ export function createColumnVersionManager(
             // Handle both Parquet and in-memory snapshots
             if (versionInfo.materializationSnapshot.startsWith('parquet:')) {
               const snapshotId = versionInfo.materializationSnapshot.replace('parquet:', '')
-              const { deleteParquetSnapshot } = await import('@/lib/opfs/snapshot-storage')
-              await deleteParquetSnapshot(snapshotId).catch(() => {})
+              const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
+              await deleteSnapshot(snapshotId).catch(() => {})
             } else {
               await dropTable(versionInfo.materializationSnapshot).catch(() => {})
             }

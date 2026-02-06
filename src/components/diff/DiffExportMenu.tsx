@@ -25,7 +25,7 @@ interface DiffExportMenuProps {
   tableBName: string
   totalRows: number
   disabled?: boolean
-  storageType?: 'memory' | 'parquet'
+  storageType?: 'memory' | 'snapshot'
 }
 
 export function DiffExportMenu({

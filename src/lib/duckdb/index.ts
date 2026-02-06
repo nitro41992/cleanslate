@@ -137,20 +137,26 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
   const caps = await detectBrowserCapabilities()
 
   // 2. Select appropriate bundle based on environment
-  // COI bundle is required for Cross-Origin Isolated environments (OPFS + pthreads support)
-  const isCOI = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
+  // COI bundle provides pthreads + SIMD for multi-threaded query performance.
+  // Compatibility mode (?mode=compatibility) forces EH bundle with single thread,
+  // allowing Parquet file uploads (the Parquet extension can't load in pthread workers).
+  const isCompatibilityMode = new URLSearchParams(window.location.search).get('mode') === 'compatibility'
+  const isCOI = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated && !isCompatibilityMode
   let bundle: duckdb.DuckDBBundle
   let bundleType: string
 
   if (isCOI && MANUAL_BUNDLES.coi) {
-    // Use COI bundle for cross-origin isolated environments
+    // Use COI bundle for cross-origin isolated environments (pthreads + SIMD)
     bundle = MANUAL_BUNDLES.coi
     bundleType = 'COI'
-    console.log('[DuckDB] Using COI bundle for cross-origin isolated environment')
+    console.log('[DuckDB] Using COI bundle (pthreads + SIMD)')
   } else {
-    // Fall back to selectBundle for non-COI environments
+    // Fall back to selectBundle for non-COI or compatibility mode
     bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
     bundleType = bundle.mainModule.includes('-eh') ? 'EH' : 'MVP'
+    if (isCompatibilityMode) {
+      console.log('[DuckDB] Compatibility mode: using EH bundle (Parquet uploads enabled)')
+    }
   }
 
   const worker = new Worker(bundle.mainWorker!)
@@ -184,7 +190,7 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
 
     if (caps.hasOPFS && caps.supportsAccessHandle) {
       // Chrome/Edge/Safari: OPFS-backed persistent storage
-      // Using EH bundle (single-threaded) which works with OPFS without the COI bundle bug
+      // OPFS-backed persistent storage (Chrome/Edge/Safari)
       try {
         console.log('[DuckDB] Opening OPFS with accessMode:', duckdb.DuckDBAccessMode.READ_WRITE, '(value:', duckdb.DuckDBAccessMode.READ_WRITE, ')')
         await db.open({
@@ -355,12 +361,15 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
   // Set memory limit
   await initConn.query(`SET memory_limit = '${memoryLimit}'`)
 
-  // Set thread count to 1 — EH/MVP bundles are single-threaded
-  // COI bundle (pthreads) was tested but can't be used: dynamic Parquet extension
-  // loading fails in pthread workers (SharedArrayBuffer memory mismatch).
-  // SET threads silently fails on EH build — this is expected.
+  // Adaptive thread count based on bundle type:
+  // - COI bundle: Use up to 4 threads (pthreads + SIMD enabled)
+  // - EH/MVP bundle: Single-threaded (SET threads silently ignored on EH — expected)
+  const threadCount = isCOI ? Math.min(navigator.hardwareConcurrency || 2, 4) : 1
   try {
-    await initConn.query(`SET threads = 1`)
+    await initConn.query(`SET threads = ${threadCount}`)
+    if (isCOI) {
+      console.log(`[DuckDB] COI multi-threading: ${threadCount} threads (hardwareConcurrency: ${navigator.hardwareConcurrency})`)
+    }
   } catch (err) {
     // Silently ignore - WASM build doesn't support thread configuration (expected)
   }
@@ -397,8 +406,8 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
   await initConn.close()
 
   console.log(
-    `[DuckDB] ${bundleType} bundle, ${memoryLimit} limit, compression enabled, ` +
-    `backend: ${isPersistent ? 'OPFS' : 'memory'}${isReadOnly ? ' (read-only)' : ''}`
+    `[DuckDB] ${bundleType} bundle, ${threadCount} thread${threadCount > 1 ? 's' : ''}, ${memoryLimit} limit, compression enabled, ` +
+    `backend: ${isPersistent ? 'OPFS' : 'memory'}${isReadOnly ? ' (read-only)' : ''}${isCompatibilityMode ? ' (compatibility mode)' : ''}`
   )
   return db
 }
@@ -459,7 +468,7 @@ export async function checkConnectionHealth(): Promise<boolean> {
  * - The worker is terminated and all WASM memory is released
  * - All module state (db, conn) is reset to null
  * - The next call to getConnection() will reinitialize DuckDB
- * - usePersistence will automatically reimport tables from Parquet snapshots
+ * - usePersistence will automatically reimport tables from snapshots
  *
  * @returns Promise that resolves when termination is complete
  */
@@ -657,6 +666,16 @@ export async function loadParquet(
   tableName: string,
   file: File
 ): Promise<{ columns: string[]; rowCount: number }> {
+  // COI mode: Parquet extension can't load in pthread workers (SharedArrayBuffer memory mismatch).
+  // Users must upload as CSV/Excel/JSON, or reload with ?mode=compatibility to use EH bundle.
+  if (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated &&
+      new URLSearchParams(window.location.search).get('mode') !== 'compatibility') {
+    throw new Error(
+      'Parquet file upload is unavailable in multi-threaded mode. ' +
+      'Please upload as CSV, JSON, or XLSX instead, or reload with ?mode=compatibility to enable Parquet uploads.'
+    )
+  }
+
   return withMutex(async () => {
     const db = await initDuckDB()
     const connection = await getConnection()
