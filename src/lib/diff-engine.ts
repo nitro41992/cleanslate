@@ -6,6 +6,7 @@ import { getMemoryStatus } from './duckdb/memory'
 import { exportTableToSnapshot, importTableFromSnapshot, deleteSnapshot } from '@/lib/opfs/snapshot-storage'
 import { registerMemoryCleanup } from './memory-manager'
 import { SHARD_SIZE } from '@/lib/constants'
+import { getChunkManager } from '@/lib/opfs/chunk-manager'
 
 // Track which snapshots are materialized as temp DuckDB tables to prevent re-loading
 const materializedSnapshots = new Set<string>()
@@ -78,8 +79,19 @@ export async function clearDiffCaches(): Promise<void> {
   console.log(`[Diff] Cleared caches (dropped ${snapshotCount} temp tables, ${viewCount} views): ${cacheCount} expressions, ${diffTableCount} diff tables, ${pendingCount} pending`)
 }
 
-// Register with memory manager so caches are cleared on memory pressure
-registerMemoryCleanup('diff-engine', clearDiffCaches)
+// Register a lightweight memory cleanup that does NOT destroy active diff state.
+// clearDiffCaches() drops materialized source tables and diff indices — if these are
+// actively used by the diff view, the view immediately re-materializes them, creating
+// a thrash loop (cleanup → reload → memory pressure → cleanup → OOM).
+// Instead, only clean up truly stale entries. Active diff data is cleaned up by the
+// DiffView lifecycle (cleanupDiffTable, cleanupMaterializedDiffView, cleanupDiffSourceFiles).
+registerMemoryCleanup('diff-engine', async () => {
+  // Only clear pending registrations (stale in-flight work)
+  if (pendingDiffRegistrations.size > 0) {
+    pendingDiffRegistrations.clear()
+    console.log('[Diff] Memory pressure: cleared pending registrations')
+  }
+})
 
 /**
  * Resolve a table reference to a SQL expression, with robust snapshot handling.
@@ -320,18 +332,16 @@ export async function runDiff(
     // Check if source is a snapshot reference
     const isParquetSource = tableA.startsWith('parquet:')
 
-    // Materialize snapshot IMMEDIATELY (before schema query)
-    let sourceTableExpr: string
+    // For snapshot sources, use ChunkManager for shard-level processing (avoids full materialization).
+    // For normal tables, use the table directly.
+    let sourceTableExpr: string | null = null  // Only set for non-snapshot sources
+    const snapshotId = isParquetSource ? tableA.replace('parquet:', '') : null
+    const chunkMgr = isParquetSource ? getChunkManager() : null
+
     if (isParquetSource) {
-      // Materialize Arrow IPC data and get SQL expression (quoted temp table name)
-      sourceTableExpr = await resolveTableRef(tableA)
-      console.log(`[Diff] Pre-materialized snapshot source: ${sourceTableExpr}`)
+      console.log(`[Diff] Using ChunkManager for shard-level snapshot processing: ${snapshotId}`)
     } else {
       sourceTableExpr = `"${tableA}"`
-    }
-
-    // Validate tables exist (skip snapshot sources since they're already validated)
-    if (!isParquetSource) {
       const tableAExists = await tableExists(tableA)
       if (!tableAExists) {
         throw new Error(`Table "${tableA}" does not exist`)
@@ -349,13 +359,13 @@ export async function runDiff(
     }
 
     // Get columns AND types from both tables
+    // For snapshot sources: load shard 0 for schema discovery (25MB vs 500MB+ for full table)
     let colsAAll: { column_name: string; data_type: string }[]
+    let shard0Table: string | null = null
     if (isParquetSource) {
-      // sourceTableExpr is now a quoted temp table name (materialized from Arrow IPC)
-      // Use information_schema.columns instead of parquet_schema()
-      const tempTableName = sourceTableExpr.replace(/"/g, '')
+      shard0Table = await chunkMgr!.loadShard(snapshotId!, 0)
       colsAAll = await query<{ column_name: string; data_type: string }>(
-        `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${tempTableName}' ORDER BY ordinal_position`
+        `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${shard0Table}' ORDER BY ordinal_position`
       )
     } else {
       colsAAll = await query<{ column_name: string; data_type: string }>(
@@ -554,11 +564,13 @@ export async function runDiff(
     let useOriginId = hasOriginIdA && hasOriginIdB
 
     // Validate _cs_origin_id values actually match between tables
+    // For snapshot sources, use already-loaded shard 0 (sufficient sample for validation)
     if (useOriginId && diffMode === 'preview') {
       try {
+        const validationTable = isParquetSource ? `"${shard0Table}"` : sourceTableExpr!
         const matchResult = await query<{ one: number }>(`
           SELECT 1 as one
-          FROM ${sourceTableExpr} a
+          FROM ${validationTable} a
           INNER JOIN "${tableB}" b ON a."${CS_ORIGIN_ID_COLUMN}" = b."${CS_ORIGIN_ID_COLUMN}"
           LIMIT 1
         `)
@@ -571,6 +583,12 @@ export async function runDiff(
       }
     }
 
+    // Evict shard 0 after schema + validation (no longer needed until Phase 1)
+    if (isParquetSource && shard0Table) {
+      await chunkMgr!.evictShard(snapshotId!, 0)
+      shard0Table = null
+    }
+
     console.log('[Diff] Row matching strategy:', {
       diffMode,
       useOriginId,
@@ -580,11 +598,12 @@ export async function runDiff(
     })
 
     // Build conditional _cs_origin_id selects based on column existence
+    // No table alias prefix — these are used in single-table SELECT queries (index table creation)
     const aOriginIdSelect = hasOriginIdA
-      ? `a."${CS_ORIGIN_ID_COLUMN}" as _cs_origin_id`
+      ? `"${CS_ORIGIN_ID_COLUMN}" as _cs_origin_id`
       : 'NULL as _cs_origin_id'
     const bOriginIdSelect = hasOriginIdB
-      ? `b."${CS_ORIGIN_ID_COLUMN}" as _cs_origin_id`
+      ? `"${CS_ORIGIN_ID_COLUMN}" as _cs_origin_id`
       : 'NULL as _cs_origin_id'
 
     // Build the index JOIN condition (lightweight — IDs only)
@@ -605,15 +624,48 @@ export async function runDiff(
         onProgress?.({ phase: 'indexing', current: 0, total: 3 })
 
         // Index table A: source/original
-        const idxAColumns = diffMode === 'two-tables'
-          ? `"_cs_id" as _cs_id, ${aOriginIdSelect}, ${keyColumns.map(c => `"${c}"`).join(', ')}, ROW_NUMBER() OVER () as _row_num`
-          : `"_cs_id" as _cs_id, ${aOriginIdSelect}, ROW_NUMBER() OVER () as _row_num`
+        // For snapshot sources, build index shard-by-shard to avoid full materialization.
+        // For normal tables, single CREATE AS SELECT.
+        if (isParquetSource) {
+          // Pre-create empty index table with explicit schema
+          // Use actual _cs_id type from source schema (often BIGINT, not VARCHAR)
+          // to avoid type mismatch in Phase 2 COALESCE with index table B
+          const csIdType = colsAAll.find(c => c.column_name === '_cs_id')?.data_type || 'BIGINT'
+          const csOriginIdType = colsAAll.find(c => c.column_name === CS_ORIGIN_ID_COLUMN)?.data_type || 'VARCHAR'
+          const keyColDefs = keyColumns.map(c => {
+            const type = colsAAll.find(col => col.column_name === c)?.data_type || 'VARCHAR'
+            return `"${c}" ${type}`
+          }).join(', ')
+          const idxASchema = diffMode === 'two-tables'
+            ? `_cs_id ${csIdType}, _cs_origin_id ${csOriginIdType}, ${keyColDefs}, _row_num BIGINT`
+            : `_cs_id ${csIdType}, _cs_origin_id ${csOriginIdType}, _row_num BIGINT`
 
-        await execute(`
-          CREATE TEMP TABLE __diff_idx_a AS
-          SELECT ${idxAColumns}
-          FROM ${sourceTableExpr}
-        `)
+          await execute(`CREATE TEMP TABLE __diff_idx_a (${idxASchema})`)
+
+          // Insert from each shard, using globalRowOffset for globally-unique row numbers
+          const manifest = await chunkMgr!.getManifest(snapshotId!)
+          let globalRowOffset = 0
+          await chunkMgr!.mapChunks(snapshotId!, async (shardTable, shard, index) => {
+            const selectCols = diffMode === 'two-tables'
+              ? `"_cs_id" as _cs_id, ${aOriginIdSelect}, ${keyColumns.map(c => `"${c}"`).join(', ')}, ROW_NUMBER() OVER () + ${globalRowOffset} as _row_num`
+              : `"_cs_id" as _cs_id, ${aOriginIdSelect}, ROW_NUMBER() OVER () + ${globalRowOffset} as _row_num`
+
+            await execute(`INSERT INTO __diff_idx_a SELECT ${selectCols} FROM "${shardTable}"`)
+            globalRowOffset += shard.rowCount
+
+            onProgress?.({ phase: 'indexing', current: index + 1, total: manifest.shards.length })
+          })
+        } else {
+          const idxAColumns = diffMode === 'two-tables'
+            ? `"_cs_id" as _cs_id, ${aOriginIdSelect}, ${keyColumns.map(c => `"${c}"`).join(', ')}, ROW_NUMBER() OVER () as _row_num`
+            : `"_cs_id" as _cs_id, ${aOriginIdSelect}, ROW_NUMBER() OVER () as _row_num`
+
+          await execute(`
+            CREATE TEMP TABLE __diff_idx_a AS
+            SELECT ${idxAColumns}
+            FROM ${sourceTableExpr}
+          `)
+        }
         onProgress?.({ phase: 'indexing', current: 1, total: 3 })
 
         // Index table B: target/current
@@ -694,39 +746,68 @@ export async function runDiff(
             .replace(/\ba\."([^"]+)"/g, 'src."$1"')
             .replace(/\bb\."([^"]+)"/g, 'tgt."$1"')
 
-          const batchSize = SHARD_SIZE
-          const totalBatches = Math.ceil(pendingCount / batchSize)
+          if (isParquetSource) {
+            // Shard-level comparison: iterate source shards, UPDATE only matching rows per shard.
+            // The JOIN condition (a_row_id = src."_cs_id") naturally scopes each UPDATE to
+            // rows from this shard — no LIMIT/OFFSET subquery needed.
+            const cmpManifest = await chunkMgr!.getManifest(snapshotId!)
 
-          for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
-            const offset = batchNum * batchSize
-            onProgress?.({ phase: 'comparing', current: batchNum + 1, total: totalBatches })
+            await chunkMgr!.mapChunks(snapshotId!, async (shardTable, _shard, index) => {
+              onProgress?.({ phase: 'comparing', current: index + 1, total: cmpManifest.shards.length })
 
-            await execute(`
-              UPDATE "${diffTableName}"
-              SET diff_status = CASE
-                WHEN (${srcTgtModificationExpr}) THEN 'modified'
-                ELSE 'unchanged'
-              END
-              FROM ${sourceTableExpr} src, "${tableB}" tgt
-              WHERE "${diffTableName}".a_row_id = src."_cs_id"
-                AND "${diffTableName}".b_row_id = tgt."_cs_id"
-                AND "${diffTableName}".diff_status = 'pending_compare'
-                AND "${diffTableName}".row_id IN (
-                  SELECT row_id FROM "${diffTableName}"
-                  WHERE diff_status = 'pending_compare'
-                  ORDER BY sort_key
-                  LIMIT ${batchSize} OFFSET ${offset}
-                )
-            `)
+              await execute(`
+                UPDATE "${diffTableName}"
+                SET diff_status = CASE
+                  WHEN (${srcTgtModificationExpr}) THEN 'modified'
+                  ELSE 'unchanged'
+                END
+                FROM "${shardTable}" src, "${tableB}" tgt
+                WHERE "${diffTableName}".a_row_id = src."_cs_id"
+                  AND "${diffTableName}".b_row_id = tgt."_cs_id"
+                  AND "${diffTableName}".diff_status = 'pending_compare'
+              `)
 
-            // Checkpoint and yield to browser between batches
-            if (batchNum < totalBatches - 1) {
+              // Checkpoint between shards to reclaim WAL space
               await conn.query('CHECKPOINT')
-              await new Promise(resolve => setTimeout(resolve, 0))
-            }
-          }
+            })
 
-          console.log(`[Diff] Phase 3 complete: compared ${totalBatches} batches`)
+            console.log(`[Diff] Phase 3 complete: compared ${cmpManifest.shards.length} shards`)
+          } else {
+            // Normal table: LIMIT/OFFSET batching on the full source table
+            const batchSize = SHARD_SIZE
+            const totalBatches = Math.ceil(pendingCount / batchSize)
+
+            for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+              const offset = batchNum * batchSize
+              onProgress?.({ phase: 'comparing', current: batchNum + 1, total: totalBatches })
+
+              await execute(`
+                UPDATE "${diffTableName}"
+                SET diff_status = CASE
+                  WHEN (${srcTgtModificationExpr}) THEN 'modified'
+                  ELSE 'unchanged'
+                END
+                FROM ${sourceTableExpr} src, "${tableB}" tgt
+                WHERE "${diffTableName}".a_row_id = src."_cs_id"
+                  AND "${diffTableName}".b_row_id = tgt."_cs_id"
+                  AND "${diffTableName}".diff_status = 'pending_compare'
+                  AND "${diffTableName}".row_id IN (
+                    SELECT row_id FROM "${diffTableName}"
+                    WHERE diff_status = 'pending_compare'
+                    ORDER BY sort_key
+                    LIMIT ${batchSize} OFFSET ${offset}
+                  )
+              `)
+
+              // Checkpoint and yield to browser between batches
+              if (batchNum < totalBatches - 1) {
+                await conn.query('CHECKPOINT')
+                await new Promise(resolve => setTimeout(resolve, 0))
+              }
+            }
+
+            console.log(`[Diff] Phase 3 complete: compared ${totalBatches} batches`)
+          }
         } else {
           console.log('[Diff] Phase 3 skipped: no rows need column comparison')
         }
@@ -832,6 +913,15 @@ export async function runDiff(
 
       storageType = 'snapshot'
       console.log(`[Diff] Exported to OPFS, freed ~${formatBytes(totalDiffRows * 58)} RAM`)
+    }
+
+    // For snapshot sources: pre-materialize the full source table NOW, while memory pressure
+    // is minimal (index tables dropped, diff table exported to OPFS). This populates the
+    // resolvedExpressionCache so fetchDiffPage doesn't need to load it later when the diff
+    // table is also in memory — avoiding OOM on large datasets.
+    if (isParquetSource) {
+      await resolveTableRef(tableA)
+      console.log(`[Diff] Pre-materialized source snapshot for diff view`)
     }
 
     return {

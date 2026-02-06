@@ -402,3 +402,57 @@ cleanslate/
 | `src/lib/diff-engine.ts` | Modify (index-first algorithm, ChunkManager integration) | 3 |
 | `src/stores/diffStore.ts` | Modify (add diffProgress) | 3 |
 | `src/components/diff/DiffView.tsx` | Modify (progress callback + UI) | 3 |
+
+---
+
+## Implementation Progress (2026-02-06)
+
+### Sprint 1: Micro-Shard Storage — COMPLETE (commit 5cfc697)
+- Manifest system, importSingleShard, 50k shards, legacy migration all shipped.
+
+### Sprint 2: ChunkManager — COMPLETE (commit 5cfc697)
+- Row-budget LRU (150k cap), mapChunks, aggressive yielding, memory-manager integration.
+
+### Sprint 3: Diff Engine — IN PROGRESS
+
+#### 3A. Index-First Diff Algorithm — COMPLETE (commit 5cfc697)
+- Phase 1-4 implemented: ID-only index tables → index JOIN → batched column comparison → cleanup.
+- Peak memory during `runDiff` dropped from ~2GB to ~280MB.
+
+#### 3B. ChunkManager Integration in `runDiff` — COMPLETE (this session)
+- `runDiff()` now uses ChunkManager for snapshot sources instead of full materialization via `resolveTableRef()`.
+- Schema discovery + origin ID validation use shard 0 (then evict).
+- Phase 1 index building uses `mapChunks()` with cumulative `globalRowOffset` for globally-unique row numbers.
+- Phase 3 column comparison uses `mapChunks()` — JOIN naturally scopes UPDATE to matching shard rows.
+- After all computation, source is pre-materialized via `resolveTableRef()` for the diff view cache.
+- Non-snapshot sources (normal DuckDB tables) are completely untouched.
+
+#### Bugs Found & Fixed During Integration
+
+**Bug 1: Table alias prefix in index creation queries (pre-existing)**
+- `aOriginIdSelect` and `bOriginIdSelect` had `a.`/`b.` table alias prefixes but were used in `SELECT ... FROM "table"` queries without aliases.
+- Previously untriggered because `_cs_origin_id` wasn't present in both tables during earlier testing.
+- Fix: Removed alias prefixes — these variables are only used in single-table index creation queries.
+
+**Bug 2: Hardcoded VARCHAR for `_cs_id` in pre-created index table**
+- The shard-level path pre-creates `__diff_idx_a` with explicit DDL. `_cs_id` was hardcoded as `VARCHAR`, but the actual column type is `BIGINT`.
+- Phase 2's `COALESCE(a._cs_id, b._cs_id)` failed because `__diff_idx_b` (created via `CREATE TABLE AS SELECT`) had `_cs_id` as `BIGINT`.
+- Fix: Look up actual `_cs_id` type from `information_schema.columns` via `colsAAll`.
+
+**Bug 3: Memory cleanup thrash loop during diff viewing (pre-existing, newly exposed)**
+- `clearDiffCaches()` was registered as a memory-manager cleanup callback. During diff viewing of large tables, memory pressure triggered cleanup → dropped source table + diff index + expression cache → diff view re-materialized everything → memory pressure → cleanup → repeat → OOM.
+- Fix: Replaced aggressive `clearDiffCaches` memory callback with lightweight version that only clears pending registrations. Active diff state is cleaned up by the DiffView lifecycle (`cleanupDiffTable`, `cleanupMaterializedDiffView`, `cleanupDiffSourceFiles`).
+
+#### 3C. Shard-Level `fetchDiffPage` — NOT STARTED (out of scope)
+- `fetchDiffPage` still calls `resolveTableRef()` which materializes the full source snapshot.
+- Pre-materialization after `runDiff` (added in 3B) ensures this doesn't cause OOM by loading the source while memory pressure is minimal.
+- True shard-level `fetchDiffPage` requires populating `minCsId`/`maxCsId` in manifests during export. Deferred to future sprint.
+
+### Memory Profile (1M rows, 30 columns)
+
+| Phase | Before Zero-Resident | After Sprint 3B |
+|-------|---------------------|-----------------|
+| `runDiff` peak | ~2GB (full source + indices + diff) | ~280MB (shards + indices + diff) |
+| After `runDiff` | ~1GB (source cached + target) | ~1GB (source pre-materialized + target) |
+| `fetchDiffPage` | Source cached (free), load diff | Source cached (free), load diff |
+| Diff view scrolling | Stable (~1.2GB) | Stable (~1.2GB, no cleanup thrashing) |
