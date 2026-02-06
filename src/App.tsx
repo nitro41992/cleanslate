@@ -71,6 +71,8 @@ function App() {
   const activeTableId = useTableStore((s) => s.activeTableId)
   const activeTable = tables.find((t) => t.id === activeTableId)
   const addTable = useTableStore((s) => s.addTable)
+  const switchToTable = useTableStore((s) => s.switchToTable)
+  const isTableFrozen = useTableStore((s) => s.isTableFrozen)
   const isContextSwitching = useTableStore((s) => s.isContextSwitching)
 
   // Compute display columns in correct order using columnOrder from tableStore
@@ -286,6 +288,24 @@ function App() {
     setPendingConflict(null)
   }
 
+  const handleSelectExistingTable = async (tableId: string) => {
+    const table = tables.find((t) => t.id === tableId)
+    if (!table) return
+
+    const isFrozen = isTableFrozen(tableId)
+    if (isFrozen) {
+      const success = await switchToTable(tableId)
+      if (success) {
+        setPreviewActiveTable(tableId, table.name)
+      } else {
+        toast.error(`Failed to open ${table.name}`)
+      }
+    } else {
+      setActiveTable(tableId)
+      setPreviewActiveTable(tableId, table.name)
+    }
+  }
+
   const handleNewTable = () => {
     fileInputRef.current?.click()
   }
@@ -423,6 +443,14 @@ function App() {
           onFileDrop={handleFileDrop}
           isLoading={isLoading}
           isReady={isReady}
+          existingTables={tables.map((t) => ({
+            id: t.id,
+            name: t.name,
+            rowCount: t.rowCount,
+            isFrozen: isTableFrozen(t.id),
+            isCheckpoint: t.isCheckpoint,
+          }))}
+          onSelectTable={handleSelectExistingTable}
         />
 
         {/* Hidden file input - still needed for programmatic triggers */}

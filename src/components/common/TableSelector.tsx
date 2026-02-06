@@ -79,11 +79,21 @@ export function TableSelector({ onNewTable }: TableSelectorProps) {
   const handleDeleteConfirm = async () => {
     if (!tableToDelete) return
 
+    const wasActive = activeTableId === tableToDelete.id
+    // Pre-compute the next table to switch to (before deletion mutates the list)
+    const remainingTables = tables.filter((t) => t.id !== tableToDelete.id)
+    const nextTable = wasActive && remainingTables.length > 0 ? remainingTables[0] : null
+
     setIsDeleting(true)
     try {
       await deleteTable(tableToDelete.id, tableToDelete.name)
-      if (activeTableId === tableToDelete.id) {
-        setPreviewActiveTable(null, null)
+      if (wasActive) {
+        if (nextTable) {
+          // Auto-switch to the next available table
+          await handleSelectTable(nextTable.id)
+        } else {
+          setPreviewActiveTable(null, null)
+        }
       }
     } finally {
       setIsDeleting(false)
