@@ -73,10 +73,10 @@ export function SimilaritySpectrum({
   onThresholdsChange,
   disabled = false,
 }: SimilaritySpectrumProps) {
-  // Create histogram buckets (10 buckets from 0-100, each 10% wide)
+  // Create histogram buckets (20 buckets from 0-100, each 5% wide)
   const histogram = useMemo(() => {
-    const bucketCount = 10
-    const bucketWidth = 100 / bucketCount // 10%
+    const bucketCount = 20
+    const bucketWidth = 100 / bucketCount // 5%
     const buckets = new Array(bucketCount).fill(0)
     const pendingPairs = pairs.filter((p) => p.status === 'pending')
 
@@ -90,7 +90,7 @@ export function SimilaritySpectrum({
       min: index * bucketWidth,
       max: (index + 1) * bucketWidth,
       count,
-      height: (count / maxCount) * 100,
+      height: count === 0 ? 0 : (count / maxCount) * 100,
     }))
   }, [pairs])
 
@@ -139,17 +139,21 @@ export function SimilaritySpectrum({
               definiteThreshold
             )
 
+            if (bucket.count === 0) {
+              return <div key={index} className="flex-1" />
+            }
+
             return (
               <div
                 key={index}
                 className="flex-1 flex rounded-md overflow-hidden transition-all duration-300 hover:opacity-90"
-                style={{ height: `${Math.max(bucket.height, 4)}%` }}
+                style={{ height: `${Math.max(bucket.height, 6)}%` }}
                 title={`${bucket.min.toFixed(0)}-${bucket.max.toFixed(0)}%: ${bucket.count} pairs`}
               >
                 {segments.map((seg, si) => (
                   <div
                     key={si}
-                    className={`${zoneColors[seg.zone]} ${bucket.count === 0 ? 'opacity-10' : 'opacity-80'}`}
+                    className={`${zoneColors[seg.zone]} opacity-80`}
                     style={{ flex: seg.fraction }}
                   />
                 ))}
