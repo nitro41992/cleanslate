@@ -569,10 +569,10 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
       {/* Main Content */}
       <TooltipProvider delayDuration={200}>
-      <div className="flex h-[calc(100vh-3.5rem)]">
+      <div className="flex h-[calc(100vh-3.5rem)] relative">
         {/* Left Config Panel - Collapsible */}
         <div className={cn(
-          'border-r border-border bg-card shrink-0 relative transition-all duration-200',
+          'border-r border-border bg-card shrink-0 transition-all duration-200',
           configCollapsed ? 'w-0 overflow-hidden border-r-0' : 'w-80'
         )}>
           {!configCollapsed && (
@@ -595,13 +595,9 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
         {/* Sidebar Toggle Button */}
         <button
-          className={cn(
-            'absolute z-10 top-1/2 -translate-y-1/2 flex items-center justify-center',
-            'w-6 h-12 rounded-r-md border border-l-0 border-border bg-card',
-            'hover:bg-accent transition-colors text-muted-foreground hover:text-foreground',
-            configCollapsed ? 'left-0' : 'left-[319px]'
-          )}
-          style={{ top: 'calc(3.5rem + 50%)' }}
+          className="z-10 self-center flex items-center justify-center shrink-0
+            w-6 h-12 rounded-r-md border border-l-0 border-border bg-card
+            hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
           onClick={() => setConfigCollapsed((c) => !c)}
           title={configCollapsed ? 'Show config panel' : 'Hide config panel'}
         >
