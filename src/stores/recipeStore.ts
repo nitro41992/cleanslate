@@ -26,6 +26,16 @@ export interface RecipeExecutionProgress {
  */
 export type RecipeBuildMode = 'list' | 'view' | 'build'
 
+/**
+ * Context for editing an existing recipe step inline via CleanPanel.
+ * Transient UI state — not persisted to OPFS.
+ */
+export interface EditingStepContext {
+  recipeId: string
+  stepId: string
+  originalStep: RecipeStep  // snapshot for cancel
+}
+
 interface RecipeState {
   // Recipe collection
   recipes: Recipe[]
@@ -33,6 +43,9 @@ interface RecipeState {
 
   // Build mode state
   buildMode: RecipeBuildMode
+
+  // Editing step context (transient, not persisted)
+  editingStepContext: EditingStepContext | null
 
   // Execution state
   isProcessing: boolean
@@ -76,6 +89,11 @@ interface RecipeActions {
   updateColumnMapping: (recipeColumn: string, tableColumn: string) => void
   clearColumnMapping: () => void
 
+  // Editing step
+  startEditingStep: (recipeId: string, stepId: string) => void
+  cancelEditingStep: () => void
+  commitEditingStep: (updates: Partial<Omit<RecipeStep, 'id'>>) => void
+
   // Export flow
   setPendingExportSteps: (steps: RecipeStep[] | null) => void
 
@@ -88,6 +106,7 @@ const initialState: RecipeState = {
   recipes: [],
   selectedRecipeId: null,
   buildMode: 'list',
+  editingStepContext: null,
   isProcessing: false,
   executionProgress: null,
   executionError: null,
@@ -300,6 +319,32 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
       pendingColumnMapping: null,
       unmappedColumns: [],
     })
+  },
+
+  // Editing step
+  startEditingStep: (recipeId, stepId) => {
+    const recipe = get().recipes.find((r) => r.id === recipeId)
+    if (!recipe) return
+    const step = recipe.steps.find((s) => s.id === stepId)
+    if (!step) return
+    set({
+      editingStepContext: {
+        recipeId,
+        stepId,
+        originalStep: { ...step },
+      },
+    })
+  },
+
+  cancelEditingStep: () => {
+    set({ editingStepContext: null })
+  },
+
+  commitEditingStep: (updates) => {
+    const ctx = get().editingStepContext
+    if (!ctx) return
+    get().updateStep(ctx.recipeId, ctx.stepId, updates)
+    set({ editingStepContext: null })
   },
 
   // Export flow

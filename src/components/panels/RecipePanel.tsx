@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
   Columns,
+  Pencil,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,6 +41,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useRecipeStore, selectSelectedRecipe } from '@/stores/recipeStore'
+import { downloadRecipeAsJson } from '@/lib/recipe/recipe-exporter'
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useRecipeExecution } from '@/hooks/useRecipeExecution'
@@ -86,6 +88,7 @@ export function RecipePanel() {
   const reorderSteps = useRecipeStore((s) => s.reorderSteps)
   const updateColumnMapping = useRecipeStore((s) => s.updateColumnMapping)
   const clearColumnMapping = useRecipeStore((s) => s.clearColumnMapping)
+  const startEditingStep = useRecipeStore((s) => s.startEditingStep)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -209,6 +212,14 @@ export function RecipePanel() {
   }
 
   // Handle step reordering
+  // Handle editing a step - pre-populate CleanPanel with step config
+  const handleEditStep = (stepId: string) => {
+    if (!selectedRecipeId) return
+    startEditingStep(selectedRecipeId, stepId)
+    // CleanPanel is already the primary panel (RecipePanel is secondary alongside it),
+    // so no panel transition needed — the editing context will trigger prefill
+  }
+
   const moveStepUp = (index: number) => {
     if (selectedRecipe && index > 0) {
       reorderSteps(selectedRecipe.id, index, index - 1)
@@ -252,25 +263,7 @@ export function RecipePanel() {
   // Handle export recipe to JSON
   const handleExport = () => {
     if (!selectedRecipe) return
-
-    const exportData = {
-      name: selectedRecipe.name,
-      description: selectedRecipe.description,
-      version: selectedRecipe.version,
-      requiredColumns: selectedRecipe.requiredColumns,
-      steps: selectedRecipe.steps,
-      createdAt: selectedRecipe.createdAt.toISOString(),
-      modifiedAt: selectedRecipe.modifiedAt.toISOString(),
-    }
-
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${selectedRecipe.name.replace(/[^a-zA-Z0-9]/g, '_')}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-
+    downloadRecipeAsJson(selectedRecipe)
     toast.success('Recipe exported')
   }
 
@@ -442,6 +435,8 @@ export function RecipePanel() {
                     const colors = getStepColorClasses(step)
                     const isFirst = index === 0
                     const isLast = index === selectedRecipe.steps.length - 1
+                    const transform = getTransformDefinition(step)
+                    const isNonEditable = !transform || step.type === 'scrub:batch'
 
                     return (
                       <div key={step.id} className="relative">
@@ -520,6 +515,27 @@ export function RecipePanel() {
                               >
                                 <ChevronDown className="w-3.5 h-3.5" />
                               </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 hover:bg-muted/60"
+                                    onClick={() => handleEditStep(step.id)}
+                                    disabled={isNonEditable}
+                                    aria-label="Edit step"
+                                  >
+                                    <Pencil className="w-3 h-3" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">
+                                  {!transform
+                                    ? 'Unknown transform type'
+                                    : step.type === 'scrub:batch'
+                                      ? 'Privacy batch steps cannot be edited inline'
+                                      : 'Edit step'}
+                                </TooltipContent>
+                              </Tooltip>
                             </div>
 
                             {/* Enable Toggle */}

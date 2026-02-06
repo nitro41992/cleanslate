@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Loader2, Wand2, AlertTriangle, BookOpen } from 'lucide-react'
+import { Loader2, Wand2, AlertTriangle, BookOpen, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -54,6 +54,9 @@ import { PrivacySubPanel } from '@/components/clean/PrivacySubPanel'
 import { FormulaEditor, type OutputMode } from '@/components/clean/FormulaEditor'
 import { extractColumnRefs } from '@/lib/formula'
 import { AddToRecipeButton } from '@/components/recipe/AddToRecipeButton'
+import { ConfirmStepUpdateDialog } from '@/components/recipe/ConfirmStepUpdateDialog'
+import { useRecipeStore, selectSelectedRecipe } from '@/stores/recipeStore'
+import { getTransformId } from '@/lib/recipe/transform-lookup'
 import { useOperationStore } from '@/stores/operationStore'
 
 export function CleanPanel() {
@@ -82,6 +85,15 @@ export function CleanPanel() {
   const applyButtonRef = useRef<HTMLButtonElement>(null)
   // Use a more flexible approach for first param - store the element directly
   const firstParamElementRef = useRef<HTMLElement | null>(null)
+
+  // Editing step state
+  const editingStepContext = useRecipeStore((s) => s.editingStepContext)
+  const cancelEditingStep = useRecipeStore((s) => s.cancelEditingStep)
+  const commitEditingStep = useRecipeStore((s) => s.commitEditingStep)
+  const editingRecipe = useRecipeStore(selectSelectedRecipe)
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false)
+  // Track whether we've already populated form from editing context (avoids re-running on every render)
+  const editingPopulatedRef = useRef<string | null>(null)
 
   // Hook for executing commands with confirmation when discarding redo states
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
@@ -177,6 +189,79 @@ export function CleanPanel() {
       return () => clearTimeout(timer)
     }
   }, [activeTable, selectedTransform, isApplying])
+
+  // Pre-populate form when editing a recipe step
+  useEffect(() => {
+    if (!editingStepContext) {
+      // Context cleared (cancel or commit) — reset form if we previously populated
+      if (editingPopulatedRef.current) {
+        editingPopulatedRef.current = null
+        resetForm()
+      }
+      return
+    }
+
+    // Avoid re-populating if we already set up for this step
+    if (editingPopulatedRef.current === editingStepContext.stepId) return
+    editingPopulatedRef.current = editingStepContext.stepId
+
+    const step = editingStepContext.originalStep
+
+    // Handle formula steps — switch to formula tab
+    if (step.type === 'transform:excel_formula') {
+      setActiveTab('formula')
+      const fp: Record<string, string> = {}
+      if (step.params) {
+        for (const [k, v] of Object.entries(step.params)) {
+          fp[k] = String(v ?? '')
+        }
+      }
+      setFormulaParams(fp)
+      return
+    }
+
+    // Switch to transforms tab
+    setActiveTab('transforms')
+
+    // Look up the TransformationDefinition
+    const transformId = getTransformId(step.type)
+    const transformDef = TRANSFORMATIONS.find((t) => t.id === transformId)
+    if (transformDef) {
+      setSelectedTransform(transformDef)
+    }
+
+    // Set column
+    if (step.column) {
+      setSelectedColumn(step.column)
+    }
+
+    // Convert step.params (Record<string, unknown>) to Record<string, string>
+    if (step.params) {
+      const stringParams: Record<string, string> = {}
+      for (const [k, v] of Object.entries(step.params)) {
+        stringParams[k] = String(v ?? '')
+      }
+      setParams(stringParams)
+    }
+  }, [editingStepContext])
+
+  // Cancel editing when CleanPanel truly unmounts (user navigates away).
+  // Use a ref to survive React StrictMode's simulated unmount/remount cycle —
+  // StrictMode fires cleanup between the two mounts, which would clear the
+  // editing context before the remounted effect can read it.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      // Defer so StrictMode's immediate remount can set mountedRef back to true
+      setTimeout(() => {
+        if (!mountedRef.current && useRecipeStore.getState().editingStepContext) {
+          useRecipeStore.getState().cancelEditingStep()
+        }
+      }, 0)
+    }
+  }, [])
 
   const resetForm = () => {
     setSelectedTransform(null)
@@ -346,6 +431,42 @@ export function CleanPanel() {
     setCastValidation(null)
   }
 
+  // Handle "Update Step" click — open confirmation dialog
+  const handleUpdateStepClick = () => {
+    setShowUpdateDialog(true)
+  }
+
+  // Handle confirmed step update
+  const handleConfirmStepUpdate = () => {
+    setShowUpdateDialog(false)
+    if (!editingStepContext) return
+
+    if (activeTab === 'formula') {
+      // Formula step update
+      const step = buildFormulaStep()
+      if (step) {
+        commitEditingStep({
+          column: step.column,
+          params: step.params,
+          label: step.label,
+        })
+      }
+    } else {
+      // Transform step update
+      const step = buildStepFromCurrentForm()
+      if (step) {
+        commitEditingStep({
+          column: step.column,
+          params: step.params,
+          label: step.label,
+        })
+      }
+    }
+
+    toast.success('Recipe step updated')
+    setTimeout(resetForm, 300)
+  }
+
   // Get target type label for display
   const getTargetTypeLabel = (type: string) => {
     const typeMap: Record<string, string> = {
@@ -430,6 +551,11 @@ export function CleanPanel() {
 
     return true
   }
+
+  // Compute editing step index for banner display
+  const editingStepNumber = editingStepContext && editingRecipe
+    ? (editingRecipe.steps.findIndex((s) => s.id === editingStepContext.stepId) + 1)
+    : null
 
   // ===== Formula Tab Logic =====
   const excelFormulaDef = TRANSFORMATIONS.find((t) => t.id === 'excel_formula')!
@@ -597,6 +723,15 @@ export function CleanPanel() {
       {/* Confirm Discard Undone Operations Dialog */}
       <ConfirmDiscardDialog {...confirmDialogProps} />
 
+      {/* Confirm Step Update Dialog */}
+      <ConfirmStepUpdateDialog
+        open={showUpdateDialog}
+        onOpenChange={setShowUpdateDialog}
+        recipe={editingRecipe}
+        onConfirm={handleConfirmStepUpdate}
+        onCancel={() => setShowUpdateDialog(false)}
+      />
+
       <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col h-full">
         <div className="border-b border-border/50 px-4 pt-2">
           <TabsList className="w-full">
@@ -616,7 +751,7 @@ export function CleanPanel() {
                     ref={pickerRef}
                     selectedTransform={selectedTransform}
                     lastApplied={lastApplied}
-                    disabled={!activeTable || isApplying}
+                    disabled={!activeTable || isApplying || !!editingStepContext}
                     onSelect={handleSelectTransform}
                     onNavigateNext={handlePickerNavigateNext}
                   />
@@ -649,6 +784,26 @@ export function CleanPanel() {
               <div className="flex-1 flex flex-col justify-center p-4">
                 {selectedTransform ? (
                     <div className="space-y-4 animate-in fade-in duration-200">
+                      {/* Editing Step Banner */}
+                      {editingStepContext && editingRecipe && (
+                        <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2">
+                          <span className="text-sm text-blue-700 dark:text-blue-300">
+                            Editing step {editingStepNumber} of <strong>{editingRecipe.name}</strong>
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100"
+                            onClick={() => {
+                              cancelEditingStep()
+                              resetForm()
+                            }}
+                          >
+                            Cancel Edit
+                          </Button>
+                        </div>
+                      )}
+
                       {/* Enhanced Transform Info */}
                       <div className="bg-muted rounded-lg p-3 space-y-3">
                         {/* Header */}
@@ -796,34 +951,50 @@ export function CleanPanel() {
 
                       {/* Action Buttons Row */}
                       <div className="flex gap-2">
-                        {/* Apply Button */}
-                        <Button
-                          ref={applyButtonRef}
-                          className="flex-1 transition-colors duration-150"
-                          onClick={handleApply}
-                          disabled={isApplying || !isValid()}
-                          data-testid="apply-transformation-btn"
-                        >
-                          {isApplying ? (
-                            <>
-                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              Applying...
-                            </>
-                          ) : (
-                            <>
-                              <Wand2 className="w-4 h-4 mr-2" />
-                              Apply
-                            </>
-                          )}
-                        </Button>
+                        {editingStepContext ? (
+                          /* Update Step button (edit mode) */
+                          <Button
+                            ref={applyButtonRef}
+                            className="flex-1 transition-colors duration-150"
+                            onClick={handleUpdateStepClick}
+                            disabled={!isValid()}
+                            data-testid="update-step-btn"
+                          >
+                            <Pencil className="w-4 h-4 mr-2" />
+                            Update Step
+                          </Button>
+                        ) : (
+                          <>
+                            {/* Apply Button (normal mode) */}
+                            <Button
+                              ref={applyButtonRef}
+                              className="flex-1 transition-colors duration-150"
+                              onClick={handleApply}
+                              disabled={isApplying || !isValid()}
+                              data-testid="apply-transformation-btn"
+                            >
+                              {isApplying ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Applying...
+                                </>
+                              ) : (
+                                <>
+                                  <Wand2 className="w-4 h-4 mr-2" />
+                                  Apply
+                                </>
+                              )}
+                            </Button>
 
-                        {/* Add to Recipe */}
-                        <AddToRecipeButton
-                          buildStep={buildStepFromCurrentForm}
-                          canAdd={canAddToRecipe()}
-                          isProcessing={isApplying}
-                          stepLabel={selectedTransform?.label}
-                        />
+                            {/* Add to Recipe (hidden in edit mode) */}
+                            <AddToRecipeButton
+                              buildStep={buildStepFromCurrentForm}
+                              canAdd={canAddToRecipe()}
+                              isProcessing={isApplying}
+                              stepLabel={selectedTransform?.label}
+                            />
+                          </>
+                        )}
                       </div>
 
                       {/* Execution Progress (for batched operations) */}
@@ -841,10 +1012,15 @@ export function CleanPanel() {
                       <Button
                         variant="ghost"
                         className="w-full"
-                        onClick={resetForm}
+                        onClick={() => {
+                          if (editingStepContext) {
+                            cancelEditingStep()
+                          }
+                          resetForm()
+                        }}
                         disabled={isApplying}
                       >
-                        Cancel
+                        {editingStepContext ? 'Cancel Edit' : 'Cancel'}
                       </Button>
                     </div>
                 ) : (
@@ -911,35 +1087,69 @@ export function CleanPanel() {
                   />
                 )}
 
+                {/* Editing Step Banner (formula tab) */}
+                {editingStepContext && editingRecipe && (
+                  <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 mt-4">
+                    <span className="text-sm text-blue-700 dark:text-blue-300">
+                      Editing step {editingStepNumber} of <strong>{editingRecipe.name}</strong>
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100"
+                      onClick={() => {
+                        cancelEditingStep()
+                        resetFormulaForm()
+                      }}
+                    >
+                      Cancel Edit
+                    </Button>
+                  </div>
+                )}
+
                 {/* Action Buttons for Formula Builder */}
                 <div className="mt-4 space-y-2 pt-4 border-t border-border/50">
                   <div className="flex gap-2">
-                    <Button
-                      className="flex-1 transition-colors duration-150"
-                      onClick={handleFormulaApply}
-                      disabled={isApplying || !isFormulaValid()}
-                      data-testid="apply-formula-btn"
-                    >
-                      {isApplying ? (
-                        <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          Applying...
-                        </>
-                      ) : (
-                        <>
-                          <Wand2 className="w-4 h-4 mr-2" />
-                          Apply Formula
-                        </>
-                      )}
-                    </Button>
+                    {editingStepContext ? (
+                      <Button
+                        className="flex-1 transition-colors duration-150"
+                        onClick={handleUpdateStepClick}
+                        disabled={!isFormulaValid()}
+                        data-testid="update-step-btn"
+                      >
+                        <Pencil className="w-4 h-4 mr-2" />
+                        Update Step
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          className="flex-1 transition-colors duration-150"
+                          onClick={handleFormulaApply}
+                          disabled={isApplying || !isFormulaValid()}
+                          data-testid="apply-formula-btn"
+                        >
+                          {isApplying ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Applying...
+                            </>
+                          ) : (
+                            <>
+                              <Wand2 className="w-4 h-4 mr-2" />
+                              Apply Formula
+                            </>
+                          )}
+                        </Button>
 
-                    {/* Add to Recipe */}
-                    <AddToRecipeButton
-                      buildStep={buildFormulaStep}
-                      canAdd={isFormulaValid()}
-                      isProcessing={isApplying}
-                      stepLabel={excelFormulaDef?.label || 'Formula'}
-                    />
+                        {/* Add to Recipe (hidden in edit mode) */}
+                        <AddToRecipeButton
+                          buildStep={buildFormulaStep}
+                          canAdd={isFormulaValid()}
+                          isProcessing={isApplying}
+                          stepLabel={excelFormulaDef?.label || 'Formula'}
+                        />
+                      </>
+                    )}
                   </div>
 
                   {/* Execution Progress */}
@@ -956,10 +1166,15 @@ export function CleanPanel() {
                   <Button
                     variant="ghost"
                     className="w-full"
-                    onClick={resetFormulaForm}
+                    onClick={() => {
+                      if (editingStepContext) {
+                        cancelEditingStep()
+                      }
+                      resetFormulaForm()
+                    }}
                     disabled={isApplying}
                   >
-                    Cancel
+                    {editingStepContext ? 'Cancel Edit' : 'Cancel'}
                   </Button>
                 </div>
               </>

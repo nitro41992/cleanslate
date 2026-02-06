@@ -35,6 +35,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useRecipeStore, selectSelectedRecipe } from '@/stores/recipeStore'
+import { downloadRecipeAsJson } from '@/lib/recipe/recipe-exporter'
 import { useTableStore } from '@/stores/tableStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useRecipeExecution } from '@/hooks/useRecipeExecution'
@@ -71,6 +72,7 @@ export function RecipePanelPrimary() {
   const reorderSteps = useRecipeStore((s) => s.reorderSteps)
   const updateColumnMapping = useRecipeStore((s) => s.updateColumnMapping)
   const clearColumnMapping = useRecipeStore((s) => s.clearColumnMapping)
+  const startEditingStep = useRecipeStore((s) => s.startEditingStep)
 
   const activeTableId = useTableStore((s) => s.activeTableId)
   const tables = useTableStore((s) => s.tables)
@@ -219,25 +221,7 @@ export function RecipePanelPrimary() {
   // Handle export recipe to JSON
   const handleExport = () => {
     if (!selectedRecipe) return
-
-    const exportData = {
-      name: selectedRecipe.name,
-      description: selectedRecipe.description,
-      version: selectedRecipe.version,
-      requiredColumns: selectedRecipe.requiredColumns,
-      steps: selectedRecipe.steps,
-      createdAt: selectedRecipe.createdAt.toISOString(),
-      modifiedAt: selectedRecipe.modifiedAt.toISOString(),
-    }
-
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${selectedRecipe.name.replace(/[^a-zA-Z0-9]/g, '_')}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-
+    downloadRecipeAsJson(selectedRecipe)
     toast.success('Recipe exported')
   }
 
@@ -277,6 +261,15 @@ export function RecipePanelPrimary() {
       }
     }
     input.click()
+  }
+
+  // Handle editing a step - opens Clean panel pre-populated with step config
+  const handleEditStep = (stepId: string) => {
+    if (!selectedRecipeId) return
+    startEditingStep(selectedRecipeId, stepId)
+    // Same panel transition as handleAddStep
+    setActivePanel('clean')
+    setSecondaryPanel('recipe')
   }
 
   // Handle "Add Steps" - opens Clean panel as secondary
@@ -642,6 +635,7 @@ export function RecipePanelPrimary() {
                         index={index}
                         totalSteps={selectedRecipe.steps.length}
                         isHighlighted={step.id === newlyAddedStepId}
+                        onEdit={() => handleEditStep(step.id)}
                         onMoveUp={() => moveStepUp(index)}
                         onMoveDown={() => moveStepDown(index)}
                         onToggleEnabled={() => toggleStepEnabled(selectedRecipe.id, step.id)}

@@ -5,7 +5,7 @@
  * Filters out commands that are not schema-dependent (edit:cell, match:merge, etc.).
  */
 
-import type { RecipeStep } from '@/types'
+import type { Recipe, RecipeStep } from '@/types'
 import type { TimelineCommand } from '@/types'
 
 /**
@@ -257,6 +257,30 @@ export function extractRequiredColumns(steps: RecipeStep[]): string[] {
  */
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11)
+}
+
+/**
+ * Download a recipe as a JSON file.
+ * Shared utility used by RecipePanel, RecipePanelPrimary, and ConfirmStepUpdateDialog.
+ */
+export function downloadRecipeAsJson(recipe: Recipe): void {
+  const exportData = {
+    name: recipe.name,
+    description: recipe.description,
+    version: recipe.version,
+    requiredColumns: recipe.requiredColumns,
+    steps: recipe.steps,
+    createdAt: recipe.createdAt.toISOString(),
+    modifiedAt: recipe.modifiedAt.toISOString(),
+  }
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${recipe.name.replace(/[^a-zA-Z0-9]/g, '_')}.json`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 /**

@@ -1,4 +1,4 @@
-import { ChevronUp, ChevronDown, X } from 'lucide-react'
+import { ChevronUp, ChevronDown, X, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -16,11 +16,15 @@ import {
   getStepColorClasses,
 } from '@/lib/recipe/transform-lookup'
 
+/** Step types that cannot be edited inline (too complex for v1) */
+const NON_EDITABLE_TYPES = new Set(['scrub:batch'])
+
 interface RecipeStepCardProps {
   step: RecipeStep
   index: number
   totalSteps: number
   isHighlighted?: boolean
+  onEdit?: () => void
   onMoveUp: () => void
   onMoveDown: () => void
   onToggleEnabled: () => void
@@ -42,6 +46,7 @@ export function RecipeStepCard({
   index,
   totalSteps,
   isHighlighted = false,
+  onEdit,
   onMoveUp,
   onMoveDown,
   onToggleEnabled,
@@ -97,6 +102,12 @@ export function RecipeStepCard({
   const params = getAllParams()
   const isFirst = index === 0
   const isLast = index === totalSteps - 1
+  const isNonEditable = NON_EDITABLE_TYPES.has(step.type) || !transform
+  const editTooltip = !transform
+    ? 'Unknown transform type — cannot edit'
+    : NON_EDITABLE_TYPES.has(step.type)
+      ? 'Privacy batch steps cannot be edited inline'
+      : 'Edit step'
 
   return (
     <div className="relative">
@@ -185,6 +196,24 @@ export function RecipeStepCard({
               </TooltipTrigger>
               <TooltipContent side="top">Move down</TooltipContent>
             </Tooltip>
+
+            {onEdit && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 hover:bg-muted/60"
+                    onClick={onEdit}
+                    disabled={isNonEditable}
+                    aria-label="Edit step"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">{editTooltip}</TooltipContent>
+              </Tooltip>
+            )}
 
             <Tooltip>
               <TooltipTrigger asChild>
