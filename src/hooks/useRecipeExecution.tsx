@@ -66,12 +66,21 @@ export function useRecipeExecution({ activeTableId, activeTableName, tableColumn
       return
     }
 
+    // Recompute requiredColumns from actual steps (persisted value may be stale)
+    const { extractRequiredColumns } = await import('@/lib/recipe/recipe-exporter')
     const { matchColumns } = await import('@/lib/recipe/column-matcher')
-    const matchResult = matchColumns(recipe.requiredColumns, tableColumns)
+    const requiredColumns = extractRequiredColumns(enabledSteps)
+
+    // Migrate stale recipes so the mapping dialog UI renders correctly
+    if (JSON.stringify(requiredColumns) !== JSON.stringify(recipe.requiredColumns)) {
+      useRecipeStore.getState().updateRecipe(recipe.id, { requiredColumns })
+    }
+
+    const matchResult = matchColumns(requiredColumns, tableColumns)
 
     if (matchResult.unmapped.length > 0) {
       const initialMapping: ColumnMapping = {}
-      for (const col of recipe.requiredColumns) {
+      for (const col of requiredColumns) {
         initialMapping[col] = matchResult.mapping[col] || ''
       }
       setColumnMapping(initialMapping)

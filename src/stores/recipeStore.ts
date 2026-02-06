@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Recipe, RecipeStep } from '@/types'
 import { generateId } from '@/lib/utils'
+import { extractRequiredColumns } from '@/lib/recipe/recipe-exporter'
 
 /**
  * Column mapping from recipe column names to actual table column names.
@@ -315,53 +316,6 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
     set(initialState)
   },
 }))
-
-/**
- * Extract unique column names from recipe steps.
- * Used to auto-populate requiredColumns.
- */
-function extractRequiredColumns(steps: RecipeStep[]): string[] {
-  const columns = new Set<string>()
-
-  for (const step of steps) {
-    // Add main column
-    if (step.column) {
-      columns.add(step.column)
-    }
-
-    // Check params for additional column references
-    if (step.params) {
-      // split_column, combine_columns, etc. may have columns in params
-      const sourceColumns = step.params.sourceColumns as string[] | undefined
-      if (sourceColumns) {
-        sourceColumns.forEach((c) => columns.add(c))
-      }
-
-      const column = step.params.column as string | undefined
-      if (column) {
-        columns.add(column)
-      }
-
-      // For combine_columns
-      const columns1 = step.params.columns as string[] | undefined
-      if (columns1) {
-        columns1.forEach((c) => columns.add(c))
-      }
-
-      // For scrub:batch rules
-      const rules = step.params.rules as Array<{ column: string }> | undefined
-      if (rules && Array.isArray(rules)) {
-        rules.forEach((rule) => {
-          if (rule && typeof rule.column === 'string') {
-            columns.add(rule.column)
-          }
-        })
-      }
-    }
-  }
-
-  return Array.from(columns).sort()
-}
 
 /**
  * Selector: Get selected recipe
