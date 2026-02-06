@@ -1061,8 +1061,9 @@ export function DataGrid({
   }, [tableId, columns])
 
   const gridColumns: GridColumn[] = useMemo(
-    () =>
-      columns.map((col) => {
+    () => {
+      // First pass: compute natural widths for all columns
+      const colDefs = columns.map((col) => {
         const colType = columnTypeMap.get(col)
 
         // Build title with sort indicator if this column is sorted
@@ -1087,15 +1088,21 @@ export function DataGrid({
         // Get type-specific icon for header
         const icon = colType ? getColumnIcon(colType) : undefined
 
-        return {
-          id: col,
-          title,
-          width,
-          icon,
-          grow: 1, // Columns expand proportionally to fill available width
-        }
-      }),
-    [columns, columnTypeMap, columnPreferences, viewState]
+        return { id: col, title, width, icon }
+      })
+
+      // Only grow columns to fill when their total natural width fits in the viewport.
+      // Row markers take ~32-48px; use 50px as safe estimate.
+      const totalNaturalWidth = colDefs.reduce((sum, c) => sum + c.width, 0)
+      const availableWidth = (containerSize.width || 800) - 50
+      const shouldGrow = totalNaturalWidth < availableWidth
+
+      return colDefs.map((def) => ({
+        ...def,
+        grow: shouldGrow ? 1 : 0,
+      }))
+    },
+    [columns, columnTypeMap, columnPreferences, viewState, containerSize.width]
   )
 
   // Read theme mode so grid colors update on toggle
