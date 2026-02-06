@@ -194,10 +194,15 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   }, [pairs, filter, deferredThresholds])
 
   // Virtualizer for efficient rendering of large lists
+  // getItemKey maps indices to stable pair IDs so cached height measurements
+  // follow items when the list changes (e.g., a card is moved to "Reviewed"
+  // and filtered out). Without this, measurements are keyed by positional
+  // index and become stale when items shift.
   const virtualizer = useVirtualizer({
     count: filteredPairs.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 80, // Estimated row height including gap
+    getItemKey: useCallback((index: number) => filteredPairs[index]?.id ?? String(index), [filteredPairs]),
+    estimateSize: () => 80,
     paddingStart: 16,
     paddingEnd: 16,
     overscan: 5,
