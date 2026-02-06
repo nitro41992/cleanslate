@@ -131,11 +131,10 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose, clusters.length, handleFilterChange])
 
-  // Auto-collapse sidebar when clusters are found
+  // Auto-collapse sidebar when clusters are found, auto-expand when empty
   useEffect(() => {
-    if (clusters.length > 0 && !isAnalyzing) {
-      setConfigCollapsed(true)
-    }
+    if (isAnalyzing) return
+    setConfigCollapsed(clusters.length > 0)
   }, [clusters.length, isAnalyzing])
 
   const handleNewAnalysis = () => {

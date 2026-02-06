@@ -143,6 +143,13 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   // Virtualizer scroll container ref
   const parentRef = useRef<HTMLDivElement>(null)
 
+  // Auto-expand sidebar when no results, so user can configure
+  useEffect(() => {
+    if (!isMatching && pairs.length === 0) {
+      setConfigCollapsed(false)
+    }
+  }, [pairs.length, isMatching])
+
   const selectedTable = tables.find((t) => t.id === tableId)
   const hasResults = pairs.length > 0
   const hasReviewed = stats.merged + stats.keptSeparate > 0
