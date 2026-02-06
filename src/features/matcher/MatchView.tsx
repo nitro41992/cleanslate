@@ -34,6 +34,7 @@ import { createCommand } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
+import { saveAppStateNow } from '@/lib/persistence/state-persistence'
 import { stringifyJSON } from '@/lib/utils/json-serialization'
 import type { MatchPair } from '@/types'
 
@@ -429,12 +430,14 @@ export function MatchView({ open, onClose }: MatchViewProps) {
       setShowDiscardConfirm(true)
     } else {
       clearPairs()
+      saveAppStateNow()
       setConfigCollapsed(false)
     }
   }
 
   const handleConfirmDiscard = () => {
     clearPairs()
+    saveAppStateNow()
     setShowDiscardConfirm(false)
     setConfigCollapsed(false)
   }
