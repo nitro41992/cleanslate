@@ -13,6 +13,7 @@ CleanSlate Pro is a browser-based, local-first data operations suite for regulat
 - **MUST** ensure E2E tests pass; if failing, work with me to determine if issue is implementation or test intent
 - **MUST NOT** add new logic to `transformations.ts` [DEPRECATED] — use `src/lib/commands/` instead
 - **MUST** use shadcn components when applicable before falling back to custom components
+- **MUST** summarize/explain context and problems to me with the understanding that I am a technical product manager and although i have a decent understanding of software development and data engineering, I need some abstraction to help me understand.
 
 ## 3. Common Commands
 
