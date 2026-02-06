@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { X, ArrowLeft, RotateCcw, Check, Square, Keyboard, ChevronsLeft, ChevronsRight } from 'lucide-react'
+import { X, ArrowLeft, ArrowRight, RotateCcw, Check, Square, Keyboard, ChevronsLeft, ChevronsRight, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
@@ -109,6 +109,8 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     markSelectedAsKeptSeparate,
     swapKeepRow,
     revertPairToPending,
+    revertSelectedToPending,
+    removeReviewedPairs,
     classifyPair,
     clearPairs,
     reset,
@@ -409,8 +411,19 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           description: `Removed ${deletedCount} duplicate rows.`,
         })
 
-        reset()
-        onClose()
+        removeReviewedPairs()
+        saveAppStateNow()
+
+        const remaining = useMatcherStore.getState().pairs.length
+        if (remaining === 0) {
+          reset()
+          onClose()
+        } else {
+          // If on Reviewed tab (now empty), switch to All
+          if (filter === 'reviewed') {
+            setFilter('all')
+          }
+        }
       } else {
         toast.error('Apply Failed', {
           description: result.error || 'An error occurred',
@@ -422,7 +435,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
         description: error instanceof Error ? error.message : 'An error occurred',
       })
     }
-  }, [tableName, matchColumn, pairs, tableId, selectedTable, updateTable, addTransformationEntry, reset, onClose])
+  }, [tableName, matchColumn, pairs, tableId, selectedTable, updateTable, addTransformationEntry, removeReviewedPairs, filter, setFilter, reset, onClose])
 
   const handleNewSearch = () => {
     const hasDecisions = stats.merged > 0 || stats.keptSeparate > 0
@@ -719,54 +732,80 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                 )}
               </div>
 
-              {/* Bulk Actions Bar */}
-              {selectedIds.size > 0 && (
-                <div className="px-5 py-3 flex items-center gap-3 border-t border-border/50 bg-card">
-                  <span className="text-sm font-medium">
-                    {selectedIds.size} selected
+              {/* Unified Bottom Bar */}
+              {(selectedIds.size > 0 || hasReviewed) && (
+                <div className="h-14 px-5 flex items-center gap-3 border-t border-border bg-card shrink-0">
+                  {/* Left: context label */}
+                  <span className="text-sm text-muted-foreground">
+                    {selectedIds.size > 0
+                      ? `${selectedIds.size} selected`
+                      : `${stats.merged} to merge · ${stats.keptSeparate} kept · ${stats.pending} remaining`}
                   </span>
-                  <div className="flex-1" />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => markSelectedAsKeptSeparate()}
-                    className="gap-2"
-                  >
-                    <X className="w-4 h-4 text-muted-foreground" />
-                    Keep Separate
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => markSelectedAsMerged()}
-                    className="gap-2"
-                  >
-                    <Check className="w-4 h-4" />
-                    Merge Selected
-                  </Button>
-                </div>
-              )}
 
-              {/* Apply Merges Bar */}
-              {hasReviewed && selectedIds.size === 0 && (
-                <div className={cn(
-                  'px-5 py-3 flex items-center gap-3 border-t border-border/50',
-                  stats.merged > 0 ? 'bg-[hsl(var(--matcher-definite-bg))]' : 'bg-card'
-                )}>
-                  <span className={cn(
-                    'text-sm',
-                    stats.merged > 0 ? 'text-[hsl(var(--matcher-definite))]' : 'text-muted-foreground'
-                  )}>
-                    {stats.merged} to merge · {stats.keptSeparate} kept · {stats.pending} remaining
-                  </span>
                   <div className="flex-1" />
-                  <Button
-                    onClick={handleApplyMerges}
-                    className="gap-2"
-                    disabled={stats.merged === 0}
-                  >
-                    <Check className="w-4 h-4" />
-                    Apply Merges
-                  </Button>
+
+                  {/* Right: actions — vary by tab + selection */}
+                  {selectedIds.size > 0 && filter !== 'reviewed' && (
+                    <>
+                      <span className="text-xs text-muted-foreground mr-1">
+                        Moves to Reviewed for final approval
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => markSelectedAsKeptSeparate()}
+                        className="gap-2 text-muted-foreground"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        Keep Separate
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => markSelectedAsMerged()}
+                        className="gap-2 text-[hsl(var(--matcher-definite))] border-[hsl(var(--matcher-definite)/0.3)] hover:bg-[hsl(var(--matcher-definite)/0.1)]"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Merge
+                      </Button>
+                    </>
+                  )}
+
+                  {selectedIds.size > 0 && filter === 'reviewed' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => revertSelectedToPending()}
+                      className="gap-2"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                      Revert to Pending
+                    </Button>
+                  )}
+
+                  {selectedIds.size === 0 && hasReviewed && filter !== 'reviewed' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFilter('reviewed')}
+                      className="gap-2"
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" />
+                      Go to Review
+                    </Button>
+                  )}
+
+                  {selectedIds.size === 0 && hasReviewed && filter === 'reviewed' && (
+                    <Button
+                      size="sm"
+                      onClick={handleApplyMerges}
+                      className="gap-2"
+                      disabled={stats.merged === 0}
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      Apply {stats.merged} Merge{stats.merged !== 1 ? 's' : ''}
+                    </Button>
+                  )}
                 </div>
               )}
             </>

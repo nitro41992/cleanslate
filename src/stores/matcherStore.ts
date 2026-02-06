@@ -98,6 +98,8 @@ interface MatcherActions {
   markSelectedAsKeptSeparate: () => void
   swapKeepRow: (pairId: string) => void
   revertPairToPending: (pairId: string) => void
+  revertSelectedToPending: () => void
+  removeReviewedPairs: () => void
   nextPair: () => void
   previousPair: () => void
 
@@ -327,6 +329,7 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     set({
       pairs: updatedPairs,
       selectedIds: newSelected,
+      expandedId: null,
       stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
     })
   },
@@ -341,6 +344,7 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     set({
       pairs: updatedPairs,
       selectedIds: newSelected,
+      expandedId: null,
       stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
     })
   },
@@ -353,6 +357,7 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     set({
       pairs: updatedPairs,
       selectedIds: new Set(),
+      expandedId: null,
       stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
     })
   },
@@ -365,6 +370,7 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     set({
       pairs: updatedPairs,
       selectedIds: new Set(),
+      expandedId: null,
       stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
     })
   },
@@ -388,6 +394,29 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     set({
       pairs: updatedPairs,
       stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
+    })
+  },
+
+  revertSelectedToPending: () => {
+    const { pairs, definiteThreshold, maybeThreshold, selectedIds } = get()
+    const updatedPairs = pairs.map((p) =>
+      selectedIds.has(p.id) ? { ...p, status: 'pending' as const } : p
+    )
+    set({
+      pairs: updatedPairs,
+      selectedIds: new Set(),
+      stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
+    })
+  },
+
+  removeReviewedPairs: () => {
+    const { pairs, definiteThreshold, maybeThreshold } = get()
+    const remainingPairs = pairs.filter((p) => p.status === 'pending')
+    set({
+      pairs: remainingPairs,
+      selectedIds: new Set(),
+      expandedId: null,
+      stats: calculateStats(remainingPairs, definiteThreshold, maybeThreshold),
     })
   },
 

@@ -236,7 +236,7 @@ export const MatchRow = memo(function MatchRow({
                 size="icon"
                 className="h-8 w-8 rounded-lg hover:bg-[hsl(var(--matcher-definite)/0.1)] transition-all"
                 onClick={onMerge}
-                title="Merge (M)"
+                title="Review as merge (M)"
               >
                 <Check className="w-4 h-4 text-[hsl(var(--matcher-definite))]" />
               </Button>
@@ -245,7 +245,7 @@ export const MatchRow = memo(function MatchRow({
                 size="icon"
                 className="h-8 w-8 rounded-lg hover:bg-muted transition-all"
                 onClick={onKeepSeparate}
-                title="Keep Separate (K)"
+                title="Review as keep (K)"
               >
                 <X className="w-4 h-4 text-muted-foreground" />
               </Button>
