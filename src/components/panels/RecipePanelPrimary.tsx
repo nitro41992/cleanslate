@@ -43,6 +43,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import type { RecipeStep } from '@/types'
 import { RecipeStepCard } from '@/components/recipe/RecipeStepCard'
+import { StepRemovedToast, STEP_TOAST_DURATION } from '@/components/recipe/StepRemovedToast'
 
 /**
  * RecipePanelPrimary - Independent recipe management view (880px primary panel)
@@ -69,6 +70,7 @@ export function RecipePanelPrimary() {
   const deleteRecipe = useRecipeStore((s) => s.deleteRecipe)
   const toggleStepEnabled = useRecipeStore((s) => s.toggleStepEnabled)
   const removeStep = useRecipeStore((s) => s.removeStep)
+  const restoreStep = useRecipeStore((s) => s.restoreStep)
   const reorderSteps = useRecipeStore((s) => s.reorderSteps)
   const updateColumnMapping = useRecipeStore((s) => s.updateColumnMapping)
   const clearColumnMapping = useRecipeStore((s) => s.clearColumnMapping)
@@ -187,6 +189,17 @@ export function RecipePanelPrimary() {
     if (selectedRecipe && index < selectedRecipe.steps.length - 1) {
       reorderSteps(selectedRecipe.id, index, index + 1)
     }
+  }
+
+  // Handle remove step with undo toast
+  const handleRemoveStep = (recipeId: string, stepId: string, index: number, step: RecipeStep) => {
+    removeStep(recipeId, stepId)
+    toast.custom((id) => (
+      <StepRemovedToast
+        toastId={id}
+        onUndo={() => restoreStep(recipeId, step, index)}
+      />
+    ), { duration: STEP_TOAST_DURATION })
   }
 
   // Handle create new recipe
@@ -639,7 +652,7 @@ export function RecipePanelPrimary() {
                         onMoveUp={() => moveStepUp(index)}
                         onMoveDown={() => moveStepDown(index)}
                         onToggleEnabled={() => toggleStepEnabled(selectedRecipe.id, step.id)}
-                        onDelete={() => removeStep(selectedRecipe.id, step.id)}
+                        onDelete={() => handleRemoveStep(selectedRecipe.id, step.id, index, step)}
                       />
                     ))}
                   </div>

@@ -49,6 +49,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import type { RecipeStep } from '@/types'
 import { formatRecipeValue } from '@/lib/recipe/format-helpers'
+import { StepRemovedToast, STEP_TOAST_DURATION } from '@/components/recipe/StepRemovedToast'
 import {
   getTransformDefinition,
   getStepIcon,
@@ -85,6 +86,7 @@ export function RecipePanel() {
   const deleteRecipe = useRecipeStore((s) => s.deleteRecipe)
   const toggleStepEnabled = useRecipeStore((s) => s.toggleStepEnabled)
   const removeStep = useRecipeStore((s) => s.removeStep)
+  const restoreStep = useRecipeStore((s) => s.restoreStep)
   const reorderSteps = useRecipeStore((s) => s.reorderSteps)
   const updateColumnMapping = useRecipeStore((s) => s.updateColumnMapping)
   const clearColumnMapping = useRecipeStore((s) => s.clearColumnMapping)
@@ -230,6 +232,17 @@ export function RecipePanel() {
     if (selectedRecipe && index < selectedRecipe.steps.length - 1) {
       reorderSteps(selectedRecipe.id, index, index + 1)
     }
+  }
+
+  // Handle remove step with undo toast
+  const handleRemoveStep = (recipeId: string, stepId: string, index: number, step: RecipeStep) => {
+    removeStep(recipeId, stepId)
+    toast.custom((id) => (
+      <StepRemovedToast
+        toastId={id}
+        onUndo={() => restoreStep(recipeId, step, index)}
+      />
+    ), { duration: STEP_TOAST_DURATION })
   }
 
   // Handle create new recipe
@@ -573,7 +586,7 @@ export function RecipePanel() {
                               variant="ghost"
                               size="sm"
                               className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                              onClick={() => removeStep(selectedRecipe.id, step.id)}
+                              onClick={() => handleRemoveStep(selectedRecipe.id, step.id, index, step)}
                             >
                               <X className="w-3 h-3 mr-1" />
                               Remove step

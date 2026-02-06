@@ -72,6 +72,7 @@ interface RecipeActions {
   addStep: (recipeId: string, step: Omit<RecipeStep, 'id'>) => boolean
   updateStep: (recipeId: string, stepId: string, updates: Partial<Omit<RecipeStep, 'id'>>) => void
   removeStep: (recipeId: string, stepId: string) => void
+  restoreStep: (recipeId: string, step: RecipeStep, index: number) => void
   reorderSteps: (recipeId: string, fromIndex: number, toIndex: number) => void
   toggleStepEnabled: (recipeId: string, stepId: string) => void
 
@@ -246,6 +247,22 @@ export const useRecipeStore = create<RecipeState & RecipeActions>((set, get) => 
             }
           : r
       ),
+    }))
+  },
+
+  restoreStep: (recipeId, step, index) => {
+    set((state) => ({
+      recipes: state.recipes.map((r) => {
+        if (r.id !== recipeId) return r
+        const steps = [...r.steps]
+        steps.splice(index, 0, step)
+        return {
+          ...r,
+          steps,
+          requiredColumns: extractRequiredColumns(steps),
+          modifiedAt: new Date(),
+        }
+      }),
     }))
   },
 

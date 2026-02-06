@@ -419,3 +419,10 @@
   --gdg-accent-light: hsl(var(--accent));
   --gdg-link-color: hsl(var(--primary));
 }
+
+/* Ensure Sonner toasts remain clickable above Radix Dialog overlays.
+   Radix sets body { pointer-events: none } when a Sheet/Dialog is open,
+   which blocks interaction with Sonner's portal-rendered toasts. */
+[data-sonner-toaster] {
+  pointer-events: auto !important;
+}
