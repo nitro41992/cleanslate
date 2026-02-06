@@ -69,7 +69,8 @@ export function ClusterList({
       result = result.filter((c) => c.values.length > 1)
     } else if (filter === 'all') {
       // "All" shows non-actionable clusters (single values, already unique)
-      result = result.filter((c) => c.values.length === 1)
+      // Only show values with count > 1 — single-occurrence values aren't useful for bulk replace
+      result = result.filter((c) => c.values.length === 1 && c.values[0].count > 1)
     }
 
     // Filter by search query
@@ -103,7 +104,7 @@ export function ClusterList({
   })
 
   const actionableCount = clusters.filter((c) => c.values.length > 1).length
-  const uniqueCount = clusters.filter((c) => c.values.length === 1).length
+  const uniqueCount = clusters.filter((c) => c.values.length === 1 && c.values[0].count > 1).length
 
   return (
     <div className="flex flex-col h-full">
@@ -140,22 +141,26 @@ export function ClusterList({
             </button>
           </div>
 
-          {/* Bulk Selection */}
-          <div className="flex-1" />
-          <button
-            className="px-2.5 py-1 text-sm font-medium rounded-md border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-            onClick={onSelectAllClusters}
-            data-testid="select-all-clusters"
-          >
-            Select All
-          </button>
-          <button
-            className="px-2.5 py-1 text-sm font-medium rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            onClick={onDeselectAllClusters}
-            data-testid="deselect-all-clusters"
-          >
-            Deselect All
-          </button>
+          {/* Bulk Selection — only relevant for Clusters tab */}
+          {filter === 'actionable' && (
+            <>
+              <div className="flex-1" />
+              <button
+                className="px-2.5 py-1 text-sm font-medium rounded-md border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                onClick={onSelectAllClusters}
+                data-testid="select-all-clusters"
+              >
+                Select All
+              </button>
+              <button
+                className="px-2.5 py-1 text-sm font-medium rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                onClick={onDeselectAllClusters}
+                data-testid="deselect-all-clusters"
+              >
+                Deselect All
+              </button>
+            </>
+          )}
         </div>
 
         {/* Search */}

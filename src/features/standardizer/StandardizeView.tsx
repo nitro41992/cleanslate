@@ -96,6 +96,12 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   const hasResults = clusters.length > 0
   const hasSelectedChanges = stats.selectedValues > 0
 
+  // Close preview drawer when switching tabs
+  const handleFilterChange = useCallback((f: typeof filter) => {
+    closePreview()
+    setFilter(f)
+  }, [closePreview, setFilter])
+
   // Handle escape key to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -111,11 +117,11 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
         switch (e.key) {
           case 'a':
           case 'A':
-            setFilter('all')
+            handleFilterChange('all')
             break
           case 't':
           case 'T':
-            setFilter('actionable')
+            handleFilterChange('actionable')
             break
         }
       }
@@ -123,7 +129,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose, clusters.length, setFilter])
+  }, [open, onClose, clusters.length, handleFilterChange])
 
   // Auto-collapse sidebar when clusters are found
   useEffect(() => {
@@ -431,7 +437,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
                   filter={filter}
                   searchQuery={searchQuery}
                   expandedId={expandedId}
-                  onFilterChange={setFilter}
+                  onFilterChange={handleFilterChange}
                   onSearchChange={setSearchQuery}
                   onToggleExpand={(id) => setExpandedId(expandedId === id ? null : id)}
                   onToggleValue={toggleValueSelection}

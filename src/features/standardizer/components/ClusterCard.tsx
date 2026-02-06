@@ -50,7 +50,7 @@ export function ClusterCard({
 
   // Render compact card for unique (single-value) clusters
   if (!isActionable) {
-    return <UniqueValueCard cluster={cluster} onSetReplacement={onSetReplacement} />
+    return <UniqueValueCard cluster={cluster} onSetReplacement={onSetReplacement} onReviewClick={onReviewClick} />
   }
 
   // Render full actionable card for clusters with multiple values
@@ -107,18 +107,27 @@ export function ClusterCard({
 
         {/* Review button */}
         {onReviewClick && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-            onClick={(e) => {
-              e.stopPropagation()
-              onReviewClick()
-            }}
-            data-testid={`review-cluster-${cluster.id}`}
-          >
-            <Eye className="h-3.5 w-3.5" />
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0 rounded-md bg-muted/50 text-muted-foreground/70 hover:bg-primary/15 hover:text-primary transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onReviewClick()
+                  }}
+                  data-testid={`review-cluster-${cluster.id}`}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>Preview rows</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
       </div>
 
@@ -185,9 +194,11 @@ export function ClusterCard({
 function UniqueValueCard({
   cluster,
   onSetReplacement,
+  onReviewClick,
 }: {
   cluster: ValueCluster
   onSetReplacement?: (valueId: string, replacement: string | null) => void
+  onReviewClick?: () => void
 }) {
   const value = cluster.values[0]
   // Check if customReplacement is defined (not undefined) to allow empty string replacements
@@ -350,10 +361,29 @@ function UniqueValueCard({
           </Button>
         )}
 
-        {/* Row count */}
-        <span className="text-[11px] text-muted-foreground/50 tabular-nums shrink-0 font-mono">
-          {value?.count.toLocaleString() ?? 0} rows
-        </span>
+        {/* Preview rows + count */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-1.5 shrink-0 px-1.5 py-0.5 rounded-md bg-muted/60 hover:bg-primary/15 text-muted-foreground/70 hover:text-primary transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onReviewClick?.()
+                }}
+              >
+                <Eye className="h-3 w-3" />
+                <span className="text-[11px] tabular-nums font-mono">
+                  {value?.count.toLocaleString() ?? 0}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <p>Preview {value?.count.toLocaleString() ?? 0} rows</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </div>
   )
@@ -402,7 +432,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster }: ClusterValueRowProps)
         variant="outline"
         className="shrink-0 text-xs tabular-nums bg-transparent border-border"
       >
-        {value.count.toLocaleString()}
+        {value.count.toLocaleString()} {value.count === 1 ? 'row' : 'rows'}
       </Badge>
 
       {value.isMaster ? (

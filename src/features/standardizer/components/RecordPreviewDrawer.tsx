@@ -140,6 +140,7 @@ export function RecordPreviewDrawer({ open, onClose }: RecordPreviewDrawerProps)
   // Early return AFTER all hooks
   if (!open || !cluster) return null
 
+  const isUniqueCluster = cluster.values.length === 1
   const height = isExpanded ? 400 : 200
 
   return (
@@ -235,7 +236,7 @@ export function RecordPreviewDrawer({ open, onClose }: RecordPreviewDrawerProps)
                       key={`row-${groupIndex}-${rowIndex}`}
                       className={cn(
                         'border-b border-border/50',
-                        group.isMaster
+                        !isUniqueCluster && group.isMaster
                           ? 'bg-amber-100 dark:bg-amber-950/30 hover:bg-amber-200 dark:hover:bg-amber-950/40'
                           : 'hover:bg-muted/50',
                         isFirstInGroup && 'border-t-2 border-t-border'
@@ -252,12 +253,12 @@ export function RecordPreviewDrawer({ open, onClose }: RecordPreviewDrawerProps)
                             className={cn(
                               'py-2 text-sm whitespace-nowrap max-w-[200px] truncate',
                               isTargetColumn && 'font-medium',
-                              isTargetColumn && group.isMaster && 'text-amber-500'
+                              isTargetColumn && !isUniqueCluster && group.isMaster && 'text-amber-500'
                             )}
                             title={displayValue}
                           >
                             <div className="flex items-center gap-1.5">
-                              {isTargetColumn && group.isMaster && rowIndex === 0 && (
+                              {isTargetColumn && !isUniqueCluster && group.isMaster && rowIndex === 0 && (
                                 <Star className="h-3 w-3 text-amber-500 fill-amber-500/30 shrink-0" />
                               )}
                               <span className="truncate">{displayValue}</span>
