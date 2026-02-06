@@ -176,6 +176,22 @@ export interface MatchPair {
   keepRow: 'A' | 'B' // Which row to keep when merging (default 'A')
 }
 
+/**
+ * Serialized matcher state for persistence across page refreshes.
+ * Saved as part of app-state.json (V5+).
+ */
+export interface SerializedMatcherState {
+  tableId: string
+  tableName: string
+  matchColumn: string
+  blockingStrategy: BlockingStrategy
+  definiteThreshold: number
+  maybeThreshold: number
+  pairs: MatchPair[]
+  tableRowCount: number   // For staleness detection after table modification
+  savedAt: string         // ISO timestamp
+}
+
 export interface ObfuscationRule {
   column: string
   method: ObfuscationMethod

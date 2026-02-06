@@ -122,6 +122,26 @@ async function runFullInitialization(): Promise<void> {
         }
       }
 
+      // Restore matcher state (merge queue persistence)
+      if (savedState.matcherState) {
+        const { useMatcherStore } = await import('@/stores/matcherStore')
+        useMatcherStore.getState().restoreFromPersisted(savedState.matcherState)
+
+        // Staleness detection: check if table row count changed since last save
+        const savedTable = savedState.tables.find(t => t.id === savedState.matcherState!.tableId)
+        if (savedTable && savedTable.rowCount !== savedState.matcherState.tableRowCount) {
+          // Defer toast to after hydration completes
+          setTimeout(() => {
+            toast({
+              title: 'Match results may be stale',
+              description: 'The table was modified since these results were saved. Consider running a new search.',
+              variant: 'default',
+            })
+          }, 2000)
+        }
+        console.log(`[Persistence] Restored matcher state: ${savedState.matcherState.pairs.length} pairs`)
+      }
+
       // Expose saved table metadata for usePersistence to use
       // This ensures tableIds remain consistent across refreshes
       const tableIdMap: Record<string, string> = {}
@@ -223,7 +243,7 @@ export function useDuckDB() {
   }, [])
 
   const loadFile = useCallback(
-    async (file: File, csvSettings?: CSVIngestionSettings) => {
+    async (file: File, csvSettings?: CSVIngestionSettings, overrideTableName?: string) => {
       setIsLoading(true)
       setLoadingMessage('Reading file...')
       try {
@@ -247,7 +267,7 @@ export function useDuckDB() {
           })
         }
 
-        const tableName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+        const tableName = overrideTableName || file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
         let result: { columns: string[]; rowCount: number }
 
         const ext = file.name.split('.').pop()?.toLowerCase()

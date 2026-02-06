@@ -882,10 +882,16 @@ if (typeof window !== 'undefined') {
         const { useTableStore } = await import('@/stores/tableStore')
         const { useUIStore } = await import('@/stores/uiStore')
         const { useRecipeStore } = await import('@/stores/recipeStore')
+        const { useMatcherStore } = await import('@/stores/matcherStore')
 
         const tableState = useTableStore.getState()
         const uiState = useUIStore.getState()
         const recipeState = useRecipeStore.getState()
+        const matcherSerialized = useMatcherStore.getState().getSerializedState()
+        if (matcherSerialized) {
+          const matchTable = tableState.tables.find(t => t.id === matcherSerialized.tableId)
+          matcherSerialized.tableRowCount = matchTable?.rowCount ?? 0
+        }
 
         await saveAppState(
           tableState.tables,
@@ -893,7 +899,8 @@ if (typeof window !== 'undefined') {
           state.getSerializedTimelines(),
           uiState.sidebarCollapsed,
           uiState.lastEdit,
-          recipeState.recipes
+          recipeState.recipes,
+          matcherSerialized
         )
       })
     })

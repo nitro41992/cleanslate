@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import type { MatchPair, BlockingStrategy } from '@/types'
+import type { MatchPair, BlockingStrategy, SerializedMatcherState } from '@/types'
 
-export type MatchFilter = 'all' | 'definite' | 'maybe' | 'not_match'
+export type MatchFilter = 'all' | 'definite' | 'maybe' | 'not_match' | 'reviewed'
 export type MatchClassification = 'definite' | 'maybe' | 'not_match'
 
 interface MatcherState {
@@ -97,6 +97,7 @@ interface MatcherActions {
   markSelectedAsMerged: () => void
   markSelectedAsKeptSeparate: () => void
   swapKeepRow: (pairId: string) => void
+  revertPairToPending: (pairId: string) => void
   nextPair: () => void
   previousPair: () => void
 
@@ -105,6 +106,10 @@ interface MatcherActions {
   getFilteredPairs: () => MatchPair[]
   clearPairs: () => void  // Clear pairs but keep config (for "New Search")
   reset: () => void       // Full reset (for closing the view)
+
+  // Persistence
+  restoreFromPersisted: (state: SerializedMatcherState) => void
+  getSerializedState: () => SerializedMatcherState | null
 }
 
 const initialState: MatcherState = {
@@ -375,6 +380,17 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
     })
   },
 
+  revertPairToPending: (pairId) => {
+    const { pairs, definiteThreshold, maybeThreshold } = get()
+    const updatedPairs = pairs.map((p) =>
+      p.id === pairId ? { ...p, status: 'pending' as const } : p
+    )
+    set({
+      pairs: updatedPairs,
+      stats: calculateStats(updatedPairs, definiteThreshold, maybeThreshold),
+    })
+  },
+
   nextPair: () => {
     const { currentPairIndex, pairs } = get()
     for (let i = currentPairIndex + 1; i < pairs.length; i++) {
@@ -436,4 +452,72 @@ export const useMatcherStore = create<MatcherState & MatcherActions>((set, get) 
   }),
 
   reset: () => set({ ...initialState, selectedIds: new Set() }),
+
+  // Persistence
+  restoreFromPersisted: (persisted) => {
+    const stats = calculateStats(persisted.pairs, persisted.definiteThreshold, persisted.maybeThreshold)
+    set({
+      tableId: persisted.tableId,
+      tableName: persisted.tableName,
+      matchColumn: persisted.matchColumn,
+      blockingStrategy: persisted.blockingStrategy,
+      definiteThreshold: persisted.definiteThreshold,
+      maybeThreshold: persisted.maybeThreshold,
+      pairs: persisted.pairs,
+      filter: 'maybe',
+      currentPairIndex: 0,
+      selectedIds: new Set(),
+      expandedId: null,
+      stats,
+    })
+    console.log(`[MatcherStore] Restored ${persisted.pairs.length} pairs for ${persisted.tableName}`)
+  },
+
+  getSerializedState: () => {
+    const state = get()
+    if (!state.tableId || !state.tableName || !state.matchColumn || state.pairs.length === 0) {
+      return null
+    }
+    return {
+      tableId: state.tableId,
+      tableName: state.tableName,
+      matchColumn: state.matchColumn,
+      blockingStrategy: state.blockingStrategy,
+      definiteThreshold: state.definiteThreshold,
+      maybeThreshold: state.maybeThreshold,
+      pairs: state.pairs,
+      tableRowCount: 0, // Caller should fill this from tableStore
+      savedAt: new Date().toISOString(),
+    }
+  },
 }))
+
+// Subscribe to matcher state changes and trigger app-state save (2s debounce)
+// Only triggers when pair decisions change (status/keepRow), not on UI-only changes
+let matcherSaveTimeout: ReturnType<typeof setTimeout> | null = null
+let prevDecisionFingerprint = ''
+
+function computeDecisionFingerprint(pairs: MatchPair[]): string {
+  if (pairs.length === 0) return ''
+  // Only track decision-relevant fields: id + status + keepRow
+  return pairs.map(p => `${p.id}:${p.status}:${p.keepRow}`).join('|')
+}
+
+useMatcherStore.subscribe((state) => {
+  const fingerprint = computeDecisionFingerprint(state.pairs)
+  if (fingerprint === prevDecisionFingerprint) return
+  prevDecisionFingerprint = fingerprint
+
+  // Don't persist empty state (initial load or after reset)
+  if (fingerprint === '') return
+
+  if (matcherSaveTimeout) clearTimeout(matcherSaveTimeout)
+  matcherSaveTimeout = setTimeout(async () => {
+    try {
+      const { saveAppStateNow } = await import('@/lib/persistence/state-persistence')
+      await saveAppStateNow()
+    } catch (error) {
+      console.error('[MatcherStore] Failed to persist matcher state:', error)
+    }
+  }, 2000)
+})

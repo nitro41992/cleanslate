@@ -607,10 +607,17 @@ if (typeof window !== 'undefined') {
           const { useTimelineStore } = await import('@/stores/timelineStore')
           const { useUIStore } = await import('@/stores/uiStore')
           const { useRecipeStore } = await import('@/stores/recipeStore')
+          const { useMatcherStore } = await import('@/stores/matcherStore')
 
           const timelineState = useTimelineStore.getState()
           const uiState = useUIStore.getState()
           const recipeState = useRecipeStore.getState()
+          const matcherSerialized = useMatcherStore.getState().getSerializedState()
+          // Fill in tableRowCount from current table data
+          if (matcherSerialized) {
+            const matchTable = state.tables.find(t => t.id === matcherSerialized.tableId)
+            matcherSerialized.tableRowCount = matchTable?.rowCount ?? 0
+          }
 
           await saveAppState(
             state.tables,
@@ -618,7 +625,8 @@ if (typeof window !== 'undefined') {
             timelineState.getSerializedTimelines(),
             uiState.sidebarCollapsed,
             uiState.lastEdit,
-            recipeState.recipes
+            recipeState.recipes,
+            matcherSerialized
           )
         } catch (error) {
           console.error('[TableStore] Failed to save state:', error)

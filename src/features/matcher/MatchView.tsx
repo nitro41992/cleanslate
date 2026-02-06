@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { X, ArrowLeft, RotateCcw, Check, Square } from 'lucide-react'
+import { X, ArrowLeft, RotateCcw, Check, Square, Keyboard, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +21,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { cn } from '@/lib/utils'
 import { MatchConfigPanel } from './components/MatchConfigPanel'
 import { SimilaritySpectrum } from './components/SimilaritySpectrum'
 import { CategoryFilter } from './components/CategoryFilter'
@@ -100,6 +107,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
     markSelectedAsMerged,
     markSelectedAsKeptSeparate,
     swapKeepRow,
+    revertPairToPending,
     classifyPair,
     clearPairs,
     reset,
@@ -115,6 +123,9 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
   // Confirmation dialog state
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+
+  // Collapsible sidebar state
+  const [configCollapsed, setConfigCollapsed] = useState(false)
 
   // Sync panel table with activeTableId when view opens or active table changes
   useEffect(() => {
@@ -133,15 +144,44 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   const hasResults = pairs.length > 0
   const hasReviewed = stats.merged + stats.keptSeparate > 0
 
-  // Get filtered pairs - compute with proper dependencies
+  // Deferred thresholds: keep slider buttery smooth (high priority) while the
+  // card list catches up as a low-priority transition
+  const [deferredThresholds, setDeferredThresholds] = useState({ definiteThreshold, maybeThreshold })
+
+  useEffect(() => {
+    startTransition(() => {
+      setDeferredThresholds({ definiteThreshold, maybeThreshold })
+    })
+  }, [definiteThreshold, maybeThreshold])
+
+  // Compute category counts with deferred thresholds so tab counts stay in sync with filtered list
+  const deferredStats = useMemo(() => {
+    const { definiteThreshold: dt, maybeThreshold: mt } = deferredThresholds
+    let pending = 0, definiteCount = 0, maybeCount = 0, notMatchCount = 0
+    for (const pair of pairs) {
+      if (pair.status !== 'pending') continue
+      pending++
+      const cl = pair.similarity >= dt ? 'definite'
+               : pair.similarity >= mt ? 'maybe' : 'not_match'
+      if (cl === 'definite') definiteCount++
+      else if (cl === 'maybe') maybeCount++
+      else notMatchCount++
+    }
+    return { pending, definiteCount, maybeCount, notMatchCount }
+  }, [pairs, deferredThresholds])
+
+  // Get filtered pairs - inline classification with deferred thresholds
   const filteredPairs = useMemo(() => {
+    const { definiteThreshold: dt, maybeThreshold: mt } = deferredThresholds
     return pairs.filter((pair) => {
+      if (filter === 'reviewed') return pair.status !== 'pending'
       if (pair.status !== 'pending') return false
       if (filter === 'all') return true
-      const classification = classifyPair(pair.similarity)
-      return classification === filter
+      const cl = pair.similarity >= dt ? 'definite'
+               : pair.similarity >= mt ? 'maybe' : 'not_match'
+      return cl === filter
     })
-  }, [pairs, filter, classifyPair])
+  }, [pairs, filter, deferredThresholds])
 
   // Virtualizer for efficient rendering of large lists
   const virtualizer = useVirtualizer({
@@ -173,6 +213,10 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   const handleSwapKeepRow = useCallback((pairId: string) => {
     swapKeepRow(pairId)
   }, [swapKeepRow])
+
+  const handleRevertToPending = useCallback((pairId: string) => {
+    revertPairToPending(pairId)
+  }, [revertPairToPending])
 
   // Handle escape key to close
   useEffect(() => {
@@ -264,6 +308,11 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
       setPairs(pairs)
       resetProgress()
+
+      // Auto-collapse sidebar to reclaim space for results
+      if (pairs.length > 0) {
+        setConfigCollapsed(true)
+      }
 
       // Add audit entry with block processing details
       if (tableId) {
@@ -380,12 +429,14 @@ export function MatchView({ open, onClose }: MatchViewProps) {
       setShowDiscardConfirm(true)
     } else {
       clearPairs()
+      setConfigCollapsed(false)
     }
   }
 
   const handleConfirmDiscard = () => {
     clearPairs()
     setShowDiscardConfirm(false)
+    setConfigCollapsed(false)
   }
 
   const handleClose = () => {
@@ -517,24 +568,49 @@ export function MatchView({ open, onClose }: MatchViewProps) {
       </header>
 
       {/* Main Content */}
+      <TooltipProvider delayDuration={200}>
       <div className="flex h-[calc(100vh-3.5rem)]">
-        {/* Left Config Panel */}
-        <div className="w-80 border-r border-border bg-card shrink-0">
-          <ScrollArea className="h-full">
-            <MatchConfigPanel
-              tables={tables}
-              tableId={tableId}
-              tableName={tableName}
-              matchColumn={matchColumn}
-              blockingStrategy={blockingStrategy}
-              isMatching={isMatching}
-              hasPairs={hasResults}
-              onMatchColumnChange={setMatchColumn}
-              onBlockingStrategyChange={setBlockingStrategy}
-              onFindDuplicates={handleFindDuplicates}
-            />
-          </ScrollArea>
+        {/* Left Config Panel - Collapsible */}
+        <div className={cn(
+          'border-r border-border bg-card shrink-0 relative transition-all duration-200',
+          configCollapsed ? 'w-0 overflow-hidden border-r-0' : 'w-80'
+        )}>
+          {!configCollapsed && (
+            <ScrollArea className="h-full">
+              <MatchConfigPanel
+                tables={tables}
+                tableId={tableId}
+                tableName={tableName}
+                matchColumn={matchColumn}
+                blockingStrategy={blockingStrategy}
+                isMatching={isMatching}
+                hasPairs={hasResults}
+                onMatchColumnChange={setMatchColumn}
+                onBlockingStrategyChange={setBlockingStrategy}
+                onFindDuplicates={handleFindDuplicates}
+              />
+            </ScrollArea>
+          )}
         </div>
+
+        {/* Sidebar Toggle Button */}
+        <button
+          className={cn(
+            'absolute z-10 top-1/2 -translate-y-1/2 flex items-center justify-center',
+            'w-6 h-12 rounded-r-md border border-l-0 border-border bg-card',
+            'hover:bg-accent transition-colors text-muted-foreground hover:text-foreground',
+            configCollapsed ? 'left-0' : 'left-[319px]'
+          )}
+          style={{ top: 'calc(3.5rem + 50%)' }}
+          onClick={() => setConfigCollapsed((c) => !c)}
+          title={configCollapsed ? 'Show config panel' : 'Hide config panel'}
+        >
+          {configCollapsed ? (
+            <ChevronsRight className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronsLeft className="w-3.5 h-3.5" />
+          )}
+        </button>
 
         {/* Results Area */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -557,10 +633,11 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                   currentFilter={filter}
                   onFilterChange={setFilter}
                   counts={{
-                    all: stats.pending,
-                    definite: stats.definiteCount,
-                    maybe: stats.maybeCount,
-                    notMatch: stats.notMatchCount,
+                    all: deferredStats.pending,
+                    definite: deferredStats.definiteCount,
+                    maybe: deferredStats.maybeCount,
+                    notMatch: deferredStats.notMatchCount,
+                    reviewed: stats.merged + stats.keptSeparate,
                   }}
                 />
               </div>
@@ -575,9 +652,16 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                   <span className="text-sm text-muted-foreground">
                     Select all ({filteredPairs.length})
                   </span>
-                  <span className="text-[11px] text-muted-foreground/50 ml-auto">
-                    A D Y N M K
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Keyboard className="w-3.5 h-3.5 text-muted-foreground/40 ml-auto cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs leading-relaxed">
+                      <p className="font-medium mb-1">Keyboard shortcuts</p>
+                      <p>A = All &nbsp; D = Definite &nbsp; Y = Maybe</p>
+                      <p>N = Not Match &nbsp; M = Merge &nbsp; K = Keep</p>
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
               )}
 
@@ -626,6 +710,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                             onMerge={() => handleMerge(pair.id)}
                             onKeepSeparate={() => handleKeepSeparate(pair.id)}
                             onSwapKeepRow={() => handleSwapKeepRow(pair.id)}
+                            onRevertToPending={() => handleRevertToPending(pair.id)}
                           />
                         </div>
                       )
@@ -664,12 +749,22 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
               {/* Apply Merges Bar */}
               {hasReviewed && selectedIds.size === 0 && (
-                <div className="px-5 py-3 flex items-center gap-3 border-t border-border/50 bg-[hsl(var(--matcher-definite-bg))]">
-                  <span className="text-sm text-[hsl(var(--matcher-definite))]">
-                    Ready to apply {stats.merged} merge{stats.merged !== 1 ? 's' : ''}
+                <div className={cn(
+                  'px-5 py-3 flex items-center gap-3 border-t border-border/50',
+                  stats.merged > 0 ? 'bg-[hsl(var(--matcher-definite-bg))]' : 'bg-card'
+                )}>
+                  <span className={cn(
+                    'text-sm',
+                    stats.merged > 0 ? 'text-[hsl(var(--matcher-definite))]' : 'text-muted-foreground'
+                  )}>
+                    {stats.merged} to merge · {stats.keptSeparate} kept · {stats.pending} remaining
                   </span>
                   <div className="flex-1" />
-                  <Button onClick={handleApplyMerges} className="gap-2">
+                  <Button
+                    onClick={handleApplyMerges}
+                    className="gap-2"
+                    disabled={stats.merged === 0}
+                  >
                     <Check className="w-4 h-4" />
                     Apply Merges
                   </Button>
@@ -695,6 +790,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           )}
         </div>
       </div>
+      </TooltipProvider>
 
       {/* Discard Confirmation Dialog */}
       <AlertDialog open={showDiscardConfirm} onOpenChange={setShowDiscardConfirm}>

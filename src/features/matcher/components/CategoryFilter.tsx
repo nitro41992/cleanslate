@@ -10,6 +10,7 @@ interface CategoryFilterProps {
     definite: number
     maybe: number
     notMatch: number
+    reviewed: number
   }
 }
 
@@ -45,6 +46,17 @@ export function CategoryFilter({
             </span>
           </TabsTrigger>
         ))}
+        {counts.reviewed > 0 && (
+          <>
+            <div className="mx-1 h-4 w-px bg-border self-center" />
+            <TabsTrigger value="reviewed" className="gap-1.5">
+              Reviewed
+              <span className="tabular-nums text-[11px]">
+                {counts.reviewed}
+              </span>
+            </TabsTrigger>
+          </>
+        )}
       </TabsList>
     </Tabs>
   )

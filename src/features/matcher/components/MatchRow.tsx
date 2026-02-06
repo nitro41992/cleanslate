@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { Check, X, ChevronDown, ChevronUp, ArrowLeftRight } from 'lucide-react'
+import { Check, X, ChevronDown, ChevronUp, ArrowLeftRight, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -23,6 +23,7 @@ interface MatchRowProps {
   onMerge: () => void
   onKeepSeparate: () => void
   onSwapKeepRow: () => void
+  onRevertToPending: () => void
 }
 
 // Soft shadow card with thin left accent
@@ -103,7 +104,9 @@ export const MatchRow = memo(function MatchRow({
   onMerge,
   onKeepSeparate,
   onSwapKeepRow,
+  onRevertToPending,
 }: MatchRowProps) {
+  const isReviewed = pair.status !== 'pending'
   const matchFieldSimilarity = useMemo(
     () => pair.fieldSimilarities.find((f) => f.column === matchColumn),
     [pair.fieldSimilarities, matchColumn]
@@ -148,11 +151,34 @@ export const MatchRow = memo(function MatchRow({
         >
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium truncate">
+              <span className={cn(
+                'text-sm truncate',
+                pair.keepRow === 'A' ? 'font-medium text-foreground' : 'text-muted-foreground/60'
+              )}>
                 {matchFieldSimilarity ? formatValue(matchFieldSimilarity.valueA) : formatValue(pair.rowA[matchColumn])}
               </span>
-              <span className="text-muted-foreground/40 text-xs">vs</span>
-              <span className="text-sm font-medium truncate">
+              <span
+                role="button"
+                tabIndex={0}
+                className="shrink-0 hover:bg-muted rounded p-0.5 transition-colors cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onSwapKeepRow()
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.stopPropagation()
+                    onSwapKeepRow()
+                  }
+                }}
+                title="Swap which row to keep"
+              >
+                <ArrowLeftRight className="w-3 h-3 text-muted-foreground/40" />
+              </span>
+              <span className={cn(
+                'text-sm truncate',
+                pair.keepRow === 'B' ? 'font-medium text-foreground' : 'text-muted-foreground/60'
+              )}>
                 {matchFieldSimilarity ? formatValue(matchFieldSimilarity.valueB) : formatValue(pair.rowB[matchColumn])}
               </span>
             </div>
@@ -180,24 +206,51 @@ export const MatchRow = memo(function MatchRow({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-0.5 shrink-0">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded-lg hover:bg-[hsl(var(--matcher-definite)/0.1)] transition-all"
-            onClick={onMerge}
-            title="Merge (M)"
-          >
-            <Check className="w-4 h-4 text-[hsl(var(--matcher-definite))]" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded-lg hover:bg-muted transition-all"
-            onClick={onKeepSeparate}
-            title="Keep Separate (K)"
-          >
-            <X className="w-4 h-4 text-muted-foreground" />
-          </Button>
+          {isReviewed ? (
+            <>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'text-xs mr-1',
+                  pair.status === 'merged'
+                    ? 'bg-[hsl(var(--matcher-definite)/0.12)] text-[hsl(var(--matcher-definite))] border-[hsl(var(--matcher-definite)/0.2)]'
+                    : 'bg-muted text-muted-foreground border-transparent'
+                )}
+              >
+                {pair.status === 'merged' ? 'Merged' : 'Kept'}
+              </Badge>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-lg hover:bg-muted transition-all"
+                onClick={onRevertToPending}
+                title="Undo decision"
+              >
+                <Undo2 className="w-4 h-4 text-muted-foreground" />
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-lg hover:bg-[hsl(var(--matcher-definite)/0.1)] transition-all"
+                onClick={onMerge}
+                title="Merge (M)"
+              >
+                <Check className="w-4 h-4 text-[hsl(var(--matcher-definite))]" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-lg hover:bg-muted transition-all"
+                onClick={onKeepSeparate}
+                title="Keep Separate (K)"
+              >
+                <X className="w-4 h-4 text-muted-foreground" />
+              </Button>
+            </>
+          )}
         </div>
       </div>
 

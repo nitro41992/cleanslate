@@ -10,7 +10,7 @@
 
 import { query, getTableColumns } from '@/lib/duckdb'
 import { generateId } from '@/lib/utils'
-import type { TableInfo, ColumnInfo, SerializedTableTimeline, LastEditLocation, SerializedRecipe, Recipe } from '@/types'
+import type { TableInfo, ColumnInfo, SerializedTableTimeline, LastEditLocation, SerializedRecipe, Recipe, SerializedMatcherState } from '@/types'
 
 /**
  * Application state schema version 2 (legacy)
@@ -59,9 +59,27 @@ export interface AppStateV4 {
   }
 }
 
+/**
+ * Application state schema version 5
+ * - Added matcherState for merge queue persistence across refresh
+ */
+export interface AppStateV5 {
+  version: 5
+  lastUpdated: string
+  tables: TableInfo[]
+  activeTableId: string | null
+  timelines: SerializedTableTimeline[]
+  recipes: SerializedRecipe[]
+  matcherState: SerializedMatcherState | null
+  uiPreferences: {
+    sidebarCollapsed: boolean
+    lastEdit: LastEditLocation | null
+  }
+}
+
 const STORAGE_DIR = 'cleanslate'
 const APP_STATE_FILE = 'app-state.json'
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 
 /**
  * Get the OPFS root directory handle
@@ -129,7 +147,8 @@ export async function saveAppState(
   timelines: SerializedTableTimeline[],
   sidebarCollapsed: boolean,
   lastEdit: LastEditLocation | null = null,
-  recipes: Recipe[] = []
+  recipes: Recipe[] = [],
+  matcherState: SerializedMatcherState | null = null
 ): Promise<void> {
   const root = await getOPFSRoot()
   if (!root) {
@@ -163,13 +182,14 @@ export async function saveAppState(
       modifiedAt: recipe.modifiedAt.toISOString(),
     }))
 
-    const state: AppStateV4 = {
+    const state: AppStateV5 = {
       version: SCHEMA_VERSION,
       lastUpdated: new Date().toISOString(),
       tables: serializedTables as unknown as TableInfo[],
       activeTableId,
       timelines: compactedTimelines,
       recipes: serializedRecipes,
+      matcherState,
       uiPreferences: {
         sidebarCollapsed,
         lastEdit,
@@ -211,7 +231,7 @@ export async function saveAppState(
  * Called after DuckDB initialization completes
  * Returns null if no saved state exists (fresh start)
  */
-export async function restoreAppState(): Promise<AppStateV4 | null> {
+export async function restoreAppState(): Promise<AppStateV5 | null> {
   const root = await getOPFSRoot()
   if (!root) {
     console.log('[Persistence] OPFS unavailable - starting fresh')
@@ -246,6 +266,16 @@ export async function restoreAppState(): Promise<AppStateV4 | null> {
         version: 4,
         recipes: [],
       } as AppStateV4
+    }
+
+    // Handle v4 → v5 migration (add matcher state)
+    if (state.version === 4) {
+      console.log('[Persistence] Migrating from V4 to V5')
+      state = {
+        ...state,
+        version: 5,
+        matcherState: null,
+      } as AppStateV5
     }
 
     // Validate schema version
@@ -434,16 +464,34 @@ export async function saveAppStateNow(): Promise<void> {
     const { useTimelineStore } = await import('@/stores/timelineStore')
     const { useUIStore } = await import('@/stores/uiStore')
     const { useRecipeStore } = await import('@/stores/recipeStore')
+    const { useMatcherStore } = await import('@/stores/matcherStore')
 
     const tableState = useTableStore.getState()
     const timelineState = useTimelineStore.getState()
     const uiState = useUIStore.getState()
     const recipeState = useRecipeStore.getState()
+    const matcherState = useMatcherStore.getState()
+
+    // Serialize matcher state if there are active results
+    const serializedMatcherState = matcherState.pairs.length > 0 && matcherState.tableId && matcherState.tableName && matcherState.matchColumn
+      ? {
+          tableId: matcherState.tableId,
+          tableName: matcherState.tableName,
+          matchColumn: matcherState.matchColumn,
+          blockingStrategy: matcherState.blockingStrategy,
+          definiteThreshold: matcherState.definiteThreshold,
+          maybeThreshold: matcherState.maybeThreshold,
+          pairs: matcherState.pairs,
+          tableRowCount: tableState.tables.find(t => t.id === matcherState.tableId)?.rowCount ?? 0,
+          savedAt: new Date().toISOString(),
+        }
+      : null
 
     console.log('[Persistence] Manual save triggered:', {
       tables: tableState.tables.length,
       recipes: recipeState.recipes.length,
       activeTableId: tableState.activeTableId,
+      hasMatcher: !!serializedMatcherState,
     })
 
     await saveAppState(
@@ -452,7 +500,8 @@ export async function saveAppStateNow(): Promise<void> {
       timelineState.getSerializedTimelines(),
       uiState.sidebarCollapsed,
       uiState.lastEdit,
-      recipeState.recipes
+      recipeState.recipes,
+      serializedMatcherState
     )
   } catch (error) {
     console.error('[Persistence] Manual save failed:', error)

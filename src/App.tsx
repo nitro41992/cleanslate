@@ -17,6 +17,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -52,8 +62,19 @@ import { reorderColumns } from '@/lib/commands/utils/column-ordering'
 
 import type { CSVIngestionSettings } from '@/types'
 
+function deriveTableName(filename: string): string {
+  return filename.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+}
+
+function getUniqueTableName(baseName: string, tables: { name: string }[]): string {
+  const names = new Set(tables.map(t => t.name.toLowerCase()))
+  let suffix = 2
+  while (names.has(`${baseName}_${suffix}`.toLowerCase())) suffix++
+  return `${baseName}_${suffix}`
+}
+
 function App() {
-  const { loadFile, isLoading, isReady, duplicateTable } = useDuckDB()
+  const { loadFile, isLoading, isReady, duplicateTable, deleteTable } = useDuckDB()
   useBeforeUnload() // Ensure pending debounced flush completes before tab closes
   const tables = useTableStore((s) => s.tables)
   const activeTableId = useTableStore((s) => s.activeTableId)
@@ -97,6 +118,17 @@ function App() {
   const [showPersistDialog, setShowPersistDialog] = useState(false)
   const [persistTableName, setPersistTableName] = useState('')
   const [isPersisting, setIsPersisting] = useState(false)
+
+  // Conflict detection state for re-upload of existing table name
+  const [pendingConflict, setPendingConflict] = useState<{
+    file: File
+    buffer?: ArrayBuffer
+    csvSettings?: CSVIngestionSettings
+    tableName: string
+    existingTableId: string
+    existingTableName: string
+    suggestedName: string
+  } | null>(null)
 
   // Persistence - auto-hydrates on mount via Parquet files in OPFS
   const { isRestoring } = usePersistence()
@@ -196,19 +228,71 @@ function App() {
       return
     }
 
+    // Conflict check for non-CSV files
+    const derived = deriveTableName(file.name)
+    const existing = tables.find(t => t.name.toLowerCase() === derived.toLowerCase())
+    if (existing) {
+      setPendingConflict({
+        file,
+        tableName: derived,
+        existingTableId: existing.id,
+        existingTableName: existing.name,
+        suggestedName: getUniqueTableName(derived, tables),
+      })
+      return
+    }
+
     await loadFile(file)
   }
 
   const handleWizardConfirm = async (settings: CSVIngestionSettings) => {
-    if (pendingFile) {
-      await loadFile(pendingFile.file, settings)
+    if (!pendingFile) return
+
+    // Conflict check for CSV files (after wizard, before loadFile)
+    const derived = deriveTableName(pendingFile.file.name)
+    const existing = tables.find(t => t.name.toLowerCase() === derived.toLowerCase())
+    if (existing) {
+      setPendingConflict({
+        file: pendingFile.file,
+        buffer: pendingFile.buffer,
+        csvSettings: settings,
+        tableName: derived,
+        existingTableId: existing.id,
+        existingTableName: existing.name,
+        suggestedName: getUniqueTableName(derived, tables),
+      })
       setPendingFile(null)
+      setShowWizard(false)
+      return
     }
+
+    await loadFile(pendingFile.file, settings)
+    setPendingFile(null)
   }
 
   const handleWizardCancel = () => {
     setPendingFile(null)
     setShowWizard(false)
+  }
+
+  // Conflict resolution handlers
+  const handleConflictReplace = async () => {
+    if (!pendingConflict) return
+    const { file, csvSettings, existingTableId, existingTableName } = pendingConflict
+    setPendingConflict(null)
+    await deleteTable(existingTableId, existingTableName)
+    await loadFile(file, csvSettings)
+  }
+
+  const handleConflictRename = async () => {
+    if (!pendingConflict) return
+    const { file, csvSettings, suggestedName } = pendingConflict
+    setPendingConflict(null)
+    await loadFile(file, csvSettings, suggestedName)
+  }
+
+  const handleConflictCancel = () => {
+    setPendingConflict(null)
   }
 
   const handleNewTable = () => {
@@ -372,6 +456,28 @@ function App() {
           onConfirm={handleWizardConfirm}
         />
 
+        {/* Table Name Conflict Dialog */}
+        <AlertDialog open={!!pendingConflict} onOpenChange={(open) => { if (!open) handleConflictCancel() }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Table already exists</AlertDialogTitle>
+              <AlertDialogDescription>
+                A table named &ldquo;{pendingConflict?.tableName}&rdquo; already exists.
+                What would you like to do?
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <Button variant="outline" onClick={handleConflictRename}>
+                Import as &ldquo;{pendingConflict?.suggestedName}&rdquo;
+              </Button>
+              <AlertDialogAction onClick={handleConflictReplace}>
+                Replace existing
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* Sonner Toaster */}
         <Toaster />
       </>
@@ -504,6 +610,28 @@ function App() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Table Name Conflict Dialog */}
+      <AlertDialog open={!!pendingConflict} onOpenChange={(open) => { if (!open) handleConflictCancel() }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Table already exists</AlertDialogTitle>
+            <AlertDialogDescription>
+              A table named &ldquo;{pendingConflict?.tableName}&rdquo; already exists.
+              What would you like to do?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button variant="outline" onClick={handleConflictRename}>
+              Import as &ldquo;{pendingConflict?.suggestedName}&rdquo;
+            </Button>
+            <AlertDialogAction onClick={handleConflictReplace}>
+              Replace existing
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Diff View Full-Screen Overlay */}
       <DiffView open={isDiffViewOpen} onClose={closeDiffView} />

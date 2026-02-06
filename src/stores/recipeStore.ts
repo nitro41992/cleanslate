@@ -438,10 +438,16 @@ if (typeof window !== 'undefined') {
       const { useTableStore } = await import('@/stores/tableStore')
       const { useTimelineStore } = await import('@/stores/timelineStore')
       const { useUIStore } = await import('@/stores/uiStore')
+      const { useMatcherStore } = await import('@/stores/matcherStore')
 
       const tableState = useTableStore.getState()
       const timelineState = useTimelineStore.getState()
       const uiState = useUIStore.getState()
+      const matcherSerialized = useMatcherStore.getState().getSerializedState()
+      if (matcherSerialized) {
+        const matchTable = tableState.tables.find(t => t.id === matcherSerialized.tableId)
+        matcherSerialized.tableRowCount = matchTable?.rowCount ?? 0
+      }
 
       await saveAppState(
         tableState.tables,
@@ -449,7 +455,8 @@ if (typeof window !== 'undefined') {
         timelineState.getSerializedTimelines(),
         uiState.sidebarCollapsed,
         uiState.lastEdit,
-        state.recipes
+        state.recipes,
+        matcherSerialized
       )
     })
   })
