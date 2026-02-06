@@ -8,11 +8,6 @@ import {
 } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { usePreviewStore, type PanelType } from '@/stores/previewStore'
 import { Wand2, Users, Merge, GitCompare, BookOpen, X, PanelLeft } from 'lucide-react'
@@ -100,6 +95,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
           'transition-[width] duration-150 ease-out'
         )}
         aria-describedby="feature-panel-description"
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
         {meta && (
           <>
@@ -158,21 +154,14 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
                 )}
 
                 {/* Close entire panel button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0"
-                      onClick={() => setActivePanel(null)}
-                    >
-                      <X className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">
-                    Close panel
-                  </TooltipContent>
-                </Tooltip>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0"
+                  onClick={() => setActivePanel(null)}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
               </div>
             </SheetHeader>
 
