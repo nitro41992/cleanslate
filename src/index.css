@@ -44,6 +44,17 @@
 
     --diff-unchanged-bg: 220 12% 96%;
     --diff-unchanged-text: 220 10% 55%;
+
+    /* Matcher colors - light mode */
+    --matcher-definite: 152 55% 35%;
+    --matcher-definite-bg: 152 40% 95%;
+    --matcher-maybe: 40 70% 45%;
+    --matcher-maybe-bg: 40 50% 95%;
+    --matcher-not-match: 220 10% 55%;
+    --matcher-not-match-bg: 220 10% 96%;
+    --matcher-field-exact: 152 50% 35%;
+    --matcher-field-similar: 40 60% 45%;
+    --matcher-field-different: 350 55% 50%;
   }
 
   .dark {
@@ -86,6 +97,17 @@
 
     --diff-unchanged-bg: 25 5% 15%;
     --diff-unchanged-text: 0 0% 50%;
+
+    /* Matcher colors - dark mode */
+    --matcher-definite: 152 40% 45%;
+    --matcher-definite-bg: 152 20% 14%;
+    --matcher-maybe: 40 50% 50%;
+    --matcher-maybe-bg: 40 20% 14%;
+    --matcher-not-match: 0 0% 50%;
+    --matcher-not-match-bg: 0 0% 14%;
+    --matcher-field-exact: 152 35% 40%;
+    --matcher-field-similar: 40 45% 50%;
+    --matcher-field-different: 350 45% 55%;
   }
 }
 

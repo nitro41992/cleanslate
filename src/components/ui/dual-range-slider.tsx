@@ -60,14 +60,14 @@ export function DualRangeSlider({
         )}
       >
         <SliderPrimitive.Range
-          className={cn('absolute h-full bg-yellow-500/50', rangeClassName)}
+          className={cn('absolute h-full bg-[hsl(var(--matcher-maybe)/0.3)]', rangeClassName)}
         />
       </SliderPrimitive.Track>
 
       {/* Left thumb (maybe threshold) */}
       <SliderPrimitive.Thumb
         className={cn(
-          'block h-5 w-5 rounded-full border-2 border-yellow-500 bg-background ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none',
+          'block h-5 w-5 rounded-full border-2 border-[hsl(var(--matcher-maybe))] bg-background ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none',
           leftThumbClassName
         )}
       />
@@ -75,7 +75,7 @@ export function DualRangeSlider({
       {/* Right thumb (definite threshold) */}
       <SliderPrimitive.Thumb
         className={cn(
-          'block h-5 w-5 rounded-full border-2 border-green-500 bg-background ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none',
+          'block h-5 w-5 rounded-full border-2 border-[hsl(var(--matcher-definite))] bg-background ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none',
           rightThumbClassName
         )}
       />

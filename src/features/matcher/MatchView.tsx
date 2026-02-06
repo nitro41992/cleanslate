@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,6 +28,27 @@ import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
 import { stringifyJSON } from '@/lib/utils/json-serialization'
+import type { MatchPair } from '@/types'
+
+/** Deduplicate pairs that have the same two match-column values (A vs B == B vs A). */
+function deduplicateByMatchValues(pairs: MatchPair[], matchColumn: string): MatchPair[] {
+  // Sort descending by similarity so we keep the highest-scoring occurrence
+  const sorted = [...pairs].sort((a, b) => b.similarity - a.similarity)
+  const seen = new Map<string, true>()
+  const result: MatchPair[] = []
+
+  for (const pair of sorted) {
+    const valA = String(pair.rowA[matchColumn] ?? '').trim().toLowerCase()
+    const valB = String(pair.rowB[matchColumn] ?? '').trim().toLowerCase()
+    const key = valA <= valB ? `${valA}|||${valB}` : `${valB}|||${valA}`
+    if (!seen.has(key)) {
+      seen.set(key, true)
+      result.push(pair)
+    }
+  }
+
+  return result
+}
 
 interface MatchViewProps {
   open: boolean
@@ -229,8 +249,18 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           )
         }
       )
-      const pairs = result.pairs
+      let pairs = result.pairs
       const totalFound = result.totalFound
+
+      // Deduplicate symmetric pairs (A vs B == B vs A)
+      if (matchColumn) {
+        const beforeCount = pairs.length
+        pairs = deduplicateByMatchValues(pairs, matchColumn)
+        const dedupCount = beforeCount - pairs.length
+        if (dedupCount > 0) {
+          toast.info(`Collapsed ${dedupCount} duplicate pair${dedupCount !== 1 ? 's' : ''}`)
+        }
+      }
 
       setPairs(pairs)
       resetProgress()
@@ -455,8 +485,8 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               {/* Stats */}
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
                 <span>{stats.pending} pending</span>
-                <span className="text-green-600 dark:text-green-400">{stats.merged} merged</span>
-                <span className="text-red-600 dark:text-red-400">{stats.keptSeparate} kept</span>
+                <span className="text-[hsl(var(--matcher-definite))]">{stats.merged} merged</span>
+                <span>{stats.keptSeparate} kept</span>
               </div>
 
               <div className="h-6 w-px bg-border" />
@@ -511,7 +541,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
           {hasResults ? (
             <>
               {/* Similarity Spectrum */}
-              <div className="p-4 border-b border-border bg-card">
+              <div className="p-5 border-b border-border/50 bg-card">
                 <SimilaritySpectrum
                   pairs={pairs}
                   maybeThreshold={maybeThreshold}
@@ -522,7 +552,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
               </div>
 
               {/* Category Filter */}
-              <div className="px-4 py-3 border-b border-border">
+              <div className="px-5 py-3 border-b border-border/50">
                 <CategoryFilter
                   currentFilter={filter}
                   onFilterChange={setFilter}
@@ -537,16 +567,16 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
               {/* Select All */}
               {filteredPairs.length > 0 && (
-                <div className="px-4 py-2 flex items-center gap-2 border-b border-border bg-muted">
+                <div className="px-5 py-2 flex items-center gap-2 border-b border-border/30">
                   <Checkbox
                     checked={selectedIds.size === filteredPairs.length && filteredPairs.length > 0}
                     onCheckedChange={toggleSelectAll}
                   />
                   <span className="text-sm text-muted-foreground">
-                    Select all ({filteredPairs.length} pairs)
+                    Select all ({filteredPairs.length})
                   </span>
-                  <span className="text-xs text-muted-foreground ml-2">
-                    Keyboard: A=All, D=Definite, Y=Maybe, N=Not Match, M=Merge, K=Keep
+                  <span className="text-[11px] text-muted-foreground/50 ml-auto">
+                    A D Y N M K
                   </span>
                 </div>
               )}
@@ -561,7 +591,7 @@ export function MatchView({ open, onClose }: MatchViewProps) {
                     No pairs match the current filter
                   </div>
                 ) : (
-                  <div className="px-4">
+                  <div className="px-5">
                     <div
                       style={{
                         height: virtualizer.getTotalSize(),
@@ -607,49 +637,43 @@ export function MatchView({ open, onClose }: MatchViewProps) {
 
               {/* Bulk Actions Bar */}
               {selectedIds.size > 0 && (
-                <>
-                  <Separator />
-                  <div className="p-4 flex items-center gap-3 bg-muted">
-                    <span className="text-sm font-medium">
-                      {selectedIds.size} selected
-                    </span>
-                    <div className="flex-1" />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => markSelectedAsKeptSeparate()}
-                      className="gap-2"
-                    >
-                      <X className="w-4 h-4 text-red-500" />
-                      Keep Separate
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => markSelectedAsMerged()}
-                      className="gap-2"
-                    >
-                      <Check className="w-4 h-4" />
-                      Merge Selected
-                    </Button>
-                  </div>
-                </>
+                <div className="px-5 py-3 flex items-center gap-3 border-t border-border/50 bg-card">
+                  <span className="text-sm font-medium">
+                    {selectedIds.size} selected
+                  </span>
+                  <div className="flex-1" />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => markSelectedAsKeptSeparate()}
+                    className="gap-2"
+                  >
+                    <X className="w-4 h-4 text-muted-foreground" />
+                    Keep Separate
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => markSelectedAsMerged()}
+                    className="gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    Merge Selected
+                  </Button>
+                </div>
               )}
 
               {/* Apply Merges Bar */}
               {hasReviewed && selectedIds.size === 0 && (
-                <>
-                  <Separator />
-                  <div className="p-4 flex items-center gap-3 bg-green-50 dark:bg-green-950/30">
-                    <span className="text-sm">
-                      Ready to apply {stats.merged} merge{stats.merged !== 1 ? 's' : ''}
-                    </span>
-                    <div className="flex-1" />
-                    <Button onClick={handleApplyMerges} className="gap-2">
-                      <Check className="w-4 h-4" />
-                      Apply Merges
-                    </Button>
-                  </div>
-                </>
+                <div className="px-5 py-3 flex items-center gap-3 border-t border-border/50 bg-[hsl(var(--matcher-definite-bg))]">
+                  <span className="text-sm text-[hsl(var(--matcher-definite))]">
+                    Ready to apply {stats.merged} merge{stats.merged !== 1 ? 's' : ''}
+                  </span>
+                  <div className="flex-1" />
+                  <Button onClick={handleApplyMerges} className="gap-2">
+                    <Check className="w-4 h-4" />
+                    Apply Merges
+                  </Button>
+                </div>
               )}
             </>
           ) : (

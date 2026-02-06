@@ -1,3 +1,4 @@
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import type { MatchFilter } from '@/stores/matcherStore'
 
@@ -12,37 +13,39 @@ interface CategoryFilterProps {
   }
 }
 
+const countColors: Record<string, string> = {
+  definite: 'text-[hsl(var(--matcher-definite))]',
+  maybe: 'text-[hsl(var(--matcher-maybe))]',
+  not_match: 'text-[hsl(var(--matcher-not-match))]',
+}
+
 export function CategoryFilter({
   currentFilter,
   onFilterChange,
   counts,
 }: CategoryFilterProps) {
-  const filters: { value: MatchFilter; label: string; count: number; color: string }[] = [
-    { value: 'all', label: 'All', count: counts.all, color: '' },
-    { value: 'definite', label: 'Definite', count: counts.definite, color: 'bg-green-100 dark:bg-green-950/40 data-[active=true]:bg-green-200 dark:data-[active=true]:bg-green-900/50' },
-    { value: 'maybe', label: 'Maybe', count: counts.maybe, color: 'bg-yellow-100 dark:bg-yellow-950/40 data-[active=true]:bg-yellow-200 dark:data-[active=true]:bg-yellow-900/50' },
-    { value: 'not_match', label: 'Not Match', count: counts.notMatch, color: 'bg-red-100 dark:bg-red-950/40 data-[active=true]:bg-red-200 dark:data-[active=true]:bg-red-900/50' },
+  const filters: { value: MatchFilter; label: string; count: number }[] = [
+    { value: 'all', label: 'All', count: counts.all },
+    { value: 'definite', label: 'Definite', count: counts.definite },
+    { value: 'maybe', label: 'Maybe', count: counts.maybe },
+    { value: 'not_match', label: 'Not Match', count: counts.notMatch },
   ]
 
   return (
-    <div className="flex items-center gap-1 p-1 bg-muted rounded-lg">
-      {filters.map((filter) => (
-        <button
-          key={filter.value}
-          onClick={() => onFilterChange(filter.value)}
-          data-active={currentFilter === filter.value}
-          className={cn(
-            'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-            'hover:bg-muted',
-            filter.color,
-            currentFilter === filter.value
-              ? 'bg-background shadow-sm'
-              : 'text-muted-foreground'
-          )}
-        >
-          {filter.label} ({filter.count})
-        </button>
-      ))}
-    </div>
+    <Tabs value={currentFilter} onValueChange={(v) => onFilterChange(v as MatchFilter)}>
+      <TabsList>
+        {filters.map((filter) => (
+          <TabsTrigger key={filter.value} value={filter.value} className="gap-1.5">
+            {filter.label}
+            <span className={cn(
+              'tabular-nums text-[11px]',
+              currentFilter === filter.value && filter.value !== 'all' && countColors[filter.value]
+            )}>
+              {filter.count}
+            </span>
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   )
 }
