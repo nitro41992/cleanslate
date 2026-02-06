@@ -17,16 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+import { TableConflictDialog } from '@/components/common/TableConflictDialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -284,11 +275,11 @@ function App() {
     await loadFile(file, csvSettings)
   }
 
-  const handleConflictRename = async () => {
+  const handleConflictRename = async (customName: string) => {
     if (!pendingConflict) return
-    const { file, csvSettings, suggestedName } = pendingConflict
+    const { file, csvSettings } = pendingConflict
     setPendingConflict(null)
-    await loadFile(file, csvSettings, suggestedName)
+    await loadFile(file, csvSettings, customName)
   }
 
   const handleConflictCancel = () => {
@@ -457,26 +448,16 @@ function App() {
         />
 
         {/* Table Name Conflict Dialog */}
-        <AlertDialog open={!!pendingConflict} onOpenChange={(open) => { if (!open) handleConflictCancel() }}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Table already exists</AlertDialogTitle>
-              <AlertDialogDescription>
-                A table named &ldquo;{pendingConflict?.tableName}&rdquo; already exists.
-                What would you like to do?
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <Button variant="outline" onClick={handleConflictRename}>
-                Import as &ldquo;{pendingConflict?.suggestedName}&rdquo;
-              </Button>
-              <AlertDialogAction onClick={handleConflictReplace}>
-                Replace existing
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <TableConflictDialog
+          open={!!pendingConflict}
+          onOpenChange={() => {}}
+          tableName={pendingConflict?.tableName ?? ''}
+          suggestedName={pendingConflict?.suggestedName ?? ''}
+          existingTableNames={tables.map((t) => t.name)}
+          onRename={handleConflictRename}
+          onReplace={handleConflictReplace}
+          onCancel={handleConflictCancel}
+        />
 
         {/* Sonner Toaster */}
         <Toaster />
@@ -612,26 +593,16 @@ function App() {
       </Dialog>
 
       {/* Table Name Conflict Dialog */}
-      <AlertDialog open={!!pendingConflict} onOpenChange={(open) => { if (!open) handleConflictCancel() }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Table already exists</AlertDialogTitle>
-            <AlertDialogDescription>
-              A table named &ldquo;{pendingConflict?.tableName}&rdquo; already exists.
-              What would you like to do?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <Button variant="outline" onClick={handleConflictRename}>
-              Import as &ldquo;{pendingConflict?.suggestedName}&rdquo;
-            </Button>
-            <AlertDialogAction onClick={handleConflictReplace}>
-              Replace existing
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <TableConflictDialog
+        open={!!pendingConflict}
+        onOpenChange={() => {}}
+        tableName={pendingConflict?.tableName ?? ''}
+        suggestedName={pendingConflict?.suggestedName ?? ''}
+        existingTableNames={tables.map((t) => t.name)}
+        onRename={handleConflictRename}
+        onReplace={handleConflictReplace}
+        onCancel={handleConflictCancel}
+      />
 
       {/* Diff View Full-Screen Overlay */}
       <DiffView open={isDiffViewOpen} onClose={closeDiffView} />
