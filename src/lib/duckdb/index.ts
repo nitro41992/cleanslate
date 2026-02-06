@@ -355,11 +355,12 @@ async function _initDuckDBInternal(): Promise<duckdb.AsyncDuckDB> {
   // Set memory limit
   await initConn.query(`SET memory_limit = '${memoryLimit}'`)
 
-  // Reduce thread count to minimize memory overhead per thread
-  // NOTE: DuckDB-WASM may not support thread configuration (compiled without threads)
-  // Silently skip - this is expected and doesn't affect functionality
+  // Set thread count to 1 — EH/MVP bundles are single-threaded
+  // COI bundle (pthreads) was tested but can't be used: dynamic Parquet extension
+  // loading fails in pthread workers (SharedArrayBuffer memory mismatch).
+  // SET threads silently fails on EH build — this is expected.
   try {
-    await initConn.query(`SET threads = 2`)
+    await initConn.query(`SET threads = 1`)
   } catch (err) {
     // Silently ignore - WASM build doesn't support thread configuration (expected)
   }

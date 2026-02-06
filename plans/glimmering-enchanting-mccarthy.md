@@ -39,7 +39,13 @@ DuckDB-WASM COI build variant gives **2-5x performance** via pthreads + SIMD. Re
 - COI bundle + DuckDB's internal OPFS VFS = `DataCloneError` (FileSystemSyncAccessHandle non-cloneable across pthread workers)
 - Already referenced in `vite.config.ts` (lines 5-9) and `browser-detection.ts` (lines 47-51)
 - `supportsAccessHandle` forced to `false` as workaround
-- **However**: CleanSlate's Parquet snapshot persistence uses JS File System API → OPFS (not DuckDB's VFS). This path may work under COI. Needs testing.
+
+**COI Investigation Result (2026-02-06): BLOCKED**
+- COOP/COEP headers were added, COI bundle activated successfully (`crossOriginIsolated === true`, 4 threads)
+- **New blocker discovered**: Parquet extension fails to load in pthread workers — `LinkError: WebAssembly.Instance(): Import #4843 "env" "memory": mismatch in shared state of memory, declared = 0, imported = 1`
+- Root cause: DuckDB-WASM dynamically loads extensions (including Parquet). The extension WASM modules are compiled without shared memory support, but COI pthread workers require SharedArrayBuffer. The memory types are incompatible.
+- This affects ALL Parquet operations (read/write), not just OPFS VFS. CleanSlate's JS-layer OPFS persistence uses DuckDB's Parquet writer, so it's blocked too.
+- **Resolution**: Reverted to EH bundle with `threads = 1`. COI cannot be used until DuckDB-WASM ships Parquet statically linked in the COI binary (no dynamic extension loading needed).
 
 ### Defensible Product Positioning
 > "Process datasets up to 2 million rows entirely in your browser — no server, no upload. Simple transforms run in seconds. Advanced operations (merge, diff, combine) optimized for up to 1 million rows."
