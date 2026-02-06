@@ -103,6 +103,17 @@ export function ActionToolbar({ disabled = false }: ActionToolbarProps) {
       return
     }
 
+    if (panelId === 'recipe') {
+      if (activePanel === 'recipe') {
+        setActivePanel(null)
+      } else {
+        setActivePanel('recipe')
+      }
+      // Always clear secondary panel so Recipes opens as the full expanded view
+      closeSecondaryPanel()
+      return
+    }
+
     if (activePanel === panelId) {
       // Toggle off if already active
       setActivePanel(null)
