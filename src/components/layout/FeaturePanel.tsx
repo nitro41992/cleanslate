@@ -97,7 +97,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
         className={cn(
           getPanelWidth(),
           'p-0 flex flex-col',
-          'transition-[width] duration-300 ease-out'
+          'transition-[width] duration-150 ease-out'
         )}
         aria-describedby="feature-panel-description"
       >
@@ -183,7 +183,7 @@ export function FeaturePanel({ children, secondaryContent }: FeaturePanelProps) 
                 className={cn(
                   'shrink-0 flex flex-col overflow-hidden',
                   'border-r border-border/40',
-                  'transition-[width,opacity] duration-300 ease-out',
+                  'transition-[width,opacity] duration-150 ease-out',
                   hasDualPanels
                     ? 'w-[340px] opacity-100'
                     : 'w-0 opacity-0'
