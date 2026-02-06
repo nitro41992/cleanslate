@@ -37,6 +37,7 @@ import {
   type DeleteRowEntry,
 } from '@/lib/opfs/changelog-storage'
 import { toast } from 'sonner'
+import { writeManifest, type SnapshotManifest, type ShardInfo } from '@/lib/opfs/manifest'
 
 // Module-level flag to prevent double-hydration from React StrictMode
 let hydrationPromise: Promise<void> | null = null
@@ -211,6 +212,9 @@ export async function performHydration(isRehydration = false): Promise<void> {
   // Clean up duplicate case-mismatched files (migration from pre-fix state)
   await cleanupDuplicateCaseSnapshots()
 
+  // Migrate legacy snapshots (no manifest) to manifest format
+  await migrateLegacySnapshots()
+
   // List all saved snapshot files
   const snapshots = await listSnapshots()
 
@@ -224,7 +228,11 @@ export async function performHydration(isRehydration = false): Promise<void> {
   // Filter to user tables only (exclude internal timeline/diff tables)
   const uniqueTables = [...new Set(
     snapshots
-      .map(name => name.replace(/_part_\d+$/, ''))
+      .map(name => name
+        .replace(/_part_\d+$/, '')
+        .replace(/_shard_\d+$/, '')
+        .replace(/_manifest$/, '')
+      )
       .filter(name => {
         if (name.startsWith('original_')) return false
         if (name.startsWith('snapshot_')) return false
@@ -799,6 +807,173 @@ function getMaxWaitTime(rowCount: number): number {
   return 15_000                             // 15s default
 }
 
+/**
+ * Migrate legacy snapshots that lack a _manifest.json.
+ *
+ * Detects snapshots with _part_N.arrow files but no manifest, and creates
+ * a manifest from the existing files. Does NOT re-chunk — just adds metadata.
+ * Re-chunking to 50k-row shards happens lazily on next export.
+ *
+ * Called once at startup, after cleanupCorruptSnapshots().
+ */
+export async function migrateLegacySnapshots(): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory()
+
+    let appDir: FileSystemDirectoryHandle
+    try {
+      appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    } catch {
+      return // No app directory yet
+    }
+
+    let snapshotsDir: FileSystemDirectoryHandle
+    try {
+      snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+    } catch {
+      return // No snapshots directory yet
+    }
+
+    // Collect all snapshot files
+    const allFiles: string[] = []
+    // @ts-expect-error entries() exists at runtime
+    for await (const [name, handle] of snapshotsDir.entries()) {
+      if (handle.kind === 'file') {
+        allFiles.push(name)
+      }
+    }
+
+    // Group files by snapshot ID (strip _part_N.arrow, _shard_N.arrow, .arrow suffixes)
+    const snapshotGroups = new Map<string, string[]>()
+    for (const fileName of allFiles) {
+      if (!fileName.endsWith('.arrow')) continue
+      if (fileName.endsWith('.arrow.tmp')) continue // Skip temp files
+
+      // Extract snapshot ID
+      let snapshotId: string
+      const shardMatch = fileName.match(/^(.+)_shard_\d+\.arrow$/)
+      const partMatch = fileName.match(/^(.+)_part_\d+\.arrow$/)
+      const singleMatch = fileName.match(/^(.+)\.arrow$/)
+
+      if (shardMatch) {
+        snapshotId = shardMatch[1]
+      } else if (partMatch) {
+        snapshotId = partMatch[1]
+      } else if (singleMatch) {
+        snapshotId = singleMatch[1]
+      } else {
+        continue
+      }
+
+      // Skip internal snapshots
+      if (snapshotId.startsWith('original_')) continue
+      if (snapshotId.startsWith('snapshot_')) continue
+      if (snapshotId.startsWith('_timeline_')) continue
+      if (snapshotId.startsWith('_diff_')) continue
+
+      const group = snapshotGroups.get(snapshotId) || []
+      group.push(fileName)
+      snapshotGroups.set(snapshotId, group)
+    }
+
+    let migratedCount = 0
+
+    for (const [snapshotId, files] of snapshotGroups) {
+      // Skip if manifest already exists
+      const manifestFileName = `${snapshotId}_manifest.json`
+      if (allFiles.includes(manifestFileName)) continue
+
+      // Skip if already using new shard naming (already has manifest or is new format)
+      const hasShardFiles = files.some(f => f.includes('_shard_'))
+      if (hasShardFiles) continue
+
+      // This is a legacy snapshot — build manifest from existing files
+      const isMultiPart = files.some(f => f.includes('_part_'))
+      const isSingle = files.length === 1 && files[0] === `${snapshotId}.arrow`
+
+      if (!isMultiPart && !isSingle) continue // Unknown format
+
+      const shards: Array<{ index: number; fileName: string; rowCount: number; byteSize: number }> = []
+
+      if (isMultiPart) {
+        // Multi-part legacy: _part_0.arrow, _part_1.arrow, ...
+        const partFiles = files
+          .filter(f => f.includes('_part_'))
+          .sort((a, b) => {
+            const numA = parseInt(a.match(/_part_(\d+)/)?.[1] || '0')
+            const numB = parseInt(b.match(/_part_(\d+)/)?.[1] || '0')
+            return numA - numB
+          })
+
+        for (let i = 0; i < partFiles.length; i++) {
+          const fileName = partFiles[i]
+          try {
+            const handle = await snapshotsDir.getFileHandle(fileName, { create: false })
+            const file = await handle.getFile()
+            shards.push({
+              index: i,
+              fileName,
+              rowCount: 0, // Unknown — will be filled on first full load
+              byteSize: file.size,
+            })
+          } catch {
+            console.warn(`[Migration] Could not read ${fileName}`)
+          }
+        }
+      } else {
+        // Single file legacy: snapshotId.arrow
+        const fileName = `${snapshotId}.arrow`
+        try {
+          const handle = await snapshotsDir.getFileHandle(fileName, { create: false })
+          const file = await handle.getFile()
+          shards.push({
+            index: 0,
+            fileName,
+            rowCount: 0, // Unknown
+            byteSize: file.size,
+          })
+        } catch {
+          console.warn(`[Migration] Could not read ${fileName}`)
+          continue
+        }
+      }
+
+      if (shards.length === 0) continue
+
+      // Write manifest with what we know
+      // rowCount=0 means "unknown, needs re-scan"
+      const manifest: SnapshotManifest = {
+        version: 1,
+        snapshotId,
+        totalRows: 0, // Unknown for legacy — filled on next full import
+        totalBytes: shards.reduce((sum, s) => sum + s.byteSize, 0),
+        shardSize: isMultiPart ? 100_000 : 0, // Legacy used 100k chunks
+        shards: shards.map(s => ({
+          index: s.index,
+          fileName: s.fileName,
+          rowCount: s.rowCount,
+          byteSize: s.byteSize,
+          minCsId: null,
+          maxCsId: null,
+        } satisfies ShardInfo)),
+        columns: [], // Unknown — filled on next full import
+        orderByColumn: '_cs_id',
+        createdAt: Date.now(),
+      }
+
+      await writeManifest(manifest)
+      migratedCount++
+      console.log(`[Migration] Created manifest for legacy snapshot: ${snapshotId} (${shards.length} part(s))`)
+    }
+
+    if (migratedCount > 0) {
+      console.log(`[Migration] Migrated ${migratedCount} legacy snapshot(s) to manifest format`)
+    }
+  } catch (error) {
+    console.warn('[Migration] Legacy snapshot migration failed (non-fatal):', error)
+  }
+}
+
 export function usePersistence() {
   const [isRestoring, setIsRestoring] = useState(true)
   const addTable = useTableStore((s) => s.addTable)
@@ -859,6 +1034,9 @@ export function usePersistence() {
         // Clean up duplicate case-mismatched files (migration from pre-fix state)
         await cleanupDuplicateCaseSnapshots()
 
+        // Migrate legacy snapshots (no manifest) to manifest format
+        await migrateLegacySnapshots()
+
         // List all saved snapshot files
         const snapshots = await listSnapshots()
 
@@ -876,11 +1054,15 @@ export function usePersistence() {
           return
         }
 
-        // Filter to only get unique table names (remove _part_N suffixes and duplicates)
+        // Filter to only get unique table names (remove _part_N/_shard_N/_manifest suffixes and duplicates)
         // Also filter out internal timeline tables (original_*, snapshot_*, _timeline_*)
         const uniqueTables = [...new Set(
           snapshots
-            .map(name => name.replace(/_part_\d+$/, ''))
+            .map(name => name
+              .replace(/_part_\d+$/, '')
+              .replace(/_shard_\d+$/, '')
+              .replace(/_manifest$/, '')
+            )
             .filter(name => {
               // Skip internal timeline tables
               if (name.startsWith('original_')) return false  // timeline original snapshots
@@ -1250,7 +1432,11 @@ export function usePersistence() {
     try {
       const snapshots = await listSnapshots()
       const uniqueTables = [...new Set(
-        snapshots.map(name => name.replace(/_part_\d+$/, ''))
+        snapshots.map(name => name
+          .replace(/_part_\d+$/, '')
+          .replace(/_shard_\d+$/, '')
+          .replace(/_manifest$/, '')
+        )
       )]
 
       for (const tableName of uniqueTables) {

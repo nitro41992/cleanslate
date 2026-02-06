@@ -15,6 +15,8 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { tableToIPC } from 'apache-arrow'
 import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
+import { SHARD_SIZE } from '@/lib/constants'
+import { writeManifest, deleteManifest, type SnapshotManifest, type ShardInfo } from './manifest'
 import { deleteFileIfExists } from './opfs-helpers'
 
 /**
@@ -266,27 +268,30 @@ async function getOrderByColumn(
  */
 export interface ExportOptions {
   /**
-   * Callback for chunk progress during large (>100k row) exports.
-   * Called after each chunk is written with current/total progress.
+   * Callback for shard progress during exports.
+   * Called after each shard is written with current/total progress.
    */
   onChunkProgress?: (current: number, total: number, tableName: string) => void
 }
 
 /**
- * Export a table to Arrow IPC file in OPFS
+ * Export a table to Arrow IPC shards in OPFS
  *
  * Uses Arrow IPC serialization: conn.query() returns Arrow Table natively,
  * serialize to IPC bytes via tableToIPC(), write bytes to OPFS.
  *
- * For tables >100k rows, uses chunked files to prevent JS heap OOM crashes.
+ * Always uses micro-shard storage: every table is split into SHARD_SIZE-row
+ * shards (50k rows) with a manifest file. For small tables the loop runs
+ * once producing a single _shard_0.arrow + manifest.
+ *
  * tableToIPC() generates the entire Uint8Array in JS heap (no compression),
- * so chunk size is kept smaller than the old Parquet path.
+ * so shard size is kept at 50k rows (~25-50 MB per shard).
  *
  * @param db - DuckDB instance (kept for caller API stability)
  * @param conn - Active DuckDB connection (for SELECT queries)
  * @param tableName - Source table to export
  * @param snapshotId - Unique snapshot identifier (e.g., "snapshot_abc_1234567890")
- * @param options - Optional export options (chunk progress callback)
+ * @param options - Optional export options (shard progress callback)
  */
 export async function exportTableToSnapshot(
   db: AsyncDuckDB,
@@ -314,173 +319,140 @@ export async function exportTableToSnapshot(
     const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
 
-    // CRITICAL: Chunk for tables >100k rows to prevent JS heap OOM
-    // tableToIPC() generates entire Uint8Array in JS heap (no compression like Parquet had)
-    const CHUNK_THRESHOLD = 100_000
-    if (rowCount > CHUNK_THRESHOLD) {
-      console.log('[Snapshot] Using chunked Arrow IPC export for large table')
+    // Detect ORDER BY column once (same for all shards)
+    const orderByCol = await getOrderByColumn(conn, tableName)
+    const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
 
-      const batchSize = CHUNK_THRESHOLD
-      const totalChunks = Math.ceil(rowCount / batchSize)
-      let offset = 0
-      let partIndex = 0
+    // Get column names for manifest
+    const columnsResult = await conn.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = '${tableName}'
+      ORDER BY ordinal_position
+    `)
+    const columns = columnsResult.toArray().map(row => row.toJSON().column_name as string)
 
-      // Track completed chunks for cleanup on failure
-      const completedChunks: string[] = []
+    // Always use micro-shard export: SHARD_SIZE rows per shard
+    const batchSize = SHARD_SIZE
+    const totalShards = Math.max(1, Math.ceil(rowCount / batchSize))
+    let offset = 0
+    let shardIndex = 0
 
-      try {
-        while (offset < rowCount) {
-          const opfsTempFile = `${snapshotId}_part_${partIndex}.arrow.tmp`
-          const finalFileName = `${snapshotId}_part_${partIndex}.arrow`
-
-          // 1. Query chunk and serialize to Arrow IPC
-          // CRITICAL: ORDER BY ensures deterministic row ordering across chunks
-          const orderByCol = await getOrderByColumn(conn, tableName)
-          const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
-
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let arrowTable: any = await conn.query(`
-            SELECT * FROM "${tableName}"
-            ${orderByClause}
-            LIMIT ${batchSize} OFFSET ${offset}
-          `)
-          let ipcBytes: Uint8Array | null = tableToIPC(arrowTable, 'stream')
-          arrowTable = null // Release Arrow Table reference for GC
-
-          // 2. Write to OPFS temp file (atomic step 1)
-          const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
-          const writable = await createWritableWithRetry(tempHandle)
-          await writable.write(ipcBytes)
-          await writable.close()
-
-          // Explicit release to help GC reclaim memory faster
-          ipcBytes = null
-
-          // CRITICAL: Small delay to ensure file handle is fully released
-          await new Promise(resolve => setTimeout(resolve, 20))
-
-          // Verify temp file was written
-          const tempFile = await tempHandle.getFile()
-          if (tempFile.size === 0) {
-            throw new Error(`[Snapshot] Failed to write temp chunk ${opfsTempFile} - file is 0 bytes`)
-          }
-
-          // 3. Atomic rename: temp → final (atomic step 2)
-          await deleteFileIfExists(snapshotsDir, finalFileName)
-          const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-          const finalWritable = await finalHandle.createWritable()
-          const tempContent = await tempFile.arrayBuffer()
-          await finalWritable.write(tempContent)
-          await finalWritable.close()
-
-          await new Promise(resolve => setTimeout(resolve, 20))
-
-          // Verify final file was written
-          const file = await finalHandle.getFile()
-          if (file.size === 0) {
-            throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
-          }
-          console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
-
-          // 4. Cleanup: delete temp file
-          await deleteFileIfExists(snapshotsDir, opfsTempFile)
-
-          completedChunks.push(finalFileName)
-          offset += batchSize
-          partIndex++
-          console.log(`[Snapshot] Exported chunk ${partIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
-
-          // Report chunk progress via callback (for UI status bar)
-          if (options?.onChunkProgress) {
-            options.onChunkProgress(partIndex, totalChunks, tableName)
-          }
-
-          // Yield to browser between chunks to prevent UI freezing during large exports
-          await yieldToMain()
-        }
-
-        // Clear chunk progress when done
-        if (options?.onChunkProgress) {
-          options.onChunkProgress(totalChunks, totalChunks, tableName)
-        }
-
-        console.log(`[Snapshot] Exported ${partIndex} chunks to ${snapshotId}_part_*.arrow`)
-      } catch (error) {
-        // Cleanup any temp files on failure
-        for (let i = 0; i <= partIndex; i++) {
-          await deleteFileIfExists(snapshotsDir, `${snapshotId}_part_${i}.arrow.tmp`)
-        }
-        throw error
-      }
-  } else {
-    // Single file export (ONLY safe for tables ≤100k rows)
-    // Uses atomic write pattern: write to .tmp file, then rename on success
-    const opfsTempFile = `${snapshotId}.arrow.tmp`
-    const finalFileName = `${snapshotId}.arrow`
+    // Collect shard metadata for manifest
+    const shardInfos: ShardInfo[] = []
 
     try {
-      // 1. Query all rows and serialize to Arrow IPC
-      const orderByCol = await getOrderByColumn(conn, tableName)
-      const orderByClause = orderByCol ? `ORDER BY "${orderByCol}"` : ''
+      while (offset < rowCount || shardIndex === 0) {
+        const opfsTempFile = `${snapshotId}_shard_${shardIndex}.arrow.tmp`
+        const finalFileName = `${snapshotId}_shard_${shardIndex}.arrow`
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let arrowTable: any = await conn.query(`
-        SELECT * FROM "${tableName}"
-        ${orderByClause}
-      `)
-      let ipcBytes: Uint8Array | null = tableToIPC(arrowTable, 'stream')
-      arrowTable = null // Release Arrow Table reference for GC
+        // 1. Query shard and serialize to Arrow IPC
+        // CRITICAL: ORDER BY ensures deterministic row ordering across shards
 
-      // 2. Write to OPFS temp file (atomic step 1: write to temp)
-      const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
-      const writable = await createWritableWithRetry(tempHandle)
-      await writable.write(ipcBytes)
-      await writable.close()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let arrowTable: any = await conn.query(`
+          SELECT * FROM "${tableName}"
+          ${orderByClause}
+          LIMIT ${batchSize} OFFSET ${offset}
+        `)
 
-      // Explicit release to help GC reclaim memory faster
-      ipcBytes = null
+        const shardRowCount = arrowTable.numRows
+        let ipcBytes: Uint8Array | null = tableToIPC(arrowTable, 'stream')
+        arrowTable = null // Release Arrow Table reference for GC
 
-      // CRITICAL: Small delay to ensure file handle is fully released
-      await new Promise(resolve => setTimeout(resolve, 20))
+        // 2. Write to OPFS temp file (atomic step 1)
+        const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
+        const writable = await createWritableWithRetry(tempHandle)
+        await writable.write(ipcBytes)
+        await writable.close()
 
-      // Verify temp file was written
-      const tempFile = await tempHandle.getFile()
-      if (tempFile.size === 0) {
-        throw new Error(`[Snapshot] Failed to write temp file ${opfsTempFile} - file is 0 bytes`)
+        // Explicit release to help GC reclaim memory faster
+        ipcBytes = null
+
+        // CRITICAL: Small delay to ensure file handle is fully released
+        await new Promise(resolve => setTimeout(resolve, 20))
+
+        // Verify temp file was written
+        const tempFile = await tempHandle.getFile()
+        if (tempFile.size === 0) {
+          throw new Error(`[Snapshot] Failed to write temp shard ${opfsTempFile} - file is 0 bytes`)
+        }
+
+        // 3. Atomic rename: temp → final (atomic step 2)
+        await deleteFileIfExists(snapshotsDir, finalFileName)
+        const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
+        const finalWritable = await finalHandle.createWritable()
+        const tempContent = await tempFile.arrayBuffer()
+        await finalWritable.write(tempContent)
+        await finalWritable.close()
+
+        await new Promise(resolve => setTimeout(resolve, 20))
+
+        // Verify final file was written
+        const file = await finalHandle.getFile()
+        if (file.size === 0) {
+          throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
+        }
+        console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
+
+        // 4. Cleanup: delete temp file
+        await deleteFileIfExists(snapshotsDir, opfsTempFile)
+
+        // Collect shard metadata
+        shardInfos.push({
+          index: shardIndex,
+          fileName: finalFileName,
+          rowCount: shardRowCount,
+          byteSize: file.size,
+          minCsId: null, // Populated by ChunkManager if needed
+          maxCsId: null,
+        })
+
+        offset += batchSize
+        shardIndex++
+        console.log(`[Snapshot] Exported shard ${shardIndex}: ${Math.min(offset, rowCount).toLocaleString()}/${rowCount.toLocaleString()} rows`)
+
+        // Report shard progress via callback (for UI status bar)
+        if (options?.onChunkProgress) {
+          options.onChunkProgress(shardIndex, totalShards, tableName)
+        }
+
+        // Yield to browser between shards to prevent UI freezing during large exports
+        await yieldToMain()
+
+        // Break if we've processed all rows (handles 0-row tables via shardIndex === 0 guard above)
+        if (offset >= rowCount) break
       }
 
-      // 3. Atomic rename: temp → final (atomic step 2)
-      // Delete existing final file first (if any), then rename
-      await deleteFileIfExists(snapshotsDir, finalFileName)
-      const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
-      const finalWritable = await finalHandle.createWritable()
-      const tempContent = await tempFile.arrayBuffer()
-      await finalWritable.write(tempContent)
-      await finalWritable.close()
-
-      // Delay to ensure file handle is released
-      await new Promise(resolve => setTimeout(resolve, 20))
-
-      // Verify final file was written
-      const file = await finalHandle.getFile()
-      if (file.size === 0) {
-        throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
+      // Clear shard progress when done
+      if (options?.onChunkProgress) {
+        options.onChunkProgress(totalShards, totalShards, tableName)
       }
-      console.log(`[Snapshot] Wrote ${(file.size / 1024 / 1024).toFixed(2)} MB to ${finalFileName}`)
 
-      // 4. Cleanup: delete temp file
-      await deleteFileIfExists(snapshotsDir, opfsTempFile)
+      // Write manifest with collected shard metadata
+      const manifest: SnapshotManifest = {
+        version: 1,
+        snapshotId,
+        totalRows: rowCount,
+        totalBytes: shardInfos.reduce((sum, s) => sum + s.byteSize, 0),
+        shardSize: SHARD_SIZE,
+        shards: shardInfos,
+        columns,
+        orderByColumn: orderByCol,
+        createdAt: Date.now(),
+      }
+      await writeManifest(manifest)
 
-      console.log(`[Snapshot] Exported to ${finalFileName}`)
+      console.log(`[Snapshot] Exported ${shardIndex} shard(s) to ${snapshotId}_shard_*.arrow`)
     } catch (error) {
-      // Cleanup orphaned temp files on failure
-      await deleteFileIfExists(snapshotsDir, opfsTempFile)
+      // Cleanup any temp files on failure
+      for (let i = 0; i <= shardIndex; i++) {
+        await deleteFileIfExists(snapshotsDir, `${snapshotId}_shard_${i}.arrow.tmp`)
+      }
       throw error
     }
-  }
 
     // CHECKPOINT after large exports to release DuckDB buffer pool
-    if (rowCount > 100_000) {
+    if (rowCount > SHARD_SIZE) {
       try {
         await conn.query('CHECKPOINT')
         console.log('[Snapshot] CHECKPOINT after large export')
@@ -496,12 +468,58 @@ export async function exportTableToSnapshot(
 }
 
 /**
+ * Import a SINGLE shard from a snapshot into DuckDB as a temp table.
+ * This is the key enabler for chunk-by-chunk processing - loads ~25-50MB per shard
+ * instead of the full table (500MB-1GB).
+ *
+ * @param db - DuckDB instance
+ * @param conn - Active DuckDB connection
+ * @param snapshotId - Snapshot identifier
+ * @param shardIndex - Which shard to load (0-based)
+ * @param tempTableName - Name for the DuckDB temp table
+ */
+export async function importSingleShard(
+  db: AsyncDuckDB,
+  conn: AsyncDuckDBConnection,
+  snapshotId: string,
+  shardIndex: number,
+  tempTableName: string
+): Promise<void> {
+  void db // Kept for caller API stability — no longer used internally
+  const root = await navigator.storage.getDirectory()
+  const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+  // Try new shard naming first, fall back to legacy part naming
+  let fileName = `${snapshotId}_shard_${shardIndex}.arrow`
+  let fileHandle: FileSystemFileHandle
+  try {
+    fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+  } catch {
+    // Legacy fallback
+    fileName = `${snapshotId}_part_${shardIndex}.arrow`
+    fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+  }
+
+  const file = await fileHandle.getFile()
+  const buffer = new Uint8Array(await file.arrayBuffer())
+
+  // Drop existing temp table if it exists
+  await conn.query(`DROP TABLE IF EXISTS "${tempTableName}"`)
+
+  // Import into temp table
+  await conn.insertArrowFromIPCStream(buffer, { name: tempTableName, create: true })
+
+  console.log(`[Snapshot] Imported shard ${shardIndex} (${(file.size / 1024 / 1024).toFixed(2)} MB) as ${tempTableName}`)
+}
+
+/**
  * Import a table from Arrow IPC file in OPFS
  *
  * Reads Arrow IPC bytes from OPFS and inserts directly into DuckDB
  * via insertArrowFromIPCStream(). No file registration needed.
  *
- * Handles both chunked files (for large tables) and single files.
+ * Handles sharded files (_shard_N), legacy chunked files (_part_N), and single files.
  *
  * @param db - DuckDB instance (kept for caller API stability)
  * @param conn - Active DuckDB connection
@@ -521,39 +539,53 @@ export async function importTableFromSnapshot(
   const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
   const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
-  // Check if this is a chunked snapshot (multiple _part_N files) or single file
-  let isChunked = false
+  // Check for sharded/chunked snapshot: try _shard_0 first, then legacy _part_0
+  let isSharded = false
   try {
-    await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
-    isChunked = true
+    await snapshotsDir.getFileHandle(`${snapshotId}_shard_0.arrow`, { create: false })
+    isSharded = true
   } catch {
-    // Not chunked, try single file
-    isChunked = false
+    // Check legacy _part_N naming
+    try {
+      await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
+      isSharded = true
+    } catch {
+      isSharded = false
+    }
   }
 
   // Drop existing table to ensure clean import
   await conn.query(`DROP TABLE IF EXISTS "${targetTableName}"`)
 
-  if (isChunked) {
+  if (isSharded) {
     let partIndex = 0
 
     while (true) {
       try {
-        const fileName = `${snapshotId}_part_${partIndex}.arrow`
-        const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+        // Try new _shard_N naming first, fall back to legacy _part_N
+        let fileName: string
+        let fileHandle: FileSystemFileHandle
+        try {
+          fileName = `${snapshotId}_shard_${partIndex}.arrow`
+          fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+        } catch {
+          fileName = `${snapshotId}_part_${partIndex}.arrow`
+          fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
+        }
+
         const file = await fileHandle.getFile()
         const buffer = new Uint8Array(await file.arrayBuffer())
 
         if (partIndex === 0) {
-          // First chunk: create the table
+          // First shard: create the table
           await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: true })
         } else {
-          // Subsequent chunks: append to existing table
+          // Subsequent shards: append to existing table
           try {
             await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: false })
           } catch (appendError) {
             // Schema mismatch fallback: use temp table + INSERT INTO SELECT
-            console.warn(`[Snapshot] Schema mismatch on chunk ${partIndex}, using fallback:`, appendError)
+            console.warn(`[Snapshot] Schema mismatch on shard ${partIndex}, using fallback:`, appendError)
             const tempChunkTable = `__temp_chunk_${Date.now()}_${partIndex}`
             await conn.insertArrowFromIPCStream(buffer, { name: tempChunkTable, create: true })
             await conn.query(`INSERT INTO "${targetTableName}" SELECT * FROM "${tempChunkTable}"`)
@@ -563,13 +595,13 @@ export async function importTableFromSnapshot(
 
         partIndex++
       } catch {
-        break // No more chunks
+        break // No more shards
       }
     }
 
-    console.log(`[Snapshot] Restored ${targetTableName} from ${partIndex} chunks`)
+    console.log(`[Snapshot] Restored ${targetTableName} from ${partIndex} shard(s)`)
   } else {
-    // Single file import
+    // Legacy single file import (pre-shard snapshots)
     const fileName = `${snapshotId}.arrow`
     const fileHandle = await snapshotsDir.getFileHandle(fileName, { create: false })
     const file = await fileHandle.getFile()
@@ -577,7 +609,7 @@ export async function importTableFromSnapshot(
 
     await conn.insertArrowFromIPCStream(buffer, { name: targetTableName, create: true })
 
-    console.log(`[Snapshot] Restored ${targetTableName} from single file`)
+    console.log(`[Snapshot] Restored ${targetTableName} from single legacy file`)
   }
 
   // Ensure identity columns exist (for snapshots from older versions)
@@ -586,7 +618,7 @@ export async function importTableFromSnapshot(
 
 /**
  * Delete a snapshot from OPFS.
- * Handles both chunked files and single files.
+ * Handles new-style shards (_shard_N), legacy chunks (_part_N), single files, and manifests.
  */
 export async function deleteSnapshot(snapshotId: string): Promise<void> {
   try {
@@ -594,23 +626,33 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
-    // Delete all chunk files (if chunked) or single file
     let partIndex = 0
     let deletedCount = 0
 
-    // Try deleting chunks first
+    // Try deleting new-style shards first
     while (true) {
       try {
-        const fileName = `${snapshotId}_part_${partIndex}.arrow`
-        await snapshotsDir.removeEntry(fileName)
+        await snapshotsDir.removeEntry(`${snapshotId}_shard_${partIndex}.arrow`)
         deletedCount++
         partIndex++
       } catch {
-        break // No more chunks
+        break
       }
     }
 
-    // If no chunks found, try single file
+    // Try deleting legacy chunks
+    partIndex = 0
+    while (true) {
+      try {
+        await snapshotsDir.removeEntry(`${snapshotId}_part_${partIndex}.arrow`)
+        deletedCount++
+        partIndex++
+      } catch {
+        break
+      }
+    }
+
+    // If no shards/chunks found, try single file (legacy)
     if (deletedCount === 0) {
       try {
         await snapshotsDir.removeEntry(`${snapshotId}.arrow`)
@@ -619,6 +661,11 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
         console.warn(`[Snapshot] Failed to delete ${snapshotId}:`, err)
       }
     }
+
+    // Delete manifest
+    try {
+      await deleteManifest(snapshotId)
+    } catch { /* ignore - manifest may not exist */ }
 
     console.log(`[Snapshot] Deleted ${deletedCount} file(s) for ${snapshotId}`)
   } catch (err) {
@@ -771,10 +818,10 @@ export async function thawTable(
 
 /**
  * Check if a snapshot file exists in OPFS.
- * Handles both single files and chunked files.
+ * Handles shards (_shard_0), legacy chunks (_part_0), and single files.
  *
  * @param snapshotId - Unique snapshot identifier (e.g., "original_abc123")
- * @returns true if snapshot exists (single or chunked), false otherwise
+ * @returns true if snapshot exists (sharded, chunked, or single), false otherwise
  */
 export async function checkSnapshotFileExists(snapshotId: string): Promise<boolean> {
   try {
@@ -782,17 +829,23 @@ export async function checkSnapshotFileExists(snapshotId: string): Promise<boole
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
-    // Check for single file
+    // Check for new-style shards first
     try {
-      await snapshotsDir.getFileHandle(`${snapshotId}.arrow`, { create: false })
+      await snapshotsDir.getFileHandle(`${snapshotId}_shard_0.arrow`, { create: false })
       return true
     } catch {
-      // Check for chunked files (part_0 indicates chunked snapshot exists)
+      // Check for single file
       try {
-        await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
+        await snapshotsDir.getFileHandle(`${snapshotId}.arrow`, { create: false })
         return true
       } catch {
-        return false
+        // Check for legacy chunked files (part_0 indicates chunked snapshot exists)
+        try {
+          await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
+          return true
+        } catch {
+          return false
+        }
       }
     }
   } catch {
@@ -801,23 +854,31 @@ export async function checkSnapshotFileExists(snapshotId: string): Promise<boole
 }
 
 /**
- * List all snapshots in OPFS
+ * List all unique snapshot IDs in OPFS.
+ * Strips _shard_N, _part_N, and _manifest suffixes to deduplicate.
  */
 export async function listSnapshots(): Promise<string[]> {
   try {
     const root = await navigator.storage.getDirectory()
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
-    const entries: string[] = []
+    const ids = new Set<string>()
 
     // @ts-expect-error entries() exists at runtime but TypeScript's lib doesn't include it
     for await (const [name, _handle] of snapshotsDir.entries()) {
       if (name.endsWith('.arrow')) {
-        entries.push(name.replace('.arrow', ''))
+        const base = name
+          .replace('.arrow', '')
+          .replace(/_part_\d+$/, '')
+          .replace(/_shard_\d+$/, '')
+        ids.add(base)
+      } else if (name.endsWith('_manifest.json')) {
+        const base = name.replace('_manifest.json', '')
+        ids.add(base)
       }
     }
 
-    return entries
+    return Array.from(ids)
   } catch {
     return []
   }
@@ -859,8 +920,8 @@ export async function cleanupOrphanedDiffFiles(): Promise<void> {
     for await (const [name, handle] of snapshotsDir.entries()) {
       if (handle.kind !== 'file') continue
 
-      // Delete any _diff_* snapshot files (including chunked _diff_*_part_N.arrow)
-      if (name.startsWith('_diff_') && name.endsWith('.arrow')) {
+      // Delete any _diff_* snapshot files (shards, legacy chunks, and manifests)
+      if (name.startsWith('_diff_') && (name.endsWith('.arrow') || name.endsWith('_manifest.json'))) {
         console.log(`[Snapshot] Removing orphaned diff file: ${name}`)
         await snapshotsDir.removeEntry(name)
         deletedCount++
@@ -893,17 +954,22 @@ async function validateArrowMagicBytes(snapshotId: string): Promise<boolean> {
     const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
     const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
 
-    // Try single file first, then first chunk of a chunked snapshot
+    // Try shard_0 first, then single file, then legacy part_0
     let file: File
     try {
-      const handle = await snapshotsDir.getFileHandle(`${snapshotId}.arrow`, { create: false })
+      const handle = await snapshotsDir.getFileHandle(`${snapshotId}_shard_0.arrow`, { create: false })
       file = await handle.getFile()
     } catch {
       try {
-        const handle = await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
+        const handle = await snapshotsDir.getFileHandle(`${snapshotId}.arrow`, { create: false })
         file = await handle.getFile()
       } catch {
-        return false
+        try {
+          const handle = await snapshotsDir.getFileHandle(`${snapshotId}_part_0.arrow`, { create: false })
+          file = await handle.getFile()
+        } catch {
+          return false
+        }
       }
     }
 
@@ -933,7 +999,8 @@ async function validateArrowMagicBytes(snapshotId: string): Promise<boolean> {
 /**
  * Scans the snapshots directory and deletes corrupt and orphaned files:
  * 1. Tiny Arrow IPC files (corrupt from failed writes)
- * 2. Orphaned .tmp files (from interrupted atomic writes)
+ * 2. Orphaned .tmp files (from interrupted atomic writes, including .json.tmp)
+ * 3. Corrupt manifest .json files (empty or unparseable)
  *
  * This is a self-healing step to recover from browser crashes or interrupted saves.
  *
@@ -968,7 +1035,7 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
     for await (const [name, handle] of snapshotsDir.entries()) {
       if (handle.kind !== 'file') continue
 
-      // Clean up orphaned temp files from atomic writes
+      // Clean up orphaned temp files from atomic writes (.arrow.tmp and .json.tmp)
       if (name.endsWith('.tmp')) {
         console.warn(`[Snapshot] Found orphaned temp file: ${name}. Deleting...`)
         await snapshotsDir.removeEntry(name)
@@ -981,6 +1048,16 @@ export async function cleanupCorruptSnapshots(): Promise<void> {
         const file = await handle.getFile()
         if (file.size < MIN_ARROW_SIZE) {
           console.warn(`[Snapshot] Found corrupt file (${file.size} bytes): ${name}. Deleting...`)
+          await snapshotsDir.removeEntry(name)
+          corruptCount++
+        }
+      }
+
+      // Clean up corrupt manifest files (empty or too small to be valid JSON)
+      if (name.endsWith('_manifest.json')) {
+        const file = await handle.getFile()
+        if (file.size < 10) {
+          console.warn(`[Snapshot] Found corrupt manifest (${file.size} bytes): ${name}. Deleting...`)
           await snapshotsDir.removeEntry(name)
           corruptCount++
         }
@@ -1037,8 +1114,8 @@ export async function cleanupDuplicateCaseSnapshots(): Promise<void> {
     // Group files by normalized (lowercase) name
     const normalizedGroups = new Map<string, string[]>()
     for (const fileName of allFiles) {
-      // Normalize: remove extension, lowercase, re-add extension
-      const baseName = fileName.replace('.arrow', '').replace(/_part_\d+$/, '')
+      // Normalize: remove extension, strip shard/part suffix, lowercase
+      const baseName = fileName.replace('.arrow', '').replace(/_part_\d+$/, '').replace(/_shard_\d+$/, '')
       const normalizedBase = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       const group = normalizedGroups.get(normalizedBase) || []
       group.push(fileName)
@@ -1053,14 +1130,14 @@ export async function cleanupDuplicateCaseSnapshots(): Promise<void> {
 
       // Find which files are fully lowercase (normalized)
       const normalizedFiles = files.filter(f => {
-        const base = f.replace('.arrow', '').replace(/_part_\d+$/, '')
+        const base = f.replace('.arrow', '').replace(/_part_\d+$/, '').replace(/_shard_\d+$/, '')
         return base === base.toLowerCase()
       })
 
       // If there's at least one normalized file, delete non-normalized duplicates
       if (normalizedFiles.length > 0) {
         for (const file of files) {
-          const base = file.replace('.arrow', '').replace(/_part_\d+$/, '')
+          const base = file.replace('.arrow', '').replace(/_part_\d+$/, '').replace(/_shard_\d+$/, '')
           if (base !== base.toLowerCase()) {
             console.log(`[Snapshot] Removing duplicate non-normalized file: ${file} (keeping lowercase version)`)
             try {

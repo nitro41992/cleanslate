@@ -32,6 +32,12 @@ interface DiffState {
   hasOriginIdB: boolean          // Whether target table had _cs_origin_id at diff creation (for consistent fetch)
   // UI state
   isComparing: boolean
+  // Progress tracking for large diffs
+  diffProgress: {
+    phase: 'indexing' | 'joining' | 'comparing' | 'summarizing'
+    current: number
+    total: number
+  } | null
   blindMode: boolean
   // Grid customization
   columnWidths: Record<string, number>  // columnName -> width
@@ -64,6 +70,7 @@ interface DiffActions {
   }) => void
   setSummary: (summary: DiffState['summary']) => void
   setIsComparing: (comparing: boolean) => void
+  setDiffProgress: (progress: DiffState['diffProgress']) => void
   setBlindMode: (enabled: boolean) => void
   reset: () => void
   clearResults: () => void
@@ -96,6 +103,7 @@ const initialState: DiffState = {
   storageType: null,
   hasOriginIdB: true,  // Default to true for safety
   isComparing: false,
+  diffProgress: null,
   blindMode: false,
   // Grid customization
   columnWidths: {},
@@ -129,6 +137,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     storageType: null,
     hasOriginIdB: true,
     keyColumns: [],
+    diffProgress: null,
   }),
   setTableA: (tableId) => set({ tableA: tableId }),
   setTableB: (tableId) => set({ tableB: tableId }),
@@ -149,6 +158,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
   }),
   setSummary: (summary) => set({ summary }),
   setIsComparing: (comparing) => set({ isComparing: comparing }),
+  setDiffProgress: (progress) => set({ diffProgress: progress }),
   setBlindMode: (enabled) => set({ blindMode: enabled }),
   clearResults: () => set({
     diffTableName: null,
@@ -162,6 +172,7 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
     removedColumns: [],
     storageType: null,
     hasOriginIdB: true,
+    diffProgress: null,
     // Clear grid customization and filters on new comparison
     columnWidths: {},
     statusFilter: null,

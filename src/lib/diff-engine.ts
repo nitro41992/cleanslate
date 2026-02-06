@@ -5,6 +5,7 @@ import { formatBytes } from './duckdb/storage-info'
 import { getMemoryStatus } from './duckdb/memory'
 import { exportTableToSnapshot, importTableFromSnapshot, deleteSnapshot } from '@/lib/opfs/snapshot-storage'
 import { registerMemoryCleanup } from './memory-manager'
+import { SHARD_SIZE } from '@/lib/constants'
 
 // Track which snapshots are materialized as temp DuckDB tables to prevent re-loading
 const materializedSnapshots = new Set<string>()
@@ -44,6 +45,14 @@ export async function clearDiffCaches(): Promise<void> {
     } catch (err) {
       console.warn(`[Diff] Failed to drop temp table for ${snapshotId}:`, err)
     }
+  }
+
+  // DROP orphaned diff index tables (from interrupted runDiff operations)
+  try {
+    await execute('DROP TABLE IF EXISTS __diff_idx_a')
+    await execute('DROP TABLE IF EXISTS __diff_idx_b')
+  } catch (err) {
+    console.warn('[Diff] Failed to drop orphaned index tables:', err)
   }
 
   // DROP materialized diff view index tables + views
@@ -278,7 +287,8 @@ export async function runDiff(
   tableA: string,
   tableB: string,
   keyColumns: string[],
-  diffMode: 'preview' | 'two-tables' = 'two-tables'
+  diffMode: 'preview' | 'two-tables' = 'two-tables',
+  onProgress?: (progress: { phase: string; current: number; total: number }) => void
 ): Promise<DiffConfig> {
   return withDuckDBLock(async () => {
     // Start memory polling (2-second intervals)
@@ -533,252 +543,214 @@ export async function runDiff(
       diffMode
     })
 
-    // DIAGNOSTIC: Sample values from both tables for the first row
-    try {
-      const sampleA = await query<Record<string, unknown>>(`
-        SELECT * FROM ${sourceTableExpr} LIMIT 1
-      `)
-      const sampleB = await query<Record<string, unknown>>(`
-        SELECT * FROM "${tableB}" LIMIT 1
-      `)
-      console.log('[Diff] Sample row comparison:', {
-        sourceTable: tableA,
-        targetTable: tableB,
-        sampleA: sampleA[0],
-        sampleB: sampleB[0]
-      })
+    // INDEX-FIRST DIFF ALGORITHM
+    // Instead of a single massive CREATE TABLE with FULL OUTER JOIN across all columns,
+    // we build lightweight ID-only index tables, JOIN them cheaply, then batch-compare
+    // only the "potentially modified" rows. Peak memory: ~72 MB instead of ~2 GB.
 
-      // DIAGNOSTIC: Count total rows from snapshot source
-      const countA = await query<{ count: number }>(`
-        SELECT COUNT(*) as count FROM ${sourceTableExpr}
-      `)
-      const countB = await query<{ count: number }>(`
-        SELECT COUNT(*) as count FROM "${tableB}"
-      `)
-      console.log('[Diff] Row counts:', {
-        snapshotRows: Number(countA[0].count),
-        currentTableRows: Number(countB[0].count)
-      })
-
-      // DIAGNOSTIC: Compare SAME row from both sources
-      const csId = sampleB[0]._cs_id
-      const sameRowA = await query<Record<string, unknown>>(`
-        SELECT * FROM ${sourceTableExpr} WHERE "_cs_id" = '${csId}' LIMIT 1
-      `)
-      const sameRowB = await query<Record<string, unknown>>(`
-        SELECT * FROM "${tableB}" WHERE "_cs_id" = '${csId}' LIMIT 1
-      `)
-      console.log('[Diff] Same row comparison (_cs_id: ' + csId + '):', {
-        snapshotRow: sameRowA[0],
-        currentRow: sameRowB[0],
-        submissionDateMatch: sameRowA[0]?.SubmissionDate === sameRowB[0]?.SubmissionDate,
-        submissionDateSnapshot: sameRowA[0]?.SubmissionDate,
-        submissionDateCurrent: sameRowB[0]?.SubmissionDate
-      })
-    } catch (err) {
-      console.warn('[Diff] Could not fetch sample rows:', err)
-    }
-
-    // Phase 1: Create NARROW temp table with ONLY metadata (JOIN executes once)
-    // CRITICAL OPTIMIZATION: Store only row IDs + status, NOT all column values
-    // This reduces memory from ~12 GB to ~26 MB for 1M x 1M rows!
-    //
-    // Narrow table schema (4 columns instead of 60+):
-    // - row_id: COALESCE(a._cs_id, b._cs_id) - universal row identifier
-    // - a_row_id: a._cs_id - for JOIN back to table A during pagination
-    // - b_row_id: b._cs_id - for JOIN back to table B during pagination
-    // - diff_status: 'added' | 'removed' | 'modified' | 'unchanged'
-    //
-    // Actual column data is fetched on-demand during pagination via LEFT JOIN
-    // sourceTableExpr already defined and cached at line 285 (files registered early)
-
-    // Determine JOIN condition and CASE logic based on diff mode
-    // For preview mode:
-    // - Use _cs_origin_id if both tables have it AND values actually match
-    // - Fall back to _cs_id if either table lacks _cs_origin_id OR values don't match
+    // Determine origin ID availability for JOIN logic
     const hasOriginIdA = colsAAllNames.includes(CS_ORIGIN_ID_COLUMN)
     const hasOriginIdB = colsBAllNames.includes(CS_ORIGIN_ID_COLUMN)
     let useOriginId = hasOriginIdA && hasOriginIdB
 
-    // CRITICAL: Check if _cs_origin_id values actually match between tables
-    // If the snapshot was created from different data (e.g., data was re-imported),
-    // the UUIDs won't match and we need to fall back to _cs_id
+    // Validate _cs_origin_id values actually match between tables
     if (useOriginId && diffMode === 'preview') {
       try {
-        // Simple check: try to find ANY matching row
         const matchResult = await query<{ one: number }>(`
           SELECT 1 as one
           FROM ${sourceTableExpr} a
           INNER JOIN "${tableB}" b ON a."${CS_ORIGIN_ID_COLUMN}" = b."${CS_ORIGIN_ID_COLUMN}"
           LIMIT 1
         `)
-        const hasAnyMatch = matchResult.length > 0
-
-        console.log('[Diff] _cs_origin_id match check:', { hasAnyMatch, resultLength: matchResult.length })
-
-        if (!hasAnyMatch) {
-          console.warn('[Diff] _cs_origin_id values do not match between snapshot and current table!')
-          console.warn('[Diff] This usually means the data was re-imported or the snapshot is stale.')
-          console.warn('[Diff] Falling back to _cs_id matching (may be less accurate if rows were inserted/deleted)')
+        if (matchResult.length === 0) {
+          console.warn('[Diff] _cs_origin_id values do not match — falling back to _cs_id')
           useOriginId = false
         }
       } catch (err) {
-        // On error, DON'T fall back - keep using _cs_origin_id
-        // The error might be transient, and _cs_origin_id matching is more accurate
         console.warn('[Diff] Could not verify _cs_origin_id match (keeping _cs_origin_id):', err)
       }
     }
 
-    if (diffMode === 'preview') {
-      console.log('[Diff] Preview mode origin ID check:', {
-        hasOriginIdA,
-        hasOriginIdB,
-        useOriginId,
-        matchColumn: useOriginId ? CS_ORIGIN_ID_COLUMN : '_cs_id'
-      })
-    }
-
-    const diffJoinCondition = diffMode === 'preview'
-      ? useOriginId
-        ? `a."${CS_ORIGIN_ID_COLUMN}" = b."${CS_ORIGIN_ID_COLUMN}"`  // Stable identity (survives row insertion)
-        : `a."_cs_id" = b."_cs_id"`  // Fallback for old tables without origin ID
-      : joinCondition  // Key-based for two-tables (uses user-selected keys)
-
-    const diffCaseLogic = diffMode === 'preview'
-      ? useOriginId
-        ? `
-          CASE
-            WHEN a."${CS_ORIGIN_ID_COLUMN}" IS NULL THEN 'added'
-            WHEN b."${CS_ORIGIN_ID_COLUMN}" IS NULL THEN 'removed'
-            WHEN ${fullModificationExpr} THEN 'modified'
-            ELSE 'unchanged'
-          END as diff_status
-        `
-        : `
-          CASE
-            WHEN a."_cs_id" IS NULL THEN 'added'
-            WHEN b."_cs_id" IS NULL THEN 'removed'
-            WHEN ${fullModificationExpr} THEN 'modified'
-            ELSE 'unchanged'
-          END as diff_status
-        `
-      : `
-        CASE
-          WHEN ${keyColumns.map((c) => `a."${c}" IS NULL`).join(' AND ')} THEN 'added'
-          WHEN ${keyColumns.map((c) => `b."${c}" IS NULL`).join(' AND ')} THEN 'removed'
-          WHEN ${fullModificationExpr} THEN 'modified'
-          ELSE 'unchanged'
-        END as diff_status
-      `
-
-    // Add ROW_NUMBER to preserve original table order for sorting
-    // Use table B (current) order as primary, fall back to table A (original) for removed rows
-    //
-    // MEMORY OPTIMIZATION: Build explicit column list instead of SELECT *
-    // The CTEs with ROW_NUMBER() OVER () require full table scan and materialization.
-    // By selecting only needed columns, we reduce memory from ~1.5GB to ~200MB for 1M rows.
-    // Needed columns: _cs_id (row ID), _cs_origin_id (if using for matching),
-    // key columns (join), value columns (modification check),
-    // plus new/removed columns (for column-level change detection)
-    const neededColumns = new Set<string>(['_cs_id'])
-    // Always add _cs_origin_id - needed for stable row matching during fetch
-    // (even if not used for diff matching, it's used for JOIN in fetchDiffPage)
-    neededColumns.add(CS_ORIGIN_ID_COLUMN)
-    keyColumns.forEach(c => neededColumns.add(c))
-    valueColumns.forEach(c => neededColumns.add(c))
-    // Add columns only in A (user's removed columns) - needed for removedColumnModificationExpr
-    newColumns.forEach(c => neededColumns.add(c))
-    // Add columns only in B (user's new columns) - needed for newColumnModificationExpr
-    removedColumns.forEach(c => neededColumns.add(c))
-
-    // Build column list for table A (source/original)
-    // Note: colsA excludes internal columns, but we need _cs_id for row identification
-    // Use colsAAllNames (defined earlier) to check all columns including internal ones
-    const colsAFiltered = [...neededColumns].filter(c => colsAAllNames.includes(c))
-    // Fallback to SELECT * if no columns match (shouldn't happen, but safety net)
-    const columnListA = colsAFiltered.length > 0
-      ? colsAFiltered.map(c => `"${c}"`).join(', ')
-      : '*'
-
-    // Build column list for table B (target/current)
-    // Note: colsB excludes internal columns, but we need _cs_id for row identification
-    // Use colsBAllNames (defined earlier) to check all columns including internal ones
-    const colsBFiltered = [...neededColumns].filter(c => colsBAllNames.includes(c))
-    // Fallback to SELECT * if no columns match (shouldn't happen, but safety net)
-    const columnListB = colsBFiltered.length > 0
-      ? colsBFiltered.map(c => `"${c}"`).join(', ')
-      : '*'
-
-    console.log('[Diff] Column projection:', {
-      allColumns: allColumns.length,
-      neededColumns: neededColumns.size,
-      neededColumnsList: [...neededColumns],
-      columnListA: colsAFiltered.length,
-      columnListB: colsBFiltered.length,
-      colsAFiltered,
-      colsBFiltered,
-      memoryReductionEstimate: allColumns.length > 0
-        ? `${Math.round((1 - neededColumns.size / allColumns.length) * 100)}%`
-        : 'N/A'
-    })
-
-    // DIAGNOSTIC: Log the exact join condition
-    console.log('[Diff] Join condition:', {
-      diffJoinCondition,
-      diffCaseLogicFirstLine: diffCaseLogic.trim().split('\n')[0]
+    console.log('[Diff] Row matching strategy:', {
+      diffMode,
+      useOriginId,
+      matchColumn: diffMode === 'preview'
+        ? (useOriginId ? CS_ORIGIN_ID_COLUMN : '_cs_id')
+        : `key columns: [${keyColumns.join(', ')}]`
     })
 
     // Build conditional _cs_origin_id selects based on column existence
-    // This prevents "column not found" errors when a table lacks the column
     const aOriginIdSelect = hasOriginIdA
-      ? `a."${CS_ORIGIN_ID_COLUMN}" as a_origin_id`
-      : 'NULL as a_origin_id'
+      ? `a."${CS_ORIGIN_ID_COLUMN}" as _cs_origin_id`
+      : 'NULL as _cs_origin_id'
     const bOriginIdSelect = hasOriginIdB
-      ? `b."${CS_ORIGIN_ID_COLUMN}" as b_origin_id`
-      : 'NULL as b_origin_id'
+      ? `b."${CS_ORIGIN_ID_COLUMN}" as _cs_origin_id`
+      : 'NULL as _cs_origin_id'
 
-    const createTempTableQuery = `
-      CREATE TEMP TABLE "${diffTableName}" AS
-      WITH
-        a_numbered AS (
-          SELECT ${columnListA}, ROW_NUMBER() OVER () as _row_num FROM ${sourceTableExpr}
-        ),
-        b_numbered AS (
-          SELECT ${columnListB}, ROW_NUMBER() OVER () as _row_num FROM "${tableB}"
-        )
-      SELECT
-        COALESCE(a."_cs_id", b."_cs_id") as row_id,
-        a."_cs_id" as a_row_id,
-        b."_cs_id" as b_row_id,
-        ${aOriginIdSelect},
-        ${bOriginIdSelect},
-        b._row_num as b_row_num,
-        COALESCE(b._row_num, a._row_num + 1000000000) as sort_key,
-        ${diffCaseLogic}
-      FROM a_numbered a
-      FULL OUTER JOIN b_numbered b ON ${diffJoinCondition.replace(/\ba\./g, 'a.').replace(/\bb\./g, 'b.')}
-    `
+    // Build the index JOIN condition (lightweight — IDs only)
+    const diffJoinCondition = diffMode === 'preview'
+      ? useOriginId
+        ? `a._cs_origin_id = b._cs_origin_id`
+        : `a._cs_id = b._cs_id`
+      : joinCondition  // Key-based for two-tables mode
 
     try {
-      // Disable insertion order preservation for memory efficiency
-      // Allows DuckDB to use streaming aggregations instead of materializing
+      // Reduce threads to 1 and disable insertion order for memory efficiency
       await conn.query(`SET preserve_insertion_order = false`)
-
-      // Reduce threads to 1 for diff operations
-      // Join-heavy ops need 3-4GB/thread; single thread reduces peak memory significantly
-      // See: https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads
       await conn.query(`SET threads = 1`)
 
       try {
-        await execute(createTempTableQuery)
+        // ── Phase 1: Build lightweight index tables (IDs + row numbers only) ──
+        // Memory: ~36 MB per index table for 1M rows (UUID + BIGINT)
+        onProgress?.({ phase: 'indexing', current: 0, total: 3 })
+
+        // Index table A: source/original
+        const idxAColumns = diffMode === 'two-tables'
+          ? `"_cs_id" as _cs_id, ${aOriginIdSelect}, ${keyColumns.map(c => `"${c}"`).join(', ')}, ROW_NUMBER() OVER () as _row_num`
+          : `"_cs_id" as _cs_id, ${aOriginIdSelect}, ROW_NUMBER() OVER () as _row_num`
+
+        await execute(`
+          CREATE TEMP TABLE __diff_idx_a AS
+          SELECT ${idxAColumns}
+          FROM ${sourceTableExpr}
+        `)
+        onProgress?.({ phase: 'indexing', current: 1, total: 3 })
+
+        // Index table B: target/current
+        const idxBColumns = diffMode === 'two-tables'
+          ? `"_cs_id" as _cs_id, ${bOriginIdSelect}, ${keyColumns.map(c => `"${c}"`).join(', ')}, ROW_NUMBER() OVER () as _row_num`
+          : `"_cs_id" as _cs_id, ${bOriginIdSelect}, ROW_NUMBER() OVER () as _row_num`
+
+        await execute(`
+          CREATE TEMP TABLE __diff_idx_b AS
+          SELECT ${idxBColumns}
+          FROM "${tableB}"
+        `)
+        onProgress?.({ phase: 'indexing', current: 2, total: 3 })
+
+        console.log('[Diff] Phase 1 complete: index tables created')
+
+        // ── Phase 2: Index JOIN → Narrow diff table ──
+        // JOIN the two lightweight index tables to classify rows as added/removed/pending_compare
+        // No column data is touched — just IDs
+        onProgress?.({ phase: 'joining', current: 2, total: 3 })
+
+        // Build CASE logic for initial classification (no modification check yet)
+        const indexCaseLogic = diffMode === 'preview'
+          ? useOriginId
+            ? `
+              CASE
+                WHEN a._cs_origin_id IS NULL THEN 'added'
+                WHEN b._cs_origin_id IS NULL THEN 'removed'
+                ELSE 'pending_compare'
+              END as diff_status
+            `
+            : `
+              CASE
+                WHEN a._cs_id IS NULL THEN 'added'
+                WHEN b._cs_id IS NULL THEN 'removed'
+                ELSE 'pending_compare'
+              END as diff_status
+            `
+          : `
+            CASE
+              WHEN ${keyColumns.map(c => `a."${c}" IS NULL`).join(' AND ')} THEN 'added'
+              WHEN ${keyColumns.map(c => `b."${c}" IS NULL`).join(' AND ')} THEN 'removed'
+              ELSE 'pending_compare'
+            END as diff_status
+          `
+
+        // For two-tables mode, the JOIN condition references a."col" = b."col" from
+        // the joinCondition built earlier — these columns exist in the index tables
+        await execute(`
+          CREATE TEMP TABLE "${diffTableName}" AS
+          SELECT
+            COALESCE(a._cs_id, b._cs_id) as row_id,
+            a._cs_id as a_row_id,
+            b._cs_id as b_row_id,
+            a._cs_origin_id as a_origin_id,
+            b._cs_origin_id as b_origin_id,
+            b._row_num as b_row_num,
+            COALESCE(b._row_num, a._row_num + 1000000000) as sort_key,
+            ${indexCaseLogic}
+          FROM __diff_idx_a a
+          FULL OUTER JOIN __diff_idx_b b ON ${diffJoinCondition}
+        `)
+
+        console.log('[Diff] Phase 2 complete: index JOIN done')
+
+        // ── Phase 3: Batched column comparison for pending_compare rows ──
+        // Only rows that matched by ID need actual column comparison
+        const pendingResult = await query<{ cnt: number }>(`
+          SELECT COUNT(*) as cnt FROM "${diffTableName}" WHERE diff_status = 'pending_compare'
+        `)
+        const pendingCount = Number(pendingResult[0].cnt)
+        console.log(`[Diff] Phase 3: ${pendingCount.toLocaleString()} rows need column comparison`)
+
+        if (pendingCount > 0) {
+          // Build modification expression with src/tgt prefixes instead of a/b
+          // The fullModificationExpr uses a."col" and b."col" — we need src."col" and tgt."col"
+          const srcTgtModificationExpr = fullModificationExpr
+            .replace(/\ba\."([^"]+)"/g, 'src."$1"')
+            .replace(/\bb\."([^"]+)"/g, 'tgt."$1"')
+
+          const batchSize = SHARD_SIZE
+          const totalBatches = Math.ceil(pendingCount / batchSize)
+
+          for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+            const offset = batchNum * batchSize
+            onProgress?.({ phase: 'comparing', current: batchNum + 1, total: totalBatches })
+
+            await execute(`
+              UPDATE "${diffTableName}"
+              SET diff_status = CASE
+                WHEN (${srcTgtModificationExpr}) THEN 'modified'
+                ELSE 'unchanged'
+              END
+              FROM ${sourceTableExpr} src, "${tableB}" tgt
+              WHERE "${diffTableName}".a_row_id = src."_cs_id"
+                AND "${diffTableName}".b_row_id = tgt."_cs_id"
+                AND "${diffTableName}".diff_status = 'pending_compare'
+                AND "${diffTableName}".row_id IN (
+                  SELECT row_id FROM "${diffTableName}"
+                  WHERE diff_status = 'pending_compare'
+                  ORDER BY sort_key
+                  LIMIT ${batchSize} OFFSET ${offset}
+                )
+            `)
+
+            // Checkpoint and yield to browser between batches
+            if (batchNum < totalBatches - 1) {
+              await conn.query('CHECKPOINT')
+              await new Promise(resolve => setTimeout(resolve, 0))
+            }
+          }
+
+          console.log(`[Diff] Phase 3 complete: compared ${totalBatches} batches`)
+        } else {
+          console.log('[Diff] Phase 3 skipped: no rows need column comparison')
+        }
+
+        // ── Phase 4: Cleanup index tables ──
+        await execute('DROP TABLE IF EXISTS __diff_idx_a')
+        await execute('DROP TABLE IF EXISTS __diff_idx_b')
+        await conn.query('CHECKPOINT')
+        console.log('[Diff] Phase 4 complete: index tables dropped')
+
       } finally {
         // Restore default settings
         await conn.query(`SET preserve_insertion_order = true`)
         await conn.query(`RESET threads`)
       }
     } catch (error) {
+      // Clean up index tables on error
+      try {
+        await execute('DROP TABLE IF EXISTS __diff_idx_a')
+        await execute('DROP TABLE IF EXISTS __diff_idx_b')
+      } catch { /* ignore cleanup errors */ }
+
       const errMsg = error instanceof Error ? error.message : String(error)
-      console.error('Diff temp table creation failed:', error)
+      console.error('Diff creation failed:', error)
 
       // Parse DuckDB errors and provide actionable feedback
       if (errMsg.includes('does not have a column') || errMsg.includes('column named')) {
@@ -810,7 +782,7 @@ export async function runDiff(
       )
     }
 
-    // Phase 2: Summary from temp table (instant - no re-join!)
+    // Summary from temp table (instant - no re-join!)
     const summaryResult = await query<Record<string, unknown>>(`
       SELECT
         COUNT(*) FILTER (WHERE diff_status = 'added') as added,
@@ -833,11 +805,9 @@ export async function runDiff(
       unchanged: toNum(rawSummary.unchanged),
     }
 
-    // Phase 3: Get total non-unchanged count for grid
-    // Note: Column-level changes are shown separately in a banner
+    // Get total non-unchanged count for grid
     const totalDiffRows = summary.added + summary.removed + summary.modified
 
-    // DIAGNOSTIC: Log final summary
     console.log('[Diff] Summary:', {
       ...summary,
       totalDiffRows,
@@ -845,37 +815,7 @@ export async function runDiff(
       targetTable: tableB
     })
 
-    // DIAGNOSTIC: Sample the actual diff results to see what changed
-    if (totalDiffRows > 0) {
-      try {
-        const diffSample = await query<Record<string, unknown>>(`
-          SELECT * FROM "${diffTableName}"
-          WHERE diff_status = 'modified'
-          LIMIT 5
-        `)
-        console.log('[Diff] Sample modified row IDs:', diffSample.map(r => r.row_id))
-
-        // Get actual data for one modified row
-        if (diffSample.length > 0) {
-          const rowId = diffSample[0].row_id
-          const dataA = await query<Record<string, unknown>>(`
-            SELECT * FROM ${sourceTableExpr} WHERE "_cs_id" = '${rowId}' LIMIT 1
-          `)
-          const dataB = await query<Record<string, unknown>>(`
-            SELECT * FROM "${tableB}" WHERE "_cs_id" = '${rowId}' LIMIT 1
-          `)
-          console.log('[Diff] Modified row data comparison:', {
-            rowId,
-            dataA: dataA[0],
-            dataB: dataB[0]
-          })
-        }
-      } catch (err) {
-        console.warn('[Diff] Could not sample diff results:', err)
-      }
-    }
-
-    // Phase 4: Tiered storage - export large diffs to OPFS
+    // Tiered storage - export large diffs to OPFS
     let storageType: 'memory' | 'snapshot' = 'memory'
 
     if (totalDiffRows >= DIFF_TIER2_THRESHOLD) {

@@ -134,6 +134,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     storageType,
     hasOriginIdB,
     isComparing,
+    diffProgress,
     blindMode,
     wordWrapEnabled,
     statusFilter,
@@ -144,6 +145,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     setKeyColumns,
     setDiffConfig,
     setIsComparing,
+    setDiffProgress,
     setBlindMode,
     toggleWordWrap,
     clearStatusFilter,
@@ -316,7 +318,12 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         sourceTableName,   // original snapshot (A) - may be "parquet:snapshot_abc"
         targetTableName,   // current table (B)
         keyColumns,
-        mode === 'compare-preview' ? 'preview' : 'two-tables'  // Row-based for preview, key-based for two-tables
+        mode === 'compare-preview' ? 'preview' : 'two-tables',  // Row-based for preview, key-based for two-tables
+        (progress) => setDiffProgress({
+          phase: progress.phase as 'indexing' | 'joining' | 'comparing' | 'summarizing',
+          current: progress.current,
+          total: progress.total,
+        })
       )
 
       // Reorder allColumns to match the target table's user-defined column order
@@ -391,9 +398,10 @@ export function DiffView({ open, onClose }: DiffViewProps) {
         description: error instanceof Error ? error.message : 'An error occurred',
       })
     } finally {
+      setDiffProgress(null)
       setIsComparing(false)
     }
-  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, setIsComparing, setDiffConfig, getTimeline, diffTableName, sourceTableName, storageType])
+  }, [mode, activeTableInfo, tableAInfo, tableBInfo, keyColumns, setIsComparing, setDiffProgress, setDiffConfig, getTimeline, diffTableName, sourceTableName, storageType])
 
   const handleNewComparison = useCallback(async () => {
     // Save old values for cleanup
@@ -720,20 +728,50 @@ export function DiffView({ open, onClose }: DiffViewProps) {
               </div>
             </>
           ) : (
-            /* Empty State - Configure Instructions */
+            /* Empty State - Configure Instructions or Progress */
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="text-center max-w-md">
-                <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-6">
-                  <span className="text-4xl">⚡</span>
+              {isComparing && diffProgress ? (
+                <div className="text-center max-w-md">
+                  <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-6">
+                    <svg className="animate-spin h-10 w-10 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  </div>
+                  <h2 className="text-xl font-semibold text-foreground mb-2">
+                    {diffProgress.phase === 'indexing' && 'Building row index...'}
+                    {diffProgress.phase === 'joining' && 'Matching rows...'}
+                    {diffProgress.phase === 'comparing' && 'Comparing values...'}
+                    {diffProgress.phase === 'summarizing' && 'Summarizing results...'}
+                  </h2>
+                  {diffProgress.total > 0 && (
+                    <div className="mt-4 space-y-2">
+                      <div className="w-64 mx-auto bg-muted rounded-full h-2 overflow-hidden">
+                        <div
+                          className="bg-primary h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(100, (diffProgress.current / diffProgress.total) * 100)}%` }}
+                        />
+                      </div>
+                      <p className="text-sm tabular-nums">
+                        {diffProgress.current.toLocaleString()} / {diffProgress.total.toLocaleString()}
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <h2 className="text-xl font-semibold text-foreground mb-2">
-                  Configure Your Comparison
-                </h2>
-                <p className="text-sm">
-                  Select two tables and choose key columns to match rows between them.
-                  The comparison will identify added, removed, and modified rows.
-                </p>
-              </div>
+              ) : (
+                <div className="text-center max-w-md">
+                  <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-6">
+                    <span className="text-4xl">⚡</span>
+                  </div>
+                  <h2 className="text-xl font-semibold text-foreground mb-2">
+                    Configure Your Comparison
+                  </h2>
+                  <p className="text-sm">
+                    Select two tables and choose key columns to match rows between them.
+                    The comparison will identify added, removed, and modified rows.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
