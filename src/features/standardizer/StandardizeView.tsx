@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect } from 'react'
 import { X, ArrowLeft, Check, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -79,21 +79,13 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   // Hook for executing commands with confirmation when discarding redo states
   const { executeWithConfirmation, confirmDialogProps } = useExecuteWithConfirmation()
 
-  // Track if we've initialized to avoid re-setting on every render
-  const hasInitialized = useRef(false)
-
-  // Auto-initialize table from activeTableId when view opens
+  // Sync panel table with activeTableId when view opens or active table changes
   useEffect(() => {
-    if (open && !hasInitialized.current && activeTableId && !tableId) {
+    if (open && activeTableId && tableId !== activeTableId) {
       const activeTable = tables.find((t) => t.id === activeTableId)
       if (activeTable) {
         setTable(activeTableId, activeTable.name)
-        hasInitialized.current = true
       }
-    }
-    // Reset initialization flag when view closes
-    if (!open) {
-      hasInitialized.current = false
     }
   }, [open, activeTableId, tableId, tables, setTable])
 

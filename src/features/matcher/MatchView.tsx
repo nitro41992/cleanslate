@@ -96,21 +96,13 @@ export function MatchView({ open, onClose }: MatchViewProps) {
   // Confirmation dialog state
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
-  // Track if we've initialized to avoid re-setting on every render
-  const hasInitialized = useRef(false)
-
-  // Auto-initialize table from activeTableId when view opens
+  // Sync panel table with activeTableId when view opens or active table changes
   useEffect(() => {
-    if (open && !hasInitialized.current && activeTableId && !tableId) {
+    if (open && activeTableId && tableId !== activeTableId) {
       const activeTable = tables.find((t) => t.id === activeTableId)
       if (activeTable) {
         setTable(activeTableId, activeTable.name)
-        hasInitialized.current = true
       }
-    }
-    // Reset initialization flag when view closes
-    if (!open) {
-      hasInitialized.current = false
     }
   }, [open, activeTableId, tableId, tables, setTable])
 

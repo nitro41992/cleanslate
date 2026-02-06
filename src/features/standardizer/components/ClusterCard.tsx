@@ -61,7 +61,7 @@ export function ClusterCard({
         isExpanded
           ? 'bg-card ring-1 ring-border/60 shadow-sm'
           : 'bg-card/60 hover:bg-card',
-        hasSelectedChanges && !isExpanded && 'ring-1 ring-primary/20 bg-card'
+        hasSelectedChanges && 'bg-primary/5 ring-1 ring-primary/30 border-l-2 border-l-primary'
       )}
       data-testid="cluster-card"
     >
@@ -372,7 +372,9 @@ function ClusterValueRow({ value, onToggle, onSetMaster }: ClusterValueRowProps)
         'group px-3 py-2 flex items-center gap-3 rounded-lg transition-colors',
         value.isMaster
           ? 'bg-amber-500/[0.06]'
-          : 'hover:bg-muted/50'
+          : value.isSelected
+            ? 'bg-primary/[0.08]'
+            : 'hover:bg-muted/50'
       )}
     >
       <Checkbox
