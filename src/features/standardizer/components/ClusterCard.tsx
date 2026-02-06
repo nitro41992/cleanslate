@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Star, Check, Pencil, X, ArrowRight, Eye } from 'lucide-react'
+import { ChevronDown, ChevronRight, Star, Pencil, X, ArrowRight, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -256,27 +256,14 @@ function UniqueValueCard({
   return (
     <div
       className={cn(
-        'rounded-lg overflow-hidden',
-        hasReplacement ? 'bg-primary/5' : 'bg-muted/30',
-        hasReplacement ? 'border border-primary/30' : 'border border-border/50',
+        'rounded-lg overflow-hidden transition-all duration-200',
+        hasReplacement
+          ? 'bg-primary/5 border border-primary/20 border-l-2 border-l-primary'
+          : 'bg-transparent border border-border/40 hover:border-border',
       )}
       data-testid="cluster-card"
     >
       <div className="px-3 py-2 flex items-center gap-2.5">
-        {/* Status indicator */}
-        {hasReplacement ? (
-          <Checkbox
-            checked={true}
-            disabled
-            className="h-4 w-4 shrink-0"
-            data-testid={`unique-value-checkbox-${value?.id}`}
-          />
-        ) : (
-          <div className="p-1 rounded bg-emerald-500/10 shrink-0">
-            <Check className="h-3 w-3 text-emerald-500" />
-          </div>
-        )}
-
         {/* Value display with edit popover */}
         <Popover open={isEditing} onOpenChange={handleOpenChange}>
           <PopoverTrigger asChild>
@@ -306,42 +293,50 @@ function UniqueValueCard({
               ) : (
                 <>
                   <span
-                    className="text-sm text-muted-foreground truncate"
+                    className="text-sm text-foreground/80 truncate group-hover:text-foreground transition-colors"
                     title={value?.value || '(empty)'}
                   >
                     {value?.value || '(empty)'}
                   </span>
-                  <Pencil className="h-3 w-3 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                  <Pencil className="h-3 w-3 text-muted-foreground/30 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                 </>
               )}
             </button>
           </PopoverTrigger>
-          <PopoverContent className="w-64 p-3" align="start">
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">
-                Replace with:
-              </label>
+          <PopoverContent
+            className="w-72 p-4 shadow-lg shadow-primary/5 ring-1 ring-primary/20"
+            align="start"
+            sideOffset={8}
+          >
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="h-px flex-1 bg-border" />
+                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                  Replace with
+                </span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
               <Input
                 ref={inputRef}
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Enter replacement value"
-                className="h-8 text-sm"
+                className="h-9 text-sm bg-background"
                 data-testid="unique-value-replacement-input"
               />
               <div className="flex gap-2">
                 <Button
                   size="sm"
-                  variant="outline"
-                  className="flex-1 h-7 text-xs"
+                  variant="ghost"
+                  className="flex-1 h-8 text-xs text-muted-foreground"
                   onClick={() => setIsEditing(false)}
                 >
                   Cancel
                 </Button>
                 <Button
                   size="sm"
-                  className="flex-1 h-7 text-xs"
+                  className="flex-1 h-8 text-xs"
                   onClick={handleConfirm}
                   data-testid="unique-value-replacement-confirm"
                 >
@@ -366,7 +361,7 @@ function UniqueValueCard({
         )}
 
         {/* Row count */}
-        <span className="text-xs text-muted-foreground/70 tabular-nums shrink-0">
+        <span className="text-[11px] text-muted-foreground/50 tabular-nums shrink-0 font-mono">
           {value?.count.toLocaleString() ?? 0} rows
         </span>
       </div>

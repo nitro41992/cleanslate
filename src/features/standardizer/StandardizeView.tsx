@@ -164,8 +164,8 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
       const executor = getCommandExecutor()
 
       // Partition mappings by type:
-      // - Unique (isUnique: true) → transform:replace (recipe-compatible)
-      // - Actionable (isUnique: false) → standardize:apply (NOT recipe-compatible, uses fuzzy matching)
+      // - Distinct (isUnique: true) → transform:replace (recipe-compatible)
+      // - Clusters (isUnique: false) → standardize:apply (NOT recipe-compatible, uses fuzzy matching)
       const uniqueMappings = mappings.filter(m => m.isUnique)
       const actionableMappings = mappings.filter(m => !m.isUnique)
 

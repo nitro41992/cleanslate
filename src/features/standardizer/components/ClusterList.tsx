@@ -108,7 +108,7 @@ export function ClusterList({
               onClick={() => onFilterChange('all')}
               data-testid="filter-all"
             >
-              Unique ({uniqueCount})
+              Distinct ({uniqueCount})
             </button>
             <button
               type="button"
@@ -121,7 +121,7 @@ export function ClusterList({
               onClick={() => onFilterChange('actionable')}
               data-testid="filter-actionable"
             >
-              Actionable ({actionableCount})
+              Clusters ({actionableCount})
             </button>
           </div>
 
@@ -159,6 +159,15 @@ export function ClusterList({
           />
         </div>
       </div>
+
+      {/* Contextual hint for Distinct tab */}
+      {filter === 'all' && filteredClusters.length > 0 && (
+        <div className="px-4 py-2 border-b border-border/50 bg-muted/30">
+          <p className="text-[11px] text-muted-foreground/60 tracking-wide">
+            Click any value to set a replacement — like find & replace, one value at a time.
+          </p>
+        </div>
+      )}
 
       {/* Cluster List */}
       {filteredClusters.length === 0 ? (
