@@ -1,171 +1,231 @@
-# Fuzzy Matcher UX Improvements
+# Fix: Duplicate Table Name Conflict on Re-Upload
 
-## Summary
-7 improvements to the Matcher panel, organized into 3 phases by complexity.
+## Problem
+
+When a user re-uploads a file whose sanitized name matches an existing table (frozen or active), `CREATE OR REPLACE TABLE` silently overwrites the DuckDB table while `addTable()` creates a **second** store entry with the same name. This leaves orphaned metadata, broken matcher state, and data loss.
+
+**User's scenario:** Had two tables (A active, B frozen). Deleted A → home view. Re-uploaded B's file → DuckDB and store now have conflicting state.
+
+## Solution
+
+Add a conflict detection dialog before `loadFile` runs. When the derived table name matches any existing table, show a dialog:
+- **Replace** — delete the old table (full cleanup), import as same name
+- **Import as [name]_2** — keep both, new table gets suffixed name
+- **Cancel** — abort the upload
+
+Applies uniformly to frozen and active tables.
 
 ---
 
-## Phase 1: Quick Wins (3 items)
+## Architecture
 
-### 1.1 Fix histogram re-bucketing bug (#6)
-**Problem:** Dragging the threshold slider updates tab counts but cards don't re-filter until you click away and back.
+Uses the same state-machine pattern as the existing CSV ingestion wizard (`pendingFile` → show dialog → resolve → `loadFile`).
 
-**Root cause:** `filteredPairs` useMemo depends on `classifyPair` (a stable Zustand function ref) but NOT on `definiteThreshold`/`maybeThreshold`. Thresholds change, stats recalculate, but the useMemo never re-triggers.
+### Flow
 
-**Fix in `MatchView.tsx` (~10 lines):**
-- Subscribe to `definiteThreshold` and `maybeThreshold` from the store
-- Add them to the `filteredPairs` useMemo dependency array
-- Inline the classification logic instead of calling `classifyPair`
-
-**Performance:** The filtering is O(n) simple numeric comparisons — negligible even for thousands of pairs. The virtualizer only renders ~15 visible items regardless of list size, keeping reconciliation cheap. To guarantee the slider stays smooth during rapid dragging, wrap the list update in `React.startTransition`:
-
-```tsx
-// Threshold state used for low-priority list updates
-const [deferredThresholds, setDeferredThresholds] = useState({ definiteThreshold, maybeThreshold })
-
-// Update deferred thresholds via startTransition on every slider tick
-useEffect(() => {
-  startTransition(() => {
-    setDeferredThresholds({ definiteThreshold, maybeThreshold })
-  })
-}, [definiteThreshold, maybeThreshold])
-
-const filteredPairs = useMemo(() => {
-  const { definiteThreshold: dt, maybeThreshold: mt } = deferredThresholds
-  return pairs.filter((pair) => {
-    if (filter === 'reviewed') return pair.status !== 'pending'
-    if (pair.status !== 'pending') return false
-    if (filter === 'all') return true
-    const cl = pair.similarity >= dt ? 'definite'
-             : pair.similarity >= mt ? 'maybe' : 'not_match'
-    return cl === filter
-  })
-}, [pairs, filter, deferredThresholds])
+```
+File drop/select
+  → deriveTableName(filename)
+  → check tableStore for name collision
+  → IF collision:
+      set pendingConflict state → show ConflictDialog
+      → user picks Replace / Rename / Cancel
+      → Replace: await deleteTable(oldId) → loadFile(file, settings)
+      → Rename:  loadFile(file, settings, suffixedName)
+      → Cancel:  clear state
+  → IF no collision:
+      proceed to loadFile as today
 ```
 
-This keeps the slider buttery smooth (high priority) while the card list catches up as a low-priority transition. In practice both update on the same frame for typical pair counts.
-
-### 1.2 Fix bottom bar counter confusion (#1)
-**Problem:** Clicking "Keep Separate" shows bottom bar saying "Ready to apply 0 merges" — confusing because the action is acknowledged only in the header.
-
-**Fix in `MatchView.tsx` lines 665-677 (~15 lines):**
-- Replace single merge count with a progress summary:
-  `"3 to merge · 1 kept · 29 remaining"`
-- Disable "Apply Merges" button when `stats.merged === 0`
-- Use muted style when no merges queued (instead of green background)
-
-### 1.3 Replace ADYMNK with keyboard shortcut tooltip (#2)
-**Problem:** `A D Y N M K` on the header row is cryptic. User didn't know what it meant.
-
-**Fix in `MatchView.tsx` lines 578-579 (~15 lines):**
-- Replace text with a small `<Keyboard>` icon wrapped in a Tooltip
-- Tooltip content shows the full shortcut legend:
-  ```
-  A = All  D = Definite  Y = Maybe
-  N = Not Match  M = Merge  K = Keep
-  ```
-- `TooltipProvider` already wraps the app from `AppLayout.tsx`
+For CSV files, the conflict check happens in `handleWizardConfirm` (after wizard, before loadFile).
+For non-CSV files, the conflict check happens in `handleFileDrop`.
 
 ---
 
-## Phase 2: Medium Scope (3 items)
+## Changes
 
-### 2.1 Keep indicator on collapsed cards (#7)
-**Problem:** Can't tell which record will be kept without expanding the card.
+### 1. `src/hooks/useDuckDB.ts` — Add `overrideTableName` parameter (~5 lines)
 
-**Fix in `MatchRow.tsx` (~25 lines):**
-- **Keep name:** full brightness `font-medium text-foreground`
-- **Remove name:** dimmed `text-muted-foreground/60`
-- Replace static "vs" with a clickable `<ArrowLeftRight>` swap icon (already imported)
-  - `onClick` calls `onSwapKeepRow()` with `e.stopPropagation()` to avoid expanding
-  - Small hover effect: `hover:bg-muted rounded p-0.5`
+`loadFile` currently derives the table name internally (line 270). Add an optional 3rd parameter so the caller can override the name for the "Rename" path.
 
-### 2.2 Collapsible left sidebar (#4)
-**Problem:** Config sidebar (320px) is always visible, wastes space after setup.
+```typescript
+// Before (line 245-246):
+const loadFile = useCallback(
+  async (file: File, csvSettings?: CSVIngestionSettings) => {
 
-**Fix in `MatchView.tsx` (~50 lines):**
-- Add local state: `const [configCollapsed, setConfigCollapsed] = useState(false)`
-- Sidebar width: `w-80` when open, `w-12` when collapsed, with `transition-all duration-200`
-- Collapse toggle: circular button on the sidebar border edge (`translate-x-1/2`)
-  - Uses `ChevronsLeft` / `ChevronsRight` icons
-- Collapsed state shows a single icon button to re-expand
-- **Auto-collapse** after "Find Duplicates" completes (reclaim space for results)
-- **Auto-expand** when "New Search" is clicked
+// After:
+const loadFile = useCallback(
+  async (file: File, csvSettings?: CSVIngestionSettings, overrideTableName?: string) => {
+```
 
-### 2.3 Undo keep/merge decisions (#3)
-**Problem:** No way to undo individual decisions. "New Search" discards ALL.
+```typescript
+// Before (line 270):
+const tableName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
 
-**Changes across 4 files (~80 lines):**
+// After:
+const tableName = overrideTableName || file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+```
 
-**a) `matcherStore.ts`:**
-- Add `revertPairToPending(pairId)` action — sets pair status back to `'pending'`
-- Extend `MatchFilter` type to include `'reviewed'`
+### 2. `src/App.tsx` — Conflict detection + dialog state (~80 lines)
 
-**b) `CategoryFilter.tsx`:**
-- Add a "Reviewed" tab showing count of `stats.merged + stats.keptSeparate`
-- Tab appears after `All | Definite | Maybe | Not Match` with a divider
+**a) Add state for pending conflict:**
 
-**c) `MatchView.tsx`:**
-- Update `filteredPairs` to handle `filter === 'reviewed'` (show non-pending pairs)
-- Pass `reviewed` count to CategoryFilter
-- Wire `revertPairToPending` through to MatchRow
+```typescript
+const [pendingConflict, setPendingConflict] = useState<{
+  file: File
+  buffer?: ArrayBuffer       // for CSV (pre-read)
+  csvSettings?: CSVIngestionSettings
+  tableName: string           // derived name that conflicts
+  existingTableId: string     // old table's ID
+  suggestedName: string       // e.g. "customers_2"
+} | null>(null)
+```
 
-**d) `MatchRow.tsx`:**
-- Add `onRevertToPending` prop
-- When `pair.status !== 'pending'`: replace Merge/Keep buttons with:
-  - A status badge ("Merged" in green, "Kept" in gray)
-  - An undo button (`Undo2` icon) that calls `onRevertToPending`
+**b) Extract helper: `deriveTableName(filename)`**
 
----
+```typescript
+function deriveTableName(filename: string): string {
+  return filename.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+}
+```
 
-## Phase 3: Large Scope (1 item)
+**c) Extract helper: `getUniqueTableName(baseName, tables)`**
 
-### 3.1 Merge queue persistence across refresh (#5)
-**Problem:** All match decisions lost on page refresh.
+```typescript
+function getUniqueTableName(baseName: string, tables: { name: string }[]): string {
+  const names = new Set(tables.map(t => t.name.toLowerCase()))
+  let suffix = 2
+  while (names.has(`${baseName}_${suffix}`.toLowerCase())) suffix++
+  return `${baseName}_${suffix}`
+}
+```
 
-**Scope:** Current table only (single set of results). Switching tables still clears.
+**d) Update `handleFileDrop` (non-CSV path):**
 
-**Changes across 4-5 files (~150 lines):**
+Before calling `loadFile(file)`, check for conflict:
+```typescript
+const derived = deriveTableName(file.name)
+const existing = tables.find(t => t.name.toLowerCase() === derived.toLowerCase())
+if (existing) {
+  setPendingConflict({
+    file,
+    tableName: derived,
+    existingTableId: existing.id,
+    suggestedName: getUniqueTableName(derived, tables),
+  })
+  return  // don't call loadFile yet
+}
+await loadFile(file)
+```
 
-**a) `types/index.ts`:**
-- Add `SerializedMatcherState` interface (tableId, tableName, matchColumn, blockingStrategy, thresholds, pairs, tableRowCount, savedAt)
+**e) Update `handleWizardConfirm` (CSV path):**
 
-**b) `state-persistence.ts`:**
-- Bump schema to V5, add `matcherState: SerializedMatcherState | null`
-- V4 -> V5 migration: set `matcherState: null`
-- Update `saveAppState` to include matcher state (read lazily from matcherStore if not provided)
-- Update `restoreAppState` to return matcher state
+Same conflict check after wizard confirms but before loadFile:
+```typescript
+const handleWizardConfirm = async (settings: CSVIngestionSettings) => {
+  if (!pendingFile) return
+  const derived = deriveTableName(pendingFile.file.name)
+  const existing = tables.find(t => t.name.toLowerCase() === derived.toLowerCase())
+  if (existing) {
+    setPendingConflict({
+      file: pendingFile.file,
+      buffer: pendingFile.buffer,
+      csvSettings: settings,
+      tableName: derived,
+      existingTableId: existing.id,
+      suggestedName: getUniqueTableName(derived, tables),
+    })
+    setPendingFile(null)
+    setShowWizard(false)
+    return
+  }
+  await loadFile(pendingFile.file, settings)
+  setPendingFile(null)
+}
+```
 
-**c) `matcherStore.ts`:**
-- Add `restoreFromPersisted(state)` action
-- Add `getSerializedState()` getter for serialization
-- Add save subscription (2s debounce) that piggybacks on existing `saveAppState` pattern
+**f) Conflict resolution handlers:**
 
-**d) `usePersistence.ts` or `useDuckDB.ts`:**
-- On restoration flow: if `matcherState` exists in saved state, call `restoreFromPersisted`
+```typescript
+const handleConflictReplace = async () => {
+  if (!pendingConflict) return
+  const { file, csvSettings, existingTableId } = pendingConflict
+  setPendingConflict(null)
+  // Full cleanup of old table (DuckDB DROP + OPFS + store + timeline)
+  await deleteTable(existingTableId)
+  await loadFile(file, csvSettings)
+}
 
-**e) `MatchView.tsx`:**
-- Staleness detection: if stored `tableRowCount !== current rowCount`, show warning toast suggesting user re-run the search
+const handleConflictRename = async () => {
+  if (!pendingConflict) return
+  const { file, csvSettings, suggestedName } = pendingConflict
+  setPendingConflict(null)
+  await loadFile(file, csvSettings, suggestedName)
+}
+
+const handleConflictCancel = () => {
+  setPendingConflict(null)
+}
+```
+
+**g) Render the conflict dialog (using existing AlertDialog):**
+
+```tsx
+<AlertDialog open={!!pendingConflict} onOpenChange={(open) => { if (!open) handleConflictCancel() }}>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>Table already exists</AlertDialogTitle>
+      <AlertDialogDescription>
+        A table named "{pendingConflict?.tableName}" already exists.
+        What would you like to do?
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel>Cancel</AlertDialogCancel>
+      <Button variant="outline" onClick={handleConflictRename}>
+        Import as "{pendingConflict?.suggestedName}"
+      </Button>
+      <AlertDialogAction onClick={handleConflictReplace}>
+        Replace existing
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
+```
+
+### 3. No changes to `loadCSV`/`loadJSON`/etc.
+
+`CREATE OR REPLACE TABLE` is fine — by the time these run, either the old table was deleted (Replace path) or the name was changed (Rename path).
+
+### 4. No changes to `tableStore`, `matcherStore`, persistence
+
+`deleteTable` in useDuckDB already handles full cleanup (DuckDB DROP, OPFS Parquet, store removal, timeline, audit). Reusing it means all downstream effects (Effect 7 in usePersistence, matcher state clearing, etc.) work automatically.
 
 ---
 
 ## Files Modified
 
-| File | Phase | Changes |
-|------|-------|---------|
-| `src/features/matcher/MatchView.tsx` | 1,2,3 | Re-bucketing fix, bottom bar, tooltip, sidebar collapse, reviewed filter, staleness |
-| `src/features/matcher/components/MatchRow.tsx` | 2 | Keep indicator, reviewed state + undo button |
-| `src/stores/matcherStore.ts` | 2,3 | `revertPairToPending`, reviewed filter, persistence actions |
-| `src/features/matcher/components/CategoryFilter.tsx` | 2 | Reviewed tab |
-| `src/lib/persistence/state-persistence.ts` | 3 | V5 schema, matcher save/restore |
-| `src/types/index.ts` | 3 | `SerializedMatcherState` interface |
+| File | Change |
+|------|--------|
+| `src/hooks/useDuckDB.ts` | Add `overrideTableName` param to `loadFile` (~5 lines) |
+| `src/App.tsx` | Conflict state, helpers, handlers, dialog (~80 lines) |
+
+---
+
+## Edge Cases
+
+1. **Frozen table conflict:** Works — `deleteTable` handles frozen tables (skips DuckDB DROP since table isn't in memory, cleans up OPFS Parquet).
+2. **Active table conflict:** Works — `deleteTable` drops from DuckDB, cleans OPFS, removes from store.
+3. **Matcher state referencing old table:** Works — after `deleteTable` removes the old table, matcher queries will fail gracefully (table not in store). The matcher state persistence already has staleness detection.
+4. **CSV wizard → conflict:** The wizard closes, conflict dialog opens. CSV settings are preserved in `pendingConflict.csvSettings`.
+5. **Multiple uploads of same file:** Each time the dialog appears. If user keeps picking "Rename", they get `name_2`, `name_3`, etc.
 
 ## Verification
 
-1. **Bug fix (#6):** Drag threshold slider while on "Maybe" tab — cards should appear/disappear in real-time
-2. **Bottom bar (#1):** Click "Keep Separate" on a card — bottom bar should show "0 to merge · 1 kept · N remaining"
-3. **Tooltip (#2):** Hover keyboard icon — should show full shortcut legend
-4. **Keep indicator (#7):** Collapsed cards show one name bright, one dimmed. Click swap icon — they swap
-5. **Sidebar (#4):** After "Find Duplicates", sidebar auto-collapses. Click edge button to expand. "New Search" auto-expands
-6. **Undo (#3):** Click "Keep" on a card, switch to "Reviewed" tab, see the card with "Kept" badge and undo button. Click undo — card returns to its similarity tab
-7. **Persistence (#5):** Mark some pairs as merged/kept, refresh page, reopen matcher — decisions restored. If table was modified, see staleness warning
+1. Upload `customers.csv` → table "customers" created
+2. Upload `customers.csv` again → conflict dialog appears
+3. Click "Replace" → old table removed, new table created with fresh timeline/audit
+4. Upload `customers.csv` again → conflict dialog appears
+5. Click "Import as customers_2" → both tables coexist
+6. Freeze a table by switching to another, then re-upload same file → conflict dialog appears for frozen table too
+7. Click "Cancel" → nothing happens, no table created
