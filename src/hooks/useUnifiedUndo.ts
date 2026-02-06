@@ -147,7 +147,7 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
           columnCount: result.columns.length,
         })
 
-        // Immediately save to Parquet (bypass debounce)
+        // Immediately save snapshot (bypass debounce)
         if (activeTable) {
           saveTable(activeTable.name).catch((err) =>
             console.error('[useUnifiedUndo] Failed to save after undo:', err)
@@ -198,7 +198,7 @@ export function useUnifiedUndo(tableId: string | null): UnifiedUndoResult {
           columnCount: result.columns.length,
         })
 
-        // Immediately save to Parquet (bypass debounce)
+        // Immediately save snapshot (bypass debounce)
         if (activeTable) {
           saveTable(activeTable.name).catch((err) =>
             console.error('[useUnifiedUndo] Failed to save after redo:', err)

@@ -169,7 +169,7 @@ export class InsertRowCommand implements Command<InsertRowParams> {
       const rowCount = Number(countResult[0]?.count ?? 0)
 
       // Journal the insert to OPFS changelog (fast path, ~2-3ms)
-      // This avoids the expensive full Parquet export for row inserts
+      // This avoids the expensive full snapshot export for row inserts
       try {
         await saveInsertRowToChangelog(
           this.params.tableId,
@@ -180,7 +180,7 @@ export class InsertRowCommand implements Command<InsertRowParams> {
         )
       } catch (err) {
         console.warn('[InsertRow] Failed to journal insert to changelog:', err)
-        // Non-fatal: data is already in DuckDB, worst case it triggers a Parquet save
+        // Non-fatal: data is already in DuckDB, worst case it triggers a snapshot save
       }
 
       return {
@@ -198,7 +198,7 @@ export class InsertRowCommand implements Command<InsertRowParams> {
             ? 0 // Inserted at beginning
             : await this.computeRowIndex(ctx, this.newCsId!),
         },
-        /** Signal that this operation was journaled — skip priority Parquet save */
+        /** Signal that this operation was journaled — skip priority snapshot save */
         journaled: true,
       }
     } catch (error) {

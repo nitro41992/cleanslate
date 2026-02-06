@@ -110,8 +110,8 @@ export const useDiffStore = create<DiffState & DiffActions>((set) => ({
 
   openView: () => set({ isViewOpen: true }),
   closeView: () => {
-    // Clear diff caches when view closes to free memory
-    clearDiffCaches()
+    // Clear diff caches when view closes to free memory (fire-and-forget)
+    clearDiffCaches().catch((err) => console.warn('[DiffStore] Cache cleanup error:', err))
     set({ isViewOpen: false })
   },
   setMode: (mode) => set({

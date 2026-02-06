@@ -18,7 +18,7 @@ export type MemoryLevel = 'normal' | 'warning' | 'critical'
 export type CompactionStatus = 'idle' | 'running'
 
 /**
- * Chunk progress for large Parquet exports (>250k rows)
+ * Chunk progress for large snapshot exports (>100k rows)
  */
 export interface ChunkProgress {
   tableName: string
@@ -71,7 +71,7 @@ interface UIState {
   /** Row that was just inserted - DataGrid will inject this locally without reload */
   pendingRowInsertion: PendingRowInsertion | null
   // Snapshot queue state (for persistence indicator)
-  savingTables: string[]           // Tables currently being saved (Parquet export in progress)
+  savingTables: string[]           // Tables currently being saved (snapshot export in progress)
   pendingTables: string[]          // Tables queued for next save (coalescing)
   chunkProgress: ChunkProgress | null  // Chunked export progress (null if not chunking)
   compactionStatus: CompactionStatus   // Changelog compaction status
@@ -100,7 +100,7 @@ interface UIActions {
   setLastSavedAt: (date: Date | null) => void
   /** Mark a table as having unsaved changes (called immediately when command executes) */
   markTableDirty: (tableId: string) => void
-  /** Mark a table as saved (called after Parquet export completes) */
+  /** Mark a table as saved (called after snapshot export completes) */
   markTableClean: (tableId: string) => void
   setMemoryUsage: (used: number, limit: number) => void
   setMemoryLevel: (level: MemoryLevel) => void
@@ -127,9 +127,9 @@ interface UIActions {
   /** Get all tables with priority save requested */
   getPrioritySaveTables: () => string[]
   // Snapshot queue actions
-  /** Add a table to the saving list (call when Parquet export starts) */
+  /** Add a table to the saving list (call when snapshot export starts) */
   addSavingTable: (tableName: string) => void
-  /** Remove a table from the saving list (call when Parquet export completes) */
+  /** Remove a table from the saving list (call when snapshot export completes) */
   removeSavingTable: (tableName: string) => void
   /** Add a table to the pending list (call when save is queued for coalescing) */
   addPendingTable: (tableName: string) => void

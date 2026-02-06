@@ -446,7 +446,7 @@ export interface DataParams {
 
 /**
  * Snapshot info for LRU undo cache (Phase 3)
- * - parquetId: Cold storage reference (e.g., "parquet:snapshot_abc_1")
+ * - parquetId: Cold storage reference (e.g., "parquet:snapshot_abc_1") — "parquet:" is a naming convention
  * - hotTableName: In-memory table name for instant undo (only for most recent snapshot)
  */
 export interface SnapshotInfo {

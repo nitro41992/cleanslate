@@ -5,13 +5,13 @@
  * Uses a dual-layer persistence strategy for optimal performance:
  *
  * 1. CHANGELOG (fast): Cell edits → OPFS JSONL (~2-3ms per write)
- * 2. PARQUET (reliable): Transforms → Full snapshot export
+ * 2. SNAPSHOT (reliable): Transforms → Full Arrow IPC snapshot export
  *
  * Lifecycle:
- * 1. App opens → Import Parquet files → Replay changelog → Ready
+ * 1. App opens → Import Arrow IPC snapshots → Replay changelog → Ready
  * 2. Cell edit → Instant OPFS changelog write (non-blocking)
- * 3. Transform → Parquet snapshot export (background, non-blocking)
- * 4. Periodic compaction → Merge changelog into Parquet → Clear changelog
+ * 3. Transform → Arrow IPC snapshot export (background, non-blocking)
+ * 4. Periodic compaction → Merge changelog into snapshot → Clear changelog
  * 5. App closes → Attempt final compaction (best-effort)
  *
  * @see https://github.com/duckdb/duckdb-wasm/issues/2096
@@ -44,7 +44,7 @@ let hydrationPromise: Promise<void> | null = null
 // Flag to signal that re-hydration is needed (after worker restart)
 let rehydrationRequested = false
 
-// Flag to suppress Parquet deletion during rehydration
+// Flag to suppress snapshot deletion during rehydration
 // When true, clearTables() won't trigger snapshot deletion
 let isRehydratingFlag = false
 
@@ -74,7 +74,7 @@ export function touchActivity(): void {
 
 /**
  * Replay changelog entries into DuckDB.
- * Called after Parquet import to apply pending cell edits.
+ * Called after snapshot import to apply pending cell edits.
  */
 async function replayChangelogEntries(
   conn: Awaited<ReturnType<typeof getConnection>>,
@@ -163,7 +163,7 @@ async function replayChangelogEntries(
 }
 
 /**
- * Perform hydration - import tables from Parquet files into DuckDB.
+ * Perform hydration - import tables from Arrow IPC snapshots into DuckDB.
  * Can be called from useEffect (initial load) or after worker restart.
  *
  * LAZY HYDRATION (Phase 4): Only the activeTableId table is fully imported.
@@ -182,7 +182,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
     const existingTables = useTableStore.getState().tables
     if (existingTables.length > 0) {
       console.log(`[Persistence] Re-hydration: clearing ${existingTables.length} stale table(s) from store`)
-      // CRITICAL: Set flag to prevent deletion subscription from deleting Parquet files
+      // CRITICAL: Set flag to prevent deletion subscription from deleting snapshot files
       isRehydratingFlag = true
       useTableStore.getState().clearTables()
     }
@@ -211,13 +211,13 @@ export async function performHydration(isRehydration = false): Promise<void> {
   // Clean up duplicate case-mismatched files (migration from pre-fix state)
   await cleanupDuplicateCaseSnapshots()
 
-  // List all saved Parquet files
+  // List all saved snapshot files
   const snapshots = await listSnapshots()
 
   if (snapshots.length === 0) {
     console.log('[Persistence] No saved snapshots found.')
     // Still replay changelog in case there are orphaned entries
-    // (e.g., user made edits but Parquet export failed)
+    // (e.g., user made edits but snapshot export failed)
     return
   }
 
@@ -240,7 +240,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
   const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
 
   // Build normalized lookup map: lowercase table name → original tableId
-  // This handles case mismatch between Parquet filenames (lowercase) and app-state.json (original casing)
+  // This handles case mismatch between snapshot filenames (lowercase) and app-state.json (original casing)
   const normalizedSavedTableIds = new Map<string, string>()
   if (savedTableIds) {
     for (const [name, id] of Object.entries(savedTableIds)) {
@@ -284,7 +284,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
   const tableIdToName = new Map<string, string>()
 
   // Build normalized lookup for savedTables: lowercase name → original savedTable entry
-  // This allows matching Parquet filenames (lowercase) to app-state entries (original casing)
+  // This allows matching snapshot filenames (lowercase) to app-state entries (original casing)
   const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }> }).__CLEANSLATE_SAVED_TABLES__
   const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }>()
   if (savedTables) {
@@ -315,8 +315,8 @@ export async function performHydration(isRehydration = false): Promise<void> {
       const shouldThaw = snapshotName === tableToThaw
 
       if (shouldThaw) {
-        // THAW: Import from Parquet into DuckDB (full hydration)
-        // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
+        // THAW: Import from Arrow IPC snapshot into DuckDB (full hydration)
+        // Use snapshotName (lowercase) for snapshot file, tableName (original casing) for DuckDB table
         await importTableFromSnapshot(db, conn, snapshotName, tableName)
 
         // Auto-migrate sequential _cs_id to gap-based (one-time migration)
@@ -348,9 +348,9 @@ export async function performHydration(isRehydration = false): Promise<void> {
           markTableFrozen(tableId)
           console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
         } else {
-          // Fallback: Read Parquet metadata directly
+          // Fallback: Read snapshot metadata directly
           // We need to briefly import to get accurate metadata, then drop
-          console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from Parquet header...`)
+          console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from snapshot metadata...`)
           await importTableFromSnapshot(db, conn, snapshotName, tableName)
           const cols = await getTableColumns(tableName)
           const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
@@ -361,7 +361,7 @@ export async function performHydration(isRehydration = false): Promise<void> {
 
           addTable(tableName, cols, rowCount, tableId)
           markTableFrozen(tableId)
-          console.log(`[Persistence] Frozen ${tableName} (${rowCount.toLocaleString()} rows) - metadata from Parquet`)
+          console.log(`[Persistence] Frozen ${tableName} (${rowCount.toLocaleString()} rows) - metadata from snapshot`)
         }
       }
 
@@ -406,12 +406,12 @@ export async function performHydration(isRehydration = false): Promise<void> {
 export function requestRehydration(): void {
   hydrationPromise = null
   rehydrationRequested = true
-  console.log('[Persistence] Re-hydration requested - will import from Parquet on next effect')
+  console.log('[Persistence] Re-hydration requested - will import from snapshots on next effect')
 }
 
 /**
  * Save a cell edit to the changelog (instant, non-blocking).
- * This is the fast path for cell edits - avoids full Parquet export.
+ * This is the fast path for cell edits - avoids full snapshot export.
  *
  * @param tableId - Table ID (from tableStore)
  * @param rowId - _cs_id of the edited row
@@ -476,7 +476,7 @@ export async function saveCellEditsToChangelog(
 
 /**
  * Save a row insert to the changelog (instant, non-blocking).
- * This is the fast path for row inserts — avoids full Parquet export.
+ * This is the fast path for row inserts — avoids full snapshot export.
  */
 export async function saveInsertRowToChangelog(
   tableId: string,
@@ -503,7 +503,7 @@ export async function saveInsertRowToChangelog(
 
 /**
  * Save a row delete to the changelog (instant, non-blocking).
- * This is the fast path for row deletes — avoids full Parquet export.
+ * This is the fast path for row deletes — avoids full snapshot export.
  */
 export async function saveDeleteRowToChangelog(
   tableId: string,
@@ -527,12 +527,12 @@ export async function saveDeleteRowToChangelog(
 }
 
 /**
- * Compact the changelog by merging pending edits into Parquet snapshots.
+ * Compact the changelog by merging pending edits into Arrow IPC snapshots.
  * Called periodically when idle or when changelog exceeds threshold.
  *
  * Flow:
  * 1. Check if compaction needed (entry count or idle time)
- * 2. Export affected tables to Parquet (changelog already applied to DuckDB)
+ * 2. Export affected tables to snapshot (changelog already applied to DuckDB)
  * 3. Clear changelog for those tables
  *
  * @param force - If true, compact regardless of thresholds
@@ -603,7 +603,7 @@ export async function compactChangelog(force = false): Promise<number> {
             continue
           }
 
-          // Export table to Parquet (includes all changes since changelog is already in DuckDB)
+          // Export table to snapshot (includes all changes since changelog is already in DuckDB)
           // Track in UI store for status bar indicator
           useUIStore.getState().addSavingTable(table.name)
 
@@ -661,7 +661,7 @@ const firstDirtyAt = new Map<string, number>()
 
 /**
  * Mark a table as recently saved to prevent redundant auto-save.
- * Called by useDuckDB after direct Parquet export during import,
+ * Called by useDuckDB after direct snapshot export during import,
  * and by timeline-engine after snapshot creation.
  *
  * @param tableId - The table ID to mark
@@ -678,7 +678,7 @@ export function markTableAsRecentlySaved(tableId: string, durationMs?: number): 
 /**
  * Force save all dirty tables immediately.
  * This is a fallback for when tables get stuck in "unsaved" state.
- * Bypasses debounce and saves all dirty tables to Parquet.
+ * Bypasses debounce and saves all dirty tables to snapshots.
  */
 export async function forceSaveAll(): Promise<void> {
   const { useUIStore } = await import('@/stores/uiStore')
@@ -720,7 +720,7 @@ export async function forceSaveAll(): Promise<void> {
       // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
       const normalizedSnapshotId = table.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
-      // Export to Parquet
+      // Export to snapshot
       await exportTableToSnapshot(db, conn, table.name, normalizedSnapshotId, {
         onChunkProgress: (current, total, tableName) => {
           uiState.setChunkProgress({ tableName, currentChunk: current, totalChunks: total })
@@ -803,7 +803,7 @@ export function usePersistence() {
   const [isRestoring, setIsRestoring] = useState(true)
   const addTable = useTableStore((s) => s.addTable)
 
-  // 1. HYDRATION: Run once on mount to restore data from Parquet files
+  // 1. HYDRATION: Run once on mount to restore data from Arrow IPC snapshots
   //    Can also be triggered after worker restart via requestRehydration()
   useEffect(() => {
     // Prevent double-hydration from React StrictMode
@@ -826,7 +826,7 @@ export function usePersistence() {
 
       try {
         // Clear any existing tables to prevent duplicates
-        // This ensures Parquet files are the single source of truth
+        // This ensures snapshots are the single source of truth
         // Skip during re-hydration - tables were already cleared by worker restart
         const existingTables = useTableStore.getState().tables
         if (existingTables.length > 0 && !isRehydration) {
@@ -859,7 +859,7 @@ export function usePersistence() {
         // Clean up duplicate case-mismatched files (migration from pre-fix state)
         await cleanupDuplicateCaseSnapshots()
 
-        // List all saved Parquet files
+        // List all saved snapshot files
         const snapshots = await listSnapshots()
 
         if (snapshots.length === 0) {
@@ -897,7 +897,7 @@ export function usePersistence() {
         const savedTableIds = (window as Window & { __CLEANSLATE_SAVED_TABLE_IDS__?: Record<string, string> }).__CLEANSLATE_SAVED_TABLE_IDS__
 
         // Build normalized lookup map: lowercase table name → original tableId
-        // This handles case mismatch between Parquet filenames (lowercase) and app-state.json (original casing)
+        // This handles case mismatch between snapshot filenames (lowercase) and app-state.json (original casing)
         const normalizedSavedTableIds = new Map<string, string>()
         if (savedTableIds) {
           for (const [name, id] of Object.entries(savedTableIds)) {
@@ -940,7 +940,7 @@ export function usePersistence() {
         const tableIdToName = new Map<string, string>()
 
         // Build normalized lookup for savedTables: lowercase name → original savedTable entry
-        // This allows matching Parquet filenames (lowercase) to app-state entries (original casing)
+        // This allows matching snapshot filenames (lowercase) to app-state entries (original casing)
         const savedTables = (window as Window & { __CLEANSLATE_SAVED_TABLES__?: Array<{ id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }> }).__CLEANSLATE_SAVED_TABLES__
         const normalizedSavedTables = new Map<string, { id: string; name: string; columns: Array<{ name: string; type: string; nullable: boolean }>; rowCount: number; columnOrder?: string[] }>()
         if (savedTables) {
@@ -971,8 +971,8 @@ export function usePersistence() {
             const shouldThaw = snapshotName === tableToThaw
 
             if (shouldThaw) {
-              // THAW: Import from Parquet into DuckDB (full hydration)
-              // Use snapshotName (lowercase) for Parquet file, tableName (original casing) for DuckDB table
+              // THAW: Import from Arrow IPC snapshot into DuckDB (full hydration)
+              // Use snapshotName (lowercase) for snapshot file, tableName (original casing) for DuckDB table
               await importTableFromSnapshot(db, conn, snapshotName, tableName)
 
               // Auto-migrate sequential _cs_id to gap-based (one-time migration)
@@ -1004,8 +1004,8 @@ export function usePersistence() {
                 markTableFrozen(tableId)
                 console.log(`[Persistence] Frozen ${tableName} (${savedTable.rowCount.toLocaleString()} rows) - metadata from app-state`)
               } else {
-                // Fallback: Read Parquet metadata directly (requires brief import)
-                console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from Parquet header...`)
+                // Fallback: Read snapshot metadata directly (requires brief import)
+                console.log(`[Persistence] No saved metadata for ${snapshotName}, reading from snapshot metadata...`)
                 await importTableFromSnapshot(db, conn, snapshotName, tableName)
                 const cols = await getTableColumns(tableName)
                 const countResult = await conn.query(`SELECT COUNT(*) as count FROM "${tableName}"`)
@@ -1016,7 +1016,7 @@ export function usePersistence() {
 
                 addTable(tableName, cols, rowCount, tableId)
                 markTableFrozen(tableId)
-                console.log(`[Persistence] Frozen ${tableName} (${rowCount.toLocaleString()} rows) - metadata from Parquet`)
+                console.log(`[Persistence] Frozen ${tableName} (${rowCount.toLocaleString()} rows) - metadata from snapshot`)
               }
             }
 
@@ -1058,7 +1058,7 @@ export function usePersistence() {
     hydrationPromise = hydrate()
   }, [addTable])
 
-  // 2. SAVING: Call this to save a specific table to Parquet
+  // 2. SAVING: Call this to save a specific table to snapshot
   // Uses queue with coalescing to prevent concurrent exports
   // priority: when true, MUST save even if previous save marked table clean (for row inserts/deletes)
   const saveTable = useCallback(async (tableName: string, priority = false): Promise<void> => {
@@ -1112,7 +1112,7 @@ export function usePersistence() {
 
       try {
         // CRITICAL: Flush any pending batch edits for this table before exporting
-        // This ensures all cell edits are captured in the Parquet file, even if
+        // This ensures all cell edits are captured in the snapshot file, even if
         // the user made rapid edits that haven't been flushed yet.
         const tableForFlush = useTableStore.getState().tables.find(t => t.name === tableName)
         if (tableForFlush) {
@@ -1135,10 +1135,10 @@ export function usePersistence() {
         console.log(`[Persistence] Saving ${tableName}...`)
 
         // CRITICAL: Normalize snapshotId to lowercase to match timeline-engine's naming convention.
-        // This prevents duplicate Parquet files in OPFS which is case-sensitive.
+        // This prevents duplicate snapshot files in OPFS which is case-sensitive.
         const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
-        // Export table to Parquet (overwrites existing snapshot)
+        // Export table to snapshot (overwrites existing snapshot)
         // Pass chunk progress callback for large table UI feedback
         await exportTableToSnapshot(db, conn, tableName, normalizedSnapshotId, {
           onChunkProgress: (current, total, table) => {
@@ -1146,7 +1146,7 @@ export function usePersistence() {
           },
         })
 
-        // Mark table as clean after successful Parquet export
+        // Mark table as clean after successful snapshot export
         const tableForClean = useTableStore.getState().tables.find(t => t.name === tableName)
         if (tableForClean) {
           useUIStore.getState().markTableClean(tableForClean.id)
@@ -1220,11 +1220,11 @@ export function usePersistence() {
     return savePromise
   }, [])
 
-  // 3. DELETE: Call this when a table is deleted to remove its Parquet file
+  // 3. DELETE: Call this when a table is deleted to remove its snapshot file
   const deleteTableSnapshot = useCallback(async (tableName: string) => {
     try {
       // CRITICAL: Normalize table name to match how snapshots are saved (lowercase, underscores)
-      // Without this, deletion of "My_Table" would look for "My_Table.parquet" but file is "my_table.parquet"
+      // Without this, deletion of "My_Table" would look for "My_Table.arrow" but file is "my_table.arrow"
       const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       await deleteSnapshot(normalizedSnapshotId)
       console.log(`[Persistence] Deleted snapshot for ${tableName} (normalized: ${normalizedSnapshotId})`)
@@ -1245,7 +1245,7 @@ export function usePersistence() {
     toast.success(`Saved ${currentTables.length} table(s)`)
   }, [saveTable])
 
-  // 5. CLEAR: Remove all Parquet files from OPFS
+  // 5. CLEAR: Remove all snapshot files from OPFS
   const clearStorage = useCallback(async () => {
     try {
       const snapshots = await listSnapshots()
@@ -1276,7 +1276,7 @@ export function usePersistence() {
     const knownTableIds = new Set<string>()
     const lastDataVersions = new Map<string, number>()
 
-    // Initialize with current tables (these were restored from Parquet, don't re-save)
+    // Initialize with current tables (these were restored from snapshots, don't re-save)
     useTableStore.getState().tables.forEach(t => {
       knownTableIds.add(t.id)
       lastDataVersions.set(t.id, t.dataVersion ?? 0)
@@ -1337,7 +1337,7 @@ export function usePersistence() {
 
         // CRITICAL: Include tables with priority save requests even if dataVersion didn't change
         // This handles LOCAL_ONLY_COMMANDS (row insert/delete) that skip dataVersion bump
-        // to avoid grid scroll reset but still need their data persisted to Parquet
+        // to avoid grid scroll reset but still need their data persisted to snapshot
         if (isNewTable || hasDataChanged || hasPriorityRequest) {
           tablesToSave.push({ id: table.id, name: table.name, rowCount: table.rowCount })
           knownTableIds.add(table.id)
@@ -1484,7 +1484,7 @@ export function usePersistence() {
   }, [isRestoring, saveTable])
 
   // 6a. REMOVED: Priority saves are now handled in Effect 6 above.
-  // The separate Effect 6a was causing concurrent Parquet exports (memory spike bug).
+  // The separate Effect 6a was causing concurrent snapshot exports (memory spike bug).
   // Priority saves now bypass debounce within Effect 6's unified handler.
 
   // 6b. WATCH DIRTY TABLES: Cell edits are persisted to changelog (fast path)
@@ -1497,10 +1497,10 @@ export function usePersistence() {
   // - dataVersion did NOT change (effect 6 won't fire)
   //
   // For structural transforms where dataVersion changes, effect 6 handles it
-  // with full Parquet export.
+  // with full snapshot export.
   //
-  // Cell edits are NOT saved to Parquet here - they go to changelog (fast path).
-  // Compaction (Effect 9) merges changelog into Parquet periodically.
+  // Cell edits are NOT saved to snapshot here - they go to changelog (fast path).
+  // Compaction (Effect 9) merges changelog into snapshot periodically.
   useEffect(() => {
     if (isRestoring) return
 
@@ -1558,8 +1558,8 @@ export function usePersistence() {
           // BUT if there are pending edits in editBatchStore (deferred during transforms),
           // the changelog write hasn't happened yet - DON'T mark clean!
           //
-          // We DON'T trigger Parquet export here - that's wasteful for cell edits.
-          // Compaction (Effect 9) will merge changelog into Parquet periodically.
+          // We DON'T trigger snapshot export here - that's wasteful for cell edits.
+          // Compaction (Effect 9) will merge changelog into snapshot periodically.
 
           // Mark tables as "saved" ONLY if no pending edits waiting to be flushed
           // This gives the user immediate feedback that their edit is safe
@@ -1590,7 +1590,7 @@ export function usePersistence() {
     }
   }, [isRestoring])
 
-  // 7. WATCH FOR DELETIONS: Subscribe to tableStore and delete Parquet when tables removed
+  // 7. WATCH FOR DELETIONS: Subscribe to tableStore and delete snapshots when tables removed
   useEffect(() => {
     if (isRestoring) return
 
@@ -1606,7 +1606,7 @@ export function usePersistence() {
       for (const [id, name] of previousTables) {
         if (!currentTableIds.has(id)) {
           // Skip deletion during rehydration - we're just clearing store metadata,
-          // not actually deleting tables. The Parquet files should remain.
+          // not actually deleting tables. The snapshot files should remain.
           if (isRehydratingFlag) {
             console.log(`[Persistence] Skipping snapshot deletion during rehydration: ${name}`)
             continue

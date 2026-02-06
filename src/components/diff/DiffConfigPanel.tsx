@@ -81,7 +81,7 @@ export function DiffConfigPanel({
           return true
         }
 
-        // Then check timeline-based snapshot (handles both in-memory and Parquet)
+        // Then check timeline-based snapshot (handles both in-memory and OPFS snapshots)
         const timeline = getTimeline(activeTableId)
         if (timeline?.originalSnapshotName) {
           // CRITICAL: Also require at least one command (transformation) to be applied
@@ -90,7 +90,7 @@ export function DiffConfigPanel({
             return false
           }
 
-          // Parquet snapshots are always valid (stored in OPFS)
+          // OPFS snapshots are always valid (persisted as Arrow IPC)
           if (timeline.originalSnapshotName.startsWith('parquet:')) {
             return true
           }

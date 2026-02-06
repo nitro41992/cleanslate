@@ -123,7 +123,7 @@ function App() {
     suggestedName: string
   } | null>(null)
 
-  // Persistence - auto-hydrates on mount via Parquet files in OPFS
+  // Persistence - auto-hydrates on mount via Arrow IPC snapshots in OPFS
   const { isRestoring } = usePersistence()
 
   // Unified undo/redo hook - single entry point for all undo/redo operations

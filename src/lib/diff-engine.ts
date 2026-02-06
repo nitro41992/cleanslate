@@ -20,26 +20,53 @@ const resolvedExpressionCache = new Map<string, string>()
 const materializedDiffViews = new Map<string, string>()
 
 /**
- * Clear all diff caches. Call when diff view closes to free memory.
- * Clears:
- * - materializedSnapshots: Set of materialized snapshot IDs
- * - resolvedExpressionCache: Map of snapshot ID → SQL expressions
- * - materializedDiffViews: Map of diff table → materialized view table
+ * Clear all diff caches and DROP materialized temp tables from DuckDB.
+ * Call when diff view closes to free memory.
  *
- * Clears ALL module-level state to prevent memory leaks across repeated diff runs.
+ * Drops temp tables for:
+ * - materializedSnapshots → __diff_src_* tables
+ * - materializedDiffViews → index tables + views
+ *
+ * Then clears all module-level tracking state.
  */
-export function clearDiffCaches(): void {
+export async function clearDiffCaches(): Promise<void> {
   const snapshotCount = materializedSnapshots.size
   const cacheCount = resolvedExpressionCache.size
   const viewCount = materializedDiffViews.size
   const diffTableCount = registeredDiffTables.size
   const pendingCount = pendingDiffRegistrations.size
+
+  // DROP materialized snapshot temp tables before clearing tracking
+  for (const snapshotId of materializedSnapshots) {
+    try {
+      const tempTableName = `__diff_src_${snapshotId.replace(/[^a-zA-Z0-9_]/g, '_')}`
+      await execute(`DROP TABLE IF EXISTS "${tempTableName}"`)
+    } catch (err) {
+      console.warn(`[Diff] Failed to drop temp table for ${snapshotId}:`, err)
+    }
+  }
+
+  // DROP materialized diff view index tables + views
+  for (const [, storedValue] of materializedDiffViews) {
+    try {
+      if (storedValue.includes('|')) {
+        const [indexTableName, viewTableName] = storedValue.split('|')
+        await execute(`DROP VIEW IF EXISTS "${viewTableName}"`)
+        await execute(`DROP TABLE IF EXISTS "${indexTableName}"`)
+      } else {
+        await execute(`DROP TABLE IF EXISTS "${storedValue}"`)
+      }
+    } catch (err) {
+      console.warn(`[Diff] Failed to drop diff view/index:`, err)
+    }
+  }
+
   materializedSnapshots.clear()
   resolvedExpressionCache.clear()
   materializedDiffViews.clear()
   registeredDiffTables.clear()
   pendingDiffRegistrations.clear()
-  console.log(`[Diff] Cleared caches: ${snapshotCount} snapshots, ${cacheCount} expressions, ${viewCount} views, ${diffTableCount} diff tables, ${pendingCount} pending`)
+  console.log(`[Diff] Cleared caches (dropped ${snapshotCount} temp tables, ${viewCount} views): ${cacheCount} expressions, ${diffTableCount} diff tables, ${pendingCount} pending`)
 }
 
 // Register with memory manager so caches are cleared on memory pressure

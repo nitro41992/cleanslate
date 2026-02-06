@@ -47,17 +47,17 @@ import { LARGE_DATASET_THRESHOLD } from '@/lib/constants'
  *
  * This is critical because:
  * 1. React Strict Mode can cause double-renders, triggering duplicate calls
- * 2. Vite HMR can remount components while Parquet export is in progress
- * 3. Concurrent calls writing to the same Parquet files causes corruption
+ * 2. Vite HMR can remount components while snapshot export is in progress
+ * 3. Concurrent calls writing to the same snapshot files causes corruption
  *
  * The mutex tracks in-flight Promises so subsequent calls wait for the first to complete.
  */
 const initializationInFlight = new Map<string, Promise<string>>()
 
 /**
- * Threshold for using Parquet storage for original snapshots.
+ * Threshold for using OPFS snapshot storage for original snapshots.
  * Uses LARGE_DATASET_THRESHOLD to align with batch execution settings.
- * Tables with ≥50k rows use OPFS Parquet, smaller tables use in-memory duplicates.
+ * Tables with ≥50k rows use OPFS snapshots, smaller tables use in-memory duplicates.
  */
 const ORIGINAL_SNAPSHOT_THRESHOLD = LARGE_DATASET_THRESHOLD
 
@@ -77,7 +77,7 @@ export function getTimelineOriginalName(timelineId: string): string {
 
 /**
  * Check if a table name represents a timeline snapshot
- * Snapshot tables can be safely dropped after Parquet export
+ * Snapshot tables can be safely dropped after snapshot export
  * Active tables (user-facing) must NEVER be dropped
  */
 export function isSnapshotTable(tableName: string): boolean {
@@ -106,14 +106,14 @@ export async function listSnapshotTables(): Promise<string[]> {
 }
 
 /**
- * Check if a Parquet snapshot has the _cs_origin_id column.
+ * Check if an OPFS snapshot has the _cs_origin_id column.
  * Old snapshots created before this feature was added won't have it.
  *
  * Uses file registration approach (like diff-engine) to work even when OPFS is disabled.
  */
 async function snapshotHasOriginId(_snapshotId: string): Promise<boolean> {
   // All snapshots created with Arrow IPC include _cs_origin_id.
-  // This was a backward-compat check for legacy Parquet snapshots,
+  // This was a backward-compat check for legacy snapshots,
   // but since we're pre-prod with no migration needed, always return true.
   return true
 }
@@ -122,8 +122,8 @@ async function snapshotHasOriginId(_snapshotId: string): Promise<boolean> {
  * Create the original snapshot for a table's timeline
  * This is called when a timeline is first created for a table
  *
- * Uses Parquet storage for large tables (≥100k rows) to reduce baseline RAM usage
- * Returns special "parquet:" prefix for Parquet-backed snapshots
+ * Uses OPFS snapshot storage for large tables (≥100k rows) to reduce baseline RAM usage
+ * Returns special "parquet:" prefix for OPFS-backed snapshots
  *
  * IMPORTANT: Uses tableName (sanitized) for snapshot naming for cross-session resilience.
  * This allows detecting existing snapshots even after page reload or HMR.
@@ -139,7 +139,7 @@ export async function createTimelineOriginalSnapshot(
   const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
   const snapshotId = `original_${sanitizedTableName}`
 
-  // IDEMPOTENCY CHECK: If Parquet files already exist, check if they need migration
+  // IDEMPOTENCY CHECK: If snapshot files already exist, check if they need migration
   // This prevents HMR/Strict Mode/page reloads from overwriting snapshots with modified data
   const existingSnapshot = await checkSnapshotFileExists(snapshotId)
   if (existingSnapshot) {
@@ -185,12 +185,12 @@ export async function createTimelineOriginalSnapshot(
   }
 
   if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
-    console.log(`[Timeline] Creating Parquet original snapshot for ${rowCount.toLocaleString()} rows...`)
+    console.log(`[Timeline] Creating OPFS snapshot for original (${rowCount.toLocaleString()} rows)...`)
 
     const db = await initDuckDB()
     const conn = await getConnection()
 
-    // Export to OPFS Parquet using direct call (no wrapper needed)
+    // Export to OPFS snapshot using direct call (no wrapper needed)
     await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     // Create persistence copy via file copy (instant, no re-export needed)
@@ -226,16 +226,16 @@ export async function createTimelineOriginalSnapshot(
       console.warn('[Timeline] Failed to create persistence copy (will rely on auto-save):', copyError)
     }
 
-    // Return special prefix to signal Parquet storage (keeps store type as string)
+    // Return special prefix to signal OPFS storage (keeps store type as string)
     return `parquet:${snapshotId}`
   }
 
-  // Small table - export to Parquet like large tables do
+  // Small table - export to OPFS snapshot like large tables do
   // OPTIMIZATION: Export active table directly (no duplicate needed)
   // DuckDB handles read consistency, so no risk of corruption during export
 
   try {
-    // Export active table directly to OPFS Parquet
+    // Export active table directly to OPFS snapshot
     // This is safe because:
     // 1. DuckDB uses MVCC (multi-version concurrency control)
     // 2. Export reads from a consistent snapshot of the table
@@ -266,24 +266,24 @@ export async function createTimelineOriginalSnapshot(
       console.warn('[Timeline] Failed to create persistence copy (will rely on auto-save):', copyError)
     }
 
-    // Return Parquet reference (same as large table path)
+    // Return snapshot reference (same as large table path)
     return `parquet:${snapshotId}`
 
   } catch (error) {
     // On export failure, fall back to in-memory duplicate
-    console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
+    console.error('[Timeline] Snapshot export failed, creating in-memory snapshot fallback:', error)
 
     const tempSnapshotName = `_timeline_original_${sanitizedTableName}`
     await duplicateTable(tableName, tempSnapshotName, true)
 
-    // Return the in-memory table name instead of Parquet reference
+    // Return the in-memory table name instead of snapshot reference
     return tempSnapshotName
   }
 }
 
 /**
  * Restore a table from a timeline original snapshot
- * Handles both in-memory and Parquet-backed snapshots
+ * Handles both in-memory and OPFS-backed snapshots
  */
 export async function restoreTimelineOriginalSnapshot(
   tableName: string,
@@ -293,13 +293,13 @@ export async function restoreTimelineOriginalSnapshot(
     // Extract snapshot ID from "parquet:original_abc123"
     const snapshotId = snapshotName.replace('parquet:', '')
 
-    console.log(`[Timeline] Restoring from Parquet: ${snapshotId}`)
+    console.log(`[Timeline] Restoring from OPFS snapshot: ${snapshotId}`)
 
-    // CRITICAL: Verify Parquet file exists BEFORE dropping the table
+    // CRITICAL: Verify snapshot file exists BEFORE dropping the table
     const { checkSnapshotFileExists } = await import('@/lib/opfs/snapshot-storage')
     const fileExists = await checkSnapshotFileExists(snapshotId)
     if (!fileExists) {
-      throw new Error(`[Timeline] Parquet snapshot file not found: ${snapshotId}. Cannot restore table.`)
+      throw new Error(`[Timeline] OPFS snapshot file not found: ${snapshotId}. Cannot restore table.`)
     }
 
     const db = await initDuckDB()
@@ -311,12 +311,12 @@ export async function restoreTimelineOriginalSnapshot(
     // Import from OPFS - wrapped in try-catch with detailed error
     try {
       await importTableFromSnapshot(db, conn, snapshotId, tableName)
-      console.log(`[Timeline] Successfully restored table ${tableName} from Parquet snapshot`)
+      console.log(`[Timeline] Successfully restored table ${tableName} from OPFS snapshot`)
     } catch (importError) {
       // CRITICAL: Table was dropped but import failed - try to create empty table to prevent crashes
-      console.error(`[Timeline] CRITICAL: Failed to import from Parquet after dropping table:`, importError)
+      console.error(`[Timeline] CRITICAL: Failed to import from OPFS snapshot after dropping table:`, importError)
       // Re-throw to let caller handle - the table is in a broken state
-      throw new Error(`Failed to restore table ${tableName} from Parquet snapshot ${snapshotId}: ${importError}`)
+      throw new Error(`Failed to restore table ${tableName} from OPFS snapshot ${snapshotId}: ${importError}`)
     }
   } else {
     // In-memory snapshot (existing behavior)
@@ -376,7 +376,7 @@ async function restoreFromHotSnapshot(targetTable: string, hotTable: string): Pr
 
 /**
  * Create a snapshot at a specific step index (before expensive operation)
- * Uses Parquet storage for large tables to prevent RAM spikes.
+ * Uses OPFS snapshot storage for large tables to prevent RAM spikes.
  *
  * LRU Cache (Phase 3): Also creates an in-memory "hot" copy for instant undo.
  * Only the most recent snapshot is kept hot; previous hot snapshots are evicted.
@@ -399,7 +399,7 @@ export async function createStepSnapshot(
   const tableId = findTableIdByTimeline(timelineId)
 
   // LRU Cache: Create hot (in-memory) snapshot for instant undo
-  // This happens BEFORE Parquet export so we capture the exact current state
+  // This happens BEFORE snapshot export so we capture the exact current state
   let hotTableName: string | undefined
   if (tableId) {
     hotTableName = getHotSnapshotName(timelineId, stepIndex)
@@ -416,13 +416,13 @@ export async function createStepSnapshot(
   }
 
   if (rowCount >= ORIGINAL_SNAPSHOT_THRESHOLD) {
-    console.log(`[Timeline] Creating Parquet step snapshot for ${rowCount.toLocaleString()} rows at step ${stepIndex}...`)
+    console.log(`[Timeline] Creating OPFS step snapshot for ${rowCount.toLocaleString()} rows at step ${stepIndex}...`)
 
     const db = await initDuckDB()
     const conn = await getConnection()
     const snapshotId = `snapshot_${timelineId}_${stepIndex}`
 
-    // Export to OPFS Parquet (file handles are dropped inside exportTableToSnapshot)
+    // Export to OPFS snapshot (file handles are dropped inside exportTableToSnapshot)
     await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     // OPTIMIZATION: Copy snapshot files to persistence location (instant, no re-export!)
@@ -487,14 +487,14 @@ export async function createStepSnapshot(
     return `parquet:${snapshotId}`
   }
 
-  // Small table - export to Parquet like large tables do
+  // Small table - export to OPFS snapshot like large tables do
   // OPTIMIZATION: Export active table directly (no duplicate needed)
   const db = await initDuckDB()
   const conn = await getConnection()
   const snapshotId = `snapshot_${timelineId}_${stepIndex}`
 
   try {
-    // Export active table directly to OPFS Parquet
+    // Export active table directly to OPFS snapshot
     // Safe due to DuckDB MVCC - reads from consistent snapshot
     await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
@@ -525,7 +525,7 @@ export async function createStepSnapshot(
       console.log(`[Snapshot] Suppressing auto-save for ${tableId}`)
     }
 
-    // Register in store with Parquet reference and hot table name
+    // Register in store with OPFS snapshot reference and hot table name
     console.log('[SNAPSHOT] Registering small table snapshot in store:', {
       tableId,
       stepIndex,
@@ -546,7 +546,7 @@ export async function createStepSnapshot(
 
   } catch (error) {
     // On export failure, fall back to in-memory duplicate
-    console.error('[Timeline] Parquet export failed, creating in-memory snapshot fallback:', error)
+    console.error('[Timeline] Snapshot export failed, creating in-memory snapshot fallback:', error)
 
     const tempSnapshotName = getTimelineSnapshotName(timelineId, stepIndex)
     await duplicateTable(tableName, tempSnapshotName, true)
@@ -867,11 +867,11 @@ export async function replayToPosition(
       store.updateTimelineOriginalSnapshot(tableId, snapshotTableName)
     }
 
-    // Verify snapshot exists (handle both Parquet and in-memory)
+    // Verify snapshot exists (handle both OPFS snapshot and in-memory)
     const isParquetSnapshot = snapshotTableName.startsWith('parquet:')
     let snapshotExists = false
     if (isParquetSnapshot) {
-      // For Parquet snapshots, verify the file actually exists in OPFS
+      // For OPFS snapshots, verify the file actually exists in OPFS
       const { checkSnapshotFileExists } = await import('@/lib/opfs/snapshot-storage')
       const snapshotId = snapshotTableName.replace('parquet:', '')
       snapshotExists = await checkSnapshotFileExists(snapshotId)
@@ -900,16 +900,16 @@ export async function replayToPosition(
       console.log('[REPLAY] COLD PATH: Restoring from disk snapshot:', { tableName, snapshotTableName, isParquetSnapshot })
     }
 
-    // Restore from snapshot (hot path is instant, cold path loads from Parquet)
+    // Restore from snapshot (hot path is instant, cold path loads from OPFS snapshot)
     try {
       if (hasHotSnapshot) {
         // HOT PATH: Instant restore from in-memory table
         await restoreFromHotSnapshot(tableName, snapshotInfo!.hotTableName!)
       } else if (snapshotTableName.startsWith('parquet:')) {
-        // COLD PATH: Load from Parquet
+        // COLD PATH: Load from OPFS snapshot
         await restoreTimelineOriginalSnapshot(tableName, snapshotTableName)
       } else {
-        // In-memory snapshot (fallback from Parquet export failure)
+        // In-memory snapshot (fallback from snapshot export failure)
         await execute(`DROP TABLE IF EXISTS "${tableName}"`)
         await duplicateTable(snapshotTableName, tableName, true)
       }
@@ -1355,7 +1355,7 @@ async function executeForwardUpdate(
 /**
  * Cleanup all timeline snapshots for a table
  * Called when a table is deleted
- * Handles both in-memory and Parquet snapshots
+ * Handles both in-memory and OPFS snapshots
  */
 export async function cleanupTimelineSnapshots(tableId: string, tableName?: string): Promise<void> {
   const store = useTimelineStore.getState()
@@ -1373,7 +1373,7 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
     try {
       const sanitizedTableName = effectiveTableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       await deleteSnapshot(`original_${sanitizedTableName}`)
-      console.log(`[Timeline] Deleted Parquet snapshot by tableName: original_${sanitizedTableName}`)
+      console.log(`[Timeline] Deleted OPFS snapshot by tableName: original_${sanitizedTableName}`)
     } catch (e) {
       // Expected if file doesn't exist
     }
@@ -1389,7 +1389,7 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
       // Skip if it's the tableName-based snapshot (already deleted above)
       if (snapshotId !== `original_${sanitizedTableName}`) {
         await deleteSnapshot(snapshotId)
-        console.log(`[Timeline] Deleted Parquet original snapshot: ${snapshotId}`)
+        console.log(`[Timeline] Deleted OPFS original snapshot: ${snapshotId}`)
       }
     } else if (timeline.originalSnapshotName) {
       await dropTable(timeline.originalSnapshotName)
@@ -1398,14 +1398,14 @@ export async function cleanupTimelineSnapshots(tableId: string, tableName?: stri
     console.warn(`Failed to drop original snapshot: ${e}`)
   }
 
-  // Drop all step snapshots (both cold Parquet and hot in-memory)
+  // Drop all step snapshots (both cold OPFS and hot in-memory)
   for (const snapshotInfo of timeline.snapshots.values()) {
     try {
-      // Drop cold (Parquet) snapshot
+      // Drop cold (OPFS) snapshot
       if (snapshotInfo.parquetId.startsWith('parquet:')) {
         const snapshotId = snapshotInfo.parquetId.replace('parquet:', '')
         await deleteSnapshot(snapshotId)
-        console.log(`[Timeline] Deleted Parquet step snapshot: ${snapshotId}`)
+        console.log(`[Timeline] Deleted OPFS step snapshot: ${snapshotId}`)
       } else {
         await dropTable(snapshotInfo.parquetId)
       }
@@ -1529,7 +1529,7 @@ async function initializeTimelineInternal(
     })
     // Verify the original snapshot exists, create if missing
     if (existing.originalSnapshotName) {
-      // Check if original snapshot still exists (handle both Parquet and in-memory)
+      // Check if original snapshot still exists (handle both OPFS snapshot and in-memory)
       let exists = false
       const snapshotName = existing.originalSnapshotName
 
@@ -1545,7 +1545,7 @@ async function initializeTimelineInternal(
       console.log(
         '[INIT_TIMELINE] Original snapshot exists:',
         exists,
-        `(type: ${snapshotName.startsWith('parquet:') ? 'Parquet' : 'table'})`
+        `(type: ${snapshotName.startsWith('parquet:') ? 'OPFS snapshot' : 'table'})`
       )
 
       if (!exists) {
@@ -1564,7 +1564,7 @@ async function initializeTimelineInternal(
     return existing.id
   }
 
-  // CRITICAL: Check for existing Parquet snapshot using tableName BEFORE creating new timeline
+  // CRITICAL: Check for existing OPFS snapshot using tableName BEFORE creating new timeline
   // This handles page reloads and HMR scenarios where the timeline store was reset but OPFS files still exist
   // Using sanitized tableName ensures same file loaded twice uses same snapshot
   const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
@@ -1578,7 +1578,7 @@ async function initializeTimelineInternal(
   if (existingParquetSnapshot && restoredTimeline && restoredTimeline.commands.length > 0) {
     // REUSE SCENARIO: Timeline was restored from app-state.json and snapshot file exists
     // This means user had data, refreshed the page, and we should preserve undo capability
-    console.log('[INIT_TIMELINE] Reusing existing Parquet snapshot for restored timeline:', potentialSnapshotId)
+    console.log('[INIT_TIMELINE] Reusing existing OPFS snapshot for restored timeline:', potentialSnapshotId)
     console.log('[INIT_TIMELINE] Restored timeline has', restoredTimeline.commands.length, 'commands at position', restoredTimeline.currentPosition)
 
     // Verify the originalSnapshotName matches what we expect
@@ -1599,7 +1599,7 @@ async function initializeTimelineInternal(
     // STALE SCENARIO: Snapshot file exists but no restored timeline
     // This could happen if app-state.json was cleared but OPFS files remain
     // Delete the stale snapshot and create fresh
-    console.log('[INIT_TIMELINE] Found stale Parquet snapshot (no timeline), deleting:', potentialSnapshotId)
+    console.log('[INIT_TIMELINE] Found stale OPFS snapshot (no timeline), deleting:', potentialSnapshotId)
     const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
     await deleteSnapshot(potentialSnapshotId)
     // Fall through to create new snapshot below

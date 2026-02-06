@@ -646,7 +646,7 @@ export function DataGrid({
           }
 
           // Save to changelog for fast persistence (non-blocking)
-          // This avoids triggering full Parquet export for cell edits
+          // This avoids triggering full snapshot export for cell edits
           const { saveCellEditsToChangelog } = await import('@/hooks/usePersistence')
           await saveCellEditsToChangelog(
             edits.map((e) => ({

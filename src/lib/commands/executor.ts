@@ -118,7 +118,7 @@ function getTimeline(tableId: string): TableCommandTimeline {
 export function clearCommandTimeline(tableId: string): void {
   const timeline = tableTimelines.get(tableId)
   if (timeline) {
-    // Clean up snapshots (both table and Parquet)
+    // Clean up snapshots (both in-memory and OPFS)
     for (const snapshot of timeline.snapshots.values()) {
       if (snapshot.storageType === 'table' && snapshot.tableName) {
         dropTable(snapshot.tableName).catch(() => {
@@ -305,7 +305,7 @@ export class CommandExecutor implements ICommandExecutor {
         // Timeline was already initialized above, fetch it
         existingTimeline = timelineStoreState.getTimeline(tableId)
 
-        // Call timeline engine's createStepSnapshot for Parquet-backed snapshots
+        // Call timeline engine's createStepSnapshot for OPFS-backed snapshots
         // This creates a snapshot of the CURRENT state (before the new command is applied)
         // CRITICAL FIX: Snapshot at index N = state AFTER command[N] was executed
         // This snapshot captures the state after command[position], before the new expensive command
@@ -428,7 +428,7 @@ export class CommandExecutor implements ICommandExecutor {
             console.log(`[Executor] Cleaned up orphaned snapshot (idempotent): ${snapshotMetadata.tableName}`)
           } else if (snapshotMetadata.storageType === 'parquet') {
             await deleteSnapshot(snapshotMetadata.id)
-            console.log(`[Executor] Cleaned up orphaned Parquet snapshot (idempotent): ${snapshotMetadata.id}`)
+            console.log(`[Executor] Cleaned up orphaned OPFS snapshot (idempotent): ${snapshotMetadata.id}`)
           }
           snapshotMetadata = undefined
         } catch (err) {
@@ -768,8 +768,8 @@ export class CommandExecutor implements ICommandExecutor {
 
         // Row insertions/deletions and column additions need persistence.
         // If the operation was journaled to OPFS changelog, skip the expensive priority
-        // Parquet save — the next compaction cycle (every 30s idle) will merge it.
-        // Otherwise, request immediate Parquet export.
+        // snapshot save — the next compaction cycle (every 30s idle) will merge it.
+        // Otherwise, request immediate snapshot save.
         if (
           command.type === 'data:insert_row' ||
           command.type === 'data:delete_row' ||
@@ -778,9 +778,9 @@ export class CommandExecutor implements ICommandExecutor {
           if (executionResult.journaled) {
             // Journaled to OPFS changelog — mark clean immediately (data is durable)
             uiStoreModule.useUIStore.getState().markTableClean(tableId)
-            console.log('[Executor] Operation journaled to changelog, skipping priority Parquet save:', command.type)
+            console.log('[Executor] Operation journaled to changelog, skipping priority snapshot save:', command.type)
           } else {
-            // Not journaled (schema:add_column, or Tier 3 delete_row) — need Parquet save
+            // Not journaled (schema:add_column, or Tier 3 delete_row) — need snapshot save
             const currentTable = useTableStore.getState().tables.find(t => t.id === tableId)
             if (currentTable) {
               uiStoreModule.useUIStore.getState().addSavingTable(currentTable.name)
@@ -822,7 +822,7 @@ export class CommandExecutor implements ICommandExecutor {
         // The UI handler (CombinePanel) adds the new table separately via addTable()
         const createsNewTable = command.type === 'combine:stack' || command.type === 'combine:join'
         if (!createsNewTable) {
-          // If operation was journaled to OPFS changelog, skip priority Parquet save.
+          // If operation was journaled to OPFS changelog, skip priority snapshot save.
           // The data is already durable in the changelog; compaction will merge it later.
           if (executionResult.journaled) {
             uiStoreModule.useUIStore.getState().markTableClean(tableId)
@@ -846,7 +846,7 @@ export class CommandExecutor implements ICommandExecutor {
       await this.pruneSnapshotsIfHighMemory()
 
       // Auto-persist to OPFS (debounced, non-blocking)
-      // Note: This triggers DuckDB CHECKPOINT which is fast, but the actual Parquet export
+      // Note: This triggers DuckDB CHECKPOINT which is fast, but the actual snapshot export
       // (in usePersistence) happens on a 2s debounce. Persistence status is managed by
       // usePersistence, not here, to accurately reflect when data is truly saved.
       const { flushDuckDB } = await import('@/lib/duckdb')
@@ -1298,8 +1298,8 @@ export class CommandExecutor implements ICommandExecutor {
       await duplicateTable(snapshot.tableName!, tableName, true)
 
     } else if (snapshot.storageType === 'parquet') {
-      // Cold storage: Restore from OPFS Parquet file
-      console.log(`[Snapshot] Restoring from Parquet: ${snapshot.path}`)
+      // Cold storage: Restore from OPFS snapshot file
+      console.log(`[Snapshot] Restoring from OPFS snapshot: ${snapshot.path}`)
 
       const db = await initDuckDB()
       const conn = await getConnection()
@@ -1334,13 +1334,13 @@ export class CommandExecutor implements ICommandExecutor {
     try {
       if (tier === 3 && snapshot) {
         // Tier 3 with snapshot - can show deleted/added rows
-        // For Parquet snapshots, we can't use them in diff views (must be in-memory)
-        // Skip diff view creation for Parquet snapshots (highlighting still works via affectedRowIds)
+        // For OPFS snapshots, we can't use them in diff views (must be in-memory)
+        // Skip diff view creation for OPFS snapshots (highlighting still works via affectedRowIds)
         if (snapshot.storageType === 'table' && snapshot.tableName) {
           return await createTier3DiffView(ctx, { ...config, snapshotTable: snapshot.tableName })
         } else {
-          // Parquet snapshot - skip diff view (can't reference Parquet in SQL)
-          console.log('[Diff] Skipping diff view for Parquet snapshot (highlighting via row IDs)')
+          // OPFS snapshot - skip diff view (can't reference OPFS snapshot in SQL)
+          console.log('[Diff] Skipping diff view for OPFS snapshot (highlighting via row IDs)')
           return undefined
         }
       } else if (tier === 1) {

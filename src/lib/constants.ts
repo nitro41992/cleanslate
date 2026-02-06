@@ -9,7 +9,7 @@
  *
  * Used by:
  * - batch-executor.ts: Default batch size for LIMIT/OFFSET pagination
- * - timeline-engine.ts: Threshold for Parquet snapshots vs in-memory
+ * - timeline-engine.ts: Threshold for OPFS snapshots vs in-memory
  *
  * Rationale for 50,000:
  * - Large enough to minimize batch overhead

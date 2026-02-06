@@ -11,7 +11,7 @@
  *
  * This is the key primitive for atomic writes:
  * 1. Write to temp file (foo.tmp)
- * 2. Rename to final name (foo.parquet)
+ * 2. Rename to final name (foo.arrow)
  *
  * If the app crashes during step 1, the temp file is orphaned (cleaned up later).
  * If the app crashes during step 2, either old or new file exists (never corrupt).

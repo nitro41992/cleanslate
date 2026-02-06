@@ -161,7 +161,7 @@ export function getOriginalFromBase(baseColumnName: string): string | null {
  * This is called when expression stack reaches COLUMN_MATERIALIZATION_THRESHOLD
  * to prevent expressions from growing too large and impacting performance.
  *
- * MEMORY OPTIMIZATION: Exports snapshot to Parquet instead of keeping in RAM
+ * MEMORY OPTIMIZATION: Exports snapshot to Arrow IPC (OPFS) instead of keeping in RAM
  */
 async function materializeColumn(
   db: {
@@ -176,7 +176,7 @@ async function materializeColumn(
   const snapshotName = `_mat_${tableName}_${column}_${Date.now()}`
   await duplicateTable(tableName, snapshotName, true)
 
-  // MEMORY OPTIMIZATION: Export snapshot to Parquet and drop from RAM
+  // MEMORY OPTIMIZATION: Export snapshot to Arrow IPC (OPFS) and drop from RAM
   // This preserves undo functionality while freeing memory
   try {
     const { initDuckDB, getConnection } = await import('@/lib/duckdb')
@@ -186,20 +186,20 @@ async function materializeColumn(
     const conn = await getConnection()
     const snapshotId = `mat_${tableName}_${column}_${Date.now()}`
 
-    // Export to OPFS Parquet
+    // Export to OPFS as Arrow IPC
     await exportTableToSnapshot(duckdb, conn, snapshotName, snapshotId)
 
     // Drop the in-memory duplicate (snapshot now in OPFS)
     await dropTable(snapshotName)
     console.log(`[Materialization] Exported snapshot to OPFS, dropped from RAM`)
 
-    // Store Parquet reference for potential undo
+    // Store snapshot reference for potential undo (parquet: prefix is a naming convention)
     versionInfo.materializationSnapshot = `parquet:${snapshotId}`
     versionInfo.materializationPosition = versionInfo.expressionStack.length
 
   } catch (error) {
     // On failure, keep in-memory snapshot as fallback
-    console.error('[Materialization] Parquet export failed, keeping in-memory snapshot:', error)
+    console.error('[Materialization] Arrow IPC export failed, keeping in-memory snapshot:', error)
     versionInfo.materializationSnapshot = snapshotName
     versionInfo.materializationPosition = versionInfo.expressionStack.length
   }
@@ -422,7 +422,7 @@ export function createColumnVersionManager(
           // At materialization boundary - cannot undo past this point
           // Clean up the materialization snapshot since we're at the limit
           if (versionInfo.materializationSnapshot) {
-            // Handle both Parquet and in-memory snapshots
+            // Handle both OPFS (Arrow IPC) and in-memory snapshots
             if (versionInfo.materializationSnapshot.startsWith('parquet:')) {
               const snapshotId = versionInfo.materializationSnapshot.replace('parquet:', '')
               const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
@@ -471,7 +471,7 @@ export function createColumnVersionManager(
 
           // Clean up materialization snapshot if it exists
           if (versionInfo.materializationSnapshot) {
-            // Handle both Parquet and in-memory snapshots
+            // Handle both OPFS (Arrow IPC) and in-memory snapshots
             if (versionInfo.materializationSnapshot.startsWith('parquet:')) {
               const snapshotId = versionInfo.materializationSnapshot.replace('parquet:', '')
               const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')

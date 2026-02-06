@@ -486,25 +486,25 @@ export function useDuckDB() {
       // 1. Drop DuckDB table (releases WASM heap memory)
       await dropTable(tableName)
 
-      // 2. Delete OPFS Parquet files (releases disk storage)
+      // 2. Delete OPFS Arrow IPC files (releases disk storage)
       // CRITICAL: Normalize table name to match how snapshots are saved (lowercase, underscores)
-      // Without this, deletion of "My_Table" would look for "My_Table.parquet" but file is "my_table.parquet"
+      // Without this, deletion of "My_Table" would look for "My_Table.arrow" but file is "my_table.arrow"
       try {
         const { deleteSnapshot } = await import('@/lib/opfs/snapshot-storage')
         const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
-        // Delete persistence copy (tablename.parquet)
+        // Delete persistence copy (tablename.arrow)
         await deleteSnapshot(normalizedSnapshotId)
-        console.log(`[DuckDB] Deleted OPFS Parquet for: ${tableName} (normalized: ${normalizedSnapshotId})`)
+        console.log(`[DuckDB] Deleted OPFS snapshot for: ${tableName} (normalized: ${normalizedSnapshotId})`)
 
-        // Delete original snapshot (original_tablename.parquet)
+        // Delete original snapshot (original_tablename.arrow)
         // This is the timeline baseline used for diff comparisons
         // MUST be deleted to prevent stale UUID mismatches on re-import
         await deleteSnapshot(`original_${normalizedSnapshotId}`)
         console.log(`[DuckDB] Deleted original snapshot: original_${normalizedSnapshotId}`)
       } catch {
         // Expected if table was never persisted to OPFS
-        console.log(`[DuckDB] No OPFS Parquet to delete for: ${tableName}`)
+        console.log(`[DuckDB] No OPFS snapshot to delete for: ${tableName}`)
       }
 
       // 3. Remove from store (triggers timeline cleanup + app-state.json save)
@@ -523,7 +523,7 @@ export function useDuckDB() {
         if (memStatus.percentage > WARNING_THRESHOLD * 100 && remainingTables > 0) {
           console.log(
             `[DuckDB] Memory still at ${memStatus.percentage.toFixed(0)}% after table deletion - ` +
-            `restarting worker to reclaim WASM heap (${remainingTables} tables will restore from Parquet)`
+            `restarting worker to reclaim WASM heap (${remainingTables} tables will restore from snapshots)`
           )
 
           // Show toast to inform user
@@ -541,7 +541,7 @@ export function useDuckDB() {
           // Reinitialize DuckDB with fresh worker
           await initDuckDB()
 
-          // Re-hydrate tables from Parquet snapshots
+          // Re-hydrate tables from OPFS snapshots
           const { performHydration } = await import('@/hooks/usePersistence')
           await performHydration(true)  // true = re-hydration mode
 
@@ -553,7 +553,7 @@ export function useDuckDB() {
             description: `Database restarted. ${remainingTables} table(s) restored.`,
           })
 
-          console.log('[DuckDB] Worker restart complete - tables reimported from Parquet')
+          console.log('[DuckDB] Worker restart complete - tables reimported from snapshots')
         }
       } catch (memError) {
         // Don't fail the delete if memory check fails
@@ -614,7 +614,7 @@ export function useDuckDB() {
    * Compact memory by restarting the WASM worker.
    * WASM linear memory pages grow but never shrink (browser limitation).
    * This terminates the worker, releases all linear memory, reinitializes DuckDB,
-   * and reloads tables from Parquet snapshots.
+   * and reloads tables from OPFS snapshots.
    */
   const compactMemory = useCallback(async () => {
     console.log('[DuckDB] Starting memory compaction...')
@@ -635,10 +635,10 @@ export function useDuckDB() {
     await initDuckDB()
     console.log('[DuckDB] DuckDB reinitialized')
 
-    // 5. Re-hydrate tables from Parquet snapshots
+    // 5. Re-hydrate tables from OPFS snapshots
     const { performHydration } = await import('@/hooks/usePersistence')
     await performHydration(true) // true = re-hydration mode
-    console.log('[DuckDB] Tables re-hydrated from Parquet')
+    console.log('[DuckDB] Tables re-hydrated from snapshots')
 
     // 6. Clear memory history so trend analysis starts fresh
     const { clearMemoryHistory } = await import('@/lib/memory-manager')

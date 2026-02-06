@@ -191,7 +191,7 @@ export interface ExecutionResult {
     /** 0-based row index where the row was inserted */
     rowIndex: number
   }
-  /** If true, this operation was journaled to OPFS changelog — skip priority Parquet save */
+  /** If true, this operation was journaled to OPFS changelog — skip priority snapshot save */
   journaled?: boolean
 }
 
@@ -399,7 +399,7 @@ export interface CellChange {
 /**
  * Snapshot storage types
  * - table: In-memory DuckDB table (fast undo, high RAM)
- * - parquet: OPFS Parquet file (slow undo, low RAM)
+ * - parquet: OPFS Arrow IPC file (slow undo, low RAM)
  */
 export type SnapshotStorageType = 'table' | 'parquet'
 
@@ -410,7 +410,7 @@ export interface SnapshotMetadata {
   id: string
   storageType: SnapshotStorageType
   tableName?: string  // For 'table' storage
-  path?: string       // For 'parquet' storage
+  path?: string       // For 'parquet' storage (now Arrow IPC format)
 }
 
 export interface TimelineCommandRecord {
@@ -425,7 +425,7 @@ export interface TimelineCommandRecord {
   backupColumn?: string
   /** For Tier 2: inverse SQL */
   inverseSql?: string
-  /** For Tier 3: snapshot metadata (table or Parquet) */
+  /** For Tier 3: snapshot metadata (in-memory table or OPFS Arrow IPC) */
   snapshotTable?: SnapshotMetadata
   /** Highlight predicate */
   rowPredicate?: string | null

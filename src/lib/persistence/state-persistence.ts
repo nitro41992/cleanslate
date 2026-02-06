@@ -4,7 +4,7 @@
  * Saves React application state (table metadata, timelines, UI preferences) to OPFS
  * as JSON, enabling workspace restoration across page refreshes.
  *
- * DuckDB tables and Parquet snapshots persist separately via cleanslate.db
+ * DuckDB tables and Arrow IPC snapshots persist separately in OPFS
  * This module only handles application-level metadata.
  */
 
@@ -346,12 +346,12 @@ async function reconcileTablesWithDuckDB(tables: TableInfo[]): Promise<TableInfo
     const duckdbTableNames = new Set(duckdbTables.map(t => t.table_name))
 
     // CRITICAL: If DuckDB is empty, skip reconciliation and preserve original metadata.
-    // At startup with Parquet persistence, DuckDB starts empty. The Parquet files are
+    // At startup with snapshot persistence, DuckDB starts empty. The snapshot files are
     // imported AFTER restoreAppState() runs (in usePersistence.hydrate()). Without this
     // check, all tables would be incorrectly marked as "orphan metadata" and removed,
     // breaking activeTableId restoration and timeline matching.
     if (duckdbTableNames.size === 0 && tables.length > 0) {
-      console.log(`[Persistence] DuckDB empty - preserving ${tables.length} table(s) from app-state.json for Parquet import`)
+      console.log(`[Persistence] DuckDB empty - preserving ${tables.length} table(s) from app-state.json for snapshot import`)
       return tables.map(deserializeTable)
     }
 

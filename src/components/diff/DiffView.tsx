@@ -200,8 +200,8 @@ export function DiffView({ open, onClose }: DiffViewProps) {
           if (currentSourceTableName) {
             await cleanupDiffSourceFiles(currentSourceTableName)
           }
-          // Clear all diff caches to free memory
-          clearDiffCaches()
+          // Clear all diff caches and DROP temp tables to free memory
+          await clearDiffCaches()
         } catch (err) {
           console.warn('[DiffView] Cleanup error:', err)
         }
@@ -409,7 +409,7 @@ export function DiffView({ open, onClose }: DiffViewProps) {
     // Use setTimeout to ensure React has processed the clearResults state update
     setTimeout(async () => {
       if (oldDiffTableName) {
-        // Cleanup materialized view first (if Parquet-backed)
+        // Cleanup materialized view first (if snapshot-backed)
         if (oldStorageType === 'snapshot') {
           await cleanupMaterializedDiffView(oldDiffTableName)
         }
