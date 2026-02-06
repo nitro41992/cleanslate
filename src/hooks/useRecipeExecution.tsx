@@ -22,6 +22,7 @@ import { Label } from '@/components/ui/label'
 import { useRecipeStore, type ColumnMapping } from '@/stores/recipeStore'
 import { toast } from 'sonner'
 import type { Recipe } from '@/types'
+import { useOperationStore } from '@/stores/operationStore'
 
 interface UseRecipeExecutionOptions {
   activeTableId: string | undefined
@@ -116,6 +117,9 @@ export function useRecipeExecution({ activeTableId, activeTableName, tableColumn
   const doExecute = useCallback(async (recipe: Recipe, mapping: ColumnMapping, secret?: string) => {
     if (!activeTableId || !activeTableName) return
 
+    const enabledCount = recipe.steps.filter((s) => s.enabled).length
+    const opLabel = `Recipe: ${recipe.name} (${enabledCount} steps)`
+    const opId = useOperationStore.getState().registerOperation('recipe', opLabel)
     setIsProcessing(true)
     setExecutionError(null)
 
@@ -123,9 +127,11 @@ export function useRecipeExecution({ activeTableId, activeTableName, tableColumn
       const { executeRecipe } = await import('@/lib/recipe/recipe-executor')
       await executeRecipe(recipe, activeTableId, activeTableName, mapping, (progress) => {
         setExecutionProgress(progress)
+        const pct = enabledCount > 0 ? Math.round((progress.currentStep / enabledCount) * 100) : -1
+        useOperationStore.getState().updateProgress(opId, pct, progress.currentStepLabel)
       }, secret)
 
-      toast.success(`Recipe applied (${recipe.steps.filter((s) => s.enabled).length} steps)`)
+      toast.success(`Recipe applied (${enabledCount} steps)`)
     } catch (err) {
       console.error('Recipe execution failed:', err)
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -135,6 +141,7 @@ export function useRecipeExecution({ activeTableId, activeTableName, tableColumn
       setIsProcessing(false)
       setExecutionProgress(null)
       clearColumnMapping()
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }, [activeTableId, activeTableName, setIsProcessing, setExecutionError, setExecutionProgress, clearColumnMapping])
 

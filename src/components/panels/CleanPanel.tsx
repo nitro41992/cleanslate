@@ -54,6 +54,7 @@ import { PrivacySubPanel } from '@/components/clean/PrivacySubPanel'
 import { FormulaEditor, type OutputMode } from '@/components/clean/FormulaEditor'
 import { extractColumnRefs } from '@/lib/formula'
 import { AddToRecipeButton } from '@/components/recipe/AddToRecipeButton'
+import { useOperationStore } from '@/stores/operationStore'
 
 export function CleanPanel() {
   const [activeTab, setActiveTab] = useState<'transforms' | 'formula'>('transforms')
@@ -229,6 +230,8 @@ export function CleanPanel() {
   const executeTransformation = async () => {
     if (!activeTable || !selectedTransform) return
 
+    const opLabel = `Applying ${selectedTransform.label}${selectedColumn ? ` to '${selectedColumn}'` : ''}`
+    const opId = useOperationStore.getState().registerOperation('clean', opLabel)
     setIsApplying(true)
 
     try {
@@ -254,6 +257,7 @@ export function CleanPanel() {
         onProgress: (progress: ExecutorProgress) => {
           console.log(`[Command] ${progress.phase}: ${progress.progress}%`)
           setExecutionProgress(progress)
+          useOperationStore.getState().updateProgress(opId, progress.progress, progress.message)
         },
       })
 
@@ -294,6 +298,7 @@ export function CleanPanel() {
     } finally {
       setIsApplying(false)
       setExecutionProgress(null)
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }
 
@@ -449,6 +454,7 @@ export function CleanPanel() {
   const handleFormulaApply = async () => {
     if (!activeTable) return
 
+    const opId = useOperationStore.getState().registerOperation('clean', 'Applying formula')
     setIsApplying(true)
     try {
       await initializeTimeline(activeTable.id, activeTable.name)
@@ -467,6 +473,7 @@ export function CleanPanel() {
       const result = await executeWithConfirmation(command, activeTable.id, {
         onProgress: (progress: ExecutorProgress) => {
           setExecutionProgress(progress)
+          useOperationStore.getState().updateProgress(opId, progress.progress, progress.message)
         },
       })
 
@@ -497,6 +504,7 @@ export function CleanPanel() {
     } finally {
       setIsApplying(false)
       setExecutionProgress(null)
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }
 

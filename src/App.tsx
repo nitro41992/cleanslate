@@ -6,6 +6,7 @@ import { EmptyStateLanding } from '@/components/layout/EmptyStateLanding'
 import { Toaster } from '@/components/ui/sonner'
 import { IngestionWizard } from '@/components/common/IngestionWizard'
 import { DataGrid } from '@/components/grid/DataGrid'
+import { GridOperationBanner } from '@/components/grid/GridOperationBanner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -423,6 +424,7 @@ function App() {
                   </Tooltip>
                 </div>
               </CardHeader>
+              <GridOperationBanner tableId={activeTable.id} />
               <CardContent className="flex-1 p-0 min-h-0 overflow-hidden relative">
                 <div className="absolute inset-0">
                   <DataGrid

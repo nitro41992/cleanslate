@@ -50,6 +50,7 @@ import { obfuscateValue, OBFUSCATION_METHODS } from '@/lib/obfuscation'
 import type { ScrubMethod, RecipeStep } from '@/types'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { useOperationStore } from '@/stores/operationStore'
 
 interface PrivacyRule {
   column: string
@@ -227,6 +228,8 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
       return
     }
 
+    const opLabel = `Privacy transforms (${rules.length} columns)`
+    const opId = useOperationStore.getState().registerOperation('clean', opLabel)
     setIsProcessing(true)
 
     try {
@@ -246,6 +249,7 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
       // User cancelled the confirmation dialog
       if (!result) {
         setIsProcessing(false)
+        useOperationStore.getState().deregisterOperation(opId)
         return
       }
 
@@ -287,6 +291,7 @@ export function PrivacySubPanel({ onCancel, onApplySuccess }: PrivacySubPanelPro
       })
     } finally {
       setIsProcessing(false)
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }
 

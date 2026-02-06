@@ -21,6 +21,7 @@ import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
 import { toast } from 'sonner'
 import type { JoinType, TableInfo } from '@/types'
+import { useOperationStore } from '@/stores/operationStore'
 
 export function CombinePanel() {
   const tables = useTableStore((s) => s.tables)
@@ -130,6 +131,7 @@ export function CombinePanel() {
     const tableB = tables.find((t) => t.id === stackTableIds[1])
     if (!tableA || !tableB) return
 
+    const opId = useOperationStore.getState().registerOperation('combine', `Stacking "${tableA.name}" + "${tableB.name}"`)
     setIsProcessing(true)
     try {
       // Create and execute command via CommandExecutor with confirmation if discarding redo states
@@ -147,6 +149,7 @@ export function CombinePanel() {
       // User cancelled the confirmation dialog
       if (!result) {
         setIsProcessing(false)
+        useOperationStore.getState().deregisterOperation(opId)
         return
       }
 
@@ -213,6 +216,7 @@ export function CombinePanel() {
       })
     } finally {
       setIsProcessing(false)
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }
 
@@ -235,6 +239,7 @@ export function CombinePanel() {
 
   const handleAutoClean = async () => {
     if (!leftTable || !rightTable || !keyColumn) return
+    const opId = useOperationStore.getState().registerOperation('combine', 'Auto-cleaning join keys')
     setIsProcessing(true)
     try {
       const { cleanedA, cleanedB } = await autoCleanKeys(leftTable.name, rightTable.name, keyColumn)
@@ -249,12 +254,14 @@ export function CombinePanel() {
       })
     } finally {
       setIsProcessing(false)
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }
 
   const handleJoin = async () => {
     if (!leftTable || !rightTable || !keyColumn || !resultTableName.trim()) return
 
+    const opId = useOperationStore.getState().registerOperation('combine', `Joining "${leftTable.name}" + "${rightTable.name}"`)
     setIsProcessing(true)
     try {
       // Create and execute command via CommandExecutor with confirmation if discarding redo states
@@ -274,6 +281,7 @@ export function CombinePanel() {
       // User cancelled the confirmation dialog
       if (!result) {
         setIsProcessing(false)
+        useOperationStore.getState().deregisterOperation(opId)
         return
       }
 
@@ -334,6 +342,7 @@ export function CombinePanel() {
       })
     } finally {
       setIsProcessing(false)
+      useOperationStore.getState().deregisterOperation(opId)
     }
   }
 
