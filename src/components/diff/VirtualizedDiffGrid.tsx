@@ -9,6 +9,7 @@ import DataGridLib, {
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { Skeleton } from '@/components/ui/skeleton'
+import { GridLoadingOverlay } from '@/components/grid/GridLoadingOverlay'
 import { fetchDiffPageWithKeyset, getRowsWithColumnChanges, type DiffRow } from '@/lib/diff-engine'
 import { useDiffStore } from '@/stores/diffStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -105,6 +106,7 @@ export function VirtualizedDiffGrid({
   const [data, setData] = useState<DiffRow[]>([])
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
   const [isLoading, setIsLoading] = useState(true)
+  const [isFetchingPages, setIsFetchingPages] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
   // LRU page cache for efficient scrolling (keyed by page start offset)
@@ -375,6 +377,7 @@ export function VirtualizedDiffGrid({
         // Create new abort controller for this fetch
         const abortController = new AbortController()
         fetchAbortRef.current = abortController
+        setIsFetchingPages(true)
 
         // Calculate which pages we need to cover the range
         const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
@@ -411,6 +414,7 @@ export function VirtualizedDiffGrid({
           setData(mergedRows)
           setLoadedRange({ start: rangeStart, end: rangeEnd })
           pendingRangeRef.current = null
+          setIsFetchingPages(false)
           return
         }
 
@@ -532,12 +536,15 @@ export function VirtualizedDiffGrid({
           setData(mergedRows)
           setLoadedRange({ start: rangeStart, end: rangeEnd })
           pendingRangeRef.current = null
+          setIsFetchingPages(false)
         } catch (err) {
           // Check if this was an intentional abort
           if (abortController.signal.aborted) {
+            setIsFetchingPages(false)
             return
           }
           console.error('[DIFFGRID] Error loading diff page:', err)
+          setIsFetchingPages(false)
         }
       }, SCROLL_DEBOUNCE_MS)
     },
@@ -921,7 +928,7 @@ export function VirtualizedDiffGrid({
   }
 
   return (
-    <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px]" data-testid="diff-grid">
+    <div ref={containerRef} className="h-full w-full gdg-container min-h-[400px] relative" data-testid="diff-grid">
       {data.length > 0 && (
         <DataGridLib
           key={gridKey}
@@ -945,6 +952,7 @@ export function VirtualizedDiffGrid({
           experimental={{ hyperWrapping: true }}
         />
       )}
+      <GridLoadingOverlay isLoading={isFetchingPages} />
     </div>
   )
 }

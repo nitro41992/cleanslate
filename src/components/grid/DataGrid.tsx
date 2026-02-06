@@ -15,6 +15,8 @@ import '@glideapps/glide-data-grid/dist/index.css'
 import { Table as ArrowTable } from 'apache-arrow'
 import { useDuckDB } from '@/hooks/useDuckDB'
 import { Skeleton } from '@/components/ui/skeleton'
+import { GridLoadingOverlay } from '@/components/grid/GridLoadingOverlay'
+import { GoToRowDialog } from '@/components/grid/GoToRowDialog'
 import { useEditStore } from '@/stores/editStore'
 import { useTimelineStore } from '@/stores/timelineStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -34,6 +36,7 @@ import {
   GLOBAL_MAX_COLUMN_WIDTH,
   MAX_COLUMN_AUTO_WIDTH,
 } from '@/components/grid/column-sizing'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ColumnHeaderMenu, FilterBar } from '@/components/grid/filters'
 import { RowMenu } from '@/components/grid/RowMenu'
 import { AddColumnDialog } from '@/components/grid/AddColumnDialog'
@@ -439,6 +442,8 @@ export function DataGrid({
   const [csIdToRowIndex, setCsIdToRowIndex] = useState<Map<string, number>>(new Map())
   const [loadedRange, setLoadedRange] = useState({ start: 0, end: 0 })
   const [isLoading, setIsLoading] = useState(true)
+  // Tracks when Arrow pages are being fetched during scroll (for loading overlay)
+  const [isFetchingPages, setIsFetchingPages] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(containerRef)
   // Grid ref for programmatic control (e.g., forcing re-render on highlight changes)
@@ -761,6 +766,32 @@ export function DataGrid({
     position: 'left' | 'right'
     referenceColumn: string
   }>({ open: false, position: 'right', referenceColumn: '' })
+
+  // Go-to-row dialog state
+  const [goToRowOpen, setGoToRowOpen] = useState(false)
+
+  // Keyboard shortcut: Cmd+G / Ctrl+G opens go-to-row dialog
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'g') {
+        e.preventDefault()
+        setGoToRowOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  // Scroll grid to a specific row, centered in the viewport
+  const handleGoToRow = useCallback((rowIndex: number) => {
+    if (gridRef.current) {
+      // Offset by half the visible rows so the target lands in the middle
+      const visibleRows = visibleRegionRef.current.height
+      const offset = Math.floor(visibleRows / 2)
+      const targetRow = Math.max(0, Math.min(rowIndex - offset, rowCount - 1))
+      gridRef.current.scrollTo(0, targetRow)
+    }
+  }, [rowCount])
 
   // Filter/sort action handlers
   const handleSetFilter = useCallback((filter: ColumnFilter) => {
@@ -1599,6 +1630,7 @@ export function DataGrid({
         // Create new abort controller for this fetch
         const abortController = new AbortController()
         fetchAbortRef.current = abortController
+        setIsFetchingPages(true)
 
         // Calculate which pages we need to cover the range
         const firstPageIdx = Math.floor(needStart / PAGE_SIZE)
@@ -1660,6 +1692,7 @@ export function DataGrid({
           setLoadedRange({ start: rangeStart, end: rangeEnd })
 
           pendingRangeRef.current = null
+          setIsFetchingPages(false)
           return
         }
 
@@ -1770,15 +1803,20 @@ export function DataGrid({
           setLoadedRange({ start: rangeStart, end: rangeEnd })
 
           pendingRangeRef.current = null
+          setIsFetchingPages(false)
         } catch (err) {
           if (abortController.signal.aborted) {
+            setIsFetchingPages(false)
             return
           }
           // Fallback to legacy JSON-based fetch if Arrow fails
           console.log('[DATAGRID] Arrow fetch failed, falling back to JSON:', err)
           try {
             const rowsWithIds = await getDataWithRowIds(tableName, needStart, needEnd - needStart)
-            if (abortController.signal.aborted) return
+            if (abortController.signal.aborted) {
+              setIsFetchingPages(false)
+              return
+            }
             const idMap = new Map<string, number>()
             const rows = rowsWithIds.map((row, index) => {
               if (row.csId) {
@@ -1793,6 +1831,7 @@ export function DataGrid({
           } catch (fallbackErr) {
             console.error('[DATAGRID] Fallback fetch also failed:', fallbackErr)
           }
+          setIsFetchingPages(false)
         }
       }, SCROLL_DEBOUNCE_MS)
     },
@@ -2435,7 +2474,7 @@ export function DataGrid({
 
       <div
         ref={containerRef}
-        className="flex-1 min-h-0 w-full gdg-container"
+        className="flex-1 min-h-0 w-full gdg-container relative"
         data-testid="data-grid"
         onMouseMove={handleMouseMove}
         onClickCapture={handleGridClick}
@@ -2488,6 +2527,36 @@ export function DataGrid({
             highlightRegions={lastEditHighlightRegions}
           />
         )}
+
+        {/* Go-to-row button overlay on the row marker header (top-left corner) */}
+        {data.length > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className="absolute top-0 left-0 z-10 flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+                style={{
+                  // Match GDG row marker width formula: >10k→48, >1k→44, >100→36, else→32
+                  width: effectiveRowCount > 10000 ? 48 : effectiveRowCount > 1000 ? 44 : effectiveRowCount > 100 ? 36 : 32,
+                  height: 36, // GDG default header height
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setGoToRowOpen(true)
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <text x="2" y="10" fill="currentColor" fontSize="9" fontFamily="ui-monospace, monospace" fontWeight="600">#</text>
+                  <path d="M9 5l2.5 2.5L9 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="start" sideOffset={2} avoidCollisions={false} className="w-fit">
+              <p className="text-xs">Go to row <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘G</kbd></p>
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        <GridLoadingOverlay isLoading={isFetchingPages} />
       </div>
 
       {/* Column header menu - shown on header click with type info and options */}
@@ -2623,6 +2692,14 @@ export function DataGrid({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Go to Row Dialog - triggered by Cmd+G / Ctrl+G */}
+      <GoToRowDialog
+        open={goToRowOpen}
+        onOpenChange={setGoToRowOpen}
+        totalRows={effectiveRowCount}
+        onGoToRow={handleGoToRow}
+      />
     </div>
   )
 }
