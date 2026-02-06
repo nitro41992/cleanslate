@@ -495,7 +495,20 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
         console.error(`[TableStore] Failed to thaw ${targetTable.name}`)
         // Attempt to re-thaw the original table
         if (currentTable && state.activeTableId) {
-          await thawTable(db, conn, currentTable.name)
+          const reThawSuccess = await thawTable(db, conn, currentTable.name)
+          if (!reThawSuccess) {
+            // CRITICAL: Original table was frozen (dropped from DuckDB) and can't be restored.
+            // Clear activeTableId to prevent DataGrid from querying a non-existent table.
+            console.error(`[TableStore] CRITICAL: Failed to restore original table ${currentTable.name}`)
+            const newFrozen = new Set(get().frozenTables)
+            newFrozen.delete(state.activeTableId)
+            set({
+              frozenTables: newFrozen,
+              activeTableId: null,
+              isContextSwitching: false,
+            })
+            return false
+          }
         }
         set({ isContextSwitching: false })
         return false

@@ -797,11 +797,20 @@ export async function freezeTable(
       // Mark table as clean after successful export
       useUIStore.getState().markTableClean(tableId)
     } else {
-      // Table is clean, but verify Parquet exists before dropping
+      // Table is clean, but verify Parquet exists AND is valid before dropping
       const snapshotExists = await checkSnapshotFileExists(normalizedSnapshotId)
       if (!snapshotExists) {
         console.log(`[Freeze] No Parquet snapshot for clean table ${tableName}, creating one`)
         await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
+      } else {
+        // Snapshot file exists — validate it has valid Parquet magic bytes
+        // Corrupt files (truncated writes, OPFS issues) can pass the existence check
+        // but fail on thaw, causing data loss if we drop the in-memory table
+        const isValid = await validateParquetMagicBytes(normalizedSnapshotId)
+        if (!isValid) {
+          console.warn(`[Freeze] Existing snapshot for ${tableName} is corrupt, re-exporting`)
+          await exportTableToParquet(db, conn, tableName, normalizedSnapshotId)
+        }
       }
     }
 
@@ -978,6 +987,51 @@ export async function cleanupOrphanedDiffFiles(): Promise<void> {
     }
   } catch (error) {
     console.warn('[Snapshot] Failed to clean up orphaned diff files:', error)
+  }
+}
+
+/**
+ * Validates a Parquet snapshot file by checking for PAR1 magic bytes.
+ * Parquet files must start and end with the 4-byte sequence "PAR1" (0x50 0x41 0x52 0x31).
+ * Files that are truncated or corrupted during write will fail this check.
+ *
+ * @param snapshotId - Normalized snapshot identifier
+ * @returns true if the file exists and has valid magic bytes, false otherwise
+ */
+async function validateParquetMagicBytes(snapshotId: string): Promise<boolean> {
+  try {
+    const root = await navigator.storage.getDirectory()
+    const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+    const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+    // Try single file first, then first chunk of a chunked snapshot
+    let file: File
+    try {
+      const handle = await snapshotsDir.getFileHandle(`${snapshotId}.parquet`, { create: false })
+      file = await handle.getFile()
+    } catch {
+      try {
+        const handle = await snapshotsDir.getFileHandle(`${snapshotId}_part_0.parquet`, { create: false })
+        file = await handle.getFile()
+      } catch {
+        return false
+      }
+    }
+
+    // Must be at least 8 bytes (4-byte header + 4-byte footer magic)
+    if (file.size < 8) return false
+
+    const header = new Uint8Array(await file.slice(0, 4).arrayBuffer())
+    const footer = new Uint8Array(await file.slice(-4).arrayBuffer())
+
+    // "PAR1" in ASCII
+    const magic = [0x50, 0x41, 0x52, 0x31]
+    const headerOk = header[0] === magic[0] && header[1] === magic[1] && header[2] === magic[2] && header[3] === magic[3]
+    const footerOk = footer[0] === magic[0] && footer[1] === magic[1] && footer[2] === magic[2] && footer[3] === magic[3]
+
+    return headerOk && footerOk
+  } catch {
+    return false
   }
 }
 
