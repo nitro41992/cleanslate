@@ -2,7 +2,7 @@
  * FormulaEditor Component
  *
  * A rich formula editor with syntax highlighting, autocomplete, function browser,
- * and template gallery. Designed for Excel power users who want to apply
+ * and template gallery. Designed for spreadsheet power users who want to apply
  * formula-based transformations without writing SQL.
  *
  * Features:
@@ -84,7 +84,7 @@ export function FormulaEditor({
           <h3 className="font-medium">Formula Builder</h3>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
-          Create Excel-like formulas to transform your data. Use @column to reference columns.
+          Create formulas to transform your data. Use @column to reference columns.
         </p>
       </div>
 

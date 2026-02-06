@@ -1,8 +1,8 @@
 /**
- * Excel Formula Command
+ * Formula Builder Command
  *
- * Applies Excel-like formulas (IF, LEN, UPPER, etc.) to table data.
- * Transpiles Excel syntax to DuckDB SQL for execution.
+ * Applies spreadsheet-style formulas (IF, LEN, UPPER, etc.) to table data.
+ * Transpiles formula syntax to DuckDB SQL for execution.
  *
  * Tier 3 - Requires snapshot for undo (creates/modifies columns).
  */
@@ -14,8 +14,8 @@ import { transpileFormula, validateFormula, extractColumnRefs } from '@/lib/form
 
 export type OutputMode = 'new' | 'replace'
 
-export interface ExcelFormulaParams extends BaseTransformParams {
-  /** Excel-like formula (e.g., "IF(@State = \"NY\", \"East\", \"West\")") */
+export interface FormulaBuilderParams extends BaseTransformParams {
+  /** Spreadsheet-style formula (e.g., "IF(@State = \"NY\", \"East\", \"West\")") */
   formula: string
   /** Name for new column (when outputMode='new') */
   outputColumn?: string
@@ -25,7 +25,7 @@ export interface ExcelFormulaParams extends BaseTransformParams {
   targetColumn?: string
 }
 
-export class ExcelFormulaCommand extends Tier3TransformCommand<ExcelFormulaParams> {
+export class FormulaBuilderCommand extends Tier3TransformCommand<FormulaBuilderParams> {
   readonly type: CommandType = 'transform:excel_formula'
   readonly label = 'Formula Builder'
 

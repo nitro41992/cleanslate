@@ -1,7 +1,7 @@
 /**
- * Excel Function → DuckDB SQL Mapping
+ * Formula Function → DuckDB SQL Mapping
  *
- * Defines how Excel-like functions are transpiled to DuckDB SQL.
+ * Defines how spreadsheet-style functions are transpiled to DuckDB SQL.
  * Handles type coercion and argument validation.
  */
 
@@ -37,12 +37,12 @@ export interface FunctionSpec {
 }
 
 /**
- * Excel function specifications with DuckDB SQL mappings.
+ * Function specifications with DuckDB SQL mappings.
  *
- * Key differences from Excel:
+ * Key differences from typical spreadsheet functions:
  * - String functions cast input to VARCHAR for safety with numeric columns
  * - IF/IFERROR handle type coercion for mixed return types
- * - Comparison uses SQL operators instead of Excel's =, <>
+ * - Comparison uses SQL operators (=, <>)
  */
 export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
   // ===== CONDITIONAL =====
@@ -121,7 +121,7 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
   MID: {
     minArgs: 3,
     maxArgs: 3,
-    // Excel MID is 1-indexed, DuckDB SUBSTR is also 1-indexed
+    // MID is 1-indexed, DuckDB SUBSTR is also 1-indexed
     toSQL: (args) => `SUBSTR(CAST(${args[0]} AS VARCHAR), ${args[1]}, ${args[2]})`,
     returnsString: true,
     description: 'MID(text, start_pos, num_chars)',

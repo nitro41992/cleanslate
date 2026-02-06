@@ -1,8 +1,8 @@
 /**
- * Excel Formula Parser & Transpiler
+ * Formula Builder Parser & Transpiler
  *
- * Parses Excel-like formulas and transpiles them to DuckDB SQL.
- * Target users: Excel power users who know formulas but avoid SQL.
+ * Parses spreadsheet-style formulas and transpiles them to DuckDB SQL.
+ * Target users: Spreadsheet power users who know formulas but avoid SQL.
  *
  * @example
  * ```typescript
@@ -46,7 +46,7 @@
  *
  * ## Type Coercion
  *
- * The transpiler handles Excel's loose typing:
+ * The transpiler handles loose typing (like spreadsheets):
  * - `IF(@A > 10, "High", 0)` → Both branches cast to VARCHAR
  * - `LEN(@number_column)` → Column cast to VARCHAR before LENGTH()
  */

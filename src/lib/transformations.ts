@@ -499,7 +499,7 @@ export const TRANSFORMATIONS: TransformationDefinition[] = [
   {
     id: 'excel_formula',
     label: 'Formula Builder',
-    description: 'Apply Excel-like formulas with syntax highlighting and autocomplete',
+    description: 'Apply spreadsheet-style formulas with syntax highlighting and autocomplete',
     icon: FunctionSquare,
     requiresColumn: false, // Column selected via @syntax in formula
     params: [
@@ -612,7 +612,7 @@ export type TransformationGroupColor = typeof TRANSFORMATION_GROUPS[number]['col
 
 /**
  * Filtered transforms for the picker UI.
- * Excludes feature-flagged transforms and excel_formula (promoted to its own tab).
+ * Excludes feature-flagged transforms and formula builder (promoted to its own tab).
  * Original arrays are preserved for command system, recipes, and replay.
  */
 export const VISIBLE_TRANSFORMATIONS = TRANSFORMATIONS.filter(

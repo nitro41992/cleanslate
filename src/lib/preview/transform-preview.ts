@@ -650,7 +650,7 @@ export function isPreviewReady(
   // Column-based transforms need a column
   const requiresColumn = ![
     'combine_columns',
-    'excel_formula', // Uses @column syntax in formula
+    'excel_formula', // Formula Builder - uses @column syntax in formula
   ].includes(transformType)
 
   if (requiresColumn && !column) {

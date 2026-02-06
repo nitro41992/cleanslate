@@ -1,7 +1,7 @@
 /**
- * Excel Formula Parser (Ohm.js)
+ * Formula Builder Parser (Ohm.js)
  *
- * Parses Excel-like formulas into an AST for transpilation to DuckDB SQL.
+ * Parses spreadsheet-style formulas into an AST for transpilation to DuckDB SQL.
  * Supports case-insensitive function names and @column syntax.
  */
 
@@ -22,7 +22,7 @@ import type {
 import { isSupportedFunction } from './functions'
 
 /**
- * Ohm.js grammar for Excel-like formulas.
+ * Ohm.js grammar for spreadsheet-style formulas.
  *
  * Grammar features:
  * - Case-insensitive function names
@@ -33,7 +33,7 @@ import { isSupportedFunction } from './functions'
  * - Boolean literals (TRUE, FALSE)
  */
 const grammarSource = `
-ExcelFormula {
+FormulaBuilder {
   Formula = Expression
 
   Expression = ConditionalExpr
@@ -366,7 +366,7 @@ semantics.addOperation<unknown>('toAST', {
 })
 
 /**
- * Parse an Excel-like formula string into an AST.
+ * Parse a spreadsheet-style formula string into an AST.
  *
  * @param formula - The formula string (e.g., "IF(@State = \"NY\", \"East\", \"West\")")
  * @returns ParseResult with AST on success or error details on failure
@@ -389,7 +389,7 @@ export function parseFormula(formula: string): ParseResult {
     }
   }
 
-  // Remove leading = if present (Excel style)
+  // Remove leading = if present (spreadsheet style)
   const cleanFormula = formula.trim().replace(/^=/, '').trim()
 
   if (cleanFormula === '') {

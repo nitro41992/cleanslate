@@ -15,4 +15,4 @@ export { UnformatCurrencyCommand, type UnformatCurrencyParams } from './unformat
 export { FixNegativesCommand, type FixNegativesParams } from './fix-negatives'
 export { PadZerosCommand, type PadZerosParams } from './pad-zeros'
 export { FillDownCommand, type FillDownParams } from './fill-down'
-export { ExcelFormulaCommand, type ExcelFormulaParams, type OutputMode } from './excel-formula'
+export { FormulaBuilderCommand, type FormulaBuilderParams, type OutputMode } from './excel-formula'

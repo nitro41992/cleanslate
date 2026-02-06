@@ -558,7 +558,7 @@ export function CleanPanel() {
     : null
 
   // ===== Formula Tab Logic =====
-  const excelFormulaDef = TRANSFORMATIONS.find((t) => t.id === 'excel_formula')!
+  const formulaBuilderDef = TRANSFORMATIONS.find((t) => t.id === 'excel_formula')!
 
   const isFormulaValid = () => {
     if (!formulaParams.formula || formulaParams.formula.trim() === '') return false
@@ -1146,7 +1146,7 @@ export function CleanPanel() {
                           buildStep={buildFormulaStep}
                           canAdd={isFormulaValid()}
                           isProcessing={isApplying}
-                          stepLabel={excelFormulaDef?.label || 'Formula'}
+                          stepLabel={formulaBuilderDef?.label || 'Formula'}
                         />
                       </>
                     )}

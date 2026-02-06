@@ -1,5 +1,5 @@
 /**
- * Excel Formula → DuckDB SQL Transpiler
+ * Formula Builder → DuckDB SQL Transpiler
  *
  * Converts parsed AST to DuckDB SQL expressions with:
  * - Type coercion for mixed return types in IF/IFERROR
@@ -161,7 +161,7 @@ function transpileBinaryExpression(node: BinaryExpression, ctx: TranspileContext
   const right = transpileNode(node.right, ctx)
 
   switch (node.operator) {
-    // Excel uses single = for equality
+    // Spreadsheet-style single = for equality
     case '=':
       return `(${left} = ${right})`
     case '<>':
@@ -263,7 +263,7 @@ function transpileFunctionCall(node: FunctionCall, ctx: TranspileContext): strin
 /**
  * Transpile IF function with type coercion for mixed return types.
  *
- * Excel allows: IF(A > 10, "High", 0) - mixed String/Number
+ * Formulas allow: IF(A > 10, "High", 0) - mixed String/Number
  * DuckDB requires: CASE WHEN ... THEN 'High' ELSE CAST(0 AS VARCHAR) END
  */
 function transpileIfFunction(node: FunctionCall, ctx: TranspileContext): string {
@@ -328,7 +328,7 @@ function transpileIferrorFunction(node: FunctionCall, ctx: TranspileContext): st
 /**
  * Transpile a formula string to DuckDB SQL expression.
  *
- * @param formula - Excel-like formula (e.g., "IF(@State = \"NY\", \"East\", \"West\")")
+ * @param formula - Spreadsheet-style formula (e.g., "IF(@State = \"NY\", \"East\", \"West\")")
  * @param availableColumns - Column names in the target table
  * @returns TranspileResult with SQL on success or error details on failure
  *
@@ -385,7 +385,7 @@ export function transpileFormula(
 /**
  * Validate a formula against a table schema without transpiling.
  *
- * @param formula - Excel-like formula
+ * @param formula - Spreadsheet-style formula
  * @param availableColumns - Column names in the target table
  * @returns ValidationResult with errors and warnings
  */

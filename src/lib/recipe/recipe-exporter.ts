@@ -235,13 +235,13 @@ export function extractRequiredColumns(steps: RecipeStep[]): string[] {
         })
       }
 
-      // For excel_formula: add referencedColumns
+      // For formula_builder: add referencedColumns
       const referencedColumns = step.params.referencedColumns as string[] | undefined
       if (referencedColumns && Array.isArray(referencedColumns)) {
         referencedColumns.forEach((c) => columns.add(c))
       }
 
-      // For excel_formula replace mode: targetColumn is a dependency
+      // For formula_builder replace mode: targetColumn is a dependency
       const targetColumn = step.params.targetColumn as string | undefined
       if (targetColumn) {
         columns.add(targetColumn)

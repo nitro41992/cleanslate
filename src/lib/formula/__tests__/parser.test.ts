@@ -1,7 +1,7 @@
 /**
- * Excel Formula Parser Tests
+ * Formula Builder Parser Tests
  *
- * Tests for parsing Excel-like formulas into AST.
+ * Tests for parsing spreadsheet-style formulas into AST.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -353,7 +353,7 @@ describe('parseFormula', () => {
   })
 
   describe('leading = sign', () => {
-    it('removes leading = sign (Excel-style)', () => {
+    it('removes leading = sign (spreadsheet-style)', () => {
       const result = parseFormula('=UPPER(@name)')
       expect(result.success).toBe(true)
       expect(result.ast).toMatchObject({

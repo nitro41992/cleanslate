@@ -1,7 +1,7 @@
 /**
- * Excel Formula AST Types
+ * Formula Builder AST Types
  *
- * Abstract Syntax Tree node definitions for parsed Excel-like formulas.
+ * Abstract Syntax Tree node definitions for parsed spreadsheet-style formulas.
  */
 
 export type ASTNode =
@@ -48,7 +48,7 @@ export interface FunctionCall {
 }
 
 /**
- * Supported Excel functions.
+ * Supported formula functions.
  * All function names are normalized to uppercase during parsing.
  */
 export type FunctionName =

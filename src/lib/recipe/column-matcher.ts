@@ -197,14 +197,14 @@ export function applyMappingToParams(
     if (key === 'column' && typeof value === 'string') {
       result[key] = mapping[value] || value
     } else if (key === 'targetColumn' && typeof value === 'string') {
-      // For excel_formula replace mode
+      // For formula_builder replace mode
       result[key] = mapping[value] || value
     } else if (key === 'columns' && Array.isArray(value)) {
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
     } else if (key === 'sourceColumns' && Array.isArray(value)) {
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
     } else if (key === 'referencedColumns' && Array.isArray(value)) {
-      // Map referencedColumns array for excel_formula
+      // Map referencedColumns array for formula_builder
       result[key] = value.map((v) => (typeof v === 'string' ? mapping[v] || v : v))
     } else if (key === 'formula' && typeof value === 'string') {
       // Map column references within formula text

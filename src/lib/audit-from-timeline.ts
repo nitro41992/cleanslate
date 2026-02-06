@@ -15,6 +15,13 @@ import type { AuditLogEntry, TimelineCommand, TableTimeline, ManualEditParams } 
 import { useTimelineStore } from '@/stores/timelineStore'
 
 /**
+ * Override labels for transform types that should not expose internal IDs to users.
+ */
+const TRANSFORM_LABELS: Record<string, string> = {
+  excel_formula: 'formula_builder',
+}
+
+/**
  * Convert a TimelineCommand to an AuditLogEntry
  */
 export function convertCommandToAuditEntry(
@@ -83,11 +90,13 @@ function buildDetails(command: TimelineCommand): string {
     case 'manual_edit':
       return `Cell [${params.columnName}] changed`
 
-    case 'transform':
+    case 'transform': {
+      const transformLabel = TRANSFORM_LABELS[params.transformationType] || params.transformationType
       if (params.column) {
-        return `Applied ${params.transformationType} to column "${params.column}"`
+        return `Applied ${transformLabel} to column "${params.column}"`
       }
-      return `Applied ${params.transformationType}`
+      return `Applied ${transformLabel}`
+    }
 
     case 'merge':
       return `Merged ${params.mergedPairs?.length || 0} duplicate pairs`

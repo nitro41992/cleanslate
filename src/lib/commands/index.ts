@@ -208,7 +208,7 @@ import {
   FixNegativesCommand,
   PadZerosCommand,
   FillDownCommand,
-  ExcelFormulaCommand,
+  FormulaBuilderCommand,
 } from './transform/tier3'
 import { StandardizeApplyCommand } from './standardize'
 import { MatchMergeCommand } from './match'
@@ -250,7 +250,7 @@ registerCommand('transform:unformat_currency', UnformatCurrencyCommand)
 registerCommand('transform:fix_negatives', FixNegativesCommand)
 registerCommand('transform:pad_zeros', PadZerosCommand)
 registerCommand('transform:fill_down', FillDownCommand)
-registerCommand('transform:excel_formula', ExcelFormulaCommand)
+registerCommand('transform:excel_formula', FormulaBuilderCommand)
 
 // Standardize commands
 registerCommand('standardize:apply', StandardizeApplyCommand)
