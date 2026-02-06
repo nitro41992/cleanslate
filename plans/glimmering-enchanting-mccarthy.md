@@ -3,11 +3,53 @@
 ## Problem Statement
 CleanSlate Pro needs to handle 1M+ row datasets performantly across all operations (transforms, merge, diff, combine, standardize, undo/redo). Current architecture has solid foundations but several bottlenecks that compound at scale.
 
-## Industry Context
-- **DuckDB-WASM**: Single-threaded in browser, 4GB WASM memory cap, supports out-of-core for some operations
-- **OPFS**: 3-4x faster than IndexedDB for large files (Notion saw 33% speedup with SQLite+OPFS)
-- **Perspective (FINOS)**: Reference architecture for 1M+ streaming data in browser WASM
-- **Parquet best practices**: Smaller row groups (20-50k) enable better predicate pushdown and partial reads
+## Research Findings (Feb 2026)
+
+### Hard Constraints
+- **DuckDB-WASM usable memory: ~2GB** (not 4GB — WASM module overhead + 32-bit pointer limit). Memory64 exists but has 10-100% perf penalty and DuckDB hasn't adopted it.
+- **Out-of-core is broken in WASM** — spill-to-disk designed for real filesystems, not OPFS. Dataset MUST fit in memory.
+- **WASM memory never shrinks** — once allocated, only freed by killing the Web Worker. Long sessions accumulate.
+- **No published UPDATE benchmarks** — all DuckDB-WASM benchmarks are for SELECTs. CleanSlate's mutation workload is uncharted.
+- **OPFS**: 3-4x faster reads, 2x faster writes vs IndexedDB. SyncAccessHandle only in dedicated Workers.
+
+### Competitive Landscape
+No browser-based tool credibly does 1M+ row data *transformation* in-browser:
+- Google Sheets: ~100k usable | Airtable: 50k-500k (plan-gated) | Excel: 1M (desktop native)
+- Quadratic: Claims "millions", no benchmarks | Perspective: Benchmarks at 864k, read-only
+- Observable+DuckDB: 5.2M rows read-only | Row Zero/Gigasheet: Billions, server backends
+
+### Practical Size Limits (After Optimizations)
+| Table Shape | Raw Size | Feasibility |
+|---|---|---|
+| 2M × 10 cols (narrow) | ~1 GB | Comfortable |
+| 2M × 20 cols (typical) | ~1.5-2 GB | Feasible for transforms, tight for merge/diff |
+| 2M × 30+ cols (wide) | ~3 GB+ | At the wall — simple transforms only |
+| 1M + 1M (merge/diff) | ~2 GB combined | Feasible but tight |
+
+### COI Multi-Threading Opportunity (Investigated)
+DuckDB-WASM COI build variant gives **2-5x performance** via pthreads + SIMD. Requires COOP/COEP headers.
+
+**Codebase is already set up for COI:**
+- `src/lib/duckdb/index.ts` imports all 3 bundles (MVP, EH, COI) and auto-detects via `crossOriginIsolated`
+- COI pthread worker initialization path already implemented (lines 156-167)
+- `SET threads = 2` already in init code (line 362), currently silently fails on EH build
+- **No third-party CDN scripts, fonts, OAuth popups, or iframes** — clean for COI
+
+**Known Blocker: DuckDB-WASM Bug #2096**
+- COI bundle + DuckDB's internal OPFS VFS = `DataCloneError` (FileSystemSyncAccessHandle non-cloneable across pthread workers)
+- Already referenced in `vite.config.ts` (lines 5-9) and `browser-detection.ts` (lines 47-51)
+- `supportsAccessHandle` forced to `false` as workaround
+- **However**: CleanSlate's Parquet snapshot persistence uses JS File System API → OPFS (not DuckDB's VFS). This path may work under COI. Needs testing.
+
+### Defensible Product Positioning
+> "Process datasets up to 2 million rows entirely in your browser — no server, no upload. Simple transforms run in seconds. Advanced operations (merge, diff, combine) optimized for up to 1 million rows."
+
+### Key Sources
+- [DuckDB-WASM Memory Discussion #1241](https://github.com/duckdb/duckdb-wasm/discussions/1241)
+- [Browser Data Processing Benchmarks (1M rows)](https://github.com/timlrx/browser-data-processing-benchmarks)
+- [Mozilla: Is Memory64 Worth Using?](https://spidermonkey.dev/blog/2025/01/15/is-memory64-actually-worth-using.html)
+- [DuckDB-WASM Memory Leak Issue #1904](https://github.com/duckdb/duckdb-wasm/issues/1904)
+- [V8: 4GB WASM Memory](https://v8.dev/blog/4gb-wasm-memory)
 
 ---
 
@@ -220,9 +262,51 @@ Lower oversized block threshold, use `TABLESAMPLE` instead of `ORDER BY RANDOM()
 
 ## Implementation Sequence
 
+### Phase 0: COI Threading Investigation (2-3 hours, do first)
+
+**Goal:** Determine if DuckDB-WASM multi-threaded COI build works with CleanSlate's persistence layer. This potentially gives 2-5x performance for free.
+
+**Step 1: Add COOP/COEP headers to Vite** (5 min)
+File: `vite.config.ts`
+Add inline plugin with middleware setting both headers for dev + preview servers.
+
+**Step 2: Verify COI activation** (5 min)
+- Open browser console, check `crossOriginIsolated === true`
+- Check DuckDB init logs for "COI" bundle selection
+- Verify `SharedArrayBuffer` is available
+
+**Step 3: Functional testing** (1-2 hours)
+- Upload a CSV (100k+ rows if possible)
+- Apply Tier 1 transforms (trim, replace, lowercase)
+- Apply a Tier 3 transform (remove_duplicates)
+- Undo the Tier 3 transform
+- Verify Parquet snapshot persistence survives page reload
+- Test merge, diff, combine panels
+
+**Step 4: Performance measurement** (30 min)
+- Compare transform times: COI vs EH on same dataset
+- Check memory usage under COI (may be higher due to thread buffers)
+- Test `SET threads = N` with different values (1, 2, 4)
+
+**Step 5: Deployment headers** (15 min)
+If COI works, add production headers for hosting platform (Vercel/Netlify/CloudFlare config).
+
+**Decision point after Phase 0:**
+- **If COI + persistence works:** Proceed with Tier 1 optimizations. Item 1.3 changes from "SET threads = 1" to "SET threads = navigator.hardwareConcurrency" (or a capped value like 4).
+- **If COI breaks persistence:** Keep EH build, proceed with Tier 1 as-is. Monitor DuckDB-WASM #2096 for upstream fix.
+
+**Files to modify:**
+- `vite.config.ts` — add COOP/COEP middleware plugin
+- `vercel.json` or `netlify.toml` or `_headers` — production headers (depending on hosting)
+- `src/lib/duckdb/index.ts` — potentially adjust `SET threads` value based on COI availability
+
+---
+
+### Subsequent Phases (after Phase 0)
+
 | Phase | Items | Effort | Risk | Dependencies |
 |-------|-------|--------|------|-------------|
-| **1** | 1.1, 1.2, 1.3, 1.4, 1.5 | 1-2 days | Low | None - all independent |
+| **1** | 1.1, 1.2, 1.3, 1.4, 1.5 | 1-2 days | Low | None — all independent |
 | **2** | 2.1, 2.2, 2.3, 2.4 | 3-5 days | Low-Med | Independent of each other |
 | **3** | 3.1, 3.2, 3.6 | 3-4 days | Medium | Independent |
 | **4** | 3.3, 3.4, 3.5, 3.7 | 4-6 days | Medium | 3.5 benefits from 2.3 |
