@@ -68,11 +68,13 @@ export function RecordPreviewDrawer({ open, onClose }: RecordPreviewDrawerProps)
       const quotedValues = values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ')
       const quotedMaster = masterValue.replace(/'/g, "''")
 
+      // Show variations first so the user immediately sees what will change,
+      // then master rows after (which are the canonical/unchanged values)
       const sql = `
         SELECT * FROM "${tableName}"
         WHERE "${columnName}" IN (${quotedValues})
         ORDER BY
-          CASE "${columnName}" WHEN '${quotedMaster}' THEN 0 ELSE 1 END,
+          CASE "${columnName}" WHEN '${quotedMaster}' THEN 1 ELSE 0 END,
           "${columnName}",
           "_cs_id"
         LIMIT 100

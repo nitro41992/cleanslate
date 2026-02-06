@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Star, Pencil, X, ArrowRight, Eye } from 'lucide-react'
+import { ChevronRight, Star, Pencil, X, ArrowRight, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -42,8 +42,6 @@ export function ClusterCard({
   // Fix: Exclude master from selectedCount to match selectableCount calculation
   const selectedCount = cluster.values.filter((v) => v.isSelected && !v.isMaster).length
   const selectableCount = cluster.values.filter((v) => !v.isMaster).length
-  const selectionRatio = selectableCount > 0 ? selectedCount / selectableCount : 0
-
   // Calculate row counts for the badge
   const masterRowCount = cluster.values.find((v) => v.isMaster)?.count ?? 0
   const selectedVariationRowCount = cluster.values
@@ -59,29 +57,24 @@ export function ClusterCard({
   return (
     <div
       className={cn(
-        'rounded-xl overflow-hidden transition-all duration-200',
-        'bg-card',
-        'border border-border',
-        hasSelectedChanges && 'shadow-sm'
+        'rounded-xl transition-all duration-200',
+        isExpanded
+          ? 'bg-card ring-1 ring-border/60 shadow-sm'
+          : 'bg-card/60 hover:bg-card',
+        hasSelectedChanges && !isExpanded && 'ring-1 ring-primary/20 bg-card'
       )}
       data-testid="cluster-card"
     >
       {/* Header */}
-      <div className="w-full px-4 py-3 flex items-center gap-3 hover:bg-muted transition-colors">
+      <div className="w-full px-4 py-3 flex items-center gap-3">
         <button
           className="flex items-center gap-3 flex-1 min-w-0"
           onClick={onToggleExpand}
         >
-          <div className={cn(
-            'p-1.5 rounded-md transition-colors',
-            isExpanded ? 'bg-accent' : 'bg-muted'
-          )}>
-            {isExpanded ? (
-              <ChevronDown className="h-3.5 w-3.5 text-primary shrink-0" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-            )}
-          </div>
+          <ChevronRight className={cn(
+            'h-3.5 w-3.5 shrink-0 transition-transform duration-150 text-muted-foreground',
+            isExpanded && 'rotate-90 text-foreground'
+          )} />
 
           <span className="font-medium text-sm truncate flex-1 text-left">
             {cluster.masterValue || '(empty)'}
@@ -129,11 +122,16 @@ export function ClusterCard({
         )}
       </div>
 
-      {/* Expanded Content */}
-      {isExpanded && (
-        <div className="border-t border-border">
-          {/* Bulk Actions with Progress Bar */}
-          <div className="px-4 py-2.5 flex items-center gap-3 bg-muted text-xs">
+      {/* Expandable Content */}
+      <div
+        className={cn(
+          'grid transition-[grid-template-rows] duration-150 ease-out',
+          isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+        )}
+      >
+        <div className="overflow-hidden min-h-0">
+          {/* Bulk Actions */}
+          <div className="mx-3 px-1 py-2 flex items-center gap-3 text-xs border-t border-border/20">
             <button
               onClick={(e) => {
                 e.stopPropagation()
@@ -143,7 +141,7 @@ export function ClusterCard({
             >
               Select all
             </button>
-            <span className="text-border/60">|</span>
+            <span className="text-muted-foreground/30">·</span>
             <button
               onClick={(e) => {
                 e.stopPropagation()
@@ -156,34 +154,26 @@ export function ClusterCard({
 
             <div className="flex-1" />
 
-            {/* Selection Progress Micro-visualization */}
-            <div className="flex items-center gap-2">
-              <div className="w-16 h-1.5 rounded-full bg-secondary overflow-hidden">
-                <div
-                  className="h-full bg-primary rounded-full transition-all duration-300"
-                  style={{ width: `${selectionRatio * 100}%` }}
-                />
-              </div>
-              <span className="text-muted-foreground tabular-nums">
-                {selectedCount}/{selectableCount}
+            {selectedCount > 0 && (
+              <span className="text-[11px] text-muted-foreground/50 tabular-nums">
+                {selectedCount === selectableCount ? 'All selected' : `${selectedCount} of ${selectableCount}`}
               </span>
-            </div>
+            )}
           </div>
 
           {/* Value List */}
-          <div className="divide-y divide-border">
-            {cluster.values.map((value, index) => (
+          <div className="px-2 pb-2 space-y-px">
+            {cluster.values.map((value) => (
               <ClusterValueRow
                 key={value.id}
                 value={value}
                 onToggle={() => onToggleValue(value.id)}
                 onSetMaster={() => onSetMaster(value.id)}
-                animationDelay={index * 10}
               />
             ))}
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -373,20 +363,17 @@ interface ClusterValueRowProps {
   value: ClusterValue
   onToggle: () => void
   onSetMaster: () => void
-  animationDelay?: number
 }
 
-function ClusterValueRow({ value, onToggle, onSetMaster, animationDelay = 0 }: ClusterValueRowProps) {
+function ClusterValueRow({ value, onToggle, onSetMaster }: ClusterValueRowProps) {
   return (
     <div
       className={cn(
-        'group px-4 py-2.5 flex items-center gap-3 transition-colors',
-        'animate-in fade-in-0 slide-in-from-left-1 duration-75',
+        'group px-3 py-2 flex items-center gap-3 rounded-lg transition-colors',
         value.isMaster
-          ? 'bg-amber-100 dark:bg-amber-950/40'
-          : 'hover:bg-muted'
+          ? 'bg-amber-500/[0.06]'
+          : 'hover:bg-muted/50'
       )}
-      style={{ animationDelay: `${animationDelay}ms` }}
     >
       <Checkbox
         checked={value.isSelected}

@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react'
+import { useRef, useMemo, useState, useCallback, useEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Search, Layers } from 'lucide-react'
 import { Input } from '@/components/ui/input'
@@ -43,6 +43,21 @@ export function ClusterList({
   onReviewClick,
 }: ClusterListProps) {
   const parentRef = useRef<HTMLDivElement>(null)
+
+  // Track expand/collapse for smooth virtualizer repositioning
+  const [isAnimating, setIsAnimating] = useState(false)
+  const animationTimer = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    return () => clearTimeout(animationTimer.current)
+  }, [])
+
+  const handleToggleExpand = useCallback((clusterId: string) => {
+    setIsAnimating(true)
+    onToggleExpand(clusterId)
+    clearTimeout(animationTimer.current)
+    animationTimer.current = setTimeout(() => setIsAnimating(false), 180)
+  }, [onToggleExpand])
 
   // Filter clusters
   const filteredClusters = useMemo(() => {
@@ -93,7 +108,7 @@ export function ClusterList({
   return (
     <div className="flex flex-col h-full">
       {/* Filter Bar */}
-      <div className="p-4 border-b border-border space-y-3 bg-card">
+      <div className="p-4 border-b border-border/50 space-y-3 bg-card">
         {/* Filter Tabs - Pill style */}
         <div className="flex gap-2 items-center">
           <div className="flex gap-1 p-1 rounded-lg bg-muted border border-border">
@@ -134,7 +149,7 @@ export function ClusterList({
           >
             Select All
           </button>
-          <span className="text-border/60">|</span>
+          <span className="text-muted-foreground/30">·</span>
           <button
             className="px-3 py-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
             onClick={onDeselectAllClusters}
@@ -162,7 +177,7 @@ export function ClusterList({
 
       {/* Contextual hint for Distinct tab */}
       {filter === 'all' && filteredClusters.length > 0 && (
-        <div className="px-4 py-2 border-b border-border/50 bg-muted/30">
+        <div className="px-4 py-2 bg-muted/20">
           <p className="text-[11px] text-muted-foreground/60 tracking-wide">
             Click any value to set a replacement — like find & replace, one value at a time.
           </p>
@@ -207,13 +222,14 @@ export function ClusterList({
                       left: 0,
                       right: 0,
                       transform: `translateY(${virtualRow.start}px)`,
+                      ...(isAnimating && { transition: 'transform 150ms ease-out' }),
                       paddingBottom: 8,
                     }}
                   >
                     <ClusterCard
                       cluster={cluster}
                       isExpanded={expandedId === cluster.id}
-                      onToggleExpand={() => onToggleExpand(cluster.id)}
+                      onToggleExpand={() => handleToggleExpand(cluster.id)}
                       onToggleValue={(valueId) => onToggleValue(cluster.id, valueId)}
                       onSetMaster={(valueId) => onSetMaster(cluster.id, valueId)}
                       onSelectAll={() => onSelectAll(cluster.id)}
