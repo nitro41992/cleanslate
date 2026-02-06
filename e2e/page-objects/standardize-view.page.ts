@@ -60,11 +60,20 @@ export class StandardizeViewPage {
   /**
    * Select a clustering algorithm
    */
-  async selectAlgorithm(algorithm: 'fingerprint' | 'metaphone'): Promise<void> {
-    const algorithmSelect = this.page.getByTestId('standardize-algorithm-select')
-    await algorithmSelect.click()
-    const optionName = algorithm === 'fingerprint' ? /Fingerprint/i : /Metaphone/i
-    await this.page.getByRole('option', { name: optionName }).click()
+  async selectAlgorithm(algorithm: 'fingerprint' | 'metaphone' | 'token_phonetic'): Promise<void> {
+    const names: Record<string, RegExp> = {
+      fingerprint: /Fingerprint/i,
+      metaphone: /Metaphone/i,
+      token_phonetic: /Token Phonetic/i,
+    }
+    await this.container.getByRole('radio', { name: names[algorithm] }).click()
+  }
+
+  /**
+   * Click Select All to select all cluster values
+   */
+  async selectAll(): Promise<void> {
+    await this.page.getByTestId('select-all-clusters').click()
   }
 
   /**

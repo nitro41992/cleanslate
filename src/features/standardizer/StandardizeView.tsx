@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from 'react'
-import { X, ArrowLeft, Check, RotateCcw } from 'lucide-react'
+import { X, ArrowLeft, Check, RotateCcw, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -23,6 +23,7 @@ import { useStandardizer } from '@/hooks/useStandardizer'
 import { createCommand, getCommandExecutor } from '@/lib/commands'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
 import { ConfirmDiscardDialog } from '@/components/common/ConfirmDiscardDialog'
+import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useState } from 'react'
 
@@ -90,6 +91,7 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
   }, [open, activeTableId, tableId, tables, setTable])
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+  const [configCollapsed, setConfigCollapsed] = useState(false)
 
   const hasResults = clusters.length > 0
   const hasSelectedChanges = stats.selectedValues > 0
@@ -123,17 +125,26 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose, clusters.length, setFilter])
 
+  // Auto-collapse sidebar when clusters are found
+  useEffect(() => {
+    if (clusters.length > 0 && !isAnalyzing) {
+      setConfigCollapsed(true)
+    }
+  }, [clusters.length, isAnalyzing])
+
   const handleNewAnalysis = () => {
     if (hasSelectedChanges) {
       setShowDiscardConfirm(true)
     } else {
       clearClusters()
+      setConfigCollapsed(false)
     }
   }
 
   const handleConfirmDiscard = () => {
     clearClusters()
     setShowDiscardConfirm(false)
+    setConfigCollapsed(false)
   }
 
   const handleApply = useCallback(async () => {
@@ -373,25 +384,41 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
 
       {/* Main Content */}
       <div className="flex h-[calc(100vh-3.5rem)]">
-        {/* Left Config Panel */}
-        <div className="w-80 border-r border-border bg-card shrink-0">
-          <ScrollArea className="h-full">
-            <StandardizeConfigPanel
-              tables={tables}
-              tableId={tableId}
-              tableName={tableName}
-              columnName={columnName}
-              algorithm={algorithm}
-              isAnalyzing={isAnalyzing}
-              hasClusters={hasResults}
-              validationError={validationError}
-              uniqueValueCount={uniqueValueCount}
-              onColumnChange={setColumn}
-              onAlgorithmChange={setAlgorithm}
-              onAnalyze={startClustering}
-            />
-          </ScrollArea>
+        {/* Left Config Panel (collapsible) */}
+        <div className={cn(
+          'border-r border-border bg-card shrink-0 transition-all duration-200',
+          configCollapsed ? 'w-0 overflow-hidden border-r-0' : 'w-80'
+        )}>
+          {!configCollapsed && (
+            <ScrollArea className="h-full">
+              <StandardizeConfigPanel
+                tables={tables}
+                tableId={tableId}
+                tableName={tableName}
+                columnName={columnName}
+                algorithm={algorithm}
+                isAnalyzing={isAnalyzing}
+                hasClusters={hasResults}
+                validationError={validationError}
+                uniqueValueCount={uniqueValueCount}
+                onColumnChange={setColumn}
+                onAlgorithmChange={setAlgorithm}
+                onAnalyze={startClustering}
+              />
+            </ScrollArea>
+          )}
         </div>
+
+        {/* Sidebar toggle button */}
+        <button
+          className="z-10 self-center flex items-center justify-center shrink-0
+            w-6 h-12 rounded-r-md border border-l-0 border-border bg-card
+            hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          onClick={() => setConfigCollapsed(c => !c)}
+          title={configCollapsed ? 'Show config panel' : 'Hide config panel'}
+        >
+          {configCollapsed ? <ChevronsRight className="w-3.5 h-3.5" /> : <ChevronsLeft className="w-3.5 h-3.5" />}
+        </button>
 
         {/* Results Area */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -433,6 +460,9 @@ export function StandardizeView({ open, onClose }: StandardizeViewProps) {
                       Ready to replace {stats.selectedValues} value{stats.selectedValues !== 1 ? 's' : ''}
                     </span>
                     <div className="flex-1" />
+                    <span className="text-xs text-muted-foreground mr-1">
+                      Replacements will apply to all matching rows in the column
+                    </span>
                     <Button onClick={handleApply} className="gap-2">
                       <Check className="w-4 h-4" />
                       Apply Replacements

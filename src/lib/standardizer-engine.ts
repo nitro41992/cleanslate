@@ -244,12 +244,12 @@ export async function buildClusters(
       id: generateId(),
       value: v.value,
       count: v.count,
-      isSelected: true, // Default all selected
-      isMaster: index === 0, // First (most frequent) is master
+      isSelected: false, // Default deselected — user opts in
+      isMaster: index === 0, // First (most frequent) is primary
     }))
 
-    // Calculate selected count (all except master)
-    const selectedCount = clusterValues.filter((v) => !v.isMaster).length
+    // Start with nothing selected — user uses Select All or picks individually
+    const selectedCount = 0
 
     clusters.push({
       id: generateId(),

@@ -143,15 +143,14 @@ export function ClusterList({
           {/* Bulk Selection */}
           <div className="flex-1" />
           <button
-            className="px-3 py-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
+            className="px-2.5 py-1 text-sm font-medium rounded-md border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
             onClick={onSelectAllClusters}
             data-testid="select-all-clusters"
           >
             Select All
           </button>
-          <span className="text-muted-foreground/30">·</span>
           <button
-            className="px-3 py-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
+            className="px-2.5 py-1 text-sm font-medium rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             onClick={onDeselectAllClusters}
             data-testid="deselect-all-clusters"
           >

@@ -167,8 +167,16 @@ export function MatchConfigPanel({
 
       {/* Blocking Strategy */}
       {selectedTable && (
-        <div className="space-y-3">
+        <div className={cn(
+          'space-y-3 transition-opacity duration-200',
+          !matchColumn && 'opacity-50 pointer-events-none'
+        )}>
           <Label>Grouping Strategy</Label>
+          {!matchColumn && (
+            <p className="text-xs text-muted-foreground italic">
+              Select a column above to choose a strategy
+            </p>
+          )}
           <RadioGroup
             value={blockingStrategy}
             onValueChange={(v) => onBlockingStrategyChange(v as BlockingStrategy)}

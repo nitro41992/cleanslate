@@ -201,9 +201,10 @@ test.describe('FR-F: Value Standardization', () => {
     // Expand first cluster and check master is shown
     await standardize.expandCluster(0)
 
-    // Look for the Master badge (exact match to avoid matching "Set Master" buttons)
-    const masterBadge = page.getByText('Master', { exact: true })
-    await expect(masterBadge).toBeVisible()
+    // Look for the Primary badge within the first cluster card
+    const firstCluster = page.getByTestId('cluster-card').first()
+    const primaryBadge = firstCluster.getByText('Primary', { exact: true })
+    await expect(primaryBadge).toBeVisible()
 
     await standardize.close()
   })
@@ -226,13 +227,13 @@ test.describe('FR-F: Value Standardization', () => {
     await standardize.filterBy('actionable')
     await standardize.expandCluster(0)
 
-    // Find a "Set Master" button and click it
-    const setMasterButton = page.getByRole('button', { name: /Set Master/i }).first()
-    await expect(setMasterButton).toBeVisible()
-    await setMasterButton.click()
+    // Find a "Set Primary" button and click it
+    const setPrimaryButton = page.getByRole('button', { name: /Set Primary/i }).first()
+    await expect(setPrimaryButton).toBeVisible()
+    await setPrimaryButton.click()
 
-    // Verify master changed (should now show Master badge)
-    const masterBadges = page.locator('text=Master')
+    // Verify primary changed (should now show Primary badge)
+    const masterBadges = page.locator('text=Primary')
     await expect(masterBadges.first()).toBeVisible({ timeout: 5000 })
 
     await standardize.close()
@@ -256,10 +257,11 @@ test.describe('FR-F: Value Standardization', () => {
     await standardize.analyze()
     await standardize.waitForClusters()
 
-    // Filter to actionable clusters only
+    // Filter to actionable clusters and select all
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
 
-    // Verify apply button is visible (values are selected by default)
+    // Verify apply button is visible after selecting
     await expect(page.getByRole('button', { name: /Apply Replacements/i })).toBeVisible()
 
     // Apply standardization
@@ -299,8 +301,9 @@ test.describe('FR-F: Value Standardization', () => {
     await standardize.analyze()
     await standardize.waitForClusters()
 
-    // Filter and apply
+    // Filter, select all, and apply
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
     await standardize.apply()
 
     // Wait for standardization to complete
@@ -488,6 +491,7 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
     await standardize.analyze()
     await standardize.waitForClusters()
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
     await standardize.apply()
 
     // Wait for transform to complete
@@ -546,6 +550,7 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
     await standardize.analyze()
     await standardize.waitForClusters()
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
     await standardize.apply()
 
     // Wait for transform to complete
@@ -623,6 +628,7 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
     await standardize.analyze()
     await standardize.waitForClusters()
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
     await standardize.apply()
 
     // Wait for transform to complete
@@ -675,6 +681,7 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
     await standardize.analyze()
     await standardize.waitForClusters()
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
     await standardize.apply()
 
     // Wait for transform to complete
@@ -748,6 +755,7 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
     await standardize.analyze()
     await standardize.waitForClusters()
     await standardize.filterBy('actionable')
+    await standardize.selectAll()
     await standardize.apply()
 
     // Wait for transform to complete

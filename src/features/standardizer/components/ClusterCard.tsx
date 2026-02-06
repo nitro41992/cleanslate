@@ -411,7 +411,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster }: ClusterValueRowProps)
           className="shrink-0 gap-1 bg-transparent border-amber-300 dark:border-amber-700/50 text-amber-600 dark:text-amber-500 hover:bg-amber-100 dark:hover:bg-amber-900/40"
         >
           <Star className="h-3 w-3 fill-amber-500/30" />
-          Master
+          Primary
         </Badge>
       ) : (
         <Button
@@ -428,7 +428,7 @@ function ClusterValueRow({ value, onToggle, onSetMaster }: ClusterValueRowProps)
           }}
           data-testid={`set-master-${value.id}`}
         >
-          Set Master
+          Set Primary
         </Button>
       )}
     </div>

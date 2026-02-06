@@ -1,15 +1,11 @@
 import { AlertCircle, CheckCircle2, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ColumnCombobox } from '@/components/ui/combobox'
+import { cn } from '@/lib/utils'
 import type { TableInfo, ClusteringAlgorithm } from '@/types'
 
 interface StandardizeConfigPanelProps {
@@ -27,27 +23,27 @@ interface StandardizeConfigPanelProps {
   onAnalyze: () => void
 }
 
-// Algorithm examples
-const ALGORITHM_EXAMPLES: Record<ClusteringAlgorithm, Array<{ before: string; after: string }>> = {
-  fingerprint: [
-    { before: 'John  Smith', after: 'john smith' },
-    { before: 'SMITH, JOHN', after: 'john smith' },
-  ],
-  metaphone: [
-    { before: 'Smith', after: 'SMθ' },
-    { before: 'Smyth', after: 'SMθ' },
-  ],
-  token_phonetic: [
-    { before: 'John Smith', after: 'JN SMθ' },
-    { before: 'Smith, John', after: 'JN SMθ' },
-  ],
+interface AlgorithmInfo {
+  title: string
+  description: string
+  badge: string
+  badgeVariant: 'default' | 'secondary'
+  examples: Array<{ before: string; after: string }>
+  hints: string[]
 }
 
-// Algorithm descriptions for the info card
-const ALGORITHM_INFO: Record<ClusteringAlgorithm, { title: string; description: string; hints: string[] }> = {
+const ALGORITHM_ORDER: ClusteringAlgorithm[] = ['fingerprint', 'metaphone', 'token_phonetic']
+
+const ALGORITHM_INFO: Record<ClusteringAlgorithm, AlgorithmInfo> = {
   fingerprint: {
     title: 'Fingerprint (Normalization)',
-    description: 'Groups values by normalized form - removes case, punctuation, and extra whitespace',
+    description: 'Groups values by normalized form — removes case, punctuation, and extra whitespace',
+    badge: 'Recommended',
+    badgeVariant: 'default',
+    examples: [
+      { before: 'John  Smith', after: 'john smith' },
+      { before: 'SMITH, JOHN', after: 'john smith' },
+    ],
     hints: [
       'Best for cleaning up inconsistent formatting',
       'Detects: extra spaces, case differences, punctuation variants',
@@ -56,6 +52,12 @@ const ALGORITHM_INFO: Record<ClusteringAlgorithm, { title: string; description: 
   metaphone: {
     title: 'Metaphone (Phonetic)',
     description: 'Groups values that sound similar using phonetic encoding',
+    badge: 'Sound-alike',
+    badgeVariant: 'secondary',
+    examples: [
+      { before: 'Smith', after: 'SMθ' },
+      { before: 'Smyth', after: 'SMθ' },
+    ],
     hints: [
       'Best for matching names with spelling variations',
       'Detects: Smith/Smyth, John/Jon, Catherine/Katherine',
@@ -63,7 +65,13 @@ const ALGORITHM_INFO: Record<ClusteringAlgorithm, { title: string; description: 
   },
   token_phonetic: {
     title: 'Token Phonetic (Names)',
-    description: 'Phonetic matching per word - ideal for full names with reordering',
+    description: 'Phonetic matching per word — ideal for full names with reordering',
+    badge: 'Best for names',
+    badgeVariant: 'secondary',
+    examples: [
+      { before: 'John Smith', after: 'JN SMθ' },
+      { before: 'Smith, John', after: 'JN SMθ' },
+    ],
     hints: [
       'Best for full names that may be in different order',
       'Detects: "John Smith" vs "Smith, John"',
@@ -100,8 +108,6 @@ export function StandardizeConfigPanel({
   }
 
   const canAnalyze = tableId && columnName && !isAnalyzing
-  const algorithmInfo = ALGORITHM_INFO[algorithm]
-  const algorithmExamples = ALGORITHM_EXAMPLES[algorithm]
 
   return (
     <div className="p-4 space-y-6">
@@ -146,65 +152,87 @@ export function StandardizeConfigPanel({
         )}
       </div>
 
-      {/* Algorithm Selection with Info Card */}
-      <div className="space-y-2">
-        <Label htmlFor="algorithm-select">Clustering Algorithm</Label>
-        <Select
+      {/* Algorithm Selection */}
+      <div className={cn(
+        'space-y-3 transition-opacity duration-200',
+        !columnName && 'opacity-50 pointer-events-none'
+      )}>
+        <Label>Clustering Algorithm</Label>
+        {!columnName && (
+          <p className="text-xs text-muted-foreground italic">
+            Select a column above to choose an algorithm
+          </p>
+        )}
+        <RadioGroup
           value={algorithm}
-          onValueChange={(value) => onAlgorithmChange(value as ClusteringAlgorithm)}
-          disabled={isAnalyzing}
+          onValueChange={(v) => onAlgorithmChange(v as ClusteringAlgorithm)}
+          className="space-y-2"
         >
-          <SelectTrigger id="algorithm-select" data-testid="standardize-algorithm-select">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="fingerprint">
-              Fingerprint (Normalization)
-            </SelectItem>
-            <SelectItem value="metaphone">
-              Metaphone (Phonetic)
-            </SelectItem>
-            <SelectItem value="token_phonetic">
-              Token Phonetic (Names)
-            </SelectItem>
-          </SelectContent>
-        </Select>
+          {ALGORITHM_ORDER.map((algo) => {
+            const info = ALGORITHM_INFO[algo]
+            const isSelected = algorithm === algo
 
-        {/* Algorithm Info Card */}
-        <div className="bg-muted/30 rounded-lg p-3 space-y-3 mt-2">
-          <div>
-            <p className="text-sm font-medium">{algorithmInfo.title}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {algorithmInfo.description}
-            </p>
-          </div>
+            return (
+              <div
+                key={algo}
+                className={cn(
+                  'flex items-start space-x-3 rounded-lg border p-3 transition-colors cursor-pointer',
+                  isSelected
+                    ? 'border-l-2 border-l-primary border-primary bg-accent'
+                    : 'border-border hover:bg-muted'
+                )}
+                onClick={() => onAlgorithmChange(algo)}
+              >
+                <RadioGroupItem
+                  value={algo}
+                  id={`algo-${algo}`}
+                  className="mt-0.5"
+                  disabled={isAnalyzing}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label
+                      htmlFor={`algo-${algo}`}
+                      className="text-sm font-medium cursor-pointer"
+                    >
+                      {info.title}
+                    </label>
+                    <Badge variant={info.badgeVariant} className="text-xs">
+                      {info.badge}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {info.description}
+                  </p>
 
-          {/* Examples */}
-          <div className="border-t border-border/50 pt-2">
-            <p className="text-xs font-medium text-muted-foreground mb-1.5">Examples</p>
-            <div className="space-y-1">
-              {algorithmExamples.slice(0, 2).map((ex, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs font-mono">
-                  <span className="text-red-600 dark:text-red-400/80">{ex.before}</span>
-                  <span className="text-muted-foreground">→</span>
-                  <span className="text-green-700 dark:text-green-400/80">{ex.after}</span>
+                  {/* Examples + Hints (expanded when selected) */}
+                  {isSelected && (
+                    <div className="mt-2 pt-2 border-t border-border">
+                      <div className="space-y-1">
+                        {info.examples.map((ex, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs font-mono">
+                            <span className="text-muted-foreground">e.g.</span>
+                            <span className="text-red-600 dark:text-red-400/80">{ex.before}</span>
+                            <span className="text-muted-foreground">→</span>
+                            <span className="text-green-700 dark:text-green-400/80">{ex.after}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <ul className="text-xs text-muted-foreground space-y-0.5 mt-2">
+                        {info.hints.map((hint, i) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="text-blue-600 dark:text-blue-400">•</span>
+                            {hint}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Hints */}
-          <div className="border-t border-border/50 pt-2">
-            <ul className="text-xs text-muted-foreground space-y-0.5">
-              {algorithmInfo.hints.map((hint, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="text-blue-600 dark:text-blue-400">•</span>
-                  {hint}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
+              </div>
+            )
+          })}
+        </RadioGroup>
       </div>
 
       {/* Validation Status */}
