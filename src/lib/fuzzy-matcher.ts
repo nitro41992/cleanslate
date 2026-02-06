@@ -1,4 +1,4 @@
-import { query, initDuckDB } from '@/lib/duckdb'
+import { query, initDuckDB, CS_ID_COLUMN } from '@/lib/duckdb'
 import { withDuckDBLock } from './duckdb/lock'
 import type { MatchPair, BlockingStrategy, FieldSimilarity, FieldSimilarityStatus } from '@/types'
 import { generateId } from '@/lib/utils'
@@ -1221,13 +1221,13 @@ export async function mergeDuplicates(
   let deletedCount = 0
 
   for (const pair of mergedPairs) {
-    // Delete the row that is NOT being kept
+    // Delete the row that is NOT being kept — use _cs_id for precise targeting
     const rowToDelete = pair.keepRow === 'A' ? pair.rowB : pair.rowA
-    const keyValue = rowToDelete[keyColumn]
-    if (keyValue !== null && keyValue !== undefined) {
+    const csId = rowToDelete[CS_ID_COLUMN]
+    if (csId !== null && csId !== undefined) {
       try {
         await query(
-          `DELETE FROM "${tableName}" WHERE "${keyColumn}" = '${String(keyValue).replace(/'/g, "''")}'`
+          `DELETE FROM "${tableName}" WHERE "${CS_ID_COLUMN}" = ${Number(csId)}`
         )
         deletedCount++
       } catch (e) {
