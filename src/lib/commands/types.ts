@@ -95,6 +95,8 @@ export interface CommandContext {
   batchSize?: number
   /** Progress callback for batched operations */
   onBatchProgress?: (current: number, total: number, percent: number) => void
+  /** Command type being executed — used by batch-utils to check shard eligibility */
+  commandType?: string
 }
 
 /**
@@ -193,6 +195,8 @@ export interface ExecutionResult {
   }
   /** If true, this operation was journaled to OPFS changelog — skip priority snapshot save */
   journaled?: boolean
+  /** If true, snapshot was already saved to OPFS during shard transform — skip priority save */
+  snapshotAlreadySaved?: boolean
 }
 
 // ===== AUDIT =====

@@ -389,6 +389,7 @@ export class CommandExecutor implements ICommandExecutor {
         ...ctx,
         batchMode: shouldBatch,
         batchSize: batchSize,
+        commandType: command.type,
         onBatchProgress: shouldBatch
           ? (curr, total, pct) => {
               // Map batch progress to execute phase (40-80%)
@@ -824,7 +825,10 @@ export class CommandExecutor implements ICommandExecutor {
         if (!createsNewTable) {
           // If operation was journaled to OPFS changelog, skip priority snapshot save.
           // The data is already durable in the changelog; compaction will merge it later.
-          if (executionResult.journaled) {
+          if (executionResult.snapshotAlreadySaved) {
+            uiStoreModule.useUIStore.getState().markTableClean(tableId)
+            console.log('[Executor] Shard transform already saved to OPFS, skipping priority save:', command.type)
+          } else if (executionResult.journaled) {
             uiStoreModule.useUIStore.getState().markTableClean(tableId)
             console.log('[Executor] Non-local journaled operation, skipping priority save:', command.type)
           } else {

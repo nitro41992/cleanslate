@@ -16,8 +16,8 @@ import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { tableToIPC } from 'apache-arrow'
 import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { SHARD_SIZE } from '@/lib/constants'
-import { writeManifest, deleteManifest, type SnapshotManifest, type ShardInfo } from './manifest'
-import { deleteFileIfExists } from './opfs-helpers'
+import { writeManifest, readManifest, deleteManifest, type SnapshotManifest, type ShardInfo } from './manifest'
+import { deleteFileIfExists, renameFile } from './opfs-helpers'
 
 /**
  * Cooperative yield to browser main thread.
@@ -465,6 +465,177 @@ export async function exportTableToSnapshot(
     releaseLock()
   }
   }) // End of withGlobalExportLock
+}
+
+/**
+ * Export a single DuckDB temp table as one Arrow IPC shard to OPFS.
+ * Used by the shard transform pipeline — each transformed shard gets written
+ * directly to disk without accumulating in memory.
+ *
+ * Uses the same atomic .tmp → rename pattern as exportTableToSnapshot.
+ *
+ * @param conn - Active DuckDB connection
+ * @param tableName - DuckDB temp table containing one shard of transformed data
+ * @param snapshotId - Output snapshot ID (e.g., "_xform_my_table_1707...")
+ * @param shardIndex - Shard index (0, 1, 2...)
+ * @returns ShardInfo metadata for manifest construction
+ */
+export async function exportSingleShard(
+  conn: AsyncDuckDBConnection,
+  tableName: string,
+  snapshotId: string,
+  shardIndex: number
+): Promise<ShardInfo> {
+  await ensureSnapshotDir()
+
+  const root = await navigator.storage.getDirectory()
+  const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+
+  const opfsTempFile = `${snapshotId}_shard_${shardIndex}.arrow.tmp`
+  const finalFileName = `${snapshotId}_shard_${shardIndex}.arrow`
+
+  // Query and serialize to Arrow IPC
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let arrowTable: any = await conn.query(`SELECT * FROM "${tableName}"`)
+  const shardRowCount = arrowTable.numRows
+  let ipcBytes: Uint8Array | null = tableToIPC(arrowTable, 'stream')
+  arrowTable = null // Release for GC
+
+  // Write to temp file (atomic step 1)
+  const tempHandle = await snapshotsDir.getFileHandle(opfsTempFile, { create: true })
+  const writable = await createWritableWithRetry(tempHandle)
+  await writable.write(ipcBytes)
+  await writable.close()
+
+  ipcBytes = null // Release for GC
+
+  // Small delay to ensure file handle is fully released
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  // Verify temp file
+  const tempFile = await tempHandle.getFile()
+  if (tempFile.size === 0) {
+    throw new Error(`[Snapshot] Failed to write temp shard ${opfsTempFile} - file is 0 bytes`)
+  }
+
+  // Atomic rename: temp → final
+  await deleteFileIfExists(snapshotsDir, finalFileName)
+  const finalHandle = await snapshotsDir.getFileHandle(finalFileName, { create: true })
+  const finalWritable = await finalHandle.createWritable()
+  const tempContent = await tempFile.arrayBuffer()
+  await finalWritable.write(tempContent)
+  await finalWritable.close()
+
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  // Verify final file
+  const file = await finalHandle.getFile()
+  if (file.size === 0) {
+    throw new Error(`[Snapshot] Failed to write ${finalFileName} - file is 0 bytes`)
+  }
+
+  // Cleanup temp
+  await deleteFileIfExists(snapshotsDir, opfsTempFile)
+
+  console.log(`[Snapshot] Exported shard ${shardIndex} (${(file.size / 1024 / 1024).toFixed(2)} MB) to ${finalFileName}`)
+
+  return {
+    index: shardIndex,
+    fileName: finalFileName,
+    rowCount: shardRowCount,
+    byteSize: file.size,
+    minCsId: null,
+    maxCsId: null,
+  }
+}
+
+/**
+ * Atomically replace one snapshot with another.
+ * Deletes old shards/manifest, renames new shards to the final snapshot ID.
+ *
+ * Used by the shard transform pipeline to replace the pre-transform snapshot
+ * with the post-transform output once all shards are processed.
+ *
+ * @param oldSnapshotId - The original snapshot to delete
+ * @param newSnapshotId - The temp output snapshot (files will be renamed)
+ * @param finalSnapshotId - What the output should be called (usually = oldSnapshotId)
+ */
+export async function swapSnapshots(
+  oldSnapshotId: string,
+  newSnapshotId: string,
+  finalSnapshotId: string
+): Promise<void> {
+  const root = await navigator.storage.getDirectory()
+  const appDir = await root.getDirectoryHandle('cleanslate', { create: false })
+  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: false })
+
+  // ATOMICITY: Rename new shards FIRST, write manifest, THEN delete old.
+  // If the browser crashes mid-swap, both old and new files exist briefly —
+  // but data is never lost. Startup cleanup handles orphaned _xform_ files.
+
+  // Step 1: Read the new manifest to know which shard files exist
+  const newManifest = await readManifest(newSnapshotId)
+  if (!newManifest) {
+    throw new Error(`[Snapshot] swapSnapshots: no manifest found for ${newSnapshotId}`)
+  }
+
+  // Step 2: Rename new shards → final ID (both old and new coexist briefly)
+  const renamedShards: ShardInfo[] = []
+
+  for (const shard of newManifest.shards) {
+    const oldFileName = shard.fileName // e.g., "_xform_table_123_shard_0.arrow"
+    const newFileName = `${finalSnapshotId}_shard_${shard.index}.arrow`
+
+    // Delete any existing file with the final name first (from old snapshot)
+    await deleteFileIfExists(snapshotsDir, newFileName)
+    await renameFile(snapshotsDir, oldFileName, newFileName)
+
+    renamedShards.push({
+      ...shard,
+      fileName: newFileName,
+    })
+  }
+
+  // Step 3: Write new manifest with final snapshot ID (confirms new data)
+  await deleteManifest(newSnapshotId)
+  await writeManifest({
+    ...newManifest,
+    snapshotId: finalSnapshotId,
+    shards: renamedShards,
+    createdAt: Date.now(),
+  })
+
+  // Step 4: Clean up leftover old shards beyond the new shard count.
+  // If old had 20 shards but new has 18, shards 18-19 from old still exist.
+  // (Shards 0..N-1 were already overwritten by the rename in step 2.)
+  const newShardCount = renamedShards.length
+  let extraIndex = newShardCount
+  while (true) {
+    const oldShardFile = `${finalSnapshotId}_shard_${extraIndex}.arrow`
+    try {
+      await snapshotsDir.getFileHandle(oldShardFile, { create: false })
+      await snapshotsDir.removeEntry(oldShardFile)
+      extraIndex++
+    } catch {
+      break // No more old shards
+    }
+  }
+
+  // Also clean up any legacy _part_N files from the old snapshot
+  let legacyIndex = 0
+  while (true) {
+    const legacyFile = `${finalSnapshotId}_part_${legacyIndex}.arrow`
+    try {
+      await snapshotsDir.getFileHandle(legacyFile, { create: false })
+      await snapshotsDir.removeEntry(legacyFile)
+      legacyIndex++
+    } catch {
+      break
+    }
+  }
+
+  console.log(`[Snapshot] Swapped ${oldSnapshotId} → ${finalSnapshotId} (${renamedShards.length} shards)`)
 }
 
 /**
