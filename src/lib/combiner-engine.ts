@@ -5,6 +5,7 @@ import { writeManifest, readManifest, type SnapshotManifest, type ShardInfo } fr
 import { SHARD_SIZE } from '@/lib/constants'
 import { withDuckDBLock } from './duckdb/lock'
 import type { JoinType, StackValidation, JoinValidation, ColumnInfo } from '@/types'
+import { yieldToMain } from '@/lib/utils/yield-to-main'
 
 /**
  * Structured progress callback for combine operations.
@@ -19,20 +20,6 @@ export type CombineProgressCallback = (progress: {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Cooperative yield to browser main thread.
- * Uses scheduler.yield() when available (Chrome 115+), falls back to setTimeout(0).
- */
-async function yieldToMain(): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scheduler = (globalThis as any).scheduler
-  if (scheduler && typeof scheduler.yield === 'function') {
-    await scheduler.yield()
-  } else {
-    await new Promise(resolve => setTimeout(resolve, 0))
-  }
-}
 
 /**
  * Normalize a table name to a safe OPFS snapshot identifier.

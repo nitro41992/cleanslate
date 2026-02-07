@@ -17,27 +17,7 @@
 
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 import { LARGE_DATASET_THRESHOLD } from '@/lib/constants'
-
-/**
- * Cooperative yield to browser main thread.
- * Uses scheduler.yield() when available (Chrome 115+) for priority-aware scheduling,
- * falls back to setTimeout(0) for older browsers.
- *
- * This prevents UI freezing during long-running batch operations by allowing
- * the browser to handle pending user input (scrolls, clicks) between chunks.
- *
- * @see https://developer.chrome.com/blog/use-scheduler-yield
- */
-async function yieldToMain(): Promise<void> {
-  // Check for scheduler.yield() support (Chrome 115+, Firefox 129+)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scheduler = (globalThis as any).scheduler
-  if (scheduler && typeof scheduler.yield === 'function') {
-    await scheduler.yield()
-  } else {
-    await new Promise(resolve => setTimeout(resolve, 0))
-  }
-}
+import { yieldToMain } from '@/lib/utils/yield-to-main'
 
 export interface BatchExecuteOptions {
   /**

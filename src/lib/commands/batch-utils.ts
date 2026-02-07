@@ -18,6 +18,7 @@ import { isInternalColumn } from './utils/column-ordering'
 import { readManifest, writeManifest, type ShardInfo, type SnapshotManifest } from '@/lib/opfs/manifest'
 import { exportSingleShard, swapSnapshots, importTableFromSnapshot, importSingleShard, deleteSnapshot } from '@/lib/opfs/snapshot-storage'
 import { SHARD_SIZE } from '@/lib/constants'
+import { yieldToMain } from '@/lib/utils/yield-to-main'
 
 /**
  * Get the column order for a table from the store.
@@ -231,20 +232,6 @@ export async function runBatchedTransform(
 }
 
 // ===== SHARD TRANSFORM PATH (Phase 2) =====
-
-/**
- * Cooperative yield to browser main thread.
- * Uses scheduler.yield() when available (Chrome 115+), falls back to setTimeout(0).
- */
-async function yieldToMain(): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scheduler = (globalThis as any).scheduler
-  if (scheduler && typeof scheduler.yield === 'function') {
-    await scheduler.yield()
-  } else {
-    await new Promise(resolve => setTimeout(resolve, 0))
-  }
-}
 
 /**
  * Commands that CANNOT be processed shard-by-shard because they need

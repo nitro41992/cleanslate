@@ -196,7 +196,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data_shard_0.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -274,10 +274,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.arrow.tmp') {
+            if (entry.name === 'basic_data_shard_0.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
+            if (entry.name === 'basic_data_shard_0.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -391,7 +391,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data_shard_0.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -419,10 +419,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.arrow.tmp') {
+            if (entry.name === 'basic_data_shard_0.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
+            if (entry.name === 'basic_data_shard_0.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -516,7 +516,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data_shard_0.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -540,10 +540,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.arrow.tmp') {
+            if (entry.name === 'basic_data_shard_0.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
+            if (entry.name === 'basic_data_shard_0.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -568,7 +568,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data_shard_0.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -603,10 +603,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.arrow.tmp') {
+            if (entry.name === 'basic_data_shard_0.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
+            if (entry.name === 'basic_data_shard_0.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }
@@ -666,7 +666,7 @@ test.describe('Row and Column Persistence', () => {
         const root = await navigator.storage.getDirectory()
         const cleanslateDir = await root.getDirectoryHandle('cleanslate')
         const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data.arrow')
+        const fileHandle = await snapshotsDir.getFileHandle('basic_data_shard_0.arrow')
         const file = await fileHandle.getFile()
         return file.size
       } catch {
@@ -718,10 +718,10 @@ test.describe('Row and Column Persistence', () => {
           const cleanslateDir = await root.getDirectoryHandle('cleanslate')
           const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
           for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data.arrow.tmp') {
+            if (entry.name === 'basic_data_shard_0.arrow.tmp') {
               hasTmpFiles = true
             }
-            if (entry.name === 'basic_data.arrow' && entry.kind === 'file') {
+            if (entry.name === 'basic_data_shard_0.arrow' && entry.kind === 'file') {
               const file = await entry.getFile()
               currentSize = file.size
             }

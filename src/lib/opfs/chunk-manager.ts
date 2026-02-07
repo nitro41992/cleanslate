@@ -17,26 +17,7 @@ import { readManifest, type SnapshotManifest, type ShardInfo } from './manifest'
 import { importSingleShard } from './snapshot-storage'
 import { initDuckDB, getConnection } from '@/lib/duckdb'
 import { registerMemoryCleanup } from '@/lib/memory-manager'
-
-/**
- * Cooperative yield to browser main thread.
- * Uses scheduler.yield() when available (Chrome 115+) for priority-aware scheduling,
- * falls back to setTimeout(0) for older browsers.
- *
- * This prevents UI freezing during shard load/evict cycles by allowing the browser
- * to handle pending user input (scrolls, clicks) between operations.
- *
- * @see https://developer.chrome.com/blog/use-scheduler-yield
- */
-async function yieldToMain(): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scheduler = (globalThis as any).scheduler
-  if (scheduler && typeof scheduler.yield === 'function') {
-    await scheduler.yield()
-  } else {
-    await new Promise(resolve => setTimeout(resolve, 0))
-  }
-}
+import { yieldToMain } from '@/lib/utils/yield-to-main'
 
 /**
  * Cached shard entry in the LRU.

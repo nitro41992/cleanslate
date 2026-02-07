@@ -18,27 +18,7 @@ import { CS_ID_COLUMN, CS_ORIGIN_ID_COLUMN } from '@/lib/duckdb'
 import { SHARD_SIZE } from '@/lib/constants'
 import { writeManifest, readManifest, deleteManifest, type SnapshotManifest, type ShardInfo } from './manifest'
 import { deleteFileIfExists, renameFile } from './opfs-helpers'
-
-/**
- * Cooperative yield to browser main thread.
- * Uses scheduler.yield() when available (Chrome 115+) for priority-aware scheduling,
- * falls back to setTimeout(0) for older browsers.
- *
- * This prevents UI freezing during snapshot export by allowing the browser
- * to handle pending user input (scrolls, clicks) between chunks.
- *
- * @see https://developer.chrome.com/blog/use-scheduler-yield
- */
-async function yieldToMain(): Promise<void> {
-  // Check for scheduler.yield() support (Chrome 115+, Firefox 129+)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scheduler = (globalThis as any).scheduler
-  if (scheduler && typeof scheduler.yield === 'function') {
-    await scheduler.yield()
-  } else {
-    await new Promise(resolve => setTimeout(resolve, 0))
-  }
-}
+import { yieldToMain } from '@/lib/utils/yield-to-main'
 
 /**
  * File-level write locks to prevent concurrent OPFS writes to the same file.
@@ -631,8 +611,7 @@ export async function swapSnapshots(
     const oldFileName = shard.fileName // e.g., "_xform_table_123_shard_0.arrow"
     const newFileName = `${finalSnapshotId}_shard_${shard.index}.arrow`
 
-    // Delete any existing file with the final name first (from old snapshot)
-    await deleteFileIfExists(snapshotsDir, newFileName)
+    // renameFile() overwrites via createWritable(), so no pre-delete needed
     await renameFile(snapshotsDir, oldFileName, newFileName)
 
     renamedShards.push({
