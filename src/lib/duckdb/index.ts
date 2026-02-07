@@ -979,11 +979,22 @@ export async function getTableDataWithKeyset(
  * Queries the actual _cs_id at the given offset position in the table,
  * ordered by _cs_id. This is accurate even after gap-based inserts/deletes.
  *
+ * Routes through shard-backed queries when the table is frozen (in OPFS, not DuckDB).
+ *
  * @param tableName - Table to query
  * @param rowIndex - 0-based row index
  * @returns _cs_id value as string, or null if index is out of range
  */
 export async function estimateCsIdForRow(tableName: string, rowIndex: number): Promise<string | null> {
+  // Check if table is in shard-backed mode (frozen but active)
+  const { useTableStore } = await import('@/stores/tableStore')
+  const tableState = useTableStore.getState()
+  const table = tableState.tables.find(t => t.name === tableName)
+  if (table && tableState.frozenTables.has(table.id)) {
+    const { estimateShardCsIdForRow } = await import('./shard-query')
+    return estimateShardCsIdForRow(tableName, rowIndex)
+  }
+
   const connection = await getConnection()
   const result = await connection.query(
     `SELECT "${CS_ID_COLUMN}" FROM "${tableName}" ORDER BY CAST("${CS_ID_COLUMN}" AS BIGINT) LIMIT 1 OFFSET ${rowIndex}`

@@ -929,6 +929,19 @@ export async function stackTables(
   onProgress?: CombineProgressCallback
 ): Promise<{ rowCount: number }> {
   return withDuckDBLock(async () => {
+    // Phase 4D: Temporarily dematerialize active table to free ~120MB during combine
+    let dematerializedTable: { tableName: string; tableId: string } | null = null
+    try {
+      const { dematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
+      dematerializedTable = await dematerializeActiveTable()
+      if (dematerializedTable) {
+        onProgress?.({ phase: 'schema', current: 0, total: 0 })
+      }
+    } catch (err) {
+      console.warn('[Combine] Dematerialization skipped:', err)
+    }
+
+    try {
     // Check if both tables exist in DuckDB
     const aExists = await tableExists(tableA)
     const bExists = await tableExists(tableB)
@@ -983,6 +996,17 @@ export async function stackTables(
 
     // Shard path: handles frozen tables + large datasets
     return stackTablesSharded(tableA, tableB, resultName, onProgress)
+    } finally {
+      // Phase 4D: Rematerialize active table after combine completes
+      if (dematerializedTable) {
+        try {
+          const { rematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
+          await rematerializeActiveTable(dematerializedTable.tableName, dematerializedTable.tableId)
+        } catch (err) {
+          console.warn('[Combine] Rematerialization failed (table stays frozen):', err)
+        }
+      }
+    }
   })
 }
 
@@ -1106,6 +1130,19 @@ export async function joinTables(
   onProgress?: CombineProgressCallback
 ): Promise<{ rowCount: number }> {
   return withDuckDBLock(async () => {
+    // Phase 4D: Temporarily dematerialize active table to free ~120MB during combine
+    let dematerializedTable: { tableName: string; tableId: string } | null = null
+    try {
+      const { dematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
+      dematerializedTable = await dematerializeActiveTable()
+      if (dematerializedTable) {
+        onProgress?.({ phase: 'schema', current: 0, total: 0 })
+      }
+    } catch (err) {
+      console.warn('[Combine] Dematerialization skipped:', err)
+    }
+
+    try {
     // Check if both tables exist in DuckDB
     const lExists = await tableExists(leftTable)
     const rExists = await tableExists(rightTable)
@@ -1169,5 +1206,16 @@ export async function joinTables(
 
     // Shard path: handles frozen tables + large datasets
     return joinTablesSharded(leftTable, rightTable, keyColumn, joinType, resultName, onProgress)
+    } finally {
+      // Phase 4D: Rematerialize active table after combine completes
+      if (dematerializedTable) {
+        try {
+          const { rematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
+          await rematerializeActiveTable(dematerializedTable.tableName, dematerializedTable.tableId)
+        } catch (err) {
+          console.warn('[Combine] Rematerialization failed (table stays frozen):', err)
+        }
+      }
+    }
   })
 }

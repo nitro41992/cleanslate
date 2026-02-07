@@ -331,23 +331,20 @@ The `__diff_narrow` table holds 1M rows at ~130MB. For 5M-row tables, this grows
 
 ---
 
-## Future Phases (High-Level)
+## Remaining Future Phases
 
-### Phase 2: Transform Engine
-- Batch executor already processes with OFFSET/LIMIT — adapt to work shard-by-shard via ChunkManager
-- **Viewport preview**: Transforms run on visible 500 rows for instant feedback
-- **Apply**: Full batch job processes all shards, writes results shard-by-shard to new snapshot
-- Progress bar: "Processing shard 5/20"
+### Phase 2: Transform Engine — SHIPPED (see Implementation Progress)
+### Phase 3: Combiner Engine — SHIPPED (see Implementation Progress)
 
-### Phase 3: Combiner Engine
-- Stack (UNION ALL): Process source A shards + source B shards sequentially, write merged shards
-- Join: Index-first approach (same pattern as diff — extract keys, JOIN keys, then hydrate matching rows in batches)
-
-### Phase 4: Active Table Rework
+### Phase 4: Active Table Rework — NOT STARTED
 - Active table no longer fully resident in DuckDB
 - Only viewport shard(s) loaded for display
 - Cell edits target specific shard → load, edit, write back, evict
-- Transforms run shard-by-shard using ChunkManager
+- This is the final step to achieve true zero-resident architecture
+
+### Shard-Level `fetchDiffPage` — DEFERRED
+- Requires `minCsId`/`maxCsId` in manifests during export
+- Current pre-materialization workaround is sufficient for 1M-row target
 
 ---
 
@@ -393,19 +390,27 @@ cleanslate/
 
 | File | Action | Sprint |
 |------|--------|--------|
-| `src/lib/opfs/manifest.ts` | Create | 1 |
-| `src/lib/opfs/snapshot-storage.ts` | Modify (shard size, naming, manifest, importSingleShard) | 1 |
-| `src/lib/constants.ts` | Modify (add SHARD_SIZE if needed) | 1 |
-| `src/hooks/usePersistence.ts` | Modify (startup migration) | 1 |
-| `src/lib/opfs/chunk-manager.ts` | Create | 2 |
-| `src/lib/memory-manager.ts` | Modify (register ChunkManager cleanup) | 2 |
-| `src/lib/diff-engine.ts` | Modify (index-first algorithm, ChunkManager integration) | 3 |
-| `src/stores/diffStore.ts` | Modify (add diffProgress) | 3 |
-| `src/components/diff/DiffView.tsx` | Modify (progress callback + UI) | 3 |
+| `src/lib/opfs/manifest.ts` | Create | 1 | DONE |
+| `src/lib/opfs/snapshot-storage.ts` | Modify (shard size, naming, manifest, importSingleShard) | 1 | DONE |
+| `src/lib/constants.ts` | Modify (add SHARD_SIZE if needed) | 1 | DONE |
+| `src/hooks/usePersistence.ts` | Modify (startup migration) | 1 | DONE |
+| `src/lib/opfs/chunk-manager.ts` | Create | 2 | DONE |
+| `src/lib/memory-manager.ts` | Modify (register ChunkManager cleanup) | 2 | DONE |
+| `src/lib/diff-engine.ts` | Modify (index-first algorithm, ChunkManager integration) | 3 | DONE |
+| `src/stores/diffStore.ts` | Modify (add diffProgress) | 3 | DONE |
+| `src/components/diff/DiffView.tsx` | Modify (progress callback + UI) | 3 | DONE |
+| `src/lib/commands/batch-utils.ts` | Modify (shard-based transform path) | Phase 2 | DONE |
+| `src/lib/commands/executor.ts` | Modify (shard path selection) | Phase 2 | DONE |
+| `src/lib/commands/types.ts` | Modify (shardParallel flag) | Phase 2 | DONE |
+| `src/lib/combiner-engine.ts` | Modify (shard-based stack/join) | Phase 3 | DONE |
+| `src/lib/commands/combine/join.ts` | Modify (shard-based join command) | Phase 3 | DONE |
+| `src/lib/commands/combine/stack.ts` | Modify (shard-based stack command) | Phase 3 | DONE |
+| `src/components/panels/CombinePanel.tsx` | Modify (progress UI) | Phase 3 | DONE |
+| `src/stores/combinerStore.ts` | Modify (progress state) | Phase 3 | DONE |
 
 ---
 
-## Implementation Progress (2026-02-06)
+## Implementation Progress (2026-02-06 → 2026-02-07)
 
 ### Sprint 1: Micro-Shard Storage — COMPLETE (commit 5cfc697)
 - Manifest system, importSingleShard, 50k shards, legacy migration all shipped.
@@ -413,13 +418,13 @@ cleanslate/
 ### Sprint 2: ChunkManager — COMPLETE (commit 5cfc697)
 - Row-budget LRU (150k cap), mapChunks, aggressive yielding, memory-manager integration.
 
-### Sprint 3: Diff Engine — IN PROGRESS
+### Sprint 3: Diff Engine — COMPLETE
 
 #### 3A. Index-First Diff Algorithm — COMPLETE (commit 5cfc697)
 - Phase 1-4 implemented: ID-only index tables → index JOIN → batched column comparison → cleanup.
 - Peak memory during `runDiff` dropped from ~2GB to ~280MB.
 
-#### 3B. ChunkManager Integration in `runDiff` — COMPLETE (this session)
+#### 3B. ChunkManager Integration in `runDiff` — COMPLETE (commit db75dc0)
 - `runDiff()` now uses ChunkManager for snapshot sources instead of full materialization via `resolveTableRef()`.
 - Schema discovery + origin ID validation use shard 0 (then evict).
 - Phase 1 index building uses `mapChunks()` with cumulative `globalRowOffset` for globally-unique row numbers.
@@ -427,7 +432,7 @@ cleanslate/
 - After all computation, source is pre-materialized via `resolveTableRef()` for the diff view cache.
 - Non-snapshot sources (normal DuckDB tables) are completely untouched.
 
-#### Bugs Found & Fixed During Integration
+#### Bugs Found & Fixed During Integration (commit db75dc0)
 
 **Bug 1: Table alias prefix in index creation queries (pre-existing)**
 - `aOriginIdSelect` and `bOriginIdSelect` had `a.`/`b.` table alias prefixes but were used in `SELECT ... FROM "table"` queries without aliases.
@@ -443,16 +448,42 @@ cleanslate/
 - `clearDiffCaches()` was registered as a memory-manager cleanup callback. During diff viewing of large tables, memory pressure triggered cleanup → dropped source table + diff index + expression cache → diff view re-materialized everything → memory pressure → cleanup → repeat → OOM.
 - Fix: Replaced aggressive `clearDiffCaches` memory callback with lightweight version that only clears pending registrations. Active diff state is cleaned up by the DiffView lifecycle (`cleanupDiffTable`, `cleanupMaterializedDiffView`, `cleanupDiffSourceFiles`).
 
-#### 3C. Shard-Level `fetchDiffPage` — NOT STARTED (out of scope)
+#### 3C. Shard-Level `fetchDiffPage` — DEFERRED
 - `fetchDiffPage` still calls `resolveTableRef()` which materializes the full source snapshot.
 - Pre-materialization after `runDiff` (added in 3B) ensures this doesn't cause OOM by loading the source while memory pressure is minimal.
 - True shard-level `fetchDiffPage` requires populating `minCsId`/`maxCsId` in manifests during export. Deferred to future sprint.
 
+### Phase 2: Shard-Based Transform Engine — COMPLETE (commit ccd66b2)
+
+Drop-and-rebuild strategy for transforms on large tables. Instead of holding source + staging copy in DuckDB (~1GB), the live table is DROPped and 50k-row OPFS shards are processed one-by-one (load → transform → export → evict → next), then rebuilt from the new shards.
+
+**Key details:**
+- Automatic selection: shard-parallel commands (`trim`, `replace`, `cast_type`, etc.) use the new path when an OPFS manifest exists
+- Cross-row commands (`remove_duplicates`, `fill_down`) and tables without snapshots fall back to the existing OFFSET batch path
+- Peak memory drops from ~1GB to ~150MB for 1M+ row tables (~85% reduction)
+- Files modified: `src/lib/commands/batch-utils.ts`, `src/lib/commands/executor.ts`, `src/lib/commands/types.ts`, `src/lib/opfs/snapshot-storage.ts`
+
+### Phase 3: Shard-Based Combiner Engine — COMPLETE (commit 0b400f0)
+
+Stack (UNION ALL) and Join operations now work shard-by-shard via ChunkManager, enabling combines even when tables are frozen to OPFS (not resident in DuckDB).
+
+**Key details:**
+- `resolveSource()` detects DuckDB-resident vs OPFS-frozen tables
+- `stackTablesSharded()`: iterates source shards → writes output shards → imports result
+- `joinTablesSharded()`: index-first algorithm (build key indexes → JOIN keys → hydrate matching rows in batches) — same pattern as diff engine
+- Fast path preserved: both tables in DuckDB and ≤50k combined rows bypass sharding
+- Structured progress reporting wired end-to-end (engine → `combinerStore` → `CombinePanel` UI)
+- Empty join early return prevents crash on 0 matches
+- E2E test fixed: dialog name mismatch + gap-based `_cs_id` assertions
+- Files modified: `src/lib/combiner-engine.ts`, `src/lib/commands/combine/join.ts`, `src/lib/commands/combine/stack.ts`, `src/components/panels/CombinePanel.tsx`, `src/stores/combinerStore.ts`, `e2e/tests/combiner-csid.spec.ts`
+
 ### Memory Profile (1M rows, 30 columns)
 
-| Phase | Before Zero-Resident | After Sprint 3B |
+| Phase | Before Zero-Resident | After All Phases |
 |-------|---------------------|-----------------|
 | `runDiff` peak | ~2GB (full source + indices + diff) | ~280MB (shards + indices + diff) |
+| Transform peak | ~1GB (source + staging copy) | ~150MB (1 shard + transform output) |
+| Stack/Join peak | ~1GB+ (both tables fully resident) | ~150MB (shard-by-shard processing) |
 | After `runDiff` | ~1GB (source cached + target) | ~1GB (source pre-materialized + target) |
 | `fetchDiffPage` | Source cached (free), load diff | Source cached (free), load diff |
 | Diff view scrolling | Stable (~1.2GB) | Stable (~1.2GB, no cleanup thrashing) |

@@ -394,6 +394,10 @@ export function useDuckDB() {
    * Get table data using keyset pagination, returning Arrow Table for O(1) cell access.
    * This is the zero-copy path for grid rendering - eliminates JSON serialization overhead.
    *
+   * Routes through shard-backed queries when the table is frozen (in OPFS, not DuckDB).
+   * This enables instant table switching — the grid can render from shards while the
+   * full table materializes in the background.
+   *
    * @param tableName - Name of the table to query
    * @param cursor - Pagination cursor
    * @param limit - Number of rows to fetch
@@ -402,6 +406,30 @@ export function useDuckDB() {
    */
   const getDataArrowWithKeyset = useCallback(
     async (tableName: string, cursor: KeysetCursor, limit = 500, startRow = 0): Promise<ArrowKeysetPageResult> => {
+      // Check if this table is in shard-backed mode (frozen but active)
+      const tableState = useTableStore.getState()
+      const table = tableState.tables.find(t => t.name === tableName)
+      if (table && tableState.frozenTables.has(table.id)) {
+        // Sprint 4E: If filters or custom sort are active, materialization is required
+        // Cross-shard filtering/sorting would need to load all shards anyway, so
+        // we trigger synchronous materialization and then query DuckDB directly.
+        const hasFilters = Boolean(cursor.whereClause)
+        const hasCustomSort = Boolean(cursor.orderByClause)
+        if (hasFilters || hasCustomSort) {
+          console.log('[DuckDB] Filter/sort active on frozen table — triggering materialization')
+          if (tableState.materializingTables.has(table.id)) {
+            await tableState.waitForMaterialization(table.id)
+          } else {
+            const { backgroundMaterialize } = await import('@/lib/opfs/snapshot-storage')
+            tableState.markTableMaterializing(table.id)
+            await backgroundMaterialize(tableName, table.id)
+          }
+          // Table is now materialized — fall through to direct DuckDB query
+        } else {
+          const { getShardDataArrowWithKeyset } = await import('@/lib/duckdb/shard-query')
+          return getShardDataArrowWithKeyset(tableName, cursor, limit, startRow)
+        }
+      }
       return getTableDataArrowWithKeyset(tableName, cursor, limit, startRow)
     },
     []
@@ -450,6 +478,19 @@ export function useDuckDB() {
    */
   const getFilteredCount = useCallback(
     async (tableName: string, filters: ColumnFilter[]) => {
+      // Sprint 4E: If table is frozen, materialize before counting filtered rows
+      const tableState = useTableStore.getState()
+      const table = tableState.tables.find(t => t.name === tableName)
+      if (table && tableState.frozenTables.has(table.id)) {
+        console.log('[DuckDB] Filtered count on frozen table — triggering materialization')
+        if (tableState.materializingTables.has(table.id)) {
+          await tableState.waitForMaterialization(table.id)
+        } else {
+          const { backgroundMaterialize } = await import('@/lib/opfs/snapshot-storage')
+          tableState.markTableMaterializing(table.id)
+          await backgroundMaterialize(tableName, table.id)
+        }
+      }
       const whereClause = buildWhereClause(filters)
       return getFilteredRowCount(tableName, whereClause)
     },

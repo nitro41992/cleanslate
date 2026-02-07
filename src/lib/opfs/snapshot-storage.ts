@@ -397,14 +397,40 @@ export async function exportTableToSnapshot(
         // 4. Cleanup: delete temp file
         await deleteFileIfExists(snapshotsDir, opfsTempFile)
 
+        // Query min/max _cs_id for this shard (enables shard-backed grid rendering)
+        // Uses the same LIMIT/OFFSET window as the shard export query above
+        let minCsId: number | null = null
+        let maxCsId: number | null = null
+        if (orderByCol === CS_ID_COLUMN && shardRowCount > 0) {
+          try {
+            const rangeResult = await conn.query(`
+              SELECT MIN(sub.cid) as min_id, MAX(sub.cid) as max_id
+              FROM (
+                SELECT CAST("${CS_ID_COLUMN}" AS BIGINT) as cid
+                FROM "${tableName}"
+                ${orderByClause}
+                LIMIT ${batchSize} OFFSET ${offset}
+              ) sub
+            `)
+            const row = rangeResult.toArray()[0]?.toJSON()
+            if (row) {
+              minCsId = row.min_id != null ? Number(row.min_id) : null
+              maxCsId = row.max_id != null ? Number(row.max_id) : null
+            }
+          } catch (err) {
+            console.warn(`[Snapshot] Failed to get min/max _cs_id for shard ${shardIndex}:`, err)
+            // Non-fatal: legacy manifests work without these values
+          }
+        }
+
         // Collect shard metadata
         shardInfos.push({
           index: shardIndex,
           fileName: finalFileName,
           rowCount: shardRowCount,
           byteSize: file.size,
-          minCsId: null, // Populated by ChunkManager if needed
-          maxCsId: null,
+          minCsId,
+          maxCsId,
         })
 
         offset += batchSize
@@ -540,13 +566,31 @@ export async function exportSingleShard(
 
   console.log(`[Snapshot] Exported shard ${shardIndex} (${(file.size / 1024 / 1024).toFixed(2)} MB) to ${finalFileName}`)
 
+  // Query min/max _cs_id from the temp table (enables shard-backed grid rendering)
+  let minCsId: number | null = null
+  let maxCsId: number | null = null
+  try {
+    const rangeResult = await conn.query(`
+      SELECT MIN(CAST("${CS_ID_COLUMN}" AS BIGINT)) as min_id,
+             MAX(CAST("${CS_ID_COLUMN}" AS BIGINT)) as max_id
+      FROM "${tableName}"
+    `)
+    const row = rangeResult.toArray()[0]?.toJSON()
+    if (row) {
+      minCsId = row.min_id != null ? Number(row.min_id) : null
+      maxCsId = row.max_id != null ? Number(row.max_id) : null
+    }
+  } catch {
+    // Non-fatal: table may lack _cs_id (e.g., diff tables)
+  }
+
   return {
     index: shardIndex,
     fileName: finalFileName,
     rowCount: shardRowCount,
     byteSize: file.size,
-    minCsId: null,
-    maxCsId: null,
+    minCsId,
+    maxCsId,
   }
 }
 
@@ -984,6 +1028,215 @@ export async function thawTable(
   } catch (error) {
     console.error(`[Thaw] Failed to thaw ${tableName}:`, error)
     return false
+  }
+}
+
+/**
+ * Active materialization cancellation tokens.
+ * Maps tableId → AbortController so switchToTable can cancel in-flight materializations.
+ */
+const materializationControllers = new Map<string, AbortController>()
+
+/**
+ * Background-materialize a table from OPFS shards into DuckDB.
+ *
+ * Imports all shards sequentially using requestIdleCallback/setTimeout to avoid
+ * blocking the UI. Once complete, the table is fully in DuckDB and the grid
+ * seamlessly switches from shard-backed to direct queries (no visual change).
+ *
+ * @param tableName - Name of the table to materialize
+ * @param tableId - Table ID for store updates
+ * @returns Promise that resolves when materialization is complete
+ */
+export async function backgroundMaterialize(
+  tableName: string,
+  tableId: string
+): Promise<boolean> {
+  const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
+  // Create cancellation token
+  const controller = new AbortController()
+  materializationControllers.set(tableId, controller)
+
+  console.log(`[Materialize] Starting background materialization for ${tableName}`)
+
+  try {
+    const { initDuckDB: initDB, getConnection: getConn } = await import('@/lib/duckdb')
+    const db = await initDB()
+    const conn = await getConn()
+
+    // Check if already materialized
+    const tableCheckResult = await conn.query(`
+      SELECT COUNT(*) as count FROM information_schema.tables
+      WHERE table_name = '${tableName}'
+    `)
+    const tableExists = Number(tableCheckResult.toArray()[0]?.toJSON()?.count ?? 0) > 0
+    if (tableExists) {
+      console.log(`[Materialize] ${tableName} already exists in DuckDB, skipping`)
+      return true
+    }
+
+    // Import the full table from OPFS shards
+    await importTableFromSnapshot(db, conn, normalizedSnapshotId, tableName)
+
+    // Check for cancellation after import
+    if (controller.signal.aborted) {
+      // Clean up: drop the table we just imported
+      await conn.query(`DROP TABLE IF EXISTS "${tableName}"`).catch(() => {})
+      console.log(`[Materialize] ${tableName} cancelled, dropped partial import`)
+      return false
+    }
+
+    // Auto-migrate sequential _cs_id to gap-based if needed
+    try {
+      const { migrateToGapBasedCsId } = await import('@/lib/duckdb')
+      await migrateToGapBasedCsId(tableName)
+    } catch (err) {
+      console.warn(`[Materialize] Migration failed for ${tableName}:`, err)
+    }
+
+    // Mark as materialized in tableStore
+    const { useTableStore } = await import('@/stores/tableStore')
+    useTableStore.getState().markTableMaterialized(tableId)
+
+    console.log(`[Materialize] Background materialization complete for ${tableName}`)
+    return true
+  } catch (error) {
+    if (controller.signal.aborted) {
+      console.log(`[Materialize] ${tableName} cancelled during error recovery`)
+      return false
+    }
+    console.error(`[Materialize] Background materialization failed for ${tableName}:`, error)
+
+    // Fall back to synchronous thaw
+    try {
+      console.log(`[Materialize] Falling back to synchronous thaw for ${tableName}`)
+      const { initDuckDB: initDB2, getConnection: getConn2 } = await import('@/lib/duckdb')
+      const db = await initDB2()
+      const conn = await getConn2()
+      const success = await thawTable(db, conn, tableName)
+      if (success) {
+        const { useTableStore } = await import('@/stores/tableStore')
+        useTableStore.getState().markTableMaterialized(tableId)
+      }
+      return success
+    } catch (fallbackError) {
+      console.error(`[Materialize] Synchronous fallback also failed for ${tableName}:`, fallbackError)
+      return false
+    }
+  } finally {
+    materializationControllers.delete(tableId)
+  }
+}
+
+/**
+ * Cancel an in-flight background materialization.
+ * Called when the user switches away from a table before materialization completes.
+ */
+export function cancelMaterialization(tableId: string): void {
+  const controller = materializationControllers.get(tableId)
+  if (controller) {
+    controller.abort()
+    materializationControllers.delete(tableId)
+    console.log(`[Materialize] Cancelled materialization for ${tableId}`)
+  }
+}
+
+/**
+ * Temporarily dematerialize the active table to free memory during heavy operations.
+ *
+ * If the table is clean (already saved to OPFS), just DROP + CHECKPOINT.
+ * If dirty, export first, then drop. Returns info needed to rematerialize.
+ *
+ * @returns Object with tableName/tableId for rematerialization, or null if no active table
+ */
+export async function dematerializeActiveTable(): Promise<{
+  tableName: string
+  tableId: string
+} | null> {
+  const { useTableStore } = await import('@/stores/tableStore')
+  const state = useTableStore.getState()
+
+  if (!state.activeTableId) return null
+
+  const activeTable = state.tables.find(t => t.id === state.activeTableId)
+  if (!activeTable) return null
+
+  // If already frozen or materializing, nothing to dematerialize
+  if (state.frozenTables.has(activeTable.id)) {
+    console.log(`[Dematerialize] ${activeTable.name} already frozen, skipping`)
+    return { tableName: activeTable.name, tableId: activeTable.id }
+  }
+
+  console.log(`[Dematerialize] Parking ${activeTable.name} to disk for heavy operation`)
+
+  try {
+    const { initDuckDB: initDB, getConnection: getConn } = await import('@/lib/duckdb')
+    const db = await initDB()
+    const conn = await getConn()
+
+    // Check if table is dirty (unsaved changes)
+    const { useUIStore } = await import('@/stores/uiStore')
+    const isDirty = useUIStore.getState().dirtyTableIds.has(activeTable.id)
+
+    if (isDirty) {
+      // Export to OPFS first
+      const normalizedSnapshotId = activeTable.name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      await exportTableToSnapshot(db, conn, activeTable.name, normalizedSnapshotId)
+      useUIStore.getState().markTableClean(activeTable.id)
+    }
+
+    // DROP from DuckDB
+    await conn.query(`DROP TABLE IF EXISTS "${activeTable.name}"`)
+    await conn.query('CHECKPOINT').catch(() => {})
+
+    // Mark as frozen in store
+    useTableStore.getState().markTableFrozen(activeTable.id)
+
+    console.log(`[Dematerialize] ${activeTable.name} parked to disk (freed ~${(activeTable.rowCount * 30 * 8 / 1024 / 1024).toFixed(0)}MB estimate)`)
+
+    return { tableName: activeTable.name, tableId: activeTable.id }
+  } catch (error) {
+    console.warn(`[Dematerialize] Failed for ${activeTable.name}, skipping:`, error)
+    return null // Graceful degradation: operation runs with current memory budget
+  }
+}
+
+/**
+ * Rematerialize a previously dematerialized table (restore from OPFS to DuckDB).
+ *
+ * @param tableName - Table name to restore
+ * @param tableId - Table ID for store updates
+ */
+export async function rematerializeActiveTable(
+  tableName: string,
+  tableId: string
+): Promise<void> {
+  const { useTableStore } = await import('@/stores/tableStore')
+
+  // If not frozen, already materialized
+  if (!useTableStore.getState().frozenTables.has(tableId)) {
+    console.log(`[Rematerialize] ${tableName} already in DuckDB, skipping`)
+    return
+  }
+
+  console.log(`[Rematerialize] Restoring ${tableName} from disk`)
+
+  try {
+    const { initDuckDB: initDB, getConnection: getConn } = await import('@/lib/duckdb')
+    const db = await initDB()
+    const conn = await getConn()
+
+    const normalizedSnapshotId = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+    await importTableFromSnapshot(db, conn, normalizedSnapshotId, tableName)
+
+    // Mark as thawed
+    useTableStore.getState().markTableThawed(tableId)
+
+    console.log(`[Rematerialize] ${tableName} restored to DuckDB`)
+  } catch (error) {
+    console.error(`[Rematerialize] Failed to restore ${tableName}:`, error)
+    // Table stays frozen — grid will use shard-backed rendering
   }
 }
 

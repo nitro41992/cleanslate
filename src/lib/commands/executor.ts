@@ -185,6 +185,25 @@ export class CommandExecutor implements ICommandExecutor {
         }
       }
 
+      // GATE: Wait for background materialization to complete before executing commands.
+      // If the table is still materializing (importing shards into DuckDB), we cannot
+      // safely run transforms against it. Wait with a toast notification.
+      if (useTableStore.getState().materializingTables.has(tableId)) {
+        console.log(`[Executor] Waiting for materialization of ${tableId} before executing ${command.type}`)
+        const { toast: showToast } = await import('@/hooks/use-toast')
+        showToast({
+          title: 'Table loading...',
+          description: 'Please wait while the table finishes loading.',
+        })
+        const materialized = await useTableStore.getState().waitForMaterialization(tableId)
+        if (!materialized) {
+          return {
+            success: false,
+            error: 'Table materialization timed out',
+          }
+        }
+      }
+
       // IMMEDIATELY mark table as dirty (before any async operations)
       // This ensures the UI shows "Unsaved changes" during the 2s debounce window
       const uiStoreModule = await import('@/stores/uiStore')

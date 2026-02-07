@@ -15,6 +15,11 @@ interface TableState {
    */
   frozenTables: Set<string>
   /**
+   * Tables currently being background-materialized (importing shards into DuckDB).
+   * While materializing, grid uses shard-backed rendering; editing is gated.
+   */
+  materializingTables: Set<string>
+  /**
    * Whether a table context switch is in progress (freeze/thaw operation).
    * Used to show loading overlay and prevent concurrent switches.
    */
@@ -76,6 +81,14 @@ interface TableActions {
   setContextSwitching: (isSwitching: boolean) => void
   /** Set column order for a table (for drag-drop reordering) */
   setColumnOrder: (tableId: string, columnOrder: string[]) => void
+  /** Mark a table as currently being background-materialized */
+  markTableMaterializing: (tableId: string) => void
+  /** Mark a table as fully materialized (background import complete) */
+  markTableMaterialized: (tableId: string) => void
+  /** Check if a table is currently being materialized */
+  isTableMaterializing: (tableId: string) => boolean
+  /** Wait for a table to finish materializing (with timeout) */
+  waitForMaterialization: (tableId: string, timeoutMs?: number) => Promise<boolean>
 }
 
 export const useTableStore = create<TableState & TableActions>((set, get) => ({
@@ -84,6 +97,7 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
   isLoading: false,
   error: null,
   frozenTables: new Set<string>(),
+  materializingTables: new Set<string>(),
   isContextSwitching: false,
 
   addTable: (name, columns, rowCount, existingId) => {
@@ -468,62 +482,65 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
     try {
       // Dynamically import DuckDB and snapshot functions to avoid circular dependencies
       const { initDuckDB, getConnection } = await import('@/lib/duckdb')
-      const { freezeTable, thawTable } = await import('@/lib/opfs/snapshot-storage')
+      const { freezeTable, cancelMaterialization, backgroundMaterialize } = await import('@/lib/opfs/snapshot-storage')
 
       const db = await initDuckDB()
       const conn = await getConnection()
 
-      // Step 1: Freeze current table (if any)
+      // Step 1: Cancel any in-flight materialization for the current table
+      if (state.activeTableId && state.materializingTables.has(state.activeTableId)) {
+        cancelMaterialization(state.activeTableId)
+        // Remove from materializing set
+        const updatedMat = new Set(state.materializingTables)
+        updatedMat.delete(state.activeTableId)
+        set({ materializingTables: updatedMat })
+      }
+
+      // Step 2: Freeze current table (if any and if materialized in DuckDB)
       if (currentTable && state.activeTableId) {
-        console.log(`[TableStore] Freezing current table: ${currentTable.name}`)
-        const freezeSuccess = await freezeTable(db, conn, currentTable.name, state.activeTableId)
-        if (!freezeSuccess) {
-          console.error(`[TableStore] Failed to freeze ${currentTable.name}`)
-          set({ isContextSwitching: false })
-          return false
+        // Only freeze if the table is actually in DuckDB (not still frozen from lazy thaw)
+        if (!state.frozenTables.has(state.activeTableId)) {
+          console.log(`[TableStore] Freezing current table: ${currentTable.name}`)
+          const freezeSuccess = await freezeTable(db, conn, currentTable.name, state.activeTableId)
+          if (!freezeSuccess) {
+            console.error(`[TableStore] Failed to freeze ${currentTable.name}`)
+            set({ isContextSwitching: false })
+            return false
+          }
         }
         // Mark as frozen
-        const updatedFrozen = new Set(state.frozenTables)
+        const updatedFrozen = new Set(get().frozenTables)
         updatedFrozen.add(state.activeTableId)
         set({ frozenTables: updatedFrozen })
       }
 
-      // Step 2: Thaw target table
-      console.log(`[TableStore] Thawing target table: ${targetTable.name}`)
-      const thawSuccess = await thawTable(db, conn, targetTable.name)
-      if (!thawSuccess) {
-        console.error(`[TableStore] Failed to thaw ${targetTable.name}`)
-        // Attempt to re-thaw the original table
-        if (currentTable && state.activeTableId) {
-          const reThawSuccess = await thawTable(db, conn, currentTable.name)
-          if (!reThawSuccess) {
-            // CRITICAL: Original table was frozen (dropped from DuckDB) and can't be restored.
-            // Clear activeTableId to prevent DataGrid from querying a non-existent table.
-            console.error(`[TableStore] CRITICAL: Failed to restore original table ${currentTable.name}`)
-            const newFrozen = new Set(get().frozenTables)
-            newFrozen.delete(state.activeTableId)
-            set({
-              frozenTables: newFrozen,
-              activeTableId: null,
-              isContextSwitching: false,
-            })
-            return false
-          }
-        }
-        set({ isContextSwitching: false })
-        return false
-      }
-
-      // Mark target as thawed
-      const newFrozenTables = new Set(state.frozenTables)
-      newFrozenTables.delete(targetTableId)
+      // Step 3: Lazy thaw — set target as active immediately (grid uses shard-backed rendering)
+      // The table stays frozen; the grid reads from shards via ChunkManager.
+      // Keep target in frozenTables for now — grid will use shard-backed rendering
       set({
-        frozenTables: newFrozenTables,
         activeTableId: targetTableId,
         isContextSwitching: false,
       })
 
-      console.log(`[TableStore] Context switch complete: ${currentTable?.name || 'none'} → ${targetTable.name}`)
+      console.log(`[TableStore] Lazy switch complete: ${currentTable?.name || 'none'} → ${targetTable.name} (shard-backed)`)
+
+      // Step 4: Start background materialization (imports shards into DuckDB)
+      // This runs asynchronously — the grid is already usable via shard-backed rendering
+      const updatedMat = new Set(get().materializingTables)
+      updatedMat.add(targetTableId)
+      set({ materializingTables: updatedMat })
+
+      // Fire-and-forget: background materialization
+      backgroundMaterialize(targetTable.name, targetTableId).then((success) => {
+        if (success) {
+          console.log(`[TableStore] Background materialization succeeded for ${targetTable.name}`)
+        } else {
+          console.warn(`[TableStore] Background materialization failed for ${targetTable.name}`)
+        }
+      }).catch((err) => {
+        console.error(`[TableStore] Background materialization error for ${targetTable.name}:`, err)
+      })
+
       return true
     } catch (error) {
       console.error('[TableStore] Context switch failed:', error)
@@ -577,6 +594,42 @@ export const useTableStore = create<TableState & TableActions>((set, get) => ({
         })
       })
     }
+  },
+
+  markTableMaterializing: (tableId) => {
+    set((state) => {
+      const updated = new Set(state.materializingTables)
+      updated.add(tableId)
+      return { materializingTables: updated }
+    })
+  },
+
+  markTableMaterialized: (tableId) => {
+    set((state) => {
+      const updated = new Set(state.materializingTables)
+      updated.delete(tableId)
+      // Also remove from frozen since it's now fully in DuckDB
+      const updatedFrozen = new Set(state.frozenTables)
+      updatedFrozen.delete(tableId)
+      return { materializingTables: updated, frozenTables: updatedFrozen }
+    })
+    console.log(`[TableStore] Table ${tableId} materialized (background import complete)`)
+  },
+
+  isTableMaterializing: (tableId) => {
+    return get().materializingTables.has(tableId)
+  },
+
+  waitForMaterialization: async (tableId, timeoutMs = 10000) => {
+    const startTime = Date.now()
+    while (get().materializingTables.has(tableId)) {
+      if (Date.now() - startTime > timeoutMs) {
+        console.warn(`[TableStore] Materialization timeout for ${tableId} after ${timeoutMs}ms`)
+        return false
+      }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    return true
   },
 }))
 

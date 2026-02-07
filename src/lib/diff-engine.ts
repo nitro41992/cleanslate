@@ -303,6 +303,18 @@ export async function runDiff(
   onProgress?: (progress: { phase: string; current: number; total: number }) => void
 ): Promise<DiffConfig> {
   return withDuckDBLock(async () => {
+    // Phase 4D: Temporarily dematerialize active table to free ~120MB during diff
+    let dematerializedTable: { tableName: string; tableId: string } | null = null
+    try {
+      const { dematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
+      dematerializedTable = await dematerializeActiveTable()
+      if (dematerializedTable) {
+        onProgress?.({ phase: 'Preparing...', current: 0, total: 0 })
+      }
+    } catch (err) {
+      console.warn('[Diff] Dematerialization skipped:', err)
+    }
+
     // Start memory polling (2-second intervals)
     let pollCount = 0
     const memoryPollInterval = setInterval(async () => {
@@ -943,6 +955,16 @@ export async function runDiff(
       // CRITICAL: Always clear interval, even on error
       clearInterval(memoryPollInterval)
       console.log(`[Diff] Completed with ${pollCount} memory polls`)
+
+      // Phase 4D: Rematerialize active table after diff completes
+      if (dematerializedTable) {
+        try {
+          const { rematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
+          await rematerializeActiveTable(dematerializedTable.tableName, dematerializedTable.tableId)
+        } catch (err) {
+          console.warn('[Diff] Rematerialization failed (table stays frozen):', err)
+        }
+      }
     }
   })
 }
