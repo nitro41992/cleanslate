@@ -98,6 +98,30 @@ export interface MatcherConfigState {
   isMatching: boolean
 }
 
+export interface OPFSFileInfo {
+  name: string
+  size: number
+}
+
+export interface SnapshotManifest {
+  version: number
+  snapshotId: string
+  totalRows: number
+  totalBytes: number
+  shardSize: number
+  shards: Array<{
+    index: number
+    fileName: string
+    rowCount: number
+    byteSize: number
+    minCsId: number | null
+    maxCsId: number | null
+  }>
+  columns: string[]
+  orderByColumn: string
+  createdAt: number
+}
+
 export interface StoreInspector {
   getTables: () => Promise<TableInfo[]>
   /** Alias for getTables (backward compatibility) */
@@ -284,6 +308,25 @@ export interface StoreInspector {
    * @param timeout - Optional timeout in milliseconds (default 30000)
    */
   waitForRecipeExecutionComplete: (timeout?: number) => Promise<void>
+  /**
+   * Enumerate OPFS snapshot files matching a snapshot ID prefix.
+   * @param snapshotId - The snapshot ID prefix to match (e.g., table name)
+   * @returns Array of file info objects with name and size
+   */
+  getOPFSSnapshotFiles: (snapshotId: string) => Promise<OPFSFileInfo[]>
+  /**
+   * Read and parse a manifest JSON file from OPFS snapshots directory.
+   * @param snapshotId - The snapshot ID (e.g., table name)
+   * @returns Parsed manifest object, or null if not found
+   */
+  getOPFSManifest: (snapshotId: string) => Promise<SnapshotManifest | null>
+  /**
+   * Wait for background materialization to complete.
+   * Polls tableStore.materializingTables until empty (or specific table removed).
+   * @param tableId - Optional specific table ID to wait for
+   * @param timeout - Optional timeout in milliseconds (default 30000)
+   */
+  waitForMaterializationComplete: (tableId?: string, timeout?: number) => Promise<void>
 }
 
 export function createStoreInspector(page: Page): StoreInspector {
@@ -1016,6 +1059,61 @@ async getTableList(): Promise<TableInfo[]> {
           // Wait for isProcessing to become false
           return state?.isProcessing === false
         },
+        { timeout }
+      )
+    },
+
+    async getOPFSSnapshotFiles(snapshotId: string): Promise<OPFSFileInfo[]> {
+      return page.evaluate(async (prefix) => {
+        const files: { name: string; size: number }[] = []
+        try {
+          const root = await navigator.storage.getDirectory()
+          const appDir = await root.getDirectoryHandle('cleanslate')
+          const snapshots = await appDir.getDirectoryHandle('snapshots')
+          // entries() exists at runtime but TypeScript's lib doesn't include it
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          for await (const [name, handle] of (snapshots as any).entries()) {
+            if (handle.kind === 'file' && name.startsWith(prefix)) {
+              const file = await handle.getFile()
+              files.push({ name, size: file.size })
+            }
+          }
+        } catch {
+          // OPFS not available or directory missing
+        }
+        return files
+      }, snapshotId)
+    },
+
+    async getOPFSManifest(snapshotId: string): Promise<SnapshotManifest | null> {
+      return page.evaluate(async (id) => {
+        try {
+          const root = await navigator.storage.getDirectory()
+          const appDir = await root.getDirectoryHandle('cleanslate')
+          const snapshots = await appDir.getDirectoryHandle('snapshots')
+          const handle = await snapshots.getFileHandle(`${id}_manifest.json`)
+          const file = await handle.getFile()
+          const text = await file.text()
+          return JSON.parse(text)
+        } catch {
+          return null
+        }
+      }, snapshotId) as Promise<SnapshotManifest | null>
+    },
+
+    async waitForMaterializationComplete(tableId?: string, timeout = 30000): Promise<void> {
+      await page.waitForFunction(
+        ({ tableId }) => {
+          const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+          if (!stores?.tableStore) return true
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.tableStore as any).getState()
+          const materializing: Set<string> = state?.materializingTables
+          if (!materializing || materializing.size === 0) return true
+          if (tableId) return !materializing.has(tableId)
+          return materializing.size === 0
+        },
+        { tableId },
         { timeout }
       )
     },

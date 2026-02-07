@@ -1,6 +1,7 @@
 import { AlertCircle } from 'lucide-react'
 import { usePreviewStore } from '@/stores/previewStore'
 import { MemoryIndicator } from '@/components/common/MemoryIndicator'
+import { MaterializationIndicator } from '@/components/common/MaterializationIndicator'
 import { PersistenceIndicator } from '@/components/common/PersistenceIndicator'
 import { OperationIndicator } from '@/components/common/OperationIndicator'
 
@@ -21,8 +22,9 @@ export function StatusBar() {
         )}
       </div>
 
-      {/* Center: Persistence status indicator */}
+      {/* Center: Materialization + Persistence status indicators */}
       <div className="flex items-center gap-3">
+        <MaterializationIndicator />
         <PersistenceIndicator />
       </div>
 
