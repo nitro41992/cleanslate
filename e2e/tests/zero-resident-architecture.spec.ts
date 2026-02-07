@@ -198,12 +198,7 @@ test.describe('Zero-Resident Architecture', () => {
     ])
   })
 
-  test.skip('diff works with shard-backed snapshots', async () => {
-    // SKIP: Diff comparison does not complete on feat/arrow-ipc-coi-threading branch.
-    // The diff engine's "Compare with Preview" mode fails to run when using shard-backed
-    // snapshots. The "Run Comparison" button click is accepted but isComparing never
-    // transitions to true. Existing diff tests (diff-filtering.spec.ts) also fail on
-    // this branch. Needs investigation in the diff engine's snapshot reader.
+  test('diff works with shard-backed snapshots', async () => {
     // Upload fr_b2_base.csv (5 rows: id, name, department, salary)
     await laundromat.uploadFile(getFixturePath('fr_b2_base.csv'))
     await wizard.waitForOpen()

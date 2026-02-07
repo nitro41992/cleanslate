@@ -304,12 +304,25 @@ export async function runDiff(
 ): Promise<DiffConfig> {
   return withDuckDBLock(async () => {
     // Phase 4D: Temporarily dematerialize active table to free ~120MB during diff
+    // IMPORTANT: Skip if active table is one of the tables being compared.
+    // In preview mode, the active table IS tableB (the diff target).
+    // Dematerializing it would DROP the very table we need to JOIN against.
     let dematerializedTable: { tableName: string; tableId: string } | null = null
     try {
       const { dematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
-      dematerializedTable = await dematerializeActiveTable()
-      if (dematerializedTable) {
-        onProgress?.({ phase: 'Preparing...', current: 0, total: 0 })
+      const { useTableStore } = await import('@/stores/tableStore')
+      const activeTable = useTableStore.getState().tables.find(
+        t => t.id === useTableStore.getState().activeTableId
+      )
+      const activeTableInUse = activeTable && (
+        activeTable.name === tableB ||
+        activeTable.name === tableA
+      )
+      if (!activeTableInUse) {
+        dematerializedTable = await dematerializeActiveTable()
+        if (dematerializedTable) {
+          onProgress?.({ phase: 'Preparing...', current: 0, total: 0 })
+        }
       }
     } catch (err) {
       console.warn('[Diff] Dematerialization skipped:', err)
