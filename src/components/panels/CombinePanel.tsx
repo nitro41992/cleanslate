@@ -13,8 +13,8 @@ import { useTableStore } from '@/stores/tableStore'
 import { useCombinerStore } from '@/stores/combinerStore'
 import { usePreviewStore } from '@/stores/previewStore'
 import { useAuditStore } from '@/stores/auditStore'
-import { validateStack, validateJoin, autoCleanKeys } from '@/lib/combiner-engine'
-import { getTableColumns } from '@/lib/duckdb'
+import { validateStack, validateJoin, autoCleanKeys, validateStackFromMetadata, validateJoinFromMetadata } from '@/lib/combiner-engine'
+import { getTableColumns, tableExists } from '@/lib/duckdb'
 import { createCommand } from '@/lib/commands'
 import { isInternalColumn } from '@/lib/commands/utils/column-ordering'
 import { useExecuteWithConfirmation } from '@/hooks/useExecuteWithConfirmation'
@@ -45,6 +45,7 @@ export function CombinePanel() {
     joinValidation,
     resultTableName,
     isProcessing,
+    combineProgress,
     setMode,
     addStackTable,
     removeStackTable,
@@ -56,6 +57,7 @@ export function CombinePanel() {
     setJoinValidation,
     setResultTableName,
     setIsProcessing,
+    setCombineProgress,
     setError,
   } = useCombinerStore()
 
@@ -117,8 +119,24 @@ export function CombinePanel() {
     if (!tableA || !tableB) return
 
     try {
-      const validation = await validateStack(tableA.name, tableB.name)
-      setStackValidation(validation)
+      // Check if both tables are in DuckDB
+      const aInDuckDB = await tableExists(tableA.name)
+      const bInDuckDB = await tableExists(tableB.name)
+
+      if (aInDuckDB && bInDuckDB) {
+        // Both in DuckDB — use original validation (queries actual data)
+        const validation = await validateStack(tableA.name, tableB.name)
+        setStackValidation(validation)
+      } else {
+        // At least one frozen — use metadata-based validation
+        const validation = validateStackFromMetadata(
+          tableA.columns,
+          tableB.columns,
+          tableA.name,
+          tableB.name
+        )
+        setStackValidation(validation)
+      }
     } catch (error) {
       console.error('Validation failed:', error)
     }
@@ -216,6 +234,7 @@ export function CombinePanel() {
       })
     } finally {
       setIsProcessing(false)
+      setCombineProgress(null)
       useOperationStore.getState().deregisterOperation(opId)
     }
   }
@@ -230,8 +249,24 @@ export function CombinePanel() {
   const handleValidateJoin = async () => {
     if (!leftTable || !rightTable || !keyColumn) return
     try {
-      const validation = await validateJoin(leftTable.name, rightTable.name, keyColumn)
-      setJoinValidation(validation)
+      const leftInDuckDB = await tableExists(leftTable.name)
+      const rightInDuckDB = await tableExists(rightTable.name)
+
+      if (leftInDuckDB && rightInDuckDB) {
+        // Both in DuckDB — use original validation (includes whitespace check)
+        const validation = await validateJoin(leftTable.name, rightTable.name, keyColumn)
+        setJoinValidation(validation)
+      } else {
+        // At least one frozen — use metadata-based validation (no whitespace check)
+        const validation = validateJoinFromMetadata(
+          leftTable.columns,
+          rightTable.columns,
+          leftTable.name,
+          rightTable.name,
+          keyColumn
+        )
+        setJoinValidation(validation)
+      }
     } catch (error) {
       console.error('Validation failed:', error)
     }
@@ -239,6 +274,15 @@ export function CombinePanel() {
 
   const handleAutoClean = async () => {
     if (!leftTable || !rightTable || !keyColumn) return
+    // Auto-clean requires both tables in DuckDB (modifies source data)
+    const leftInDB = await tableExists(leftTable.name)
+    const rightInDB = await tableExists(rightTable.name)
+    if (!leftInDB || !rightInDB) {
+      toast.error('Auto-Clean Not Available', {
+        description: 'Load both tables first to auto-clean keys.',
+      })
+      return
+    }
     const opId = useOperationStore.getState().registerOperation('combine', 'Auto-cleaning join keys')
     setIsProcessing(true)
     try {
@@ -342,6 +386,7 @@ export function CombinePanel() {
       })
     } finally {
       setIsProcessing(false)
+      setCombineProgress(null)
       useOperationStore.getState().deregisterOperation(opId)
     }
   }
@@ -583,7 +628,12 @@ export function CombinePanel() {
                 {isProcessing ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Stacking...
+                    {combineProgress ? (
+                      combineProgress.phase === 'schema' ? 'Analyzing schemas...' :
+                      combineProgress.phase === 'hydrating' ? `Processing shard ${combineProgress.current}/${combineProgress.total}...` :
+                      combineProgress.phase === 'finalizing' ? 'Importing result...' :
+                      'Stacking...'
+                    ) : 'Stacking...'}
                   </>
                 ) : (
                   <>
@@ -756,7 +806,14 @@ export function CombinePanel() {
                   {isProcessing ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Joining...
+                      {combineProgress ? (
+                        combineProgress.phase === 'schema' ? 'Analyzing schemas...' :
+                        combineProgress.phase === 'indexing' ? `Building key index (${combineProgress.current}/${combineProgress.total})...` :
+                        combineProgress.phase === 'joining' ? 'Matching keys...' :
+                        combineProgress.phase === 'hydrating' ? `Building result (${combineProgress.current}/${combineProgress.total})...` :
+                        combineProgress.phase === 'finalizing' ? 'Importing result...' :
+                        'Joining...'
+                      ) : 'Joining...'}
                     </>
                   ) : (
                     <>

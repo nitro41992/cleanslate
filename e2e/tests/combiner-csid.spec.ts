@@ -67,7 +67,7 @@ test.describe('Combiner _cs_id column', () => {
 
     // 4. Select tables to stack
     // Scope to the dialog to avoid ambiguity, use getByRole for the combobox
-    const combineDialog = page.getByRole('dialog', { name: 'Combine Tables' })
+    const combineDialog = page.getByRole('dialog', { name: 'Combine' })
     await combineDialog.waitFor({ state: 'visible' })
 
     // Select first table - selecting from combobox auto-adds the table
@@ -99,11 +99,11 @@ test.describe('Combiner _cs_id column', () => {
     const columnNames = columns.map((c) => c.column_name)
     expect(columnNames).toContain('_cs_id')
 
-    // 9. Verify _cs_id values are sequential (1, 2, 3, 4)
+    // 9. Verify _cs_id values are gap-based sequential (100, 200, 300, 400)
     const rows = await inspector.runQuery<{ _cs_id: number }>(
       'SELECT "_cs_id" FROM stacked_result ORDER BY "_cs_id"'
     )
-    expect(rows.map((r) => Number(r._cs_id))).toEqual([1, 2, 3, 4])
+    expect(rows.map((r) => Number(r._cs_id))).toEqual([100, 200, 300, 400])
 
     // 10. Verify grid displays correctly by checking it's visible (not gray/error)
     await expect(laundromat.gridContainer).toBeVisible()
@@ -129,7 +129,7 @@ test.describe('Combiner _cs_id column', () => {
     await laundromat.openCombinePanel()
 
     // 4. Scope to the dialog
-    const combineDialog = page.getByRole('dialog', { name: 'Combine Tables' })
+    const combineDialog = page.getByRole('dialog', { name: 'Combine' })
     await combineDialog.waitFor({ state: 'visible' })
 
     // 5. Click Join tab
@@ -175,11 +175,11 @@ test.describe('Combiner _cs_id column', () => {
     const columnNames = columns.map((c) => c.column_name)
     expect(columnNames).toContain('_cs_id')
 
-    // 11. Verify _cs_id values are sequential (1, 2)
+    // 11. Verify _cs_id values are gap-based sequential (100, 200)
     const rows = await inspector.runQuery<{ _cs_id: number }>(
       'SELECT "_cs_id" FROM joined_result ORDER BY "_cs_id"'
     )
-    expect(rows.map((r) => Number(r._cs_id))).toEqual([1, 2])
+    expect(rows.map((r) => Number(r._cs_id))).toEqual([100, 200])
 
     // 12. Verify grid displays correctly by checking it's visible (not gray/error)
     await expect(laundromat.gridContainer).toBeVisible()
@@ -206,7 +206,7 @@ test.describe('Combiner _cs_id column', () => {
     await laundromat.openCombinePanel()
 
     // Scope to the dialog
-    const combineDialog = page.getByRole('dialog', { name: 'Combine Tables' })
+    const combineDialog = page.getByRole('dialog', { name: 'Combine' })
     await combineDialog.waitFor({ state: 'visible' })
 
     const stackPanel = combineDialog.getByRole('tabpanel', { name: 'Stack' })

@@ -18,6 +18,8 @@ import type {
 import { generateId } from '@/lib/utils'
 import { joinTables, validateJoin } from '@/lib/combiner-engine'
 import { getTableColumns } from '@/lib/duckdb'
+import { checkSnapshotFileExists } from '@/lib/opfs/snapshot-storage'
+import { useCombinerStore } from '@/stores/combinerStore'
 import type { JoinType } from '@/types'
 
 export interface CombineJoinParams {
@@ -70,23 +72,31 @@ export class CombineJoinCommand implements Command<CombineJoinParams> {
       }
     }
 
-    // Check source tables exist
+    // Check if tables are available (in DuckDB or frozen in OPFS)
     const leftExists = await ctx.db.tableExists(leftTableName)
     const rightExists = await ctx.db.tableExists(rightTableName)
 
     if (!leftExists) {
-      return {
-        isValid: false,
-        errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${leftTableName} not found` }],
-        warnings: [],
+      const snapshotId = leftTableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      const hasSnapshot = await checkSnapshotFileExists(snapshotId)
+      if (!hasSnapshot) {
+        return {
+          isValid: false,
+          errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${leftTableName} not found` }],
+          warnings: [],
+        }
       }
     }
 
     if (!rightExists) {
-      return {
-        isValid: false,
-        errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${rightTableName} not found` }],
-        warnings: [],
+      const snapshotId = rightTableName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      const hasSnapshot = await checkSnapshotFileExists(snapshotId)
+      if (!hasSnapshot) {
+        return {
+          isValid: false,
+          errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${rightTableName} not found` }],
+          warnings: [],
+        }
       }
     }
 
@@ -100,7 +110,7 @@ export class CombineJoinCommand implements Command<CombineJoinParams> {
       }
     }
 
-    // Validate join compatibility
+    // Validate join compatibility (may fail if tables are frozen — that's OK, engine handles it)
     try {
       const validation = await validateJoin(leftTableName, rightTableName, keyColumn)
       if (!validation.isValid) {
@@ -117,11 +127,12 @@ export class CombineJoinCommand implements Command<CombineJoinParams> {
       }))
       return { isValid: true, errors: [], warnings }
     } catch (error) {
-      return {
-        isValid: false,
-        errors: [{ code: 'VALIDATION_ERROR', message: error instanceof Error ? error.message : String(error) }],
-        warnings: [],
+      // Only swallow "table not in DuckDB" errors — re-throw unexpected ones
+      const msg = error instanceof Error ? error.message : String(error)
+      if (msg.includes('Catalog Error') || msg.includes('not found') || msg.includes('does not exist')) {
+        return { isValid: true, errors: [], warnings: [] }
       }
+      throw error
     }
   }
 
@@ -129,8 +140,9 @@ export class CombineJoinCommand implements Command<CombineJoinParams> {
     const { leftTableName, rightTableName, keyColumn, joinType, resultTableName } = this.params
 
     try {
-      // Call the combiner engine
-      const { rowCount } = await joinTables(leftTableName, rightTableName, keyColumn, joinType, resultTableName)
+      // Call the combiner engine with progress reporting
+      const onProgress = useCombinerStore.getState().setCombineProgress
+      const { rowCount } = await joinTables(leftTableName, rightTableName, keyColumn, joinType, resultTableName, onProgress)
 
       // Get new table columns
       const columns = await getTableColumns(resultTableName)

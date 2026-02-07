@@ -18,6 +18,8 @@ import type {
 import { generateId } from '@/lib/utils'
 import { stackTables, validateStack } from '@/lib/combiner-engine'
 import { getTableColumns } from '@/lib/duckdb'
+import { checkSnapshotFileExists } from '@/lib/opfs/snapshot-storage'
+import { useCombinerStore } from '@/stores/combinerStore'
 
 export interface CombineStackParams {
   tableId: string // Source table A (for context building)
@@ -59,23 +61,32 @@ export class CombineStackCommand implements Command<CombineStackParams> {
       }
     }
 
-    // Check source tables exist
+    // Check if tables are available (in DuckDB or frozen in OPFS)
     const tableAExists = await ctx.db.tableExists(sourceTableA)
     const tableBExists = await ctx.db.tableExists(sourceTableB)
 
     if (!tableAExists) {
-      return {
-        isValid: false,
-        errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${sourceTableA} not found` }],
-        warnings: [],
+      // Check if frozen in OPFS
+      const snapshotId = sourceTableA.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      const hasSnapshot = await checkSnapshotFileExists(snapshotId)
+      if (!hasSnapshot) {
+        return {
+          isValid: false,
+          errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${sourceTableA} not found` }],
+          warnings: [],
+        }
       }
     }
 
     if (!tableBExists) {
-      return {
-        isValid: false,
-        errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${sourceTableB} not found` }],
-        warnings: [],
+      const snapshotId = sourceTableB.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      const hasSnapshot = await checkSnapshotFileExists(snapshotId)
+      if (!hasSnapshot) {
+        return {
+          isValid: false,
+          errors: [{ code: 'TABLE_NOT_FOUND', message: `Table ${sourceTableB} not found` }],
+          warnings: [],
+        }
       }
     }
 
@@ -89,7 +100,7 @@ export class CombineStackCommand implements Command<CombineStackParams> {
       }
     }
 
-    // Validate stack compatibility
+    // Validate stack compatibility (may fail if tables are frozen — that's OK, engine handles it)
     try {
       const validation = await validateStack(sourceTableA, sourceTableB)
       const warnings = validation.warnings.map((w) => ({
@@ -99,11 +110,12 @@ export class CombineStackCommand implements Command<CombineStackParams> {
       }))
       return { isValid: true, errors: [], warnings }
     } catch (error) {
-      return {
-        isValid: false,
-        errors: [{ code: 'VALIDATION_ERROR', message: error instanceof Error ? error.message : String(error) }],
-        warnings: [],
+      // Only swallow "table not in DuckDB" errors — re-throw unexpected ones
+      const msg = error instanceof Error ? error.message : String(error)
+      if (msg.includes('Catalog Error') || msg.includes('not found') || msg.includes('does not exist')) {
+        return { isValid: true, errors: [], warnings: [] }
       }
+      throw error
     }
   }
 
@@ -111,8 +123,9 @@ export class CombineStackCommand implements Command<CombineStackParams> {
     const { sourceTableA, sourceTableB, resultTableName } = this.params
 
     try {
-      // Call the combiner engine
-      const { rowCount } = await stackTables(sourceTableA, sourceTableB, resultTableName)
+      // Call the combiner engine with progress reporting
+      const onProgress = useCombinerStore.getState().setCombineProgress
+      const { rowCount } = await stackTables(sourceTableA, sourceTableB, resultTableName, onProgress)
 
       // Get new table columns
       const columns = await getTableColumns(resultTableName)

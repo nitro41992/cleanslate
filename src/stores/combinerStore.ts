@@ -18,6 +18,11 @@ interface CombinerState {
   resultTableName: string
   isProcessing: boolean
   error: string | null
+  combineProgress: {
+    phase: 'idle' | 'schema' | 'indexing' | 'joining' | 'hydrating' | 'finalizing'
+    current: number
+    total: number
+  } | null
 }
 
 interface CombinerActions {
@@ -37,6 +42,7 @@ interface CombinerActions {
   setResultTableName: (name: string) => void
   setIsProcessing: (processing: boolean) => void
   setError: (error: string | null) => void
+  setCombineProgress: (progress: CombinerState['combineProgress']) => void
   reset: () => void
 }
 
@@ -52,6 +58,7 @@ const initialState: CombinerState = {
   resultTableName: '',
   isProcessing: false,
   error: null,
+  combineProgress: null,
 }
 
 export const useCombinerStore = create<CombinerState & CombinerActions>((set) => ({
@@ -84,5 +91,6 @@ export const useCombinerStore = create<CombinerState & CombinerActions>((set) =>
   setResultTableName: (name) => set({ resultTableName: name }),
   setIsProcessing: (processing) => set({ isProcessing: processing }),
   setError: (error) => set({ error }),
+  setCombineProgress: (progress) => set({ combineProgress: progress }),
   reset: () => set(initialState),
 }))
