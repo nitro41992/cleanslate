@@ -2041,6 +2041,49 @@ export function DataGrid({
       // Skip if value hasn't changed
       if (previousValue === newCellValue) return
 
+      // GATE: Wait for background materialization before allowing cell edits.
+      // After a table switch, the table is frozen (shard-backed). Edits require
+      // the table to be fully materialized in DuckDB. Without this gate, edits
+      // silently fail because DuckDB doesn't have the table yet.
+      const tableState = useTableStore.getState()
+      if (tableState.frozenTables.has(tableId) || tableState.materializingTables.has(tableId)) {
+        if (tableState.materializingTables.has(tableId)) {
+          // Already materializing — just wait
+          toast({
+            title: 'Table loading...',
+            description: 'Please wait while the table finishes loading.',
+          })
+          const materialized = await tableState.waitForMaterialization(tableId, 15000)
+          if (!materialized) {
+            toast({
+              title: 'Edit failed',
+              description: 'Table loading timed out. Please try again.',
+              variant: 'destructive',
+            })
+            return
+          }
+        } else {
+          // Frozen but not materializing — trigger materialization, then wait
+          toast({
+            title: 'Table loading...',
+            description: 'Please wait while the table finishes loading.',
+          })
+          const { backgroundMaterialize } = await import('@/lib/opfs/snapshot-storage')
+          tableState.markTableMaterializing(tableId)
+          await backgroundMaterialize(tableName, tableId)
+          // backgroundMaterialize calls markTableMaterialized on success,
+          // which clears both materializingTables and frozenTables
+          if (useTableStore.getState().frozenTables.has(tableId)) {
+            toast({
+              title: 'Edit failed',
+              description: 'Table loading failed. Please try again.',
+              variant: 'destructive',
+            })
+            return
+          }
+        }
+      }
+
       // Validate the new value against the column type
       const colType = columnTypeMap.get(colName)
       if (colType && newCellValue !== null) {

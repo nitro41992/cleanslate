@@ -156,9 +156,14 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     const tablesBefore = await inspector.getTableList()
     expect(tablesBefore.map(t => t.name)).toContain('basic_data')
 
-    // 3. Flush to OPFS to ensure table is persisted
+    // 3. Flush to OPFS to ensure table is persisted (Arrow IPC export is debounced)
     await inspector.flushToOPFS()
     await inspector.saveAppState()
+    // Wait for snapshot files to appear in OPFS (auto-save will create them)
+    await expect.poll(async () => {
+      const files = await getSnapshotFiles(page, 'basic_data')
+      return files.length
+    }, { timeout: 15000 }).toBeGreaterThan(0)
 
     // Verify snapshot file exists before deletion
     const snapshotsBefore = await getSnapshotFiles(page, 'basic_data')
@@ -179,9 +184,8 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     // Hover over the table row to reveal delete button
     await tableRow.hover()
 
-    // Click delete button (second button in the menu item - first is copy, second is trash)
-    // Wait briefly for opacity transition to complete
-    const deleteBtn = tableRow.getByRole('button').nth(1)
+    // Click delete button (only button in the menu item - trash icon)
+    const deleteBtn = tableRow.getByRole('button').nth(0)
     await expect(deleteBtn).toBeVisible()
     await deleteBtn.click()
 
@@ -196,22 +200,16 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
       return tables.map(t => t.name)
     }, { timeout: 10000 }).not.toContain('basic_data')
 
-    // Brief wait for filesystem operations to complete
-    await page.waitForFunction(
-      () => true,
-      { timeout: 500 }
-    ).catch(() => {})
-
-    // 6. Verify snapshot file was deleted (checking normalized name)
-    const snapshotsAfterDelete = await getSnapshotFiles(page, 'basic_data')
-    console.log('[Test] Snapshot files after delete:', snapshotsAfterDelete)
-    // Filter out timeline/snapshot files, only check the main table file
-    const mainTableSnapshots = snapshotsAfterDelete.filter(f =>
-      !f.startsWith('original_') &&
-      !f.startsWith('snapshot_') &&
-      !f.startsWith('_timeline_')
-    )
-    expect(mainTableSnapshots).toHaveLength(0)
+    // 6. Poll until snapshot files are deleted (checking normalized name)
+    await expect.poll(async () => {
+      const files = await getSnapshotFiles(page, 'basic_data')
+      const mainFiles = files.filter(f =>
+        !f.startsWith('original_') &&
+        !f.startsWith('snapshot_') &&
+        !f.startsWith('_timeline_')
+      )
+      return mainFiles.length
+    }, { timeout: 10000 }).toBe(0)
 
     // 7. Refresh the page
     await page.reload()
@@ -241,9 +239,13 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
-    // Flush and save
+    // Flush and save, then wait for snapshot files to appear in OPFS
     await inspector.flushToOPFS()
     await inspector.saveAppState()
+    await expect.poll(async () => {
+      const files = await getSnapshotFiles(page, 'basic_data')
+      return files.length
+    }, { timeout: 15000 }).toBeGreaterThan(0)
 
     // 2. Delete the table
     await page.getByTestId('table-selector').click()
@@ -251,7 +253,7 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     const tableRow = page.getByRole('menuitem', { name: /basic_data/ })
     await expect(tableRow).toBeVisible()
     await tableRow.hover()
-    const deleteBtn = tableRow.getByRole('button').nth(1)
+    const deleteBtn = tableRow.getByRole('button').nth(0)
     await expect(deleteBtn).toBeVisible()
     await deleteBtn.click()
 
@@ -289,9 +291,14 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('with_duplicates', 5)
 
-    // Flush and save both
+    // Flush and save both, then wait for snapshot files to appear in OPFS
     await inspector.flushToOPFS()
     await inspector.saveAppState()
+    await expect.poll(async () => {
+      const bd = await getSnapshotFiles(page, 'basic_data')
+      const wd = await getSnapshotFiles(page, 'with_duplicates')
+      return bd.length > 0 && wd.length > 0
+    }, { timeout: 15000 }).toBe(true)
 
     // Verify both exist
     const tablesBefore = await inspector.getTableList()
@@ -303,7 +310,7 @@ test.describe('FR-PERSIST-DELETE: Table Delete Persistence', () => {
     const tableRow = page.getByRole('menuitem', { name: /basic_data/ })
     await expect(tableRow).toBeVisible()
     await tableRow.hover()
-    const deleteBtn = tableRow.getByRole('button').nth(1)
+    const deleteBtn = tableRow.getByRole('button').nth(0)
     await expect(deleteBtn).toBeVisible()
     await deleteBtn.click()
 

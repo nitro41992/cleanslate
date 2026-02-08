@@ -1052,6 +1052,11 @@ export async function backgroundMaterialize(
     const tableExists = Number(tableCheckResult.toArray()[0]?.toJSON()?.count ?? 0) > 0
     if (tableExists) {
       console.log(`[Materialize] ${tableName} already exists in DuckDB, skipping`)
+      // Clean up materializingTables/frozenTables even when skipping import.
+      // switchToTable adds to materializingTables before calling this function,
+      // so we must clear it to avoid the table being permanently stuck.
+      const { useTableStore } = await import('@/stores/tableStore')
+      useTableStore.getState().markTableMaterialized(tableId)
       return true
     }
 

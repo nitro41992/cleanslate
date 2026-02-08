@@ -186,20 +186,43 @@ export class CommandExecutor implements ICommandExecutor {
       }
 
       // GATE: Wait for background materialization to complete before executing commands.
-      // If the table is still materializing (importing shards into DuckDB), we cannot
-      // safely run transforms against it. Wait with a toast notification.
-      if (useTableStore.getState().materializingTables.has(tableId)) {
+      // If the table is frozen (shard-backed) or still materializing (importing shards
+      // into DuckDB), we cannot safely run transforms against it.
+      const tableState = useTableStore.getState()
+      if (tableState.frozenTables.has(tableId) || tableState.materializingTables.has(tableId)) {
         console.log(`[Executor] Waiting for materialization of ${tableId} before executing ${command.type}`)
         const { toast: showToast } = await import('@/hooks/use-toast')
         showToast({
           title: 'Table loading...',
           description: 'Please wait while the table finishes loading.',
         })
-        const materialized = await useTableStore.getState().waitForMaterialization(tableId)
-        if (!materialized) {
-          return {
-            success: false,
-            error: 'Table materialization timed out',
+
+        if (tableState.materializingTables.has(tableId)) {
+          // Already materializing — wait for it
+          const materialized = await tableState.waitForMaterialization(tableId, 15000)
+          if (!materialized) {
+            return {
+              success: false,
+              error: 'Table materialization timed out',
+            }
+          }
+        } else {
+          // Frozen but not materializing — trigger materialization
+          const { backgroundMaterialize } = await import('@/lib/opfs/snapshot-storage')
+          const tableName = tableState.tables.find(t => t.id === tableId)?.name
+          if (!tableName) {
+            return {
+              success: false,
+              error: 'Cannot find table name for materialization',
+            }
+          }
+          tableState.markTableMaterializing(tableId)
+          await backgroundMaterialize(tableName, tableId)
+          if (useTableStore.getState().frozenTables.has(tableId)) {
+            return {
+              success: false,
+              error: 'Table materialization failed',
+            }
           }
         }
       }

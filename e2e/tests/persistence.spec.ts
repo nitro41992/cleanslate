@@ -130,20 +130,24 @@ test.describe('Application State Persistence', () => {
     expect(tables[0].name).toBe('basic_data')
     expect(tables[0].rowCount).toBe(5)
 
-    // Flush to OPFS before reload (simple wait pattern from opfs-persistence.spec.ts)
+    // Flush DuckDB WAL and save app state, then wait for Arrow IPC export to complete
     await inspector.flushToOPFS()
-
-    // Wait for flush to complete with simple poll
-    await expect.poll(async () => {
-      const tables = await inspector.getTableList()
-      return tables.some(t => t.name === 'basic_data')
-    }, { timeout: 10000 }).toBeTruthy()
+    await inspector.saveAppState()
+    await inspector.waitForPersistenceComplete()
 
     // Refresh page
     await page.reload()
     await waitForAppReady(page, inspector)
 
-    // Wait for table to be queryable in DuckDB
+    // Wait for hydration to restore the table
+    await page.waitForFunction(() => {
+      const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, { getState: () => Record<string, unknown> }> }).__CLEANSLATE_STORES__
+      const tableStore = stores?.tableStore?.getState()
+      const tables = (tableStore as { tables?: unknown[] })?.tables
+      return tables && tables.length > 0
+    }, { timeout: 30000 })
+
+    // Wait for table to be queryable in DuckDB (thawed during hydration)
     await expect.poll(async () => {
       try {
         const rows = await inspector.runQuery('SELECT COUNT(*) as cnt FROM basic_data')
@@ -186,15 +190,10 @@ test.describe('Application State Persistence', () => {
     const tablesBefore = await inspector.getTableList()
     const tableId = tablesBefore[0].id
 
-    // Flush to OPFS before reload
+    // Flush DuckDB WAL and save app state, then wait for Arrow IPC export to complete
     await inspector.flushToOPFS()
     await inspector.saveAppState()
-
-    // Wait for flush with simple poll
-    await expect.poll(async () => {
-      const tables = await inspector.getTableList()
-      return tables.some(t => t.name === 'whitespace_data')
-    }, { timeout: 10000 }).toBeTruthy()
+    await inspector.waitForPersistenceComplete()
 
     // Refresh page
     await page.reload()
@@ -252,14 +251,10 @@ test.describe('Application State Persistence', () => {
       return { hasDups, hasBasic, count: tables.length }
     }, { timeout: 15000 }).toMatchObject({ hasDups: true, hasBasic: true })
 
-    // Flush to OPFS
+    // Flush DuckDB WAL and save app state, then wait for Arrow IPC export to complete
     await inspector.flushToOPFS()
-
-    // Wait for persistence by checking store tables
-    await expect.poll(async () => {
-      const tables = await inspector.getTableList()
-      return tables.length
-    }, { timeout: 10000 }).toBeGreaterThanOrEqual(2)
+    await inspector.saveAppState()
+    await inspector.waitForPersistenceComplete()
 
     // Refresh page
     await page.reload()
@@ -294,15 +289,10 @@ test.describe('Application State Persistence', () => {
     const activeTableName = tablesBefore.find(t => t.id === activeTableBefore)?.name
     expect(activeTableName).toBe('whitespace_data')
 
-    // Flush to OPFS before reload
+    // Flush DuckDB WAL and save app state, then wait for Arrow IPC export to complete
     await inspector.flushToOPFS()
     await inspector.saveAppState()
-
-    // Wait for flush with simple poll
-    await expect.poll(async () => {
-      const tables = await inspector.getTableList()
-      return tables.length
-    }, { timeout: 10000 }).toBeGreaterThanOrEqual(2)
+    await inspector.waitForPersistenceComplete()
 
     // Refresh page
     await page.reload()
@@ -342,15 +332,10 @@ test.describe('Application State Persistence', () => {
       return await inspector.getUIState('sidebarCollapsed')
     }, { timeout: 5000 }).toBe(true)
 
-    // Flush to OPFS and save app state before reload
+    // Flush DuckDB WAL and save app state, then wait for Arrow IPC export to complete
     await inspector.flushToOPFS()
     await inspector.saveAppState()
-
-    // Wait for flush with simple poll
-    await expect.poll(async () => {
-      const tables = await inspector.getTableList()
-      return tables.some(t => t.name === 'basic_data')
-    }, { timeout: 10000 }).toBeTruthy()
+    await inspector.waitForPersistenceComplete()
 
     // Refresh page
     await page.reload()

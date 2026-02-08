@@ -562,21 +562,6 @@ test.describe('Row and Column Persistence', () => {
     // Dismiss any overlay
     await page.keyboard.press('Escape')
 
-    // Get file size before second insert
-    const sizeBeforeSecondInsert = await page.evaluate(async () => {
-      try {
-        const root = await navigator.storage.getDirectory()
-        const cleanslateDir = await root.getDirectoryHandle('cleanslate')
-        const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-        const fileHandle = await snapshotsDir.getFileHandle('basic_data_shard_0.arrow')
-        const file = await fileHandle.getFile()
-        return file.size
-      } catch {
-        return 0
-      }
-    })
-    console.log('[Test FR-ROW-PERSIST-3] File size before second insert:', sizeBeforeSecondInsert)
-
     // Insert second row below row 2
     await clickRowMarker(page, 2)
     await expect(page.getByRole('button', { name: 'Insert Below' })).toBeVisible({ timeout: 5000 })
@@ -588,41 +573,9 @@ test.describe('Row and Column Persistence', () => {
       return Number(rows[0].cnt)
     }, { timeout: 10000 }).toBe(7)
 
-    // Wait for second insert save to complete (file size must increase again)
-    await expect.poll(async () => {
-      const state = await page.evaluate(async ({ origSize }) => {
-        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
-        if (!stores?.uiStore) return { saving: true, hasTmpFiles: true, sizeIncreased: false }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const uiState = (stores.uiStore as any).getState()
-
-        let hasTmpFiles = false
-        let currentSize = 0
-        try {
-          const root = await navigator.storage.getDirectory()
-          const cleanslateDir = await root.getDirectoryHandle('cleanslate')
-          const snapshotsDir = await cleanslateDir.getDirectoryHandle('snapshots')
-          for await (const entry of snapshotsDir.values()) {
-            if (entry.name === 'basic_data_shard_0.arrow.tmp') {
-              hasTmpFiles = true
-            }
-            if (entry.name === 'basic_data_shard_0.arrow' && entry.kind === 'file') {
-              const file = await entry.getFile()
-              currentSize = file.size
-            }
-          }
-        } catch { /* Ignore OPFS errors */ }
-
-        return {
-          saving: uiState?.savingTables?.size > 0,
-          hasTmpFiles,
-          sizeIncreased: currentSize > origSize
-        }
-      }, { origSize: sizeBeforeSecondInsert })
-      return !state.saving && !state.hasTmpFiles && state.sizeIncreased
-    }, { timeout: 20000 }).toBe(true)
-
-    // Flush any pending data and save app state
+    // Row inserts are journaled to the OPFS changelog (fast path) and don't trigger
+    // snapshot re-export. Use flushToOPFS() to force snapshot export before reload.
+    // The key assertion is that 7 rows survive the reload, not snapshot file timing.
     await inspector.flushToOPFS()
     await inspector.saveAppState()
 

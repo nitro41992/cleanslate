@@ -129,6 +129,37 @@ export const useEditBatchStore = create<EditBatchState>((set, get) => ({
         return
       }
 
+      // Check if table is frozen/materializing — defer flush until DuckDB has the table
+      const { useTableStore } = await import('@/stores/tableStore')
+      const tableState = useTableStore.getState()
+      if (tableState.frozenTables.has(tableId) || tableState.materializingTables.has(tableId)) {
+        console.log('[EditBatch] Deferring flush - table is frozen or materializing')
+        if (tableState.materializingTables.has(tableId)) {
+          // Wait for materialization, then flush
+          const materialized = await tableState.waitForMaterialization(tableId, 15000)
+          if (!materialized) {
+            console.error('[EditBatch] Materialization timed out - preserving edits for retry')
+            return
+          }
+          // Fall through to flush below
+        } else {
+          // Frozen but not materializing — trigger materialization, then flush
+          const { backgroundMaterialize } = await import('@/lib/opfs/snapshot-storage')
+          tableState.markTableMaterializing(tableId)
+          const tableName = useTableStore.getState().tables.find(t => t.id === tableId)?.name
+          if (!tableName) {
+            console.error('[EditBatch] Cannot find table name for materialization')
+            return
+          }
+          await backgroundMaterialize(tableName, tableId)
+          if (useTableStore.getState().frozenTables.has(tableId)) {
+            console.error('[EditBatch] Materialization failed - preserving edits for retry')
+            return
+          }
+          // Fall through to flush below
+        }
+      }
+
       // Table not being transformed - flush normally
       // IMPORTANT: Await the callback to ensure changelog write completes before clearing
       try {

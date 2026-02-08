@@ -119,6 +119,65 @@ async function snapshotHasOriginId(_snapshotId: string): Promise<boolean> {
 }
 
 /**
+ * Copy all snapshot files from one snapshot ID to another.
+ * Handles shard-based (_shard_N.arrow + manifest), legacy chunked (_part_N.arrow),
+ * and single-file (.arrow) formats.
+ *
+ * Used to create persistence copies from timeline original snapshots.
+ */
+async function copySnapshotFiles(sourceId: string, destId: string): Promise<void> {
+  const root = await navigator.storage.getDirectory()
+  const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
+  const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
+  const { copyFile, listFiles } = await import('@/lib/opfs/opfs-helpers')
+
+  // Check for shard-based files first (new Arrow IPC format): _shard_N.arrow + manifest
+  const shardFiles = await listFiles(snapshotsDir, { prefix: `${sourceId}_shard_` })
+  if (shardFiles.length > 0) {
+    for (const shardFile of shardFiles) {
+      const destFile = shardFile.replace(`${sourceId}_`, `${destId}_`)
+      await copyFile(snapshotsDir, shardFile, destFile)
+    }
+    // Copy the manifest if it exists, rewriting shard filenames to match dest
+    try {
+      const manifestHandle = await snapshotsDir.getFileHandle(`${sourceId}_manifest.json`)
+      const manifestFile = await manifestHandle.getFile()
+      const manifestJson = JSON.parse(await manifestFile.text())
+      // Rewrite snapshotId and shard fileNames to match dest prefix
+      manifestJson.snapshotId = destId
+      if (Array.isArray(manifestJson.shards)) {
+        for (const shard of manifestJson.shards) {
+          if (typeof shard.fileName === 'string') {
+            shard.fileName = shard.fileName.replace(`${sourceId}_`, `${destId}_`)
+          }
+        }
+      }
+      const destHandle = await snapshotsDir.getFileHandle(`${destId}_manifest.json`, { create: true })
+      const writable = await destHandle.createWritable()
+      await writable.write(JSON.stringify(manifestJson))
+      await writable.close()
+    } catch { /* manifest may not exist for legacy shards */ }
+    console.log(`[Timeline] Created persistence copy via file copy (${shardFiles.length} shards)`)
+    return
+  }
+
+  // Check for legacy chunked files (_part_N)
+  const chunkFiles = await listFiles(snapshotsDir, { prefix: `${sourceId}_part_` })
+  if (chunkFiles.length > 0) {
+    for (const chunkFile of chunkFiles) {
+      const destFile = chunkFile.replace(`${sourceId}_`, `${destId}_`)
+      await copyFile(snapshotsDir, chunkFile, destFile)
+    }
+    console.log(`[Timeline] Created persistence copy via file copy (${chunkFiles.length} chunks)`)
+    return
+  }
+
+  // Single file: source.arrow → dest.arrow
+  await copyFile(snapshotsDir, `${sourceId}.arrow`, `${destId}.arrow`)
+  console.log(`[Timeline] Created persistence copy via file copy`)
+}
+
+/**
  * Create the original snapshot for a table's timeline
  * This is called when a timeline is first created for a table
  *
@@ -194,34 +253,14 @@ export async function createTimelineOriginalSnapshot(
     await exportTableToSnapshot(db, conn, tableName, snapshotId)
 
     // Create persistence copy via file copy (instant, no re-export needed)
-    // This eliminates the "double tax" where import exports data twice
+    // This eliminates the "double tax" where import exports data twice.
+    // NOTE: We intentionally do NOT call markTableAsRecentlySaved() here.
+    // The persistence subscription will mark the table dirty and the auto-save
+    // debounce will fire, but it will just overwrite the file we already created.
+    // This avoids a race condition where markTableAsRecentlySaved suppresses the
+    // auto-save but the dirty flag remains, causing persistenceStatus to get stuck.
     try {
-      const root = await navigator.storage.getDirectory()
-      const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
-      const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
-      const { copyFile, listFiles } = await import('@/lib/opfs/opfs-helpers')
-
-      // Check if this is a chunked export (multiple _part_N files)
-      const chunkFiles = await listFiles(snapshotsDir, { prefix: `${snapshotId}_part_` })
-
-      if (chunkFiles.length > 0) {
-        // Copy chunked files: original_foo_part_0.arrow → foo_part_0.arrow
-        for (const chunkFile of chunkFiles) {
-          const destFile = chunkFile.replace(`${snapshotId}_`, `${sanitizedTableName}_`)
-          await copyFile(snapshotsDir, chunkFile, destFile)
-        }
-        console.log(`[Timeline] Created persistence copy via file copy (${chunkFiles.length} chunks)`)
-      } else {
-        // Copy single file: original_foo.arrow → foo.arrow
-        await copyFile(snapshotsDir, `${snapshotId}.arrow`, `${sanitizedTableName}.arrow`)
-        console.log(`[Timeline] Created persistence copy via file copy`)
-      }
-
-      // Mark as recently saved to suppress auto-save
-      if (_tableId) {
-        const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
-        markTableAsRecentlySaved(_tableId, 10_000) // 10 second window
-      }
+      await copySnapshotFiles(snapshotId, sanitizedTableName)
     } catch (copyError) {
       console.warn('[Timeline] Failed to create persistence copy (will rely on auto-save):', copyError)
     }
@@ -247,21 +286,9 @@ export async function createTimelineOriginalSnapshot(
     console.log(`[Timeline] Exported original snapshot to OPFS (${rowCount.toLocaleString()} rows)`)
 
     // Create persistence copy via file copy (instant, no re-export needed)
+    // NOTE: We intentionally do NOT call markTableAsRecentlySaved() here (see large table path comment)
     try {
-      const root = await navigator.storage.getDirectory()
-      const appDir = await root.getDirectoryHandle('cleanslate', { create: true })
-      const snapshotsDir = await appDir.getDirectoryHandle('snapshots', { create: true })
-      const { copyFile } = await import('@/lib/opfs/opfs-helpers')
-
-      // Copy single file: original_foo.arrow → foo.arrow
-      await copyFile(snapshotsDir, `${snapshotId}.arrow`, `${sanitizedTableName}.arrow`)
-      console.log(`[Timeline] Created persistence copy via file copy`)
-
-      // Mark as recently saved to suppress auto-save
-      if (_tableId) {
-        const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
-        markTableAsRecentlySaved(_tableId, 10_000) // 10 second window
-      }
+      await copySnapshotFiles(snapshotId, sanitizedTableName)
     } catch (copyError) {
       console.warn('[Timeline] Failed to create persistence copy (will rely on auto-save):', copyError)
     }

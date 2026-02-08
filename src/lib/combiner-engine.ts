@@ -861,8 +861,12 @@ export async function validateStack(
   tableA: string,
   tableB: string
 ): Promise<StackValidation> {
-  const colsA = await getTableColumns(tableA)
-  const colsB = await getTableColumns(tableB)
+  // Resolve sources to handle frozen tables (not in DuckDB, shard-backed in OPFS)
+  const sourceA = await resolveSource(tableA)
+  const sourceB = await resolveSource(tableB)
+
+  const colsA = await getColumnsForSource(sourceA)
+  const colsB = await getColumnsForSource(sourceB)
 
   const namesA = new Set(colsA.map((c) => c.name))
   const namesB = new Set(colsB.map((c) => c.name))
@@ -917,12 +921,24 @@ export async function stackTables(
 ): Promise<{ rowCount: number }> {
   return withDuckDBLock(async () => {
     // Phase 4D: Temporarily dematerialize active table to free ~120MB during combine
+    // IMPORTANT: Skip if active table is one of the source tables being combined.
+    // Dematerializing a source table would DROP it from DuckDB mid-operation.
     let dematerializedTable: { tableName: string; tableId: string } | null = null
     try {
       const { dematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
-      dematerializedTable = await dematerializeActiveTable()
-      if (dematerializedTable) {
-        onProgress?.({ phase: 'schema', current: 0, total: 0 })
+      const { useTableStore } = await import('@/stores/tableStore')
+      const activeTable = useTableStore.getState().tables.find(
+        t => t.id === useTableStore.getState().activeTableId
+      )
+      const activeTableInUse = activeTable && (
+        activeTable.name === tableA ||
+        activeTable.name === tableB
+      )
+      if (!activeTableInUse) {
+        dematerializedTable = await dematerializeActiveTable()
+        if (dematerializedTable) {
+          onProgress?.({ phase: 'schema', current: 0, total: 0 })
+        }
       }
     } catch (err) {
       console.warn('[Combine] Dematerialization skipped:', err)
@@ -1006,8 +1022,12 @@ export async function validateJoin(
   tableB: string,
   keyColumn: string
 ): Promise<JoinValidation> {
-  const colsA = await getTableColumns(tableA)
-  const colsB = await getTableColumns(tableB)
+  // Resolve sources to handle frozen tables (not in DuckDB, shard-backed in OPFS)
+  const sourceA = await resolveSource(tableA)
+  const sourceB = await resolveSource(tableB)
+
+  const colsA = await getColumnsForSource(sourceA)
+  const colsB = await getColumnsForSource(sourceB)
 
   const warnings: string[] = []
 
@@ -1035,9 +1055,10 @@ export async function validateJoin(
   }
 
   // FR-E3: Check if key columns have leading/trailing whitespace
-  // Only check for text columns (VARCHAR)
+  // Only check for text columns when both tables are in DuckDB (can't run SQL on frozen tables)
+  const bothInDuckDB = sourceA.type === 'duckdb' && sourceB.type === 'duckdb'
   const isTextColumn = typeA === 'VARCHAR' || typeA === 'TEXT'
-  if (isTextColumn) {
+  if (isTextColumn && bothInDuckDB) {
     const wsCheckA = await query<{ has_whitespace: boolean }>(`
       SELECT COUNT(*) > 0 as has_whitespace
       FROM "${tableA}"
@@ -1118,12 +1139,24 @@ export async function joinTables(
 ): Promise<{ rowCount: number }> {
   return withDuckDBLock(async () => {
     // Phase 4D: Temporarily dematerialize active table to free ~120MB during combine
+    // IMPORTANT: Skip if active table is one of the source tables being joined.
+    // Dematerializing a source table would DROP it from DuckDB mid-operation.
     let dematerializedTable: { tableName: string; tableId: string } | null = null
     try {
       const { dematerializeActiveTable } = await import('@/lib/opfs/snapshot-storage')
-      dematerializedTable = await dematerializeActiveTable()
-      if (dematerializedTable) {
-        onProgress?.({ phase: 'schema', current: 0, total: 0 })
+      const { useTableStore } = await import('@/stores/tableStore')
+      const activeTable = useTableStore.getState().tables.find(
+        t => t.id === useTableStore.getState().activeTableId
+      )
+      const activeTableInUse = activeTable && (
+        activeTable.name === leftTable ||
+        activeTable.name === rightTable
+      )
+      if (!activeTableInUse) {
+        dematerializedTable = await dematerializeActiveTable()
+        if (dematerializedTable) {
+          onProgress?.({ phase: 'schema', current: 0, total: 0 })
+        }
       }
     } catch (err) {
       console.warn('[Combine] Dematerialization skipped:', err)

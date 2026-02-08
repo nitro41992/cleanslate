@@ -487,3 +487,41 @@ Stack (UNION ALL) and Join operations now work shard-by-shard via ChunkManager, 
 | After `runDiff` | ~1GB (source cached + target) | ~1GB (source pre-materialized + target) |
 | `fetchDiffPage` | Source cached (free), load diff | Source cached (free), load diff |
 | Diff view scrolling | Stable (~1.2GB) | Stable (~1.2GB, no cleanup thrashing) |
+
+---
+
+## Phase 4 Completion: Cell Edit Gating + E2E Coverage (2026-02-07)
+
+### Gap A: Cell Edit Materialization Gating — COMPLETE
+
+Three-layer defense preventing silent edit failures on frozen tables:
+
+1. **`DataGrid.tsx` `onCellEdited`**: Checks `frozenTables`/`materializingTables` before processing. Shows toast, waits for materialization, then proceeds.
+2. **`editBatchStore.ts` flush**: Defense-in-depth for edge case where table becomes frozen between edit and flush.
+3. **`executor.ts` gate**: Enhanced to check `frozenTables` (previously only checked `materializingTables`). Triggers `backgroundMaterialize` if needed.
+
+### Bug Fixes Discovered During E2E
+
+1. **`backgroundMaterialize` state leak** (`snapshot-storage.ts`): When table already existed in DuckDB, returned `true` without calling `markTableMaterialized()`, leaving tables permanently stuck in `materializingTables`. Fixed by adding `markTableMaterialized()` in early-exit path.
+
+2. **Combiner source table dematerialization** (`combiner-engine.ts`): Both `stackTables` and `joinTables` dematerialized the active table without checking if it was a source table for the operation. This dropped a needed table from DuckDB mid-operation. Fixed by adding safety check (matching the diff engine's existing pattern) — skip dematerialization when active table is a source.
+
+### Gap C: E2E Test Coverage — COMPLETE (11 tests, all passing)
+
+| # | Test | What It Validates |
+|---|------|-------------------|
+| 1 | shard + manifest files written to OPFS | Storage layer basics |
+| 2 | manifest metadata matches imported data | Manifest integrity |
+| 3 | table switch restores frozen table | Freeze/thaw cycle |
+| 4 | transform after table switch | Phase 4 executor gate |
+| 5 | cell edit after table switch | Gap A — materialization gating |
+| 6 | CommandExecutor gate allows transform | Gap A — executor layer |
+| 7 | materialization indicator appears | UI feedback during switch |
+| 8 | sort works after table switch | Data integrity post-thaw |
+| 9 | stack with frozen source | Phase 3 combiner + frozen source |
+| 10 | join with frozen source | Phase 3 combiner join path |
+| 11 | diff with shard-backed snapshots | Phase 2 diff + frozen source |
+
+### Deferred
+
+- **Gap B: Shard-level `fetchDiffPage`** — memory optimization (~300-400MB savings during diff). Infrastructure ready (minCsId/maxCsId in manifests, ChunkManager APIs). Not needed for 1M-row target.

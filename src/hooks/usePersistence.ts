@@ -1332,6 +1332,12 @@ export function usePersistence() {
         const tableForClean = useTableStore.getState().tables.find(t => t.name === tableName)
         if (tableForClean) {
           useUIStore.getState().markTableClean(tableForClean.id)
+
+          // Clear changelog for this table since the snapshot now includes all changes.
+          // Without this, cell edits and row inserts/deletes from the changelog would be
+          // replayed on top of the snapshot during hydration, causing duplicate rows.
+          const changelogStorage = getChangelogStorage()
+          await changelogStorage.clearChangelog(tableForClean.id)
         }
 
         console.log(`[Persistence] ${tableName} saved`)

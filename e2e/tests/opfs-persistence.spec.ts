@@ -258,16 +258,37 @@ test.describe('OPFS Persistence - Basic Functionality', () => {
     await wizard.import()
     await inspector.waitForTableLoaded('basic_data', 5)
 
-    // Apply multiple transformations
+    // Get tableId for reliable waitForTransformComplete
+    const tableId = await inspector.getActiveTableId()
+    expect(tableId).not.toBeNull()
+
+    // Apply transformation (triggers timeline initialization + original snapshot creation)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'name' })
-    await inspector.waitForTransformComplete()
-    await picker.addTransformation('Trim Whitespace', { column: 'email' })
-    await inspector.waitForTransformComplete()
+    await inspector.waitForTransformComplete(tableId!)
+
+    // Verify transform applied via SQL
+    await expect.poll(async () => {
+      const rows = await inspector.runQuery('SELECT name FROM basic_data LIMIT 1')
+      return rows[0]?.name
+    }, { timeout: 10000 }).toBe('JOHN DOE')
+
+    // Close panel and wait for grid to settle
+    await laundromat.closePanel()
+    await inspector.waitForGridReady()
+
+    // Force materialization via cell edit on transformed column
+    // (Tier 1 transforms use expression chaining; cell edit forces materialization for OPFS export)
+    await laundromat.editCell(2, 1, 'EDITED_NAME')
+    await expect.poll(async () => {
+      const rows = await inspector.runQuery('SELECT name FROM basic_data WHERE id = 3')
+      return rows[0]?.name
+    }, { timeout: 10000 }).toBe('EDITED_NAME')
 
     // Flush to OPFS (required in test env where auto-flush is disabled)
     await inspector.flushToOPFS()
+    await inspector.waitForPersistenceComplete()
     // Also save app state (timelines, UI state) for transforms to persist
     await inspector.saveAppState()
 
@@ -280,6 +301,31 @@ test.describe('OPFS Persistence - Basic Functionality', () => {
       const tables = await inspector.getTables()
       return tables.some(t => t.name === 'basic_data')
     }, { timeout: 10000 }).toBeTruthy()
+
+    // Wait for table to be queryable in DuckDB
+    await expect.poll(async () => {
+      try {
+        const rows = await inspector.runQuery('SELECT COUNT(*) as cnt FROM basic_data')
+        return Number(rows[0].cnt)
+      } catch {
+        return 0
+      }
+    }, { timeout: 15000 }).toBe(5)
+
+    // Verify transform + edit persisted (row 1 should be uppercase, row 3 should be edited)
+    await expect.poll(async () => {
+      try {
+        const rows = await inspector.runQuery(
+          'SELECT id, name FROM basic_data WHERE id IN (1, 3) ORDER BY id'
+        )
+        return rows.map(r => ({ id: Number(r.id), name: r.name }))
+      } catch {
+        return null
+      }
+    }, { timeout: 10000 }).toEqual([
+      { id: 1, name: 'JOHN DOE' },
+      { id: 3, name: 'EDITED_NAME' },
+    ])
 
     // Log timeline snapshot count (for debugging)
     const snapshotTables = await inspector.runQuery(`
