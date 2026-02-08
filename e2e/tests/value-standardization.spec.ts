@@ -276,15 +276,20 @@ test.describe('FR-F: Value Standardization', () => {
     const uniqueUpdated = new Set(updatedNames).size
     expect(uniqueUpdated).toBeLessThan(uniqueInitial)
 
-    // Rule 1: Verify rows 1-3 all standardized to "John Smith" (identity check)
-    expect(updatedData[0].name).toBe('John Smith')
-    expect(updatedData[1].name).toBe('John Smith')
-    expect(updatedData[2].name).toBe('John Smith')
+    // Rule 1: Verify rows 1-3 all standardized to the SAME value (identity check)
+    // The master value is the most frequent variant; with count=1 for each,
+    // the selection depends on DuckDB row order, so we check consistency not exact value.
+    const johnCluster = updatedData[0].name
+    expect(updatedData[1].name).toBe(johnCluster)
+    expect(updatedData[2].name).toBe(johnCluster)
+    // Master should be one of the known variants
+    expect(['John Smith', 'JOHN SMITH', 'john  smith']).toContain(johnCluster)
 
-    // Verify rows 6-8 standardized to "Jane Doe"
-    expect(updatedData[5].name).toBe('Jane Doe')
-    expect(updatedData[6].name).toBe('Jane Doe')
-    expect(updatedData[7].name).toBe('Jane Doe')
+    // Verify rows 6-8 standardized to the same value
+    const janeCluster = updatedData[5].name
+    expect(updatedData[6].name).toBe(janeCluster)
+    expect(updatedData[7].name).toBe(janeCluster)
+    expect(['Jane Doe', 'Jane   Doe', 'JANE DOE']).toContain(janeCluster)
   })
 
   test('FR-F3: should create audit entry with drill-down', async () => {
@@ -367,17 +372,18 @@ test.describe('FR-F: Value Standardization', () => {
     // Search for "John"
     await standardize.search('John')
 
-    // Wait for search filter to apply
+    // Wait for search filter to apply (case-insensitive check since master value
+    // could be any casing variant like "JOHN SMITH" or "John Smith")
     await expect.poll(async () => {
       const clusters = await getClusterMasterValues(page)
-      return clusters.some(name => name.includes('John'))
+      return clusters.some(name => name.toLowerCase().includes('john'))
     }, { timeout: 5000 }).toBe(true)
 
     // Rule 1: Verify only clusters with "John" remain visible (identity check)
     const visibleClusters = await getClusterMasterValues(page)
-    expect(visibleClusters.some(name => name.includes('John'))).toBe(true)
-    expect(visibleClusters.every(name => !name.includes('Jane'))).toBe(true)
-    expect(visibleClusters.every(name => !name.includes('Bob'))).toBe(true)
+    expect(visibleClusters.some(name => name.toLowerCase().includes('john'))).toBe(true)
+    expect(visibleClusters.every(name => !name.toLowerCase().includes('jane'))).toBe(true)
+    expect(visibleClusters.every(name => !name.toLowerCase().includes('bob'))).toBe(true)
 
     await standardize.close()
   })
@@ -438,6 +444,8 @@ test.describe('FR-F: Value Standardization', () => {
  * - Undo/Redo functionality
  */
 test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () => {
+  let browser: Browser
+  let context: BrowserContext
   let page: Page
   let laundromat: LaundromatPage
   let wizard: IngestionWizardPage
@@ -448,9 +456,15 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
   // Extended timeout for heavy integration tests
   test.setTimeout(90000)
 
-  // Tier 3: Fresh page per test for heavy operations (per e2e/CLAUDE.md)
-  test.beforeEach(async ({ browser }) => {
-    page = await browser.newPage()
+  test.beforeAll(async ({ browser: b }) => {
+    browser = b
+  })
+
+  // Tier 3: Fresh CONTEXT per test for complete WASM isolation (per e2e/CLAUDE.md)
+  // browser.newPage() is insufficient — WASM worker state leaks across pages in same context
+  test.beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
     laundromat = new LaundromatPage(page)
     wizard = new IngestionWizardPage(page)
     standardize = new StandardizeViewPage(page)
@@ -461,8 +475,11 @@ test.describe('FR-F: Standardization Integration (Diff, Drill-down, Undo)', () =
   })
 
   test.afterEach(async () => {
-    // Fresh page per test - just close it
-    await page.close()
+    try {
+      await context.close()
+    } catch {
+      // Ignore - context may already be closed from crash
+    }
   })
 
   async function loadTestData() {

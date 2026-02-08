@@ -1358,25 +1358,32 @@ export async function applyTransformation(
     }
 
     case 'calculate_age': {
-      // Use same COALESCE pattern as captureRowDetails for consistent date parsing
+      // ICU-free age calculation using strftime + JS date literal
+      // CURRENT_DATE, DATE_DIFF, EXTRACT all trigger ICU autoloading in DuckDB-WASM
+      const colRef = `"${step.column}"`
+      const ageNow = new Date()
+      const ageTodayStr = `${ageNow.getFullYear()}-${String(ageNow.getMonth() + 1).padStart(2, '0')}-${String(ageNow.getDate()).padStart(2, '0')}`
+      const ageToday = `'${ageTodayStr}'::DATE`
+      const parsedDateExpr = `TRY_CAST(COALESCE(
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%Y-%m-%d'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%Y%m%d'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%m/%d/%Y'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%d/%m/%Y'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%Y/%m/%d'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%d-%m-%Y'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%m-%d-%Y'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%Y.%m.%d'),
+                   TRY_STRPTIME(CAST(${colRef} AS VARCHAR), '%d.%m.%Y'),
+                   TRY_CAST(${colRef} AS DATE)
+                 ) AS DATE)`
       sql = `
         CREATE OR REPLACE TABLE "${tempTable}" AS
         SELECT *,
-               DATE_DIFF('year',
-                 COALESCE(
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y-%m-%d'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y%m%d'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%m/%d/%Y'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d/%m/%Y'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y/%m/%d'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d-%m-%Y'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%m-%d-%Y'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%Y.%m.%d'),
-                   TRY_STRPTIME(CAST("${step.column}" AS VARCHAR), '%d.%m.%Y'),
-                   TRY_CAST("${step.column}" AS DATE)
-                 ),
-                 CURRENT_DATE
-               ) as age
+               (CAST(strftime(${ageToday}, '%Y') AS INTEGER) - CAST(strftime(${parsedDateExpr}, '%Y') AS INTEGER)
+                 - CASE WHEN (CAST(strftime(${ageToday}, '%m') AS INTEGER) < CAST(strftime(${parsedDateExpr}, '%m') AS INTEGER)
+                              OR (CAST(strftime(${ageToday}, '%m') AS INTEGER) = CAST(strftime(${parsedDateExpr}, '%m') AS INTEGER)
+                                  AND CAST(strftime(${ageToday}, '%d') AS INTEGER) < CAST(strftime(${parsedDateExpr}, '%d') AS INTEGER)))
+                        THEN 1 ELSE 0 END) as age
         FROM "${tableName}"
       `
       await execute(sql)

@@ -593,6 +593,7 @@ export function CleanPanel() {
       const commandParams = {
         tableId: activeTable.id,
         ...formulaParams,
+        outputMode: formulaParams.outputMode || 'new',
       }
 
       const command = createCommand(commandType, commandParams)

@@ -163,18 +163,30 @@ test.describe('Diff View Filtering', () => {
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
 
-    // Select Formula Builder transformation
-    await picker.selectTransformation('Formula Builder')
+    // Switch to Formula Builder tab (it's a separate tab, not a transform tile)
+    const formulaTab = page.getByRole('tab', { name: 'Formula Builder' })
+    await formulaTab.click()
 
-    // Fill in the formula (LEN(@name) to calculate name length)
-    await picker.fillParam('Formula', 'LEN(@name)')
+    // Wait for the formula editor to render (placeholder starts with "e.g., IF(")
+    const formulaTextarea = page.locator('textarea[placeholder*="IF(" i]')
+    await formulaTextarea.waitFor({ state: 'visible', timeout: 5000 })
+
+    // Fill in the formula using type() for reliable React state updates
+    await formulaTextarea.click()
+    await formulaTextarea.fill('LEN(@name)')
 
     // Fill in the output column name
-    // The "New Column Name" input has placeholder "e.g., result, category, score"
     await page.locator('#new-column-name').fill('name_length')
 
-    // Apply the transformation
-    await picker.apply()
+    // Wait for the apply button to be enabled (formula validation runs async)
+    const applyFormulaBtn = page.getByTestId('apply-formula-btn')
+    await expect(applyFormulaBtn).toBeEnabled({ timeout: 10000 })
+
+    // Apply the formula
+    await applyFormulaBtn.click()
+
+    // Wait for the "Applying..." state to complete
+    await expect(applyFormulaBtn).not.toContainText('Applying', { timeout: 30000 })
     await inspector.waitForTransformComplete(tableId!)
 
     // Verify the column was added

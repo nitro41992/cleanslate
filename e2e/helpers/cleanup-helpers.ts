@@ -169,6 +169,16 @@ export async function coolHeap(
       for (const table of tables) {
         await inspector.runQuery(`DROP TABLE IF EXISTS "${table.name}"`).catch(() => {})
       }
+
+      // Also clear tableStore so next import doesn't hit "Duplicate table name" dialog
+      await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (stores?.tableStore) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const state = (stores.tableStore as any).getState()
+          state.clearTables?.()
+        }
+      }).catch(() => {})
     } catch {
       // Silently ignore errors
     }

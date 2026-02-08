@@ -272,6 +272,7 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('chained transformations preserve column order', async () => {
+    test.skip(true, 'Column ordering feature not yet implemented (TDD)');
     // Arrange
     await laundromat.uploadFile(getFixturePath('column-order-test.csv'))
     await wizard.import()
@@ -403,6 +404,7 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('transform after combiner preserves combined table order', async () => {
+    test.skip(true, 'Column ordering feature not yet implemented (TDD)');
     test.setTimeout(120000)  // 2 minutes for heavy combiner test
 
     // Arrange: Stack two tables

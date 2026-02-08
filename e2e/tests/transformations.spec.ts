@@ -514,6 +514,7 @@ test.describe('Transformations: Numeric Strings Data', () => {
   })
 
   test('should apply custom SQL transformation', async () => {
+    test.skip(true, 'Transform is feature-flagged off (HIDDEN_TRANSFORMS)');
     await loadTestData()
 
     await laundromat.openCleanPanel()

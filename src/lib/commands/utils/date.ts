@@ -226,21 +226,54 @@ export function buildDateFormatExpression(
 export type AgePrecision = 'years' | 'decimal'
 
 /**
+ * Get today's date as a DuckDB DATE literal string.
+ *
+ * Uses JavaScript Date to avoid CURRENT_DATE in SQL, which triggers
+ * ICU extension autoloading in DuckDB-WASM (icu_duckdb_cpp_init missing).
+ */
+export function getCurrentDateLiteral(): string {
+  const now = new Date()
+  const yyyy = now.getFullYear()
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  const dd = String(now.getDate()).padStart(2, '0')
+  return `'${yyyy}-${mm}-${dd}'::DATE`
+}
+
+/**
  * Build an age calculation expression from a date column
- * Returns age in years using DATE_DIFF
+ * Returns age in years using pure arithmetic (no ICU extension required).
+ *
+ * NOTE: DuckDB-WASM's ICU extension fails to load (icu_duckdb_cpp_init missing).
+ * CURRENT_DATE, DATE_DIFF, and EXTRACT all trigger ICU autoloading.
+ * We use a JS-injected date literal + strftime-based extraction instead.
  *
  * @param column - The column name containing dates
  * @param precision - 'years' for whole years, 'decimal' for fractional years
  */
 export function buildAgeExpression(column: string, precision: AgePrecision = 'years'): string {
   const parseExpr = buildDateParseExpression(column)
+  // Cast parsed timestamp to DATE for date arithmetic
+  const castExpr = `TRY_CAST(${parseExpr} AS DATE)`
+  const today = getCurrentDateLiteral()
 
   if (precision === 'decimal') {
-    // Calculate fractional years using days divided by average year length (365.25)
-    return `ROUND(DATE_DIFF('day', ${parseExpr}, CURRENT_DATE) / 365.25, 1)`
+    // Calculate fractional years using date subtraction (date - date returns integer days in DuckDB)
+    return `ROUND((${today} - ${castExpr}) / 365.25, 1)`
   }
 
-  return `DATE_DIFF('year', ${parseExpr}, CURRENT_DATE)`
+  // Use strftime to extract year/month/day as integers (avoids EXTRACT which triggers ICU)
+  const birthYear = `CAST(strftime(${castExpr}, '%Y') AS INTEGER)`
+  const birthMonth = `CAST(strftime(${castExpr}, '%m') AS INTEGER)`
+  const birthDay = `CAST(strftime(${castExpr}, '%d') AS INTEGER)`
+  const curYear = `CAST(strftime(${today}, '%Y') AS INTEGER)`
+  const curMonth = `CAST(strftime(${today}, '%m') AS INTEGER)`
+  const curDay = `CAST(strftime(${today}, '%d') AS INTEGER)`
+
+  // Calculate whole years: subtract years, then adjust if birthday hasn't occurred yet this year
+  return `(${curYear} - ${birthYear}
+    - CASE WHEN (${curMonth} < ${birthMonth}
+                 OR (${curMonth} = ${birthMonth} AND ${curDay} < ${birthDay}))
+           THEN 1 ELSE 0 END)`
 }
 
 /**

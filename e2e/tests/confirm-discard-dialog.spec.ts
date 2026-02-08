@@ -278,11 +278,11 @@ test.describe('Confirm Discard Dialog: Multiple Undo States', () => {
   })
 
   async function loadTestData() {
-    await inspector.runQuery('DROP TABLE IF EXISTS mixed_case')
-    await laundromat.uploadFile(getFixturePath('mixed-case.csv'))
+    await inspector.runQuery('DROP TABLE IF EXISTS whitespace_data')
+    await laundromat.uploadFile(getFixturePath('whitespace-data.csv'))
     await wizard.waitForOpen()
     await wizard.import()
-    await inspector.waitForTableLoaded('mixed_case', 3)
+    await inspector.waitForTableLoaded('whitespace_data', 3)
   }
 
   /**
@@ -304,7 +304,7 @@ test.describe('Confirm Discard Dialog: Multiple Undo States', () => {
 
     // Wait for first transform to complete
     await expect.poll(async () => {
-      const row = await getRowById('mixed_case', 1)
+      const row = await getRowById('whitespace_data', 1)
       const name = row.name as string
       return name.trim() === name
     }, { timeout: 10000 }).toBe(true)
@@ -316,7 +316,7 @@ test.describe('Confirm Discard Dialog: Multiple Undo States', () => {
 
     // Wait for second transform
     await expect.poll(async () => {
-      const row = await getRowById('mixed_case', 1)
+      const row = await getRowById('whitespace_data', 1)
       const name = row.name as string
       return name === name.toUpperCase()
     }, { timeout: 10000 }).toBe(true)
@@ -328,7 +328,7 @@ test.describe('Confirm Discard Dialog: Multiple Undo States', () => {
 
     // Wait for third transform
     await expect.poll(async () => {
-      const row = await getRowById('mixed_case', 1)
+      const row = await getRowById('whitespace_data', 1)
       const name = row.name as string
       return name === name.toLowerCase()
     }, { timeout: 10000 }).toBe(true)
@@ -339,7 +339,7 @@ test.describe('Confirm Discard Dialog: Multiple Undo States', () => {
 
     // Wait for first undo to complete (data should no longer be lowercase)
     await expect.poll(async () => {
-      const row = await getRowById('mixed_case', 1)
+      const row = await getRowById('whitespace_data', 1)
       const name = row.name as string
       return name !== name.toLowerCase()
     }, { timeout: 10000 }).toBe(true)

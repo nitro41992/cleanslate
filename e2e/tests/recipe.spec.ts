@@ -114,22 +114,16 @@ test.describe('Recipe Functionality', () => {
       await wizard.import()
       await inspector.waitForTableLoaded('basic_data', 5)
 
-      // Apply multiple transforms (must close/reopen panel between transforms)
-      // Use Uppercase on all columns since it will always affect rows (data starts as mixed case)
+      // Apply multiple transforms with the panel kept open (avoids close/reopen race)
+      // Add waitForGridReady() between transforms to let WASM settle
       await laundromat.openCleanPanel()
       await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'name' })
       await inspector.waitForTransformComplete()
-      await laundromat.closePanel()
-
-      await laundromat.openCleanPanel()
-      await picker.waitForOpen()
+      await inspector.waitForGridReady()
       await picker.addTransformation('Uppercase', { column: 'email' })
       await inspector.waitForTransformComplete()
-      await laundromat.closePanel()
-
-      await laundromat.openCleanPanel()
-      await picker.waitForOpen()
+      await inspector.waitForGridReady()
       await picker.addTransformation('Uppercase', { column: 'city' })
       await inspector.waitForTransformComplete()
       await laundromat.closePanel()
@@ -383,17 +377,29 @@ test.describe('Recipe Functionality', () => {
       // Wait for dialog to close
       await expect(page.getByRole('dialog')).toBeHidden()
 
-      // Undo the transform to reset data
+      // Re-import clean data instead of undoing (undo can cause DuckDB/store state mismatch)
       await laundromat.closeAuditSidebar()
-      await laundromat.undo()
+      await inspector.runQuery('DROP TABLE IF EXISTS mixed_case')
+      await page.evaluate(() => {
+        const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+        if (stores?.tableStore) {
+          const state = (stores.tableStore as { getState: () => { tables: Array<{ id: string; name: string }>; removeTable: (id: string) => void } }).getState()
+          const table = state.tables.find((t: { name: string }) => t.name === 'mixed_case')
+          if (table) state.removeTable(table.id)
+        }
+      })
+      await laundromat.uploadFile(getFixturePath('mixed-case.csv'))
+      await wizard.waitForOpen()
+      await wizard.import()
+      await inspector.waitForTableLoaded('mixed_case', 3)
 
-      // Wait for undo to complete by polling SQL for original value
+      // Verify original data is restored
       await expect.poll(async () => {
         const rows = await inspector.runQuery<{ name: string }>('SELECT name FROM mixed_case ORDER BY "_cs_id" LIMIT 1')
         return rows[0].name
-      }, { timeout: 15000, message: 'Name should be reverted after undo' }).toBe(originalName)
+      }, { timeout: 10000, message: 'Name should be original after re-import' }).toBe(originalName)
 
-      // Apply the recipe - should match "name" column
+      // Apply the recipe - should match "name" column case-insensitively
       // Open recipe panel via toolbar
       await page.getByTestId('toolbar-recipe').click()
       await expect(page.getByRole('button', { name: 'Import recipe' })).toBeVisible({ timeout: 5000 })
@@ -530,14 +536,11 @@ test.describe('Recipe Functionality', () => {
       await wizard.import()
       await inspector.waitForTableLoaded('basic_data', 5)
 
+      // Apply two transforms with the panel kept open (avoids close/reopen race)
       await laundromat.openCleanPanel()
       await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'name' })
       await inspector.waitForTransformComplete()
-      await laundromat.closePanel()
-
-      await laundromat.openCleanPanel()
-      await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'email' })
       await inspector.waitForTransformComplete()
       await laundromat.closePanel()
@@ -553,19 +556,19 @@ test.describe('Recipe Functionality', () => {
       await page.getByTestId('toolbar-recipe').click()
       await expect(page.getByRole('button', { name: 'Import recipe' })).toBeVisible({ timeout: 5000 })
 
-      // Find the toggle button for the first step (uses aria-label="Disable step" when enabled)
-      const toggleBtn = page.getByRole('button', { name: 'Disable step' }).first()
-      await expect(toggleBtn).toBeVisible({ timeout: 5000 })
+      // Find the toggle switch for the first step (Radix Switch with role="switch")
+      const toggleSwitch = page.getByRole('switch', { name: 'Disable step' }).first()
+      await expect(toggleSwitch).toBeVisible({ timeout: 5000 })
 
-      // Verify initially enabled via aria-pressed attribute
-      await expect(toggleBtn).toHaveAttribute('aria-pressed', 'true')
+      // Verify initially enabled via aria-checked attribute
+      await expect(toggleSwitch).toHaveAttribute('aria-checked', 'true')
 
       // Toggle off
-      await toggleBtn.click()
+      await toggleSwitch.click()
 
-      // After toggle, the button label changes to "Enable step"
-      const toggleBtnAfter = page.getByRole('button', { name: 'Enable step' }).first()
-      await expect(toggleBtnAfter).toHaveAttribute('aria-pressed', 'false')
+      // After toggle, the aria-label changes to "Enable step" and aria-checked to "false"
+      const toggleSwitchAfter = page.getByRole('switch', { name: 'Enable step' }).first()
+      await expect(toggleSwitchAfter).toHaveAttribute('aria-checked', 'false')
 
       // Verify in store
       const recipeState = await inspector.getRecipeState()
@@ -581,14 +584,11 @@ test.describe('Recipe Functionality', () => {
       await wizard.import()
       await inspector.waitForTableLoaded('basic_data', 5)
 
+      // Apply two transforms with the panel kept open (avoids close/reopen race)
       await laundromat.openCleanPanel()
       await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'name' })
       await inspector.waitForTransformComplete()
-      await laundromat.closePanel()
-
-      await laundromat.openCleanPanel()
-      await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'email' })
       await inspector.waitForTransformComplete()
       await laundromat.closePanel()
@@ -629,14 +629,11 @@ test.describe('Recipe Functionality', () => {
       await wizard.import()
       await inspector.waitForTableLoaded('basic_data', 5)
 
+      // Apply two transforms with the panel kept open (avoids close/reopen race)
       await laundromat.openCleanPanel()
       await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'name' })
       await inspector.waitForTransformComplete()
-      await laundromat.closePanel()
-
-      await laundromat.openCleanPanel()
-      await picker.waitForOpen()
       await picker.addTransformation('Uppercase', { column: 'email' })
       await inspector.waitForTransformComplete()
       await laundromat.closePanel()
@@ -657,8 +654,10 @@ test.describe('Recipe Functionality', () => {
       let recipe = recipeState.recipes.find((r) => r.name === 'Remove Step Recipe')
       expect(recipe!.steps).toHaveLength(2)
 
-      // Click "Delete step" on first step (using aria-label)
-      const deleteBtn = page.getByRole('button', { name: 'Delete step' }).first()
+      // Click "Remove step" on first step
+      // Use exact: true to avoid matching the sidebar recipe list item button
+      // whose name "Remove Step Recipe..." contains "Remove step" as substring
+      const deleteBtn = page.getByRole('button', { name: 'Remove step', exact: true }).first()
       await deleteBtn.click()
 
       // Verify step removed - poll to ensure store update

@@ -15,7 +15,7 @@ export class MatchViewPage {
     this.backButton = page.getByRole('button', { name: /Back to Tables/i })
     this.closeButton = page.locator('[data-testid="match-view"] header button').last()
     this.newSearchButton = page.getByRole('button', { name: /New Search/i })
-    this.applyMergesButton = page.getByRole('button', { name: /Apply Merges/i })
+    this.applyMergesButton = page.getByRole('button', { name: /Apply.*Merge/i })
     this.findDuplicatesButton = page.getByRole('button', { name: /Find Duplicates/i })
   }
 
@@ -25,7 +25,7 @@ export class MatchViewPage {
   async waitForOpen(): Promise<void> {
     await expect(this.container).toBeVisible({ timeout: 10000 })
     // Use h1 heading to avoid ambiguity with toolbar button and h2 config panel heading
-    await expect(this.container.getByRole('heading', { level: 1, name: 'SMART DEDUPE' })).toBeVisible()
+    await expect(this.container.getByRole('heading', { level: 1, name: 'Merge' })).toBeVisible()
   }
 
   /**
@@ -152,7 +152,7 @@ export class MatchViewPage {
 
       // console.log('Direct call returned', Array.isArray(pairs) ? pairs.length : 0, 'pairs')
       // Wait for pairs to be visible in the UI
-      await expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 5000 }).catch(() => {
+      await expect(this.page.locator('text=/\\d+%/').first()).toBeVisible({ timeout: 5000 }).catch(() => {
         // If no pairs visible, that's OK - maybe no duplicates found
       })
     }
@@ -164,7 +164,7 @@ export class MatchViewPage {
   async waitForPairs(): Promise<void> {
     // Wait for final results - either pairs appear or "No Duplicates Found" message
     await Promise.race([
-      expect(this.page.locator('text=/\\d+% Similar/').first()).toBeVisible({ timeout: 30000 }),
+      expect(this.page.locator('text=/\\d+%/').first()).toBeVisible({ timeout: 30000 }),
       expect(this.page.getByText('No Duplicates Found').first()).toBeVisible({ timeout: 30000 })
     ])
   }
@@ -180,8 +180,8 @@ export class MatchViewPage {
    * ```
    */
   async getPairCount(): Promise<number> {
-    // Count elements with "% Similar" text
-    const pairBadges = this.page.locator('text=/\\d+% Similar/')
+    // Count elements with "%" text
+    const pairBadges = this.page.locator('text=/\\d+%/')
     const count = await pairBadges.count()
     return count
   }
@@ -217,19 +217,17 @@ export class MatchViewPage {
    * Click the merge button for a specific pair (0-indexed)
    */
   async mergePair(index: number): Promise<void> {
-    // Wait for the match view to be stable (state-aware)
     await expect(this.container).toBeVisible()
 
-    // Locate pair rows by finding elements that contain "% Similar" text
-    // This ensures we're targeting the actual pair rows, not strategy options
-    const pairRows = this.page.locator('[data-testid="match-view"]').locator('text=/\\d+% Similar/').locator('..')
-    const pair = pairRows.nth(index)
-    await expect(pair).toBeVisible({ timeout: 5000 })
+    // Find pair cards directly — rounded-xl containers with a percentage badge
+    const pairCards = this.container.locator('div.rounded-xl.bg-card').filter({
+      has: this.page.locator('text=/\\d+%/'),
+    })
+    const card = pairCards.nth(index)
+    await expect(card).toBeVisible({ timeout: 5000 })
 
-    // The merge button has title="Merge (M)" - go up to the row container and find the button
-    // Note: MatchRow uses rounded-xl class, not rounded-lg
-    const rowContainer = pair.locator('xpath=ancestor::div[contains(@class, "border") and contains(@class, "rounded-xl")]')
-    const mergeButton = rowContainer.locator('button[title*="Merge"]')
+    // The merge button has title="Review as merge (M)"
+    const mergeButton = card.locator('button[title*="merge" i]')
     await expect(mergeButton).toBeVisible({ timeout: 5000 })
     await mergeButton.click()
   }
@@ -238,18 +236,17 @@ export class MatchViewPage {
    * Click the keep separate button for a specific pair (0-indexed)
    */
   async keepSeparatePair(index: number): Promise<void> {
-    // Wait for the match view to be stable (state-aware)
     await expect(this.container).toBeVisible()
 
-    // Locate pair rows by finding elements that contain "% Similar" text
-    const pairRows = this.page.locator('[data-testid="match-view"]').locator('text=/\\d+% Similar/').locator('..')
-    const pair = pairRows.nth(index)
-    await expect(pair).toBeVisible({ timeout: 5000 })
+    // Find pair cards directly — rounded-xl containers with a percentage badge
+    const pairCards = this.container.locator('div.rounded-xl.bg-card').filter({
+      has: this.page.locator('text=/\\d+%/'),
+    })
+    const card = pairCards.nth(index)
+    await expect(card).toBeVisible({ timeout: 5000 })
 
-    // The keep separate button has title="Keep Separate (K)"
-    // Note: MatchRow uses rounded-xl class, not rounded-lg
-    const rowContainer = pair.locator('xpath=ancestor::div[contains(@class, "border") and contains(@class, "rounded-xl")]')
-    const keepButton = rowContainer.locator('button[title*="Keep"]')
+    // The keep separate button has title="Review as keep (K)"
+    const keepButton = card.locator('button[title*="keep" i]')
     await expect(keepButton).toBeVisible({ timeout: 5000 })
     await keepButton.click()
   }
@@ -258,9 +255,11 @@ export class MatchViewPage {
    * Select a pair checkbox (0-indexed)
    */
   async selectPair(index: number): Promise<void> {
-    const pairs = this.page.locator('[data-testid="match-view"]').locator('.border.rounded-xl')
-    const pair = pairs.nth(index)
-    const checkbox = pair.getByRole('checkbox')
+    const pairCards = this.container.locator('div.rounded-xl.bg-card').filter({
+      has: this.page.locator('text=/\\d+%/'),
+    })
+    const card = pairCards.nth(index)
+    const checkbox = card.getByRole('checkbox')
     await checkbox.click()
   }
 
@@ -280,23 +279,49 @@ export class MatchViewPage {
   }
 
   /**
-   * Click the Apply Merges button
+   * Navigate to the Reviewed tab (where Apply Merges button lives)
+   */
+  async goToReview(): Promise<void> {
+    const goToReviewBtn = this.page.getByRole('button', { name: /Go to Review/i })
+    if (await goToReviewBtn.isVisible()) {
+      await goToReviewBtn.click()
+    }
+    // Wait for Reviewed tab content to load
+    await expect(this.applyMergesButton).toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Click the Apply Merges button (auto-navigates to Reviewed tab if needed)
    */
   async applyMerges(): Promise<void> {
-    await expect(this.applyMergesButton).toBeVisible()
+    // Apply Merges only appears on the Reviewed tab
+    const goToReviewBtn = this.page.getByRole('button', { name: /Go to Review/i })
+    if (await goToReviewBtn.isVisible()) {
+      await goToReviewBtn.click()
+    }
+    await expect(this.applyMergesButton).toBeVisible({ timeout: 5000 })
     await this.applyMergesButton.click()
-    // Wait for merge to complete and view to close
-    await expect(this.container).not.toBeVisible({ timeout: 10000 })
+
+    // Wait for merge to complete (success toast)
+    await expect(this.page.getByText('Merges Applied')).toBeVisible({ timeout: 10000 })
+
+    // View stays open after merge — close it via Back to Tables
+    if (await this.container.isVisible()) {
+      await this.backButton.click()
+      await expect(this.container).not.toBeVisible({ timeout: 5000 })
+    }
   }
 
   /**
    * Get the similarity percentage from a pair (0-indexed)
    */
   async getPairSimilarity(index: number): Promise<number> {
-    const pairs = this.page.locator('[data-testid="match-view"]').locator('.border.rounded-xl')
-    const pair = pairs.nth(index)
-    const similarityText = await pair.locator('text=/\\d+% Similar/').textContent()
-    const match = similarityText?.match(/(\d+)% Similar/)
+    const pairCards = this.container.locator('div.rounded-xl.bg-card').filter({
+      has: this.page.locator('text=/\\d+%/'),
+    })
+    const card = pairCards.nth(index)
+    const similarityText = await card.locator('text=/\\d+%/').textContent()
+    const match = similarityText?.match(/(\d+)%/)
     return match ? parseInt(match[1], 10) : 0
   }
 

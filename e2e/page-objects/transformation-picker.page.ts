@@ -129,27 +129,34 @@ export class TransformationPickerPage {
     // Wait for column selector to be visible (renders after transformation selected)
     const columnSelect = this.page.getByTestId('column-selector')
     await columnSelect.waitFor({ state: 'visible', timeout: 10000 })
-    await columnSelect.click()
 
-    // Wait for popover to fully open (data-state="open" indicates animation started)
-    // The Radix popover has CSS animations that make elements unstable during open
-    const popoverContent = this.page.locator('[data-radix-popper-content-wrapper]')
-    await popoverContent.waitFor({ state: 'visible', timeout: 5000 })
-
-    // Wait for the option to be visible and use force click to bypass animation instability
-    // The Radix popover uses zoom/fade animations that can make elements "not stable"
+    // Click column selector and wait for the option to appear.
+    // Retry the click if the dropdown doesn't open on first attempt
+    // (Radix Popover may not be ready immediately after form renders).
     const option = this.page.getByRole('option', { name: columnName })
-    await option.waitFor({ state: 'visible', timeout: 5000 })
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await columnSelect.click()
+      try {
+        await option.waitFor({ state: 'visible', timeout: 2000 })
+        break // dropdown opened, option visible
+      } catch {
+        // Dropdown didn't open — retry click
+      }
+    }
+
+    // Click the option (force: true to bypass animation instability)
     await option.click({ force: true })
 
-    // Wait for dropdown to close after selection
-    // The dropdown uses Radix UI which wraps content in a popper wrapper
-    await popoverContent.waitFor({
-      state: 'hidden',
-      timeout: 2000
-    }).catch(async () => {
-      // If dropdown doesn't close automatically, press Escape to close it
-      await this.page.keyboard.press('Escape')
+    // Wait for the column selector text to update (confirms selection registered)
+    await this.page.waitForFunction(
+      (colName: string) => {
+        const trigger = document.querySelector('[data-testid="column-selector"]')
+        return trigger?.textContent?.includes(colName) ?? false
+      },
+      columnName,
+      { timeout: 3000 }
+    ).catch(() => {
+      // Selection may still be valid even if text hasn't updated
     })
   }
 
@@ -232,8 +239,12 @@ export class TransformationPickerPage {
       paramLabel,
       { timeout: 3000 }
     ).catch(async () => {
-      // If dropdown doesn't close automatically, press Escape
-      await this.page.keyboard.press('Escape')
+      // If dropdown doesn't close, click panel heading to dismiss it
+      // NOTE: Do NOT use Escape — it can close the entire CleanPanel
+      const panelHeading = this.page.getByTestId('panel-clean').locator('h3, [role="heading"]').first()
+      if (await panelHeading.isVisible()) {
+        await panelHeading.click()
+      }
     })
   }
 
@@ -242,37 +253,37 @@ export class TransformationPickerPage {
    */
   async apply(): Promise<void> {
     await this.applyButton.click()
-    // Wait for the button to return to normal state (not showing "Applying...")
+    // Wait for transform to complete: either the button returns to normal state
+    // OR the form resets (button removed from DOM after successful apply + resetForm)
     await this.page.waitForFunction(
       () => {
         const btn = document.querySelector('[data-testid="apply-transformation-btn"]')
-        return btn && !btn.textContent?.includes('Applying')
+        // Button gone = form was reset after success → done
+        if (!btn) return true
+        // Button exists but still says "Applying..." → keep waiting
+        return !btn.textContent?.includes('Applying')
       },
       { timeout: 30000 }
     )
-    // Wait for success indicator (toast or button state change) - state-aware
-    await this.page.locator('[role="region"][aria-label*="Notifications"] [data-state="open"]')
-      .waitFor({ state: 'visible', timeout: 1000 }).catch(() => {
-        // Toast may not appear for all transformations, which is OK
-      })
 
-    // Wait for the form to reset (CleanPanel resets after 1.5s delay)
+    // Wait for the form to fully reset (CleanPanel resets after 1.5s delay)
     // This ensures subsequent addTransformation calls work correctly
     await this.page.waitForFunction(
       () => {
         const panel = document.querySelector('[data-testid="panel-clean"]')
         if (!panel) return false
         // Form is reset when the "Select a transformation" placeholder appears
-        // OR when no transformation is currently selected (Apply button is disabled)
+        // OR when Apply button is disabled or gone (no transform selected)
         const text = panel.textContent || ''
         const hasPlaceholder = text.includes('Select a transformation from the left')
         const applyBtn = panel.querySelector('[data-testid="apply-transformation-btn"]')
+        const applyGone = !applyBtn
         const applyDisabled = applyBtn?.hasAttribute('disabled') || false
-        return hasPlaceholder || applyDisabled
+        return hasPlaceholder || applyGone || applyDisabled
       },
-      { timeout: 3000 }
+      { timeout: 5000 }
     ).catch(() => {
-      // If form doesn't reset within 3s, continue anyway (may be OK for some transformations)
+      // If form doesn't reset within 5s, continue anyway (may be OK for some transformations)
     })
   }
 

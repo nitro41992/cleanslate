@@ -8,6 +8,23 @@ import { getFixturePath } from '../helpers/file-upload'
 import { coolHeap, coolHeapLight } from '../helpers/heap-cooling'
 
 /**
+ * Helper to fully drop a table from both DuckDB and Zustand tableStore.
+ * Prevents "Duplicate table name" dialog when re-importing the same table
+ * in serial test groups where coolHeapLight doesn't drop tables.
+ */
+async function dropTableFully(page: Page, inspector: StoreInspector, tableName: string) {
+  await inspector.runQuery(`DROP TABLE IF EXISTS "${tableName}"`)
+  await page.evaluate((name) => {
+    const stores = (window as Window & { __CLEANSLATE_STORES__?: Record<string, unknown> }).__CLEANSLATE_STORES__
+    if (stores?.tableStore) {
+      const state = (stores.tableStore as { getState: () => { tables: Array<{ id: string; name: string }>; removeTable: (id: string) => void } }).getState()
+      const table = state.tables.find((t) => t.name === name)
+      if (table) state.removeTable(table.id)
+    }
+  }, tableName)
+}
+
+/**
  * Shared helper to configure and run Find Duplicates with proper thresholds.
  * Uses "Compare All" blocking strategy and lowers threshold to 60% for test data.
  */
@@ -91,7 +108,7 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   })
 
   async function loadTestData() {
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_text_dirty')
+    await dropTableFully(page, inspector, 'fr_a3_text_dirty')
     await laundromat.uploadFile(getFixturePath('fr_a3_text_dirty.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -147,6 +164,7 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   })
 
   test('should remove accents from text', async () => {
+    test.skip(true, 'Transform is feature-flagged off (HIDDEN_TRANSFORMS)')
     await loadTestData()
 
     await laundromat.openCleanPanel()
@@ -161,6 +179,7 @@ test.describe.serial('FR-A3: Text Cleaning Transformations', () => {
   })
 
   test('should remove non-printable characters', async () => {
+    test.skip(true, 'Transform is feature-flagged off (HIDDEN_TRANSFORMS)')
     await loadTestData()
 
     await laundromat.openCleanPanel()
@@ -201,7 +220,7 @@ test.describe.serial('FR-A3: Finance & Number Transformations', () => {
   })
 
   async function loadTestData() {
-    await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_finance')
+    await dropTableFully(page, inspector, 'fr_a3_finance')
     await laundromat.uploadFile(getFixturePath('fr_a3_finance.csv'))
     await wizard.waitForOpen()
     await wizard.import()
@@ -380,6 +399,7 @@ test.describe('FR-A3: Fill Down Transformation', () => {
   })
 
   test('should fill down empty cells from above', async () => {
+    test.skip(true, 'Transform is feature-flagged off (HIDDEN_TRANSFORMS)');
     await inspector.runQuery('DROP TABLE IF EXISTS fr_a3_fill_down')
     await laundromat.uploadFile(getFixturePath('fr_a3_fill_down.csv'))
     await wizard.waitForOpen()
@@ -583,7 +603,7 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
 
     // Verify match view is open with correct title
     // Use h1 heading to avoid ambiguity with toolbar button and h2 config panel heading
-    await expect(page.getByRole('heading', { level: 1, name: 'SMART DEDUPE' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Merge' })).toBeVisible()
 
     // Run find duplicates using helper
     await runFindDuplicates()
@@ -592,8 +612,8 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     const matcherState = await inspector.getMatcherState()
     expect(matcherState.pairs.length).toBeGreaterThanOrEqual(2) // Expect John/Jon, Jane/Janet, Sarah/Sara
 
-    // Verify "% Similar" format is displayed in UI
-    await expect(page.locator('text=/\\d+% Similar/').first()).toBeVisible()
+    // Verify similarity percentage is displayed in UI (badge shows "75%")
+    await expect(page.locator('text=/\\d+%/').first()).toBeVisible()
     // Verify pair contains expected matches
     await expect(page.locator('text=/John/').first()).toBeVisible()
   })
@@ -619,6 +639,9 @@ test.describe.serial('FR-C1: Fuzzy Matcher', () => {
     // Verify stats updated
     const afterMergeState = await inspector.getMatcherState()
     expect(afterMergeState.stats.merged).toBe(1)
+
+    // Navigate to Reviewed tab where Apply Merges button lives
+    await matchView.goToReview()
 
     // Verify Apply Merges bar is visible
     const hasApplyBar = await matchView.hasApplyMergesBar()

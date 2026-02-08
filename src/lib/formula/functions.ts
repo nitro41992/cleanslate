@@ -451,7 +451,7 @@ export const FUNCTION_SPECS: Record<FunctionName, FunctionSpec> = {
   DATEDIFF: {
     minArgs: 2,
     maxArgs: 2,
-    toSQL: (args) => `DATE_DIFF('day', ${args[0]}, ${args[1]})`,
+    toSQL: (args) => `(TRY_CAST(${args[1]} AS DATE) - TRY_CAST(${args[0]} AS DATE))`,
     returnsNumber: true,
     description: 'DATEDIFF(start_date, end_date) - Days between two dates',
     signature: 'DATEDIFF(start_date, end_date)',

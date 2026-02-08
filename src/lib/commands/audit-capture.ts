@@ -200,22 +200,31 @@ async function captureCalculateAgeDetails(
 
   const whereClause = `${quotedCol} IS NOT NULL`
 
-  // Use same COALESCE pattern for date parsing
-  const newValueExpression = `CAST(DATE_DIFF('year',
-    COALESCE(
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y-%m-%d'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y%m%d'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%m/%d/%Y'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%d/%m/%Y'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y/%m/%d'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%d-%m-%Y'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%m-%d-%Y'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y.%m.%d'),
-      TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%d.%m.%Y'),
-      TRY_CAST(${quotedCol} AS DATE)
-    ),
-    CURRENT_DATE
-  ) AS VARCHAR)`
+  // ICU-free age calculation using strftime + JS date literal
+  // CURRENT_DATE, DATE_DIFF, EXTRACT all trigger ICU autoloading in DuckDB-WASM
+  const now = new Date()
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const today = `'${todayStr}'::DATE`
+
+  const parsedDate = `TRY_CAST(COALESCE(
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y-%m-%d'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y%m%d'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%m/%d/%Y'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%d/%m/%Y'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y/%m/%d'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%d-%m-%Y'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%m-%d-%Y'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%Y.%m.%d'),
+    TRY_STRPTIME(CAST(${quotedCol} AS VARCHAR), '%d.%m.%Y'),
+    TRY_CAST(${quotedCol} AS DATE)
+  ) AS DATE)`
+  const newValueExpression = `CAST(
+    (CAST(strftime(${today}, '%Y') AS INTEGER) - CAST(strftime(${parsedDate}, '%Y') AS INTEGER)
+      - CASE WHEN (CAST(strftime(${today}, '%m') AS INTEGER) < CAST(strftime(${parsedDate}, '%m') AS INTEGER)
+                   OR (CAST(strftime(${today}, '%m') AS INTEGER) = CAST(strftime(${parsedDate}, '%m') AS INTEGER)
+                       AND CAST(strftime(${today}, '%d') AS INTEGER) < CAST(strftime(${parsedDate}, '%d') AS INTEGER)))
+             THEN 1 ELSE 0 END)
+  AS VARCHAR)`
 
   const insertSql = `
     INSERT INTO _audit_details (id, audit_entry_id, row_index, column_name, previous_value, new_value, created_at)

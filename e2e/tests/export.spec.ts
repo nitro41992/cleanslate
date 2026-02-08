@@ -30,9 +30,9 @@ test.describe.serial('Export', () => {
   })
 
   test.afterEach(async () => {
-    // Tier 2 cleanup - Clear state accumulation between tests
+    // Tier 2 cleanup - Drop tables to prevent duplicate table name dialog
     await coolHeap(page, inspector, {
-      dropTables: false,  // Each test manages its own tables
+      dropTables: true,
       closePanels: true,
       clearDiffState: true,
       pruneAudit: true,

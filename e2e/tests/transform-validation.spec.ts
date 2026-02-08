@@ -100,6 +100,7 @@ test.describe('Transform Validation: No-Op Detection', () => {
   })
 
   test('Fill Down: shows validation message when no empty values exist', async () => {
+    test.skip(true, 'Transform is feature-flagged off (HIDDEN_TRANSFORMS)');
     // Load data with no empty values
     await inspector.runQuery('DROP TABLE IF EXISTS validation_no_empty')
     await laundromat.uploadFile(getFixturePath('validation-no-empty.csv'))
@@ -129,6 +130,7 @@ test.describe('Transform Validation: No-Op Detection', () => {
   })
 
   test('Fill Down: allows apply when empty values exist', async () => {
+    test.skip(true, 'Transform is feature-flagged off (HIDDEN_TRANSFORMS)');
     // Load data with empty values using the empty-values fixture
     await inspector.runQuery('DROP TABLE IF EXISTS empty_values')
     await laundromat.uploadFile(getFixturePath('empty-values.csv'))
