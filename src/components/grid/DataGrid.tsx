@@ -467,6 +467,8 @@ export function DataGrid({
   const prevRowCountRef = useRef(rowCount)
   // Flag to skip next reload after local row injection
   const skipNextReloadRef = useRef(false)
+  // Track previous table name to detect table switches (stale skip flag clearing)
+  const prevTableNameRef = useRef(tableName)
 
   // Legacy LRU page cache for fallback (JSON-based)
   const pageCacheRef = useRef<Map<number, CachedPage>>(new Map())
@@ -1236,6 +1238,15 @@ export function DataGrid({
   useEffect(() => {
     console.log('[DATAGRID] useEffect triggered', { tableName, columnCount: columns.length, rowCount, dataVersion, isReplaying, viewState })
 
+    // If the active table changed, any pending skip flag is stale — clear it
+    const tableChanged = tableName !== prevTableNameRef.current
+    if (tableChanged) {
+      prevTableNameRef.current = tableName
+      if (useUIStore.getState().skipNextGridReload) {
+        useUIStore.getState().setSkipNextGridReload(false)
+      }
+    }
+
     // Check and consume skip flag (e.g., after diff close to prevent unnecessary reload)
     const shouldSkip = useUIStore.getState().skipNextGridReload
     if (shouldSkip) {
@@ -1252,8 +1263,9 @@ export function DataGrid({
       return
     }
 
-    // Track rowCount changes
+    // Track rowCount and tableName changes
     prevRowCountRef.current = rowCount
+    prevTableNameRef.current = tableName
 
     if (!tableName || columns.length === 0) {
       console.log('[DATAGRID] Early return - no tableName or columns')
