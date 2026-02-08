@@ -19,21 +19,25 @@ export class CollapseSpacesCommand extends Tier1TransformCommand<CollapseSpacesP
   readonly label = 'Collapse Spaces'
 
   getTransformExpression(_ctx: CommandContext): string {
-    return `regexp_replace(${COLUMN_PLACEHOLDER}, '[ \\t\\n\\r]+', ' ', 'g')`
+    // Cast to VARCHAR so regexp_replace works on non-text columns (e.g., DOUBLE)
+    const castCol = `CAST(${COLUMN_PLACEHOLDER} AS VARCHAR)`
+    return `regexp_replace(${castCol}, '[ \\t\\n\\r]+', ' ', 'g')`
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
+    const castCol = `CAST(${col} AS VARCHAR)`
     // NULL-safe comparison: only rows where value would actually change
-    return `${col} IS DISTINCT FROM regexp_replace(${col}, '[ \\t\\n\\r]+', ' ', 'g')`
+    return `${castCol} IS DISTINCT FROM regexp_replace(${castCol}, '[ \\t\\n\\r]+', ' ', 'g')`
   }
 
   async execute(ctx: CommandContext): Promise<ExecutionResult> {
     const col = this.params.column!
-    const expr = `regexp_replace("${col}", '[ \\t\\n\\r]+', ' ', 'g')`
+    const castCol = `CAST("${col}" AS VARCHAR)`
+    const expr = `regexp_replace(${castCol}, '[ \\t\\n\\r]+', ' ', 'g')`
 
     if (ctx.batchMode) {
-      return runBatchedColumnTransform(ctx, col, expr, `"${col}" IS DISTINCT FROM ${expr}`)
+      return runBatchedColumnTransform(ctx, col, expr, `${castCol} IS DISTINCT FROM ${expr}`)
     }
 
     return super.execute(ctx)

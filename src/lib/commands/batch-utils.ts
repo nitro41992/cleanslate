@@ -325,6 +325,12 @@ async function runShardTransform(
     }
   }
 
+  // Suppress auto-save: table is about to be dropped and rebuilt via shards.
+  // Output is written directly to OPFS (snapshotAlreadySaved=true), so
+  // persistence doesn't need to re-export.
+  const { markTableAsRecentlySaved } = await import('@/hooks/usePersistence')
+  markTableAsRecentlySaved(ctx.table.id, 120_000) // 2 min window for large tables
+
   // Phase 2: DROP the live DuckDB table to free ~500MB
   await conn.query(`DROP TABLE IF EXISTS "${tableName}"`)
   try {

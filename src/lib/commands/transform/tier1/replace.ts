@@ -32,6 +32,8 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
 
   getTransformExpression(_ctx: CommandContext): string {
     const col = COLUMN_PLACEHOLDER
+    // Cast to VARCHAR so string functions work on non-text columns (e.g., DOUBLE)
+    const castCol = `CAST(${col} AS VARCHAR)`
     const find = escapeSqlString(this.params.find)
     const replace = escapeSqlString(this.params.replace ?? '')
     // Handle boolean or string values from UI (UI passes 'true'/'false' strings)
@@ -40,14 +42,14 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
 
     if (matchType === 'exact') {
       if (caseSensitive) {
-        return `CASE WHEN ${col} = '${find}' THEN '${replace}' ELSE ${col} END`
+        return `CASE WHEN ${castCol} = '${find}' THEN '${replace}' ELSE ${col} END`
       } else {
-        return `CASE WHEN LOWER(${col}) = LOWER('${find}') THEN '${replace}' ELSE ${col} END`
+        return `CASE WHEN LOWER(${castCol}) = LOWER('${find}') THEN '${replace}' ELSE ${col} END`
       }
     } else {
       // contains
       if (caseSensitive) {
-        return `REPLACE(${col}, '${find}', '${replace}')`
+        return `REPLACE(${castCol}, '${find}', '${replace}')`
       } else {
         // Workaround for DuckDB-WASM 1.32.0: inline (?i) flag doesn't work reliably
         // Convert each letter to a character class [Aa] for case-insensitive matching
@@ -58,13 +60,15 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
           const upper = letter.toUpperCase()
           return lower !== upper ? `[${lower}${upper}]` : letter
         })
-        return `REGEXP_REPLACE(${col}, '${pattern}', '${replace}', 'g')`
+        return `REGEXP_REPLACE(${castCol}, '${pattern}', '${replace}', 'g')`
       }
     }
   }
 
   async getAffectedRowsPredicate(_ctx: CommandContext): Promise<string> {
     const col = this.getQuotedColumn()
+    // Cast to VARCHAR so string comparisons work on non-text columns (e.g., DOUBLE)
+    const castCol = `CAST(${col} AS VARCHAR)`
     const find = escapeSqlString(this.params.find)
     // Handle boolean or string values from UI (UI passes 'true'/'false' strings)
     const caseSensitive = this.params.caseSensitive === false || this.params.caseSensitive === 'false' ? false : true
@@ -72,16 +76,16 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
 
     if (matchType === 'exact') {
       if (caseSensitive) {
-        return `${col} = '${find}'`
+        return `${castCol} = '${find}'`
       } else {
-        return `LOWER(${col}) = LOWER('${find}')`
+        return `LOWER(${castCol}) = LOWER('${find}')`
       }
     } else {
       // contains
       if (caseSensitive) {
-        return `${col} LIKE '%${find}%'`
+        return `${castCol} LIKE '%${find}%'`
       } else {
-        return `LOWER(${col}) LIKE LOWER('%${find}%')`
+        return `LOWER(${castCol}) LIKE LOWER('%${find}%')`
       }
     }
   }
@@ -94,18 +98,20 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
     const matchType = this.params.matchType ?? 'contains'
 
     if (ctx.batchMode) {
+      // Cast to VARCHAR so string functions work on non-text columns (e.g., DOUBLE)
+      const castCol = `CAST("${col}" AS VARCHAR)`
       let expr: string
 
       if (matchType === 'exact') {
         if (caseSensitive) {
-          expr = `CASE WHEN "${col}" = '${find}' THEN '${replace}' ELSE "${col}" END`
+          expr = `CASE WHEN ${castCol} = '${find}' THEN '${replace}' ELSE "${col}" END`
         } else {
-          expr = `CASE WHEN LOWER("${col}") = LOWER('${find}') THEN '${replace}' ELSE "${col}" END`
+          expr = `CASE WHEN LOWER(${castCol}) = LOWER('${find}') THEN '${replace}' ELSE "${col}" END`
         }
       } else {
         // contains
         if (caseSensitive) {
-          expr = `REPLACE("${col}", '${find}', '${replace}')`
+          expr = `REPLACE(${castCol}, '${find}', '${replace}')`
         } else {
           // Case-insensitive regex replacement (character class workaround)
           let pattern = escapeRegexPattern(this.params.find)
@@ -114,11 +120,11 @@ export class ReplaceCommand extends Tier1TransformCommand<ReplaceParams> {
             const upper = letter.toUpperCase()
             return lower !== upper ? `[${lower}${upper}]` : letter
           })
-          expr = `REGEXP_REPLACE("${col}", '${pattern}', '${replace}', 'g')`
+          expr = `REGEXP_REPLACE(${castCol}, '${pattern}', '${replace}', 'g')`
         }
       }
 
-      return runBatchedColumnTransform(ctx, col, expr, `"${col}" IS DISTINCT FROM ${expr}`)
+      return runBatchedColumnTransform(ctx, col, expr, `${castCol} IS DISTINCT FROM ${expr}`)
     }
 
     return super.execute(ctx)
