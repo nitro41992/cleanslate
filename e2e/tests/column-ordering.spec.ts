@@ -272,7 +272,6 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('chained transformations preserve column order', async () => {
-    test.skip(true, 'Column ordering feature not yet implemented (TDD)');
     // Arrange
     await laundromat.uploadFile(getFixturePath('column-order-test.csv'))
     await wizard.import()
@@ -280,23 +279,24 @@ test.describe('Column Order Preservation', () => {
 
     const originalOrder = ['id', 'name', 'email', 'status']
 
-    // Act: Apply 3 transformations in sequence
-    // 1. Trim email
+    // Act: Apply 3 transformations in sequence (keep panel open, match recipe test pattern)
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
+
+    // 1. Trim email
     await picker.addTransformation('Trim Whitespace', { column: 'email' })
-    await laundromat.closePanel()
+    await inspector.waitForTransformComplete()
+    await inspector.waitForGridReady()
 
     // 2. Lowercase name
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
     await picker.addTransformation('Lowercase', { column: 'name' })
-    await laundromat.closePanel()
+    await inspector.waitForTransformComplete()
+    await inspector.waitForGridReady()
 
     // 3. Uppercase status
-    await laundromat.openCleanPanel()
-    await picker.waitForOpen()
     await picker.addTransformation('Uppercase', { column: 'status' })
+    await inspector.waitForTransformComplete()
+
     await laundromat.closePanel()
 
     // Assert: Original column order maintained
@@ -404,7 +404,6 @@ test.describe('Column Order Preservation', () => {
   })
 
   test('transform after combiner preserves combined table order', async () => {
-    test.skip(true, 'Column ordering feature not yet implemented (TDD)');
     test.setTimeout(120000)  // 2 minutes for heavy combiner test
 
     // Arrange: Stack two tables
@@ -447,15 +446,20 @@ test.describe('Column Order Preservation', () => {
     await laundromat.closePanel()
     await expect(page.getByTestId('combiner')).toBeHidden({ timeout: 5000 })
 
+    // Wait for grid to fully settle after combiner operation
+    await inspector.waitForGridReady()
+
     // Act: Apply transformation to stacked table
     // First, switch to stacked_result table in the UI
     await page.getByTestId('table-selector').click()
     // Match menuitem by partial text since it includes row count
     await page.getByRole('menuitem', { name: /stacked_result/ }).click()
+    await inspector.waitForGridReady()
 
     await laundromat.openCleanPanel()
     await picker.waitForOpen()
     await picker.addTransformation('Trim Whitespace', { column: 'email' })
+    await inspector.waitForTransformComplete()
 
     // Assert: Combined table's column order preserved
     const finalColumns = await inspector.getTableColumns('stacked_result')
